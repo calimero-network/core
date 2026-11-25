@@ -65,6 +65,17 @@ client.signIn(PlatformPasskey(activity))   // Android Credential Manager
 mero-tee release at or above `2.3.109`, signed by the mero-tee release workflow, and its quote
 must match that release's `locked-read-only` image, with Intel's collateral checked on the device.
 
+A build people install from Google Play uses `CloudPolicy.production`. Only a separate staging
+build (its own product flavor) uses `CloudEnvironment.STAGING`, which brings staging's directory
+and policy: any of staging's three image profiles (`CloudReleasePolicy.profiles`, with
+`allowDebugProfile`), the node's own, whose signed image its quote must still be. A native app has
+no hostname a browser checked, so the build decides, never what a person types or a server answers:
+
+```kotlin
+val cloud = if (BuildConfig.MERO_STAGING) CloudEnvironment.STAGING else CloudEnvironment.PRODUCTION
+val client = CalimeroClient.connect(CalimeroConnectOptions(cluster, policy = cloud.policy(), directory = cloud.directory))
+```
+
 ## 4. A Compose app
 
 Most apps should not hold a client at all: `MeroAppSession` keeps the session, and its

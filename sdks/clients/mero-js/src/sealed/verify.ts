@@ -104,6 +104,13 @@ export interface QuoteVerifierOptions {
    */
   allowedTcbStatuses?: string[];
   /**
+   * The oldest Intel TCB evaluation data (the collateral's
+   * `tcbEvaluationDataNumber`) a TCB status may be computed against. It can
+   * raise {@link DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER}, never lower it: the
+   * floor enforced is the higher of the two.
+   */
+  minTcbEvaluationDataNumber?: number;
+  /**
    * Where to get collateral (a Calimero 1.0 node sends none): for example
    * `(quote) => getCollateral(PHALA_PCCS_URL, quote)` from `@phala/dcap-qvl`.
    * Without it, a quote that came without collateral is refused.
@@ -116,6 +123,23 @@ export interface QuoteVerifierOptions {
 /** A quote verifier as this package builds one ({@link createQuoteVerifier}). */
 export type QuoteVerifier = VerifyTransportQuote & { readonly includeCollateral: true };
 
+/**
+ * The oldest Intel TCB evaluation data (`tcbEvaluationDataNumber` in the
+ * collateral's TCB info) a quote's TCB status may be computed against.
+ *
+ * A status is only as current as the baseline that produced it. Intel signs
+ * every baseline it ever published, so a collateral source serving an older
+ * one passes every signature check and makes a platform that has since fallen
+ * behind read `UpToDate`. A real quote whose collateral names a lower number,
+ * or none, is refused; {@link QuoteVerifierOptions.minTcbEvaluationDataNumber}
+ * can raise the floor, never lower it.
+ *
+ * Mirrors core's `calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`
+ * (crates/tee-attestation/src/policy.rs): raise the two together, or this
+ * client trusts a node core's nodes refuse.
+ */
+export const DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER = 20;
+
 const MEASUREMENT_HEX = /^[0-9a-f]{96}$/;
 const REGISTERS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2', 'rtmr3'] as const;
 
@@ -127,6 +151,9 @@ const REGISTERS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2', 'rtmr3'] as const;
  *   now;
  * - the platform's TCB status is one allowed (`UpToDate` by default), and
  *   never `Revoked`;
+ * - that status was computed against Intel TCB evaluation data no older than
+ *   {@link DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER} (or the higher
+ *   `minTcbEvaluationDataNumber`);
  * - its measurements are those of a trusted image: one of
  *   `allowedMeasurements` in full, and the MRTD and any RTMRs listed;
  * - its report data is the nonce followed by the binding the client computed.
@@ -171,6 +198,7 @@ export function createQuoteVerifier(options: QuoteVerifierOptions): QuoteVerifie
     }
   }
   const allowedStatuses = options.allowedTcbStatuses ?? ['UpToDate'];
+  const floor = tcbEvaluationDataFloor(options.minTcbEvaluationDataNumber);
   const now = options.now ?? Date.now;
 
   const verifier = async ({
@@ -196,6 +224,20 @@ export function createQuoteVerifier(options: QuoteVerifierOptions): QuoteVerifie
 
     if (verified.status === 'Revoked' || !allowedStatuses.includes(verified.status)) {
       throw new Error(`The platform's TCB status is ${verified.status}, which is not accepted`);
+    }
+    // A status is only as current as the baseline that produced it. (A mock
+    // quote never gets here: it carries no signature, so it has no collateral.)
+    const number = tcbEvaluationDataNumber(against.tcb_info);
+    if (number === undefined) {
+      throw new Error(
+        `The TCB evaluation data the platform's TCB status was computed against is unknown (minimum ${floor})`,
+      );
+    }
+    if (number < floor) {
+      throw new Error(
+        `The platform's TCB status was computed against Intel TCB evaluation data ${number}, older than ` +
+          `the minimum ${floor}; point the collateral source at current collateral`,
+      );
     }
     const td = tdReport(verified.report);
     // TUD bit 0. A debug TD's memory and registers are open to the host, so its
@@ -227,6 +269,26 @@ export function createQuoteVerifier(options: QuoteVerifierOptions): QuoteVerifie
     return true;
   };
   return Object.assign(verifier, { includeCollateral: true as const });
+}
+
+/** The floor enforced: `configured`, never below {@link DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER}. */
+function tcbEvaluationDataFloor(configured: number | undefined): number {
+  if (configured === undefined) return DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER;
+  if (!Number.isSafeInteger(configured) || configured < 0) {
+    throw new Error(`minTcbEvaluationDataNumber is ${JSON.stringify(configured)}, not a TCB evaluation data number`);
+  }
+  return Math.max(configured, DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER);
+}
+
+/** The `tcbEvaluationDataNumber` of a collateral's TCB info, or `undefined` when it names none. */
+function tcbEvaluationDataNumber(tcbInfo: string): number | undefined {
+  let number: unknown;
+  try {
+    number = (JSON.parse(tcbInfo) as { tcbEvaluationDataNumber?: unknown })?.tcbEvaluationDataNumber;
+  } catch {
+    return undefined;
+  }
+  return typeof number === 'number' && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
 }
 
 function measurements(values: string[], label: string): string[] {

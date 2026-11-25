@@ -13,13 +13,38 @@ be `nonce ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ tr
 | --- | --- |
 | `.development` (`allowMock: true`) | a `MOCK_TDX_QUOTE_V1` quote binding the nonce and key: `merod local` only |
 | `.production` (`release: CloudReleasePolicy(minReleaseVersion: "2.3.109")`) | a real TDX quote from a signed mero-tee release |
+| `.staging` (`CloudEnvironment.staging.policy()`) | the same, of any of staging's image profiles (`locked-read-only`, `debug`, `debug-read-only`): testing builds only |
 | `verifyQuote:` | your own `TransportQuoteVerifier` (e.g. `createQuoteVerifier` with pinned measurements) |
 
 A real quote is judged as core's `Measurements::Release` does, and as mero-js does:
 
 1. the release the node names is at least `minReleaseVersion` (`claimedRelease`);
 2. that release's `published-mrtds.json` is fetched (`ReleaseSource`: the Cloud mirror, GitHub, or your own) and its Sigstore signature checked against mero-tee's release workflow (`trustSignedRelease`);
-3. the quote's signature chain and TCB status are checked on the device against Intel's collateral (`Dcap.verify`), which a 1.0 node does not send: it is fetched from the cloud's PCCS mirror (`collateralSource`, default `TeeTrust.defaultCollateralMirror`; `"intel"` for Intel's PCS) by `IntelPcs.collateral(for:baseURL:)`, or from `fetchCollateral` when you give one. The mirror cannot forge Intel's signatures; `maxCollateralAgeDays` bounds how old a copy it may replay;
-4. the TD is not a debug TD, and its registers are the release's image for the trusted profile (`locked-read-only` unless `allowDebugProfile`).
+3. the quote's signature chain and TCB status are checked on the device against Intel's collateral (`Dcap.verify`), which a 1.0 node does not send: it is fetched from the cloud's PCCS mirror (`collateralSource`, default `TeeTrust.defaultCollateralMirror`; `"intel"` for Intel's PCS) by `IntelPcs.collateral(for:baseURL:)`, or from `fetchCollateral` when you give one. The mirror cannot forge Intel's signatures; `maxCollateralAgeDays` bounds how old a copy it may replay; and the TCB status must have been computed against Intel TCB evaluation data (`tcbEvaluationDataNumber`) of at least `TeeTrust.defaultMinTcbEvaluationDataNumber` (20, core's `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`): an older baseline, still Intel-signed, could call an out-of-date platform up to date. `minTcbEvaluationDataNumber` can raise that floor, never lower it;
+4. the TD is not a debug TD, and its registers are the release's image for the trusted profile (`locked-read-only` unless `allowDebugProfile`; with `profiles`, the one the node names when it is listed, as core's `allowed_profiles`).
+
+## Staging
+
+A native app has no hostname a browser checked, so the build decides which
+Calimero Cloud it trusts, never what a person types or a server answers. A
+build people install from the App Store uses `.production`; a separate staging
+build (its own configuration, e.g. a `MERO_STAGING` compilation condition)
+uses `CloudEnvironment.staging`, which brings staging's directory and policy:
+
+```swift
+#if MERO_STAGING
+let cloud = CloudEnvironment.staging
+#else
+let cloud = CloudEnvironment.production
+#endif
+let client = try await CalimeroClient.connect(
+    CalimeroConnectOptions(cluster: cluster, policy: cloud.policy(), directory: cloud.directory))
+```
+
+Staging's clusters run all three image profiles, so `.staging` lists them
+(`CloudReleasePolicy.profiles`) with `allowDebugProfile`: the profile the node
+names is used when listed, and its quote must still be that profile's signed
+image. A debug image's memory is readable by the operator, so a staging build
+is for testing only.
 
 Nothing reads the environment: mock quotes pass only with `allowMock`.

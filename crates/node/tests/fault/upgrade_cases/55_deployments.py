@@ -77,7 +77,8 @@ class DeploymentUsedSecrets(DeepCase):
         dex = person(w, "dex")
         used = _pack(dex, w, USED, "1.0.0", _component(w, "used-secrets"), {
             "outbound": [f"https://{HOST}/"],
-            "secrets": {"NEAR_AI_API_KEY": {"hosts": [HOST], "required": True}},
+            "secrets": {"NEAR_AI_API_KEY": {"host": HOST, "paths": ["/"], "header": "authorization",
+                                            "format": "Bearer {}", "required": True}},
         })
         notes = _pack(dex, w, NOTES, "1.0.0", _component(w, "uses-secrets"), {
             "uses": {"inference": {"package": USED, "range": "^1", "version": "1.0.0"}},
@@ -214,7 +215,7 @@ class DeploymentOfferUpgrades(DeepCase):
 class DeploymentNamedToCustomers(DeepCase):
     name = "deployment-named-to-customers"
     area = "Deployments"
-    since = "1.0.0-rc.36"
+    since = "1.0.0-rc.37"
     seeds = "a deployment offering a release, and a customer's instance from it"
     verifies = ("`GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name "
                 "(names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second "
@@ -253,7 +254,7 @@ def _recovery_key(seed: bytes) -> str:
 class DeploymentNeedsRecovery(DeepCase):
     name = "deployment-needs-recovery"
     area = "Deployments"
-    since = "1.0.0-rc.36"
+    since = "1.0.0-rc.37"
     seeds = "an organization with a recovery key, and a deployment it owns"
     verifies = ("the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns "
                 "the deployment, before the passkey; on the new release rotating it succeeds, and another "

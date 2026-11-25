@@ -31,9 +31,13 @@ mod fleet;
 mod orgs;
 mod packages;
 mod recovery;
+mod rejection;
 mod routing;
 mod sign_up;
 mod updates;
+
+pub use approvals::egress_args;
+pub use rejection::{Rejection, RejectionKind};
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,22 +177,31 @@ pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node'
 pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 64 bytes";
 /// The apply error for an update policy whose hold is outside
 /// `MIN_HOLD_HOURS..=MAX_HOLD_HOURS` ([`crate::types::UpgradePolicy`]).
-pub const BAD_UPGRADE_POLICY: &str = "BAD_UPGRADE_POLICY: holdHours is 24 (a day) to 168 (a week)";
+pub const BAD_UPGRADE_POLICY: Rejection = Rejection::new(
+    RejectionKind::BadUpgradePolicy,
+    "BAD_UPGRADE_POLICY: holdHours is 24 (a day) to 168 (a week)",
+);
 /// The apply error for a red or unclassified update whose policy asks for a second
 /// approver, without another owner's or admin's live first approval of it
 /// ([`SystemState::update_gate`]).
-pub const SECOND_APPROVAL_REQUIRED: &str = "SECOND_APPROVAL_REQUIRED: this update is red and the app's policy asks for a second approver: another owner or admin approves it first (POST /apps/{app}/upgrade-approvals)";
+pub const SECOND_APPROVAL_REQUIRED: Rejection =
+    Rejection::new(RejectionKind::SecondApprovalRequired, "SECOND_APPROVAL_REQUIRED: this update is red and the app's policy asks for a second approver: another owner or admin approves it first (POST /apps/{app}/upgrade-approvals)");
 /// The apply error for an update's class that leaves out a reason the log shows, or is
 /// not one the classifier answers (red without a reason, green with one, too many).
-pub const UPGRADE_CLASS_MISMATCH: &str =
-    "UPGRADE_CLASS_MISMATCH: the update's class does not match the releases the log holds";
+pub const UPGRADE_CLASS_MISMATCH: Rejection = Rejection::new(
+    RejectionKind::UpgradeClassMismatch,
+    "UPGRADE_CLASS_MISMATCH: the update's class does not match the releases the log holds",
+);
 /// The apply error for a first approval where one approval applies the update: no second
 /// approver in the app's policy, or a green update.
-pub const ONE_APPROVAL: &str =
-    "ONE_APPROVAL: this update needs one approval: upgrade the app (POST /apps/{app}/upgrade)";
+pub const ONE_APPROVAL: Rejection = Rejection::new(
+    RejectionKind::OneApproval,
+    "ONE_APPROVAL: this update needs one approval: upgrade the app (POST /apps/{app}/upgrade)",
+);
 /// The apply error for a first approval of an update another owner or admin approved
 /// first: that one waits for its second, which is an upgrade.
-pub const APPROVAL_PENDING: &str = "APPROVAL_PENDING: another owner or admin approved this update already: apply it (POST /apps/{app}/upgrade)";
+pub const APPROVAL_PENDING: Rejection =
+    Rejection::new(RejectionKind::ApprovalPending, "APPROVAL_PENDING: another owner or admin approved this update already: apply it (POST /apps/{app}/upgrade)");
 /// Who an update that applied on its own names as its actor (`UpgradeApp::auto`): its
 /// app's update policy, never an account (no account id has this shape).
 pub const AUTO_UPDATE: &str = "policy:auto-update";
@@ -196,47 +209,45 @@ pub const AUTO_UPDATE: &str = "policy:auto-update";
 /// not let through: no `noDestinations` policy, a class other than green, a unit with a
 /// destination before or after, an older release, a unit's member alone, or another
 /// release than its deployment offers.
-pub const AUTO_UPDATE_REFUSED: &str = "AUTO_UPDATE_REFUSED: the app's update policy does not apply this update on its own; an owner or admin approves it";
+pub const AUTO_UPDATE_REFUSED: Rejection =
+    Rejection::new(RejectionKind::AutoUpdateRefused, "AUTO_UPDATE_REFUSED: the app's update policy does not apply this update on its own; an owner or admin approves it");
 /// The apply error for an update proposed to apply on its own before its hold passed,
 /// judged on the release's logged install or offer time and the upgrade's own `at`.
-pub const HOLD_NOT_OVER: &str =
-    "HOLD_NOT_OVER: the update's hold has not passed since the release was logged";
+pub const HOLD_NOT_OVER: Rejection = Rejection::new(
+    RejectionKind::HoldNotOver,
+    "HOLD_NOT_OVER: the update's hold has not passed since the release was logged",
+);
 /// The apply error for an update proposed to apply on its own without a restore point.
-pub const RESTORE_POINT_REQUIRED: &str =
-    "RESTORE_POINT_REQUIRED: an update applies on its own only after a restore point";
+pub const RESTORE_POINT_REQUIRED: Rejection = Rejection::new(
+    RejectionKind::RestorePointRequired,
+    "RESTORE_POINT_REQUIRED: an update applies on its own only after a restore point",
+);
 /// The apply error for an undo of an app whose last upgrade left no restore point.
-pub const NO_RESTORE_POINT: &str = "NO_RESTORE_POINT: this app has no upgrade to undo";
+pub const NO_RESTORE_POINT: Rejection = Rejection::new(
+    RejectionKind::NoRestorePoint,
+    "NO_RESTORE_POINT: this app has no upgrade to undo",
+);
 /// The apply error for an undo logged more than `UNDO_WINDOW_SECS` after its upgrade.
-pub const UNDO_WINDOW_PASSED: &str =
-    "UNDO_WINDOW_PASSED: an upgrade is undone within 7 days of it, and this one is older";
+pub const UNDO_WINDOW_PASSED: Rejection = Rejection::new(
+    RejectionKind::UndoWindowPassed,
+    "UNDO_WINDOW_PASSED: an upgrade is undone within 7 days of it, and this one is older",
+);
 /// The apply error for an undo of an app that no longer runs what its upgrade moved it
 /// to, or is being restored from another backup.
-pub const UNDO_STALE: &str =
-    "UNDO_STALE: the app no longer runs the release its last upgrade moved it to";
+pub const UNDO_STALE: Rejection = Rejection::new(
+    RejectionKind::UndoStale,
+    "UNDO_STALE: the app no longer runs the release its last upgrade moved it to",
+);
 /// The apply error for an undo whose apps or new groups are not those its instance's
 /// restore points name (the instance and the members its unit's upgrade moved).
-pub const UNDO_NOT_AS_NAMED: &str =
-    "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point";
+pub const UNDO_NOT_AS_NAMED: Rejection =
+    Rejection::new(RejectionKind::UndoNotAsNamed, "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point");
 /// The apply error for an undo to a release that is no longer installed (a bundle another
 /// release ships may remain, but the release itself and its frontend are gone).
-pub const UNDO_RELEASE_GONE: &str =
-    "UNDO_RELEASE_GONE: the release the app ran before is no longer installed";
-/// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
-pub const UPDATE_REFUSALS: [(&str, u16); 13] = [
-    (BAD_UPGRADE_POLICY, 400),
-    (SECOND_APPROVAL_REQUIRED, 409),
-    (UPGRADE_CLASS_MISMATCH, 409),
-    (ONE_APPROVAL, 409),
-    (APPROVAL_PENDING, 409),
-    (AUTO_UPDATE_REFUSED, 409),
-    (HOLD_NOT_OVER, 409),
-    (RESTORE_POINT_REQUIRED, 409),
-    (NO_RESTORE_POINT, 409),
-    (UNDO_WINDOW_PASSED, 409),
-    (UNDO_STALE, 409),
-    (UNDO_NOT_AS_NAMED, 409),
-    (UNDO_RELEASE_GONE, 409),
-];
+pub const UNDO_RELEASE_GONE: Rejection = Rejection::new(
+    RejectionKind::UndoReleaseGone,
+    "UNDO_RELEASE_GONE: the release the app ran before is no longer installed",
+);
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
 /// The apply error for a price table with a zero fuel rate.
@@ -273,7 +284,8 @@ pub struct RunSlot {
     pub pool: String,
 }
 
-/// The prefix of every apply error that is a quota refusal.
+/// How a quota refusal's message starts ([`Rejection::quota`]). Only the
+/// wording: its status comes from its kind ([`RejectionKind::QuotaExceeded`]).
 pub const QUOTA_PREFIX: &str = "quota exceeded";
 
 /// The refusal when an app would run a compute component.
@@ -281,8 +293,10 @@ const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never
 
 /// The refusal when an app names a compute component its bundle's release does not ship.
 /// The refusal of an uninstall of a release another release's pipelines pin as a module.
-pub const MODULE_IN_USE: &str =
-    "an installed release's pipelines use that release as a module; uninstall them first";
+pub const MODULE_IN_USE: Rejection = Rejection::new(
+    RejectionKind::ModuleInUse,
+    "an installed release's pipelines use that release as a module; uninstall them first",
+);
 const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
 
 /// The refusal when an app names a release that does not ship its bundle.
@@ -442,10 +456,11 @@ pub struct PackageVersion {
     /// URL prefixes the app may call out to (the manifest's signed `outbound`).
     #[serde(default)]
     pub outbound: Vec<String>,
-    /// The secrets the release declares (`BundleManifest::secrets`): the node fills only
-    /// these names, each only into a request to one of its hosts. Empty for a release that
-    /// declares none (and every release recorded before), which keeps the operator's
-    /// bindings alone, as before.
+    /// The credentials the release binds (`BundleManifest::secrets`): the node attaches
+    /// each to its host's requests, in its header or body field, and no other. Empty for a
+    /// release that binds none, whose requests carry no secret. Its shape changed in
+    /// 1.0.0-rc.36 (one host and one place, from a list of hosts), a hard cutover: an
+    /// `InstallPackage` an earlier release recorded is not read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, calimero_bundle::BundleSecret>,
     /// The apps the release references (`BundleManifest::uses`), by reference name: a
@@ -1021,8 +1036,9 @@ pub enum Admission {
     SignUpInvite,
 }
 
-/// The prefix of every apply error that refuses a sign-up under the
-/// cluster's policy; the API answers it `403 SIGN_UP_REFUSED`.
+/// How a refusal of a sign-up under the cluster's policy starts
+/// ([`Rejection::sign_up`]). Only the wording: the API answers it `403
+/// SIGN_UP_REFUSED` for its kind ([`RejectionKind::SignUpRefused`]).
 pub const SIGN_UP_PREFIX: &str = "sign-up refused";
 
 /// A refusal: no organization invite is kept under that token. The last use
@@ -1048,8 +1064,10 @@ pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins r
 /// whose apps have app teams, is installing an app there: an admin's.
 /// Refusal of a `DeleteApp` under the whole-unit rule naming a unit's member: it goes with
 /// the instance whose release created it.
-pub const UNIT_MEMBER: &str =
-    "this app is a member of an instance's unit: it is deleted with that instance, not alone";
+pub const UNIT_MEMBER: Rejection = Rejection::new(
+    RejectionKind::UnitMember,
+    "this app is a member of an instance's unit: it is deleted with that instance, not alone",
+);
 /// Refusal of a `DeleteApp` whose `members` are not the instance's unit as it stands.
 pub const UNIT_NOT_AS_NAMED: &str = "the unit's members are not the ones the delete names";
 
@@ -1072,15 +1090,56 @@ pub struct PersonalOrgSeed {
 pub const NO_PERSONAL_ORG: &str = "the new owner has no personal organization to take the app";
 /// A refusal: an account owns at most one personal organization
 /// ([`crate::types::Org::personal`]).
-pub const PERSONAL_ORG_EXISTS: &str = "the account has a personal organization already";
+pub const PERSONAL_ORG_EXISTS: Rejection = Rejection::new(
+    RejectionKind::PersonalOrgExists,
+    "the account has a personal organization already",
+);
 /// A refusal: from the cluster version that makes organizations ordinary
 /// ([`SystemState::ordinary_orgs`]) no personal organization is made; an account's own
 /// organization is an ordinary one it creates.
-pub const NO_PERSONAL_ORGS: &str =
-    "personal organizations are no longer made: create an ordinary organization";
+pub const NO_PERSONAL_ORGS: Rejection = Rejection::new(
+    RejectionKind::PersonalOrgsEnded,
+    "personal organizations are no longer made: create an ordinary organization",
+);
 /// How far up a unit [`SystemState::guest_holder`] walks: a unit nests at most
 /// `api::apps::MAX_UNIT_DEPTH` deep, so this leaves room and bounds a cycle.
 pub const MAX_UNIT_LINKS_UP: usize = 8;
+
+/// A refusal: the organization turned egress off, so it approves no outbound host
+/// until it is on again; the API answers it `409 EGRESS_OFF`.
+pub const EGRESS_OFF: Rejection = Rejection::new(
+    RejectionKind::EgressOff,
+    "egress is off for this organization: turn it on before approving outbound hosts",
+);
+
+/// Who turned egress off for an app ([`SystemState::egress_off`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EgressOff {
+    /// Its organization, for every app of it.
+    Org,
+    /// The instance itself.
+    Instance,
+}
+
+impl EgressOff {
+    /// Who, as a refusal and a page name it.
+    #[must_use]
+    pub const fn who(self) -> &'static str {
+        match self {
+            Self::Org => "its organization",
+            Self::Instance => "the instance",
+        }
+    }
+
+    /// Its name on the wire (`offBy`).
+    #[must_use]
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Org => "organization",
+            Self::Instance => "instance",
+        }
+    }
+}
 
 /// An organization's settings, as `SetOrgSettings` changes them and its consent states them
 /// (camelCase, a setting left out kept as it is).
@@ -1155,8 +1214,10 @@ pub const MAX_APP_INVITE_USES: u32 = 1_000;
 pub const MAX_APP_INVITE_TTL_SECS: u64 = 90 * 24 * 3600;
 /// A refusal: the instance's release or its organization does not allow guests
 /// ([`SystemState::guests_allowed`]).
-pub const GUESTS_NOT_ALLOWED: &str =
-    "this instance takes no guests: its release or its organization does not allow them";
+pub const GUESTS_NOT_ALLOWED: Rejection = Rejection::new(
+    RejectionKind::GuestsNotAllowed,
+    "this instance takes no guests: its release or its organization does not allow them",
+);
 /// A refusal: an instance invite gone, used up or never made.
 pub const APP_INVITE_GONE: &str = "this invite was used up, revoked or never existed";
 
@@ -1170,10 +1231,15 @@ pub const PERSONAL_ORG_NAME: &str = "Personal";
 pub const ONLY_ADMINS_ALL_APPS: &str =
     "only the organization's owner and admins give someone every app added later";
 /// A refusal: capability bits that no capability has.
-pub const UNKNOWN_CAPABILITIES: &str = "capabilities name a bit no capability has";
+pub const UNKNOWN_CAPABILITIES: Rejection = Rejection::new(
+    RejectionKind::UnknownCapabilities,
+    "capabilities name a bit no capability has",
+);
 /// A refusal: an invite grants no capability its creator does not hold.
-pub const CANNOT_GRANT_UNHELD: &str =
-    "an invite grants only capabilities its creator holds; only the owner and admins grant any";
+pub const CANNOT_GRANT_UNHELD: Rejection = Rejection::new(
+    RejectionKind::CannotGrantUnheld,
+    "an invite grants only capabilities its creator holds; only the owner and admins grant any",
+);
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
@@ -1271,8 +1337,8 @@ pub const MAX_DEPLOYMENT_SECRETS: usize = 4096;
 
 /// Why a deployment's secret is refused: no release it offers declares the name, nor (for
 /// an entry judged by `SetDeploymentSecret::used`) one an offered release references.
-pub const UNDECLARED_SECRET: &str =
-    "no release this deployment offers, or one they use, declares that secret; offer one that does first";
+pub const UNDECLARED_SECRET: Rejection =
+    Rejection::new(RejectionKind::UndeclaredSecret, "no release this deployment offers, or one they use, declares that secret; offer one that does first");
 
 /// The names of a secret a deployment reaches ([`SystemState::deployment_declarers`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1286,10 +1352,14 @@ pub struct SecretDeclarers {
 /// Why an upgrade of an instance from a deployment is refused: it names a
 /// release other than the one the deployment offers for the instance's package
 /// (`SystemState::within_deployment`).
-pub const OUTSIDE_DEPLOYMENT: &str = "an instance from a deployment runs the release its deployment offers: its developer decides which, and its owner accepts it or not";
+pub const OUTSIDE_DEPLOYMENT: Rejection =
+    Rejection::new(RejectionKind::OutsideDeployment, "an instance from a deployment runs the release its deployment offers: its developer decides which, and its owner accepts it or not");
 
 /// Why clearing a deployment's secret is refused: it holds no value of it.
-pub const NO_DEPLOYMENT_SECRET: &str = "this deployment holds no value of that secret";
+pub const NO_DEPLOYMENT_SECRET: Rejection = Rejection::new(
+    RejectionKind::NotFound,
+    "this deployment holds no value of that secret",
+);
 
 /// A deployment's id: derived from the nonce its creator's consent signed,
 /// so the consent binds it and no node picks another (32 lowercase hex
@@ -1411,12 +1481,16 @@ impl DeployerGrant {
 /// Why an organization without a recovery key may not own a deployment, nor remove its key
 /// while it owns one ([`SystemState::keeps_recoverable`]); the API answers it `409
 /// RECOVERY_KEY_REQUIRED` (`node::rejected`).
-pub const RECOVERY_KEY_REQUIRED: &str = "an organization that owns a deployment holds a recovery key, so a lost passkey never locks the deployment: set one first, and rotate it rather than remove it";
+pub const RECOVERY_KEY_REQUIRED: Rejection = Rejection::new(
+    RejectionKind::RecoveryKeyRequired,
+    "an organization that owns a deployment holds a recovery key, so a lost passkey never locks the deployment: set one first, and rotate it rather than remove it",
+);
 
 /// What an install is refused with where deployments are granted and the
 /// installer holds no live grant; the API answers it `403
 /// DEPLOY_NOT_GRANTED` (`node::rejected`).
-pub const NOT_A_DEPLOYER: &str = "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.";
+pub const NOT_A_DEPLOYER: Rejection =
+    Rejection::new(RejectionKind::DeployNotGranted, "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.");
 
 /// How many deployer grants a cluster keeps.
 pub const MAX_DEPLOYERS: usize = 10_000;
@@ -1433,8 +1507,9 @@ pub enum ReleaseScope {
     Cluster,
 }
 
-/// The prefix of every apply error that refuses new work past a release
-/// deadline ([`Stall`]); the API answers it `409 RELEASE_DEADLINE`.
+/// How a refusal of new work past a release deadline starts
+/// ([`Stall::rejection`]). Only the wording: the API answers it `409
+/// RELEASE_DEADLINE` for its kind ([`RejectionKind::ReleaseDeadline`]).
 pub const DEADLINE_PREFIX: &str = "new work stopped";
 
 /// How many releases may carry a deadline at once.
@@ -1455,7 +1530,14 @@ pub struct Stall {
 }
 
 impl Stall {
-    /// The refusal, naming the release to approve and its deadline.
+    /// The refusal ([`RejectionKind::ReleaseDeadline`]), naming the release
+    /// to approve and its deadline.
+    #[must_use]
+    pub fn rejection(&self) -> Rejection {
+        Rejection::with(RejectionKind::ReleaseDeadline, self.message())
+    }
+
+    /// The refusal's message.
     #[must_use]
     pub fn message(&self) -> String {
         format!(
@@ -2227,6 +2309,18 @@ impl SystemState {
         self.orgs.get(&app.org)?.outbound_approvals.get(signer)
     }
 
+    /// Who turned egress off for `app`, if anyone: its organization
+    /// ([`crate::types::Org::egress_off`]) before the instance itself
+    /// ([`crate::types::AppRecord::egress_off`]). While it is off no outbound request
+    /// leaves the cluster for the app, whatever was approved (`Node::outbound_for`).
+    #[must_use]
+    pub fn egress_off(&self, app: &AppRecord) -> Option<EgressOff> {
+        if self.orgs.get(&app.org).is_some_and(|o| o.egress_off) {
+            return Some(EgressOff::Org);
+        }
+        app.egress_off.then_some(EgressOff::Instance)
+    }
+
     /// The release `app` runs, if installed: the one it records
     /// (`AppRecord::release`), else the one its bundle came out of (as
     /// `Node::release_of_app`).
@@ -2554,36 +2648,36 @@ impl SystemState {
     /// created without it.
     ///
     /// # Errors
-    /// The refusal, starting with [`SIGN_UP_PREFIX`].
-    pub fn admits(&self, invite: Option<&SignUpRedemption>) -> Result<Admission, &'static str> {
+    /// The refusal ([`RejectionKind::SignUpRefused`]).
+    pub fn admits(&self, invite: Option<&SignUpRedemption>) -> Result<Admission, Rejection> {
         self.admits_key(invite.map(|r| (r.invite_key.as_str(), r.now)))
     }
 
     /// [`Self::admits`] for an invite key presented at `now`.
     ///
     /// # Errors
-    /// The refusal, starting with [`SIGN_UP_PREFIX`].
-    pub fn admits_key(&self, invite: Option<(&str, u64)>) -> Result<Admission, &'static str> {
+    /// The refusal ([`RejectionKind::SignUpRefused`]).
+    pub fn admits_key(&self, invite: Option<(&str, u64)>) -> Result<Admission, Rejection> {
         let admission = match invite {
             None => Admission::Open,
             Some((key, now)) => {
                 if let Some(i) = self.sign_up_invites.get(key) {
                     if i.expires_at <= now || i.uses_left == 0 {
-                        return Err("sign-up refused: the invite has expired");
+                        return Err(Rejection::sign_up("the invite has expired"));
                     }
                     Admission::SignUpInvite
                 } else if let Some(i) = self.invites.get(key) {
                     if i.expires_at <= now || i.uses_left == 0 {
-                        return Err("sign-up refused: the invite has expired");
+                        return Err(Rejection::sign_up("the invite has expired"));
                     }
                     if !self.orgs.contains_key(&i.org) {
-                        return Err("sign-up refused: the invite's organization is gone");
+                        return Err(Rejection::sign_up("the invite's organization is gone"));
                     }
                     Admission::OrgInvite
                 } else {
-                    return Err(
-                        "sign-up refused: this invite was used up, revoked or never existed",
-                    );
+                    return Err(Rejection::sign_up(
+                        "this invite was used up, revoked or never existed",
+                    ));
                 }
             }
         };
@@ -2592,10 +2686,10 @@ impl SystemState {
             | (SignUp::Invite, Admission::OrgInvite | Admission::SignUpInvite)
             | (SignUp::Closed, Admission::SignUpInvite) => Ok(admission),
             (SignUp::Invite, Admission::Open) => {
-                Err("sign-up refused: this cluster takes new accounts by invite only")
+                Err(Rejection::sign_up("this cluster takes new accounts by invite only"))
             }
             (SignUp::Closed, _) => Err(
-                "sign-up refused: this cluster takes only accounts its operator or owner pre-authorized with a sign-up invite",
+                Rejection::sign_up("this cluster takes only accounts its operator or owner pre-authorized with a sign-up invite"),
             ),
         }
     }
@@ -2855,7 +2949,7 @@ impl SystemState {
         app: &AppRecord,
         release: Option<&PackageRef>,
         run: Option<&str>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Rejection> {
         let Some(id) = app.deployment.as_deref() else {
             return Ok(());
         };
@@ -2902,8 +2996,8 @@ impl SystemState {
     }
 
     /// The secret values of the deployment `app_id` was created from, by name,
-    /// for a run of `package`: what fills `{{secret:NAME}}` for it where the
-    /// instance set no value of its own. `None` for an instance from no
+    /// for a run of `package`: what the outbound gate attaches where the
+    /// release binds `NAME` and the instance set no value of its own. `None` for an instance from no
     /// deployment, one deleted since, or a run of a package the deployment does
     /// not offer or reference ([`Self::deployment_covers`]): its managers set
     /// the values for the code they ship, and no other code gets them, whatever the record
@@ -3718,12 +3812,12 @@ impl SystemState {
         nonce: &str,
         actor: &str,
         logged: ScopeAsLogged,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, Rejection> {
         use crate::types::caps;
 
         let o = self.orgs.get(org).ok_or("no such organization")?;
         if !o.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
-            return Err(ONLY_ADMINS_INSTALL);
+            return Err(ONLY_ADMINS_INSTALL.into());
         }
         let in_org = |a: &&AppRecord| a.org == org;
         let specs = match apps {
@@ -3747,7 +3841,7 @@ impl SystemState {
                 .collect(),
         };
         if specs.len() > MAX_SCOPE_PACKAGES {
-            return Err("too many packages in one step");
+            return Err("too many packages in one step".into());
         }
         // A package's own `join` (or `childTeams`) decides its team and no
         // other: `shared` then closes nothing more unless asked, and never
@@ -3756,7 +3850,7 @@ impl SystemState {
             .iter()
             .any(|a| a.join.is_some() || a.child_teams.is_some());
         if shared == Some(true) && specs.iter().any(|a| a.join == Some(TeamJoin::Everyone)) {
-            return Err("an app team cannot open while the step closes every app team");
+            return Err("an app team cannot open while the step closes every app team".into());
         }
         // Each package: its team (found, or to make), name, instances, and
         // who reaches those instances now.
@@ -3773,7 +3867,7 @@ impl SystemState {
         let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
         for spec in specs {
             if plans.iter().any(|p| p.package == spec.package) {
-                return Err("a package is named twice");
+                return Err("a package is named twice".into());
             }
             let record = self.packages.get(&spec.package).ok_or("no such package")?;
             let name = match spec.name {
@@ -3786,19 +3880,19 @@ impl SystemState {
                     .to_owned(),
             };
             if name.trim().is_empty() || name.chars().count() > MAX_APP_TEAM_NAME_CHARS {
-                return Err("an app team's name is 1 to 64 characters");
+                return Err("an app team's name is 1 to 64 characters".into());
             }
             let keep = match spec.keep {
                 None => None,
                 Some(_) if spec.join != Some(TeamJoin::Invite) => {
-                    return Err("only closing an app team (join: invite) names who keeps it");
+                    return Err("only closing an app team (join: invite) names who keeps it".into());
                 }
                 Some(list) => {
                     if list.len() > MAX_SCOPE_KEEP {
-                        return Err("too many accounts kept in one step");
+                        return Err("too many accounts kept in one step".into());
                     }
                     if list.iter().any(|a| o.role(a).is_none()) {
-                        return Err("only members of the organization keep an app");
+                        return Err("only members of the organization keep an app".into());
                     }
                     Some(list.into_iter().collect::<BTreeSet<_>>())
                 }
@@ -3809,14 +3903,15 @@ impl SystemState {
             let instances: Vec<AppId> = match spec.instances {
                 Some(ids) => {
                     if ids.len() > MAX_SCOPE_INSTANCES {
-                        return Err("too many instances in one step");
+                        return Err("too many instances in one step".into());
                     }
                     let ids: BTreeSet<AppId> = ids.into_iter().collect();
                     for id in &ids {
                         let a = self.apps.get(id).ok_or("no such app")?;
                         if a.org != org || !of_package(a) {
                             return Err(
-                                "an instance named is not of that package in this organization",
+                                "an instance named is not of that package in this organization"
+                                    .into(),
                             );
                         }
                     }
@@ -4087,7 +4182,7 @@ impl SystemState {
         nonce: &str,
         actor: &str,
         rows: MoveRows,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, Rejection> {
         use crate::types::{caps, OrgMode};
 
         let MoveRows {
@@ -4099,14 +4194,14 @@ impl SystemState {
         let app = self.apps.get(app_id).ok_or("no such app")?;
         let from = app.org.clone();
         if from == to_org {
-            return Err("the app is in that organization already");
+            return Err("the app is in that organization already".into());
         }
         if !self.manages_app(app, actor) {
-            return Err(ONLY_MANAGERS_MOVE);
+            return Err(ONLY_MANAGERS_MOVE.into());
         }
         let target = self.orgs.get(to_org).ok_or("no such organization")?;
         if !target.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
-            return Err(ONLY_ADMINS_MOVE_IN);
+            return Err(ONLY_ADMINS_MOVE_IN.into());
         }
         let source = self.orgs.get(&from);
         let package = self.package_of(app).map(str::to_owned);
@@ -4119,11 +4214,11 @@ impl SystemState {
                     .and_then(Team::app_package)
                     .is_some_and(|p| package.as_deref() == Some(p));
                 if !app_team {
-                    return Err(MOVE_NEEDS_APP_TEAM);
+                    return Err(MOVE_NEEDS_APP_TEAM.into());
                 }
                 Some((*team).clone())
             }
-            _ => return Err(MOVE_NEEDS_APP_TEAM),
+            _ => return Err(MOVE_NEEDS_APP_TEAM.into()),
         };
         let to_app_team = (app.access.org_wide() || source_team.is_some())
             && package.is_some()
@@ -4154,7 +4249,7 @@ impl SystemState {
             .role(&app.owner)
             .or_else(|| joins.iter().find(|(m, _)| *m == app.owner).map(|(_, r)| *r));
         if !owner_role.is_some_and(|r| r >= OrgRole::Member) {
-            return Err(MOVE_OWNER_NOT_IN_TARGET);
+            return Err(MOVE_OWNER_NOT_IN_TARGET.into());
         }
 
         let release = self.governing_release(app);
@@ -4162,7 +4257,7 @@ impl SystemState {
         let after = self.approved_for_release(release, to_org);
         if let (Some(b), Some(a)) = (before, after) {
             if b.is_disjoint(a) {
-                return Err(MOVE_RELEASES_DISJOINT);
+                return Err(MOVE_RELEASES_DISJOINT.into());
             }
         }
 
@@ -4180,7 +4275,7 @@ impl SystemState {
         };
         let held = self.app_file_bytes.get(app_id).copied().unwrap_or(0);
         if self.file_bytes(to_org).saturating_add(held) > max_bytes {
-            return Err("quota exceeded: file bytes");
+            return Err(Rejection::quota("file bytes"));
         }
         let granted = |slots: &mut dyn Iterator<Item = &RunSlot>| {
             slots
@@ -4204,7 +4299,7 @@ impl SystemState {
             && (target_runs.saturating_add(runs) > max_runs
                 || target_fuel.saturating_add(fuel) > max_fuel)
         {
-            return Err("quota exceeded: compute runs");
+            return Err(Rejection::quota("compute runs"));
         }
 
         // The team whose invites lose their reason once the app leaves it.
@@ -4628,9 +4723,9 @@ impl SystemState {
     /// beside a team (it covers them), a team not of `org`, an account the cluster does not
     /// know (one name per account), a scope past [`crate::types::MAX_GRANT_SCOPE_BYTES`], or more than
     /// [`crate::types::MAX_TEAM_GRANTS`] teams or [`crate::types::MAX_ACCOUNT_GRANTS`] names.
-    pub fn check_grants(&self, org: &str, grants: &[Grant]) -> Result<(), &'static str> {
+    pub fn check_grants(&self, org: &str, grants: &[Grant]) -> Result<(), Rejection> {
         if grants.len() > crate::types::MAX_GRANTS {
-            return Err("quota exceeded: an instance holds at most 1018 grants");
+            return Err(Rejection::quota("an instance holds at most 1018 grants"));
         }
         let o = self.orgs.get(org).ok_or("no such organization")?;
         let mut named: BTreeSet<&str> = BTreeSet::new();
@@ -4641,36 +4736,36 @@ impl SystemState {
                 Grant::Org => !std::mem::replace(&mut whole, true),
                 Grant::Anyone => !std::mem::replace(&mut anyone, true),
                 Grant::Link(_) => {
-                    return Err("a public link is made with its own consent, not as a grant");
+                    return Err("a public link is made with its own consent, not as a grant".into());
                 }
                 Grant::Team { team } => {
                     if !o.teams.contains_key(team) {
-                        return Err("no such team in the app's organization");
+                        return Err("no such team in the app's organization".into());
                     }
                     teams.insert(team)
                 }
                 Grant::Account { account, scope } => {
                     if !self.accounts.contains_key(account) {
-                        return Err("unknown account");
+                        return Err("unknown account".into());
                     }
                     if scope.as_ref().is_some_and(|v| !crate::types::scope_fits(v)) {
-                        return Err("a grant's scope is at most 256 bytes of JSON");
+                        return Err("a grant's scope is at most 256 bytes of JSON".into());
                     }
                     named.insert(account)
                 }
             };
             if !fresh {
-                return Err("a grant is listed twice");
+                return Err("a grant is listed twice".into());
             }
         }
         if whole && !teams.is_empty() {
-            return Err("a grant to the organization covers its teams: not both");
+            return Err("a grant to the organization covers its teams: not both".into());
         }
         if teams.len() > crate::types::MAX_TEAM_GRANTS {
-            return Err("quota exceeded: an instance names at most 16 teams");
+            return Err(Rejection::quota("an instance names at most 16 teams"));
         }
         if named.len() > crate::types::MAX_ACCOUNT_GRANTS {
-            return Err("quota exceeded: an instance names at most 1000 accounts");
+            return Err(Rejection::quota("an instance names at most 1000 accounts"));
         }
         Ok(())
     }
@@ -4821,7 +4916,7 @@ fn scope_subject(scope: &ReleaseScope, _actor: &str) -> String {
 /// # Errors
 /// The proof is missing, does not verify, was used before, or states
 /// another change.
-pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'static str> {
+pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let proofs = Proofs { s };
     match cmd.area() {
         Area::Fleet => fleet::authorize(&proofs, cmd),
@@ -5029,6 +5124,7 @@ impl SystemCmd {
             Self::SetDeploymentSecret { .. } => Area::Deployments,
             Self::ClearDeploymentSecret { .. } => Area::Deployments,
             Self::SetOutboundApproval { .. } => Area::Approvals,
+            Self::SetEgress { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
@@ -6460,6 +6556,22 @@ pub enum SystemCmd {
         #[serde(default)]
         consent: Value,
     },
+    /// Turn egress off (`egress: false`) or back on for every app of an organization, or
+    /// with `app` for that instance alone ([`crate::types::Org::egress_off`],
+    /// [`crate::types::AppRecord::egress_off`]): the organization's owner or an admin, with
+    /// passkey consent (`org:<org> / __set_egress / { app, egress }`). Off, no outbound
+    /// request leaves the cluster for the apps it covers, over every approval, and the
+    /// organization approves no new outbound host. Not gated: a node of an earlier release
+    /// cannot decode it (a hard cutover).
+    SetEgress {
+        org: OrgId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<AppId>,
+        egress: bool,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
     /// The owner deletes the organization: its teams, invites and apps go
     /// with it. Logged with the owner's passkey consent.
     DeleteOrg {
@@ -7076,15 +7188,19 @@ fn ok(v: Value) -> Vec<u8> {
     json!({ "ok": v }).to_string().into_bytes()
 }
 
-fn err(msg: &str) -> Vec<u8> {
-    json!({ "err": msg }).to_string().into_bytes()
+fn err(refused: &Rejection) -> Vec<u8> {
+    refused.to_output()
 }
 
-/// Read a system command's output.
-pub fn output(bytes: &[u8]) -> Result<Value, String> {
-    let v: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+/// Read a system command's output: its value, or its refusal of the kind
+/// the answer's `code` names ([`Rejection::from_output`]).
+///
+/// # Errors
+/// The command was refused, or the output is not JSON.
+pub fn output(bytes: &[u8]) -> Result<Value, Rejection> {
+    let v: Value = serde_json::from_slice(bytes).map_err(|e| Rejection::from(e.to_string()))?;
     if let Some(e) = v.get("err") {
-        return Err(e.as_str().unwrap_or("error").to_owned());
+        return Err(Rejection::from_output(&v, e));
     }
     Ok(v.get("ok").cloned().unwrap_or(Value::Null))
 }
@@ -7102,7 +7218,7 @@ impl SystemMachine {
     /// Apply `cmd`, only once its proof holds ([`authorize`]): refused if it
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
-    fn run(&mut self, mut cmd: SystemCmd) -> Result<Value, String> {
+    fn run(&mut self, mut cmd: SystemCmd) -> Result<Value, Rejection> {
         // From the mark on, a flag naming an older rule is no choice of the
         // proposer's: this release's nodes always set it.
         if self.state.holds_current_rules(self.index) {
@@ -7114,10 +7230,10 @@ impl SystemMachine {
         let used = if cmd.is_session_command() && !self.state.proves_sessions(self.index) {
             None
         } else {
-            authorize(&self.state, &cmd).map_err(str::to_owned)?
+            authorize(&self.state, &cmd)?
         };
         if let Some(stall) = self.new_work_refusal(&cmd) {
-            return Err(stall.message());
+            return Err(stall.rejection());
         }
         // Found before it applies: the command may remove the passkey.
         let approval = used
@@ -7132,9 +7248,9 @@ impl SystemMachine {
             None
         };
         if expiry.is_some_and(|at| at <= self.state.proofs_forgotten_through) {
-            return Err("that sign-in's session has expired: sign in again".to_owned());
+            return Err("that sign-in's session has expired: sign in again".into());
         }
-        let out = self.run_authorized(cmd).map_err(str::to_owned)?;
+        let out = self.run_authorized(cmd)?;
         if let Some(used) = used {
             if let Some(at) = expiry {
                 let _new = self
@@ -7155,11 +7271,11 @@ impl SystemMachine {
     /// [`Self::run`] without the proof: the command's own rules and the
     /// new-work refusal, for tests of those rules.
     #[cfg(test)]
-    fn run_unproven(&mut self, cmd: SystemCmd) -> Result<Value, String> {
+    fn run_unproven(&mut self, cmd: SystemCmd) -> Result<Value, Rejection> {
         if let Some(stall) = self.new_work_refusal(&cmd) {
-            return Err(stall.message());
+            return Err(stall.rejection());
         }
-        self.run_authorized(cmd).map_err(str::to_owned)
+        self.run_authorized(cmd)
     }
 
     /// Creating an app, upgrading one or installing a release is new work:
@@ -7192,7 +7308,7 @@ impl SystemMachine {
     }
 
     /// Apply `cmd` by its own rules, its proof already judged ([`Self::run`]).
-    fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
+    fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, Rejection> {
         match cmd.area() {
             Area::Fleet => fleet::apply(self, cmd),
             Area::Packages => packages::apply(self, cmd),
@@ -7212,14 +7328,23 @@ impl SystemMachine {
 /// A refusal: no account recovery code is (still) known under that key.
 pub const UNKNOWN_RECOVERY_CODE: &str = "unknown or used recovery code";
 /// A refusal: a recovery of the account is under way already.
-pub const ACCOUNT_RECOVERY_PENDING: &str = "a recovery of this account is under way";
+pub const ACCOUNT_RECOVERY_PENDING: Rejection = Rejection::new(
+    RejectionKind::RecoveryPending,
+    "a recovery of this account is under way",
+);
 /// A refusal: no recovery of the account is under way (for that passkey).
 pub const NO_ACCOUNT_RECOVERY_PENDING: &str = "no recovery of this account is under way";
 
 /// A refusal: the organization holds no recovery key.
-pub const NO_RECOVERY_KEY: &str = "this organization has no recovery key";
+pub const NO_RECOVERY_KEY: Rejection = Rejection::new(
+    RejectionKind::NoRecoveryKey,
+    "this organization has no recovery key",
+);
 /// A refusal: a recovery is under way already.
-pub const RECOVERY_PENDING: &str = "a recovery of this organization is under way";
+pub const RECOVERY_PENDING: Rejection = Rejection::new(
+    RejectionKind::RecoveryPending,
+    "a recovery of this organization is under way",
+);
 /// A refusal: the bundle a backup's state runs is no longer installed.
 pub const RESTORE_BUNDLE_GONE: &str =
     "the bundle the backup's state runs is no longer installed: install that release again first";
@@ -7227,7 +7352,10 @@ pub const RESTORE_BUNDLE_GONE: &str =
 pub const NO_RECOVERY_PENDING: &str =
     "no recovery of this organization is under way for that account";
 /// A refusal: the recovery's delay has not passed.
-pub const RECOVERY_NOT_READY: &str = "the recovery may finish only once its delay has passed";
+pub const RECOVERY_NOT_READY: Rejection = Rejection::new(
+    RejectionKind::RecoveryNotReady,
+    "the recovery may finish only once its delay has passed",
+);
 /// A refusal: someone but the owner manages the recovery key.
 pub const OWNER_ONLY_RECOVERY: &str = "only the organization's owner manages its recovery";
 
@@ -7267,11 +7395,16 @@ impl Machine for SystemMachine {
                 // joined on an older one). Skipping it would leave this node
                 // serving a state the others no longer have (a revoked key
                 // still working here), so the group stops on it instead.
+                // Named, never quoted: serde_json's words quote the entry (a name, an
+                // email), and the operator reads this line and the stop reason.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
-                error!(index, error = %e, undecodable = n,
+                let named = crate::log_safe::serde(&e);
+                error!(index, error_kind = %named, undecodable = n,
                     "a system entry this node cannot decode: the system group stops here; run a release that reads it");
-                state.fail(format_args!("system entry {index} does not decode: {e}"));
-                err(&format!("malformed command: {e}"))
+                state.fail(format_args!(
+                    "system entry {index} does not decode: {named}"
+                ));
+                err(&Rejection::from(format!("malformed command: {e}")))
             }
         }
     }

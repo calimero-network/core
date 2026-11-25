@@ -116,13 +116,14 @@ impl Plan {
         })
     }
 
-    fn apply<S: Store>(self, store: &mut S) {
+    fn apply<S: Store>(self, store: &mut S) -> Result<(), StorageError> {
         for write in self.writes {
             match write {
-                Write::Put(k, v) => store.put(&k, &v),
-                Write::Add(k, delta) => store.add(&k, delta),
+                Write::Put(k, v) => store.put(&k, &v)?,
+                Write::Add(k, delta) => store.add(&k, delta)?,
             }
         }
+        Ok(())
     }
 }
 
@@ -165,7 +166,7 @@ impl<S: Store> Text<S> {
         let key = key(&self.name, NEXT, None)?;
         let first = read_count(&self.store, &key, self.name.label())?;
         let delta = i64::try_from(n).map_err(|_| StorageError::Encode("too many ids".into()))?;
-        self.store.add(&key, delta);
+        self.store.add(&key, delta)?;
         Ok(first)
     }
 
@@ -176,7 +177,7 @@ impl<S: Store> Text<S> {
         let done = doc.edit(edit)?;
         let plan = doc.plan()?;
         plan.check()?;
-        plan.apply(&mut self.store);
+        plan.apply(&mut self.store)?;
         Ok(done)
     }
 
@@ -266,10 +267,10 @@ impl<S: Store> Text<S> {
     pub fn clear(&mut self) -> Result<(), StorageError> {
         for kind in [RUN, LINK, NODE] {
             let base = key(&self.name, kind, None)?;
-            let _removed = clear_prefix(&mut self.store, &base);
+            let _removed = clear_prefix(&mut self.store, &base)?;
         }
         for kind in [ROOT, LEN] {
-            self.store.delete(&key(&self.name, kind, None)?);
+            self.store.delete(&key(&self.name, kind, None)?)?;
         }
         Ok(())
     }

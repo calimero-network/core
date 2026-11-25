@@ -18,14 +18,16 @@ class UpdateReasonType6:
     Attributes:
         code (UpdateReasonType6Code):
         member (Union[None, str]):
-        package (str):
-        version (str):
+        name (str):
+        before (Union[None, str]):
+        after (str):
     """
 
     code: UpdateReasonType6Code
     member: Union[None, str]
-    package: str
-    version: str
+    name: str
+    before: Union[None, str]
+    after: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,9 +36,12 @@ class UpdateReasonType6:
         member: Union[None, str]
         member = self.member
 
-        package = self.package
+        name = self.name
 
-        version = self.version
+        before: Union[None, str]
+        before = self.before
+
+        after = self.after
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -44,8 +49,9 @@ class UpdateReasonType6:
             {
                 "code": code,
                 "member": member,
-                "package": package,
-                "version": version,
+                "name": name,
+                "before": before,
+                "after": after,
             }
         )
 
@@ -63,15 +69,23 @@ class UpdateReasonType6:
 
         member = _parse_member(d.pop("member"))
 
-        package = d.pop("package")
+        name = d.pop("name")
 
-        version = d.pop("version")
+        def _parse_before(data: object) -> Union[None, str]:
+            if data is None:
+                return data
+            return cast(Union[None, str], data)
+
+        before = _parse_before(d.pop("before"))
+
+        after = d.pop("after")
 
         update_reason_type_6 = cls(
             code=code,
             member=member,
-            package=package,
-            version=version,
+            name=name,
+            before=before,
+            after=after,
         )
 
         update_reason_type_6.additional_properties = d

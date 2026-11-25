@@ -101,7 +101,7 @@ def sync_detailed(
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
     absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
     organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
-    the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).
+    the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -142,7 +142,7 @@ def sync(
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
     absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
     organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
-    the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).
+    the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -178,7 +178,7 @@ async def asyncio_detailed(
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
     absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
     organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
-    the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).
+    the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -217,7 +217,7 @@ async def asyncio(
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
     absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
     organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
-    the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).
+    the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

@@ -233,6 +233,19 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
         let (status, v) = peer_send(&c, &node3, 0, false, "internal/raft", &rpc, 3).await;
         assert_eq!(status, 403, "sender {sender}: {v}");
     }
+    // Nor in a batch of heartbeats (B6): the batch is taken, the app group's
+    // item is answered with the same refusal and reaches no group.
+    let batch = json!({
+        "target": 1,
+        "items": [{ "group": group, "rpc": { "Append": {
+            "vote": { "leader_id": { "term": 1_000, "node_id": 3 }, "committed": true },
+            "prev_log_id": null, "leader_commit": null, "entries": [],
+        } } }],
+    });
+    let (status, v) = peer_send(&c, &node3, 0, false, "internal/raft-batch", &batch, 3).await;
+    assert_eq!(status, 200, "{v}");
+    let refused = v[0]["Error"].as_str().unwrap_or_default();
+    assert!(refused.contains("FORBIDDEN"), "{v}");
     // The system group still takes node 3's messages: it is a registered node
     // (decision 7: any release may be a system voter).
     let rpc = json!({
@@ -318,7 +331,7 @@ async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
         .write(serde_json::to_vec(cmd).unwrap())
         .await
         .unwrap();
-    calimero_node::system::output(&out)
+    calimero_node::system::output(&out).map_err(|e| e.to_string())
 }
 
 /// A consent as the API logs it: `pk`'s assertion over the statement.

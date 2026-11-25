@@ -1,39 +1,159 @@
 [graph]
-targets = []
+# The platforms we ship and test: merod and meroctl for Linux (x86_64, aarch64)
+# and macOS (aarch64, release.yml / platforms.yml), apps for wasm32-wasip2 and
+# wasm32-unknown-unknown (e2e.yml). Windows-only and Redox-only crates are out of
+# the graph, so their duplicates, advisories and licenses do not count.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "wasm32-wasip2",
+    "wasm32-unknown-unknown",
+]
 
 [advisories]
 # Vulnerabilities are denied by default. Only flag unmaintained crates we depend on
 # directly (transitive unmaintained crates aren't actionable here).
 unmaintained = "workspace"
-# Dated baseline of advisories accepted for now. These are transitive through
-# libp2p 0.56's DNS stack and the RSA/rand chain, and can't be lock-bumped
-# without an upstream upgrade; any *new* advisory still fails CI.
+# Advisories accepted for now, each with what pulls the crate in and why it does
+# not reach us. Any *new* advisory still fails CI.
 #
 # ⚠️ AN ENTRY THAT NO LONGER MATCHES IS NOT HARMLESS — IT IS A LOADED GUN.
 # `cargo deny` reports it as `advisory-not-detected`, and until someone acts on
 # that warning the id sits here ready to silently suppress the advisory if the
-# crate ever comes back. Six aws-lc-sys / rustls-webpki entries were removed
-# when the rustls bump below carried aws-lc-sys to 0.45.0 and rustls-webpki to
-# 0.103.15; keep pruning them as they stop matching.
+# crate ever comes back. Remove an entry as soon as it stops matching (the
+# hickory-proto RUSTSEC-2026-0118/0119 entries went when hickory 0.26 left the
+# affected range, and RUSTSEC-2026-0097 when rand 0.8.8 / 0.9.5 were locked).
 ignore = [
-    { id = "RUSTSEC-2026-0118", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
-    { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
-    { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5, via elliptic-curve 0.13; the fix is in 0.7, pending the elliptic-curve 0.14 upgrade" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 (Marvin timing attack on decryption and signing), via dcap-qvl-webpki (dcap-qvl 0.5) and openidconnect 4 (sigstore 0.15); both only verify RSA signatures with public keys, no private-key operation runs; fixed in rsa 0.10, pending those upgrades" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 (timing variability), via elliptic-curve 0.13 (p256/p384 in dcap-qvl-webpki, x509-verify, tdx-quote, openidconnect 4); used to verify ECDSA signatures over public data; fixed in 0.7, pending the elliptic-curve 0.14 upgrade of those crates" },
 ]
 
 [bans]
-multiple-versions = "warn" # Warn about duplicate dependency versions
+# A second version of a crate is a second copy to audit, patch and compile, and
+# for crypto crates a second implementation of the same primitive. A new
+# duplicate fails CI: unify it (`cargo update -p <crate>`, or move our own
+# dependency to the version upstream uses), or add it below with the dependency
+# that pins the other version. Each skip names a version requirement, so a patch
+# release of it still matches; remove the skip once the pinning crate moves.
+multiple-versions = "deny"
 
-# Skip specific crates that might need multiple versions
-[[bans.skip]]
-name = "ring"
-version = "*"
+# --- RustCrypto's previous generation (digest 0.10, cipher 0.4, rand_core 0.6).
+# Our crates are on the current one (sha2 0.11, ed25519-dalek 3, curve25519-dalek 5,
+# rand 0.10). The old one stays until these move, and moving them changes how
+# quotes, peer keys, Noise and HPKE are verified or encrypted, so it waits for
+# their upstream releases rather than a fork:
+#   dcap-qvl 0.5 / dcap-qvl-webpki / x509-verify / tdx-quote: TDX quote and
+#     collateral verification (calimero-tee-attestation),
+#   libp2p-identity 0.2: node and peer identity keys,
+#   snow 0.9 (Noise, calimero-sealed) and hpke 0.13 (calimero-client, node),
+#   sigstore 0.15 -> openidconnect 4 / oauth2 5 / rsa 0.9 / crypto_secretbox
+#     (calimero-tee-release's release checks).
+skip = [
+    { crate = "aead@0.5", reason = "aes-gcm 0.10 / chacha20poly1305 0.10 via snow 0.9 and hpke 0.13; crypto_secretbox via sigstore 0.15" },
+    { crate = "aes@0.8", reason = "aes-gcm 0.10 via snow 0.9 and hpke 0.13" },
+    { crate = "aes-gcm@0.10", reason = "snow 0.9 and hpke 0.13; 0.11 comes from sigstore 0.15's pkcs5" },
+    { crate = "block-buffer@0.10", reason = "digest 0.10 (see the list above)" },
+    { crate = "chacha20@0.9", reason = "chacha20poly1305 0.10 via snow 0.9 and hpke 0.13; 0.10 is rand 0.10's" },
+    { crate = "cipher@0.4", reason = "aes 0.8, chacha20 0.9, salsa20 0.10 (snow 0.9, hpke 0.13, sigstore 0.15's crypto_secretbox)" },
+    { crate = "const-oid@0.9", reason = "der 0.7 via dcap-qvl 0.5, x509-verify, rsa 0.9" },
+    { crate = "cpufeatures@0.2", reason = "sha2 0.10, aes 0.8, curve25519-dalek 4 (see the list above)" },
+    { crate = "crypto-common@0.1", reason = "digest 0.10 and cipher 0.4 (see the list above)" },
+    { crate = "ctr@0.9", reason = "aes-gcm 0.10 via snow 0.9 and hpke 0.13" },
+    { crate = "curve25519-dalek@4", reason = "snow 0.9, x25519-dalek 2 (hpke 0.13), ed25519-dalek 2" },
+    { crate = "der@0.7", reason = "dcap-qvl 0.5, x509-cert 0.2, x509-verify, rsa 0.9, elliptic-curve 0.13" },
+    { crate = "der_derive@0.7", reason = "der 0.7" },
+    { crate = "digest@0.10", reason = "sha2 0.10, hmac 0.12, rsa 0.9, elliptic-curve 0.13, curve25519-dalek 4 (see the list above)" },
+    { crate = "ed25519@2", reason = "ed25519-dalek 2" },
+    { crate = "ed25519-dalek@2", reason = "libp2p-identity 0.2, dcap-qvl-webpki, x509-verify, openidconnect 4" },
+    { crate = "getrandom@0.2", reason = "ring 0.17, rand_core 0.6, oauth2 5" },
+    { crate = "getrandom@0.3", reason = "rand_core 0.9 (hpke 0.13, imbl 7, tantivy-columnar's rand 0.9), jobserver" },
+    { crate = "ghash@0.5", reason = "aes-gcm 0.10" },
+    { crate = "hmac@0.12", reason = "hkdf 0.12 / hpke 0.13, rfc6979 (ecdsa 0.16), openidconnect 4" },
+    { crate = "inout@0.1", reason = "cipher 0.4" },
+    { crate = "pem-rfc7468@0.7", reason = "der 0.7 and elliptic-curve 0.13" },
+    { crate = "pkcs8@0.10", reason = "rsa 0.9, elliptic-curve 0.13, ed25519 2" },
+    { crate = "polyval@0.6", reason = "ghash 0.5 (aes-gcm 0.10)" },
+    { crate = "rand@0.8", reason = "libp2p-identity 0.2, openraft 0.9, oauth2 5 / openidconnect 4, num-bigint-dig (rsa 0.9), rust_decimal" },
+    { crate = "rand@0.9", reason = "tantivy-columnar 0.27" },
+    { crate = "rand_chacha@0.3", reason = "rand 0.8" },
+    { crate = "rand_chacha@0.9", reason = "rand 0.9" },
+    { crate = "rand_core@0.6", reason = "rand 0.8, snow 0.9, x25519-dalek 2, rsa 0.9, elliptic-curve 0.13" },
+    { crate = "rand_core@0.9", reason = "hpke 0.13, imbl 7, rand 0.9" },
+    { crate = "salsa20@0.10", reason = "crypto_secretbox 0.1 via sigstore 0.15" },
+    { crate = "sha2@0.10", reason = "dcap-qvl 0.5, libp2p-identity 0.2, snow 0.9, hpke 0.13, p256/p384 0.13, rsa 0.9, cranelift-codegen 0.137" },
+    { crate = "signature@2", reason = "dcap-qvl 0.5, ecdsa 0.16, rsa 0.9, ed25519 2, x509-verify" },
+    { crate = "spki@0.7", reason = "dcap-qvl's x509-cert 0.2, x509-verify, tdx-quote, rsa 0.9, ecdsa 0.16" },
+    { crate = "universal-hash@0.5", reason = "poly1305 0.8 and polyval 0.6" },
+    { crate = "x509-cert@0.2", reason = "dcap-qvl 0.5, x509-verify, x509-ocsp; calimero-tee-release is on 0.3 with sigstore 0.15" },
 
-[[bans.skip]]
-name = "tokio"
-version = "*"
+    # --- HTTP and TLS.
+    # Our crates use reqwest 0.12 with `rustls-tls`, which trusts bundled webpki
+    # roots (calimero-tee-attestation's AGENTS.md: a PCCS behind a private CA must
+    # fail). dcap-qvl 0.5, oci-client 0.18 and sigstore 0.15 pull reqwest 0.13 with
+    # hickory-dns and rustls-platform-verifier; one shared 0.13 would move every
+    # node client to the OS trust store and hickory's resolver, which TDX images
+    # are not tested with. Unify when that move is made on purpose, with tests.
+    { crate = "reqwest@0.12", reason = "ours; 0.13 (dcap-qvl 0.5, oci-client 0.18, sigstore 0.15) changes TLS roots and DNS, see above" },
+    { crate = "wasm-streams@0.4", reason = "reqwest 0.12 (see reqwest)" },
+    { crate = "tower-http@0.6", reason = "reqwest 0.12 and 0.13; calimero-node's server uses 0.7" },
+    { crate = "untrusted@0.7", reason = "aws-lc-rs 1 and tough 0.24 (sigstore 0.15)" },
+    { crate = "base64@0.13", reason = "serde-human-bytes 0.1 via dcap-qvl 0.5" },
+    { crate = "base64@0.21", reason = "openidconnect 4 and oauth2 5 via sigstore 0.15" },
+    { crate = "base64@0.22", reason = "reqwest 0.12/0.13, dcap-qvl 0.5, oci-client 0.18, pem 3, prost-reflect 0.16" },
+    { crate = "pem@3", reason = "dcap-qvl 0.5, tdx-quote, rcgen 0.13, tough 0.24; sigstore 0.15 uses 4" },
+
+    # --- Wasm tooling: one wasm-tools release per consumer. Our crates use the
+    # one wasmtime 50 uses (0.261), so a module we parse is parsed as the engine
+    # parses it; calimero-sdk's wit-bindgen 0.63 uses 0.262, and wasip2 (std's
+    # wasm32-wasip2 bindings, via getrandom) uses wit-bindgen 0.51.
+    { crate = "wasmparser@0.261", reason = "wasmtime 50 and our crates; wit-bindgen 0.63 (calimero-sdk) uses 0.262" },
+    { crate = "wasm-encoder@0.261", reason = "wasmtime 50; wit-bindgen 0.63 uses 0.262" },
+    { crate = "wasm-metadata@0.261", reason = "wasmtime 50's wit-component; wit-bindgen 0.63 uses 0.262" },
+    { crate = "wit-component@0.261", reason = "wasmtime 50's component bindgen; wit-bindgen 0.63 uses 0.262" },
+    { crate = "wit-parser@0.261", reason = "wasmtime 50 and calimero-app-wit; wit-bindgen 0.63 uses 0.262" },
+    { crate = "wit-bindgen@0.51", reason = "wasip2 1.0 (getrandom on wasm32-wasip2); calimero-sdk uses 0.63" },
+    { crate = "hashbrown@0.15", reason = "petgraph 0.8 via prost-build (sigstore_protobuf_specs' build)" },
+    { crate = "hashbrown@0.16", reason = "gimli 0.33 via wasmtime 50" },
+    { crate = "foldhash@0.1", reason = "hashbrown 0.15" },
+
+    # --- Proc macros and build tools: compile-time only, nothing of them ships.
+    { crate = "syn@2", reason = "most proc macros (serde's moved to 3): der_derive, derive_more, prost, tracing-attributes, zerocopy, ..." },
+    { crate = "prettyplease@0.2", reason = "prost-build 0.14" },
+    { crate = "darling@0.20", reason = "derive_builder 0.20 via oci-client 0.18 / oci-spec (sigstore 0.15)" },
+    { crate = "darling_core@0.20", reason = "darling 0.20" },
+    { crate = "darling_macro@0.20", reason = "darling 0.20" },
+    { crate = "derive_more@1", reason = "openraft 0.9 and scale-info 2; dcap-qvl 0.5 uses 2" },
+    { crate = "derive_more-impl@1", reason = "derive_more 1" },
+    { crate = "thiserror@1", reason = "openraft 0.9, oauth2 5 / openidconnect 4 (sigstore 0.15)" },
+    { crate = "thiserror-impl@1", reason = "thiserror 1" },
+    { crate = "itertools@0.10", reason = "openidconnect 4, prost-build / prost-derive 0.14, bindgen 0.72 (librocksdb-sys build)" },
+    { crate = "ordered-float@2", reason = "serde-value 0.7 via openidconnect 4 / prost-reflect (sigstore 0.15)" },
+]
+
+# eyre is the error crate (CODING_STANDARDS.md, "Errors and panics"). anyhow is
+# only allowed where a dependency's public trait names it: dcap-qvl's
+# `HttpClient::get` returns `anyhow::Result`, which calimero-tee-attestation's
+# collateral transports implement. The other wrappers are upstream crates.
+[[bans.deny]]
+crate = "anyhow"
+reason = "use eyre (CODING_STANDARDS.md); anyhow only where a dependency's trait names it"
+wrappers = [
+    "calimero-tee-attestation",
+    "dcap-qvl",
+    "prost-derive",
+    "sigstore_protobuf_specs",
+    "wasm-metadata",
+    "wasmprinter",
+    "wasmtime-environ",
+    "wasmtime-internal-component-macro",
+    "wasmtime-internal-wit-bindgen",
+    "wit-bindgen-core",
+    "wit-bindgen-rust",
+    "wit-bindgen-rust-macro",
+    "wit-component",
+    "wit-parser",
+]
 
 [licenses]
 confidence-threshold = 0.8
@@ -44,9 +164,7 @@ allow = [
     "BSD-2-Clause",
     "ISC",
     "Zlib",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
-    "OpenSSL",
     "CC0-1.0",
     "BSL-1.0",
     "MPL-2.0",

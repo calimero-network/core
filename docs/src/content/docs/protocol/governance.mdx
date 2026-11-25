@@ -533,7 +533,7 @@ organization without a recovery key is `409 RECOVERY_KEY_REQUIRED`, and so is
 removing the key (`POST /orgs/{org}/recovery { publicKey: null }`) while it
 owns one; rotating it stays allowed, and no member change is ever blocked. The
 owner keeps the seed offline. Both refusals come before the passkey, and apply
-judges them again (`deploymentNeedsRecovery`, 1.0.0-rc.36); an entry logged
+judges them again (`deploymentNeedsRecovery`, 1.0.0-rc.37); an entry logged
 below that version replays as it applied, and an organization that already owns
 a deployment without a key is refused nothing until it creates another or would
 remove a key it later sets. An account's deployment needs no key.
@@ -566,7 +566,7 @@ entry that says so (`in_deployment`, set once the cluster version brings
 the rule; an earlier entry replays as it applied.
 
 **Secrets**: a value a manager sets for a secret its offered releases declare
-fills `{{secret:NAME}}` for every instance created from the deployment that
+is the value the node attaches where the release binds `NAME`, for every instance created from the deployment that
 set no value of its own (`PUT /apps/{app}/secrets/{name}`), and goes before
 the operator's: the instance's value, then the deployment's, then the
 operator's. Only for a name the release the instance runs declares, only

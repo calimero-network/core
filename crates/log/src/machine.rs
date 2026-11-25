@@ -1066,16 +1066,22 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
 
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<tokio::fs::File>, StorageError> {
         let path = self.snapshot_path(&format!("g{}-recv-{}.snap", self.group, hex_id()));
-        if let Some(old) = self.receiving.replace(path.clone()) {
-            let _removed = std::fs::remove_file(old);
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(io)?;
+        let old = self.receiving.replace(path.clone());
+        // An unlink and a create wait on the file system's journal, which a
+        // slow disk holds like an fsync: on the blocking pool.
+        let file = off_workers(move || {
+            if let Some(old) = old {
+                let _removed = std::fs::remove_file(old);
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(io)
+        })
+        .await?;
         Ok(Box::new(tokio::fs::File::from_std(file)))
     }
 

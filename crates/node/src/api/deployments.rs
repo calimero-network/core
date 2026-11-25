@@ -723,7 +723,7 @@ async fn deployment_secret_clear(
             .is_some_and(|h| h.contains_key(&name))
     });
     if !held {
-        return Err(ApiError::not_found(crate::system::NO_DEPLOYMENT_SECRET));
+        return Err(crate::node::rejected(crate::system::NO_DEPLOYMENT_SECRET));
     }
     node.require_features(&[Feature::DeploymentSecrets]).await?;
     let confirm = body.and_then(|Json(b)| b.confirm);

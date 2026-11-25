@@ -120,7 +120,7 @@ extension CalimeroClient {
 
         /// Where an app's unit may send data: `GET /apps/{app}/egress` (`app_egress`).
         ///
-        /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+        /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
         ///
         /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
         @discardableResult
@@ -356,7 +356,7 @@ extension CalimeroClient {
 
         /// Set an app's own value of a declared secret: `PUT /apps/{app}/secrets/{name}` (`app_secret_set`).
         ///
-        /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+        /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -369,7 +369,7 @@ extension CalimeroClient {
 
         /// The secrets an app's release declares: `GET /apps/{app}/secrets` (`app_secrets`).
         ///
-        /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+        /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -377,6 +377,19 @@ extension CalimeroClient {
             let input = Operations.AppSecrets.Input(path: .init(app: app))
             return try await client.perform { api in
                 try await api.appSecrets(input).ok.body.json
+            }
+        }
+
+        /// Turn one app's egress off or on: `POST /apps/{app}/egress` (`app_set_egress`).
+        ///
+        /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func setEgress(app: Swift.String, egress: Swift.Bool, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppSetEgress.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppSetEgress.Input(path: .init(app: app), body: .json(.init(egress: egress)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appSetEgress(input).ok.body.json
             }
         }
 
@@ -1460,7 +1473,7 @@ extension CalimeroClient {
 
         /// Create a deployment: `POST /deployments` (`deployment_create`).
         ///
-        /// A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain). An organization owns a deployment only holding a recovery key (`POST /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.36.
+        /// A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain). An organization owns a deployment only holding a recovery key (`POST /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.37.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -1547,7 +1560,7 @@ extension CalimeroClient {
 
         /// Set a deployment's value of a secret: `PUT /deployments/{id}/secrets/{name}` (`deployment_secret_set`).
         ///
-        /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -1902,6 +1915,19 @@ extension CalimeroClient {
             }
         }
 
+        /// Turn the organization's egress off or on: `POST /orgs/{org}/egress` (`org_egress`).
+        ///
+        /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func egress(org: Swift.String, egress: Swift.Bool, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.OrgEgress.Output.Ok.Body.JsonPayload {
+            let input = Operations.OrgEgress.Input(path: .init(org: org), body: .json(.init(egress: egress)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.orgEgress(input).ok.body.json
+            }
+        }
+
         /// One organization: `GET /orgs/{org}` (`org_get`).
         ///
         /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
@@ -1943,7 +1969,7 @@ extension CalimeroClient {
 
         /// Approve outbound prefixes for the organization's apps: `POST /orgs/{org}/outbound` (`org_outbound_approval`).
         ///
-        /// The owner; `412` first.
+        /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -2179,7 +2205,7 @@ extension CalimeroClient {
 
         /// Set the organization's recovery key: `POST /orgs/{org}/recovery` (`recovery_set`).
         ///
-        /// Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).
+        /// Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult

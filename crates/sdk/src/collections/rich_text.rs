@@ -145,7 +145,7 @@ impl<S: Store> RichText<S> {
         };
         let id = self.text.mint(1)?;
         let mark_key = self.mark_key(id)?;
-        self.text.store.put(&mark_key, &value::to_vec(&mark)?);
+        self.text.store.put(&mark_key, &value::to_vec(&mark)?)?;
         Ok(id)
     }
 
@@ -263,7 +263,7 @@ impl<S: Store> RichText<S> {
     /// Remove every character and mark.
     pub fn clear(&mut self) -> Result<(), StorageError> {
         let base = collection_key(&self.text.name, "k", &[])?;
-        let _removed = clear_prefix(&mut self.text.store, &base);
+        let _removed = clear_prefix(&mut self.text.store, &base)?;
         self.text.clear()
     }
 }

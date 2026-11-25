@@ -890,9 +890,10 @@ fn pack_refuses_services_it_cannot_pack() {
     assert!(refused(&["--service", "a=bad.wasm"]).contains("not a WASM component"));
 }
 
-/// `[package.metadata.calimero.secrets]` is signed into the manifest as `secrets`, so
-/// whoever deploys the app sees what to supply; a secret naming a host no outbound prefix
-/// covers is refused as a node would refuse it.
+/// `[package.metadata.calimero.secrets]` is signed into the manifest as `secrets`, each a
+/// credential bound to one host and one header or body field, so whoever deploys the app
+/// sees what to supply and where it goes; a secret naming a host no outbound prefix covers,
+/// or the earlier `hosts` shape, is refused as a node would refuse it.
 #[test]
 fn pack_declares_the_secrets_the_crate_names() {
     let tmp = tempfile::tempdir().unwrap();
@@ -901,7 +902,8 @@ fn pack_declares_the_secrets_the_crate_names() {
         format!(
             "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
              package = \"com.example.x\"\noutbound = [\"https://cloud-api.near.ai/v1/\"]\n\n\
-             [package.metadata.calimero.secrets.NEAR_AI_API_KEY]\nhosts = [\"{secret_host}\"]\n\
+             [package.metadata.calimero.secrets.NEAR_AI_API_KEY]\nhost = \"{secret_host}\"\n\
+             paths = [\"/v1/\"]\nheader = \"authorization\"\nformat = \"Bearer {{}}\"\n\
              description = \"NEAR AI Cloud API key\"\nrequired = true\n"
         )
     };
@@ -914,7 +916,10 @@ fn pack_declares_the_secrets_the_crate_names() {
     assert_eq!(
         manifest(&untar(&d.join("x.mpk")))["secrets"],
         serde_json::json!({ "NEAR_AI_API_KEY": {
-            "hosts": ["cloud-api.near.ai"],
+            "host": "cloud-api.near.ai",
+            "paths": ["/v1/"],
+            "header": "authorization",
+            "format": "Bearer {}",
             "description": "NEAR AI Cloud API key",
             "required": true,
         } })
@@ -931,6 +936,23 @@ fn pack_declares_the_secrets_the_crate_names() {
         err.contains("evil.example") && err.contains("outbound"),
         "{err}"
     );
+
+    // The earlier shape names hosts and no place: refused, saying what a binding takes.
+    std::fs::write(
+        d.join("Cargo.toml"),
+        crate_with("cloud-api.near.ai").replace(
+            "host = \"cloud-api.near.ai\"",
+            "hosts = [\"cloud-api.near.ai\"]",
+        ),
+    )
+    .unwrap();
+    let out = meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "z.mpk"],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("bodyField"), "{err}");
 }
 
 /// `[package.metadata.calimero.uses]` is signed into the manifest as `uses`, each pinned to
