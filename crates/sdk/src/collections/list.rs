@@ -237,9 +237,9 @@ impl<T: Serialize + DeserializeOwned, S: Store> List<T, S> {
             id: id.clone(),
             value,
         })?;
-        self.store.put(&order, &item);
-        self.store.put(&at, &value::to_vec(&Bytes(pos.to_vec()))?);
-        self.store.add(&self.len_key()?, 1);
+        self.store.put(&order, &item)?;
+        self.store.put(&at, &value::to_vec(&Bytes(pos.to_vec()))?)?;
+        self.store.add(&self.len_key()?, 1)?;
         Ok(id)
     }
 
@@ -299,7 +299,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> List<T, S> {
             id: id.to_owned(),
             value,
         })?;
-        self.store.put(&order, &item);
+        self.store.put(&order, &item)?;
         Ok(old)
     }
 
@@ -313,9 +313,9 @@ impl<T: Serialize + DeserializeOwned, S: Store> List<T, S> {
         let order = self.order_key(&pos)?;
         let stored = self.store.get(&order).ok_or(StorageError::Dangling)?;
         let value = value::from_slice::<Item<T>>(&stored)?.value;
-        self.store.delete(&order);
-        self.store.delete(&self.id_key(id)?);
-        self.store.add(&self.len_key()?, -1);
+        self.store.delete(&order)?;
+        self.store.delete(&self.id_key(id)?)?;
+        self.store.add(&self.len_key()?, -1)?;
         Ok(Some(value))
     }
 
@@ -324,10 +324,10 @@ impl<T: Serialize + DeserializeOwned, S: Store> List<T, S> {
     fn move_to(&mut self, id: &str, from: &[u8], to: &[u8]) -> Result<(), StorageError> {
         let old = self.order_key(from)?;
         let stored = self.store.get(&old).ok_or(StorageError::Dangling)?;
-        self.store.delete(&old);
-        self.store.put(&self.order_key(to)?, &stored);
+        self.store.delete(&old)?;
+        self.store.put(&self.order_key(to)?, &stored)?;
         self.store
-            .put(&self.id_key(id)?, &value::to_vec(&Bytes(to.to_vec()))?);
+            .put(&self.id_key(id)?, &value::to_vec(&Bytes(to.to_vec()))?)?;
         Ok(())
     }
 
@@ -418,7 +418,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> List<T, S> {
     /// Remove every item, a batch at a time; returns how many stored entries there were.
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let all = crate::commons::encode(self.name.parts())?;
-        Ok(clear_prefix(&mut self.store, &all))
+        clear_prefix(&mut self.store, &all)
     }
 
     /// Remove at most `max` items from the front, with their id rows and the length;
@@ -438,13 +438,13 @@ impl<T: Serialize + DeserializeOwned, S: Store> List<T, S> {
             }
             for (k, v) in batch {
                 let item: Item<serde::de::IgnoredAny> = value::from_slice(&v)?;
-                self.store.delete(&k);
-                self.store.delete(&self.id_key(&item.id)?);
+                self.store.delete(&k)?;
+                self.store.delete(&self.id_key(&item.id)?)?;
                 removed += 1;
             }
         }
         if removed > 0 {
-            self.store.add(&self.len_key()?, -(removed as i64));
+            self.store.add(&self.len_key()?, -(removed as i64))?;
         }
         if !done {
             done = self.store.range(&start, &end, false).next(1).is_empty();

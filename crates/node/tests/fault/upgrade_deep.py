@@ -56,6 +56,11 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
+     "`AppRecord::egress_off`, `SetEgress`)",
+     "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
+     "cluster is recreated rather than rolled, and no release before it has the switch to seed. "
+     "`tests/it/egress.rs` covers the switch, its refusals and the consent page on one build"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -83,6 +88,13 @@ NOT_COVERED = [
      "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
      "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
      "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
+    ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per run (`calimero_app_host`'s fuel table)",
+     "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
+     "the log replays alike on either release, and below cluster version 1.0.0-rc.36 (`Feature::HostFuel`) "
+     "the new release runs calls without the charges, as the old one did; a search cap answers a view, which "
+     "is never logged. The deep cases' calls and searches run far within the default fuel on both releases. "
+     "`tests/engine.rs` (`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
+     "`a_host_without_host_fuel_charges_as_before`) covers it on one build"),
     ("Keys", "An API key made with follow-ups (`POST /auth/apikeys { then }`): confirm calls approved by the "
      "key's one passkey prompt",
      "it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its "
@@ -99,7 +111,7 @@ NOT_COVERED = [
     ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
                   "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
                   "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
-                  "`deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link"),
+                  "`deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link"),
      "a consent request is approved in a browser on the node's consent page; the cluster test "
      "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
      "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "

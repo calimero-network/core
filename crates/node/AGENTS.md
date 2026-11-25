@@ -77,6 +77,11 @@ is its command line.
   never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
   Regressions: `system::routing::tests`
   (`routing_a_raft_message_does_not_scan_the_apps`, a scaling guard).
+  Heartbeats always travel batched per peer (`internal/raft-batch`,
+  `PeerTransport::send_batch`, B6); every item passes `admit_raft` as a message alone
+  does, only empty appends, at most `MAX_HEARTBEATS_PER_BATCH`; a batch a peer refuses
+  is sent again item by item. Regressions: `cluster::heartbeats_travel_batched_and_the_cluster_keeps_its_leader`,
+  `approval_bypasses::a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/it/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
@@ -272,7 +277,7 @@ is its command line.
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
   `the_nodes_own_commands_cannot_be_called_as_methods`.
-- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES`; those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`, `a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node` (`tests/it/consent_page.rs`: a step-up after an app-origin sign-in, asked and answered on every pair of nodes).
+- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES` and are never refused: one sealed session (`calimero_sealed::SealedSession`, set by `intercept`) holds at most `MAX_CEREMONIES_PER_SESSION`, its next begin displacing its own oldest, and a full pool displaces the oldest of the session holding the most, so a flood never locks other callers out (review finding D1). The store (`api::Ceremonies`) indexes ceremonies by expiry, by session and by each session's rank, so a begin, take, expiry or displacement is O(log n), never a scan of the pool. Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS front, where every client has the front's address, and `X-Forwarded-For` is written outside the TD. Those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`, `api::tests::one_session_only_displaces_its_own_ceremonies`, `api::tests::a_full_pool_displaces_the_biggest_holder_then_the_oldest`, `a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in` (`tests/it/sessions.rs`), `a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node` (`tests/it/consent_page.rs`: a step-up after an app-origin sign-in, asked and answered on every pair of nodes).
 - **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
   the exact call; the retry carries a passkey assertion, which is logged as consent.
 - **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
@@ -525,7 +530,9 @@ is its command line.
   through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
-  in the gate; each only for a name the release declares. The deployment's
+  in the gate; each only for a name the release declares, and attached by the gate
+  where its binding says (`PackageVersion::secrets`, one host and one header or body
+  field each; the shape since 1.0.0-rc.37, a hard cutover). The deployment's
   only for a run of a release of a package it offers or an offered release
   references (`SystemState::deployment_covers`, over `used_releases`; any
   version: its signer is pinned): its
@@ -663,10 +670,37 @@ is its command line.
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
   whoever holds `MANAGE_APPLICATION` org-wide in the app's organization, with
-  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply). The request is
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply).
+  **Egress switch** (`SystemCmd::SetEgress { org, app?, egress }`, ungated: a hard cutover, an earlier
+  release cannot decode it;
+  `Org::egress_off`, `AppRecord::egress_off`, `SystemState::egress_off`): an organization's owner or
+  an admin turns egress off for every app of it or one instance (`POST /orgs/{org}/egress`, `POST
+  /apps/{app}/egress { egress }`, passkey over `org:<org> / __set_egress / { app, egress }`,
+  `system::egress_args`). `outbound_for` wraps every client in `calimero_outbound::egress_gated`,
+  which reads the system state before each request and refuses `EgressOff:` over every approval;
+  `SetOutboundApproval` for an organization whose switch is off is refused (`EGRESS_OFF`, `409`;
+  `api::refuse_egress_off` before the passkey, also on the consent page's `outbound`). Off is
+  instant; on again only through the consent page (`setEgress`, `consent_page::orgs::egress`, a
+  red `egressOn` attention), the route refusing any other principal `403 CONSENT_PAGE_REQUIRED`
+  (`Principal::consent_page`). `GET /apps/{app}/egress` answers `egress`, `offBy`, `summary`
+  (`egress::NO_EGRESS`); `GET /orgs/{org}` `egressOff`. Regressions: `tests/it/egress.rs`
+  (`egress_off_refuses_an_approved_host_whatever_the_approval`,
+  `an_instances_egress_is_turned_off_and_back_on_only_on_the_page`). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
+- **Operator logs** (review finding F6): `merod run` logs at `info,openraft=warn` and
+  every line ships to the operator, so `info!`, `warn!` and `error!` carry what the
+  node names (ids, hosts, kinds, codes, counts, lengths), never an error's words where
+  they can quote input. `log_safe::serde` names a serde_json error by category and
+  position (its words quote the entry), `log_safe::kind` an error by its `ApiError`
+  code, JSON, io or HTTP kind; an `ApiError` is logged as `status`/`code`, never
+  `message`. `StateTx::fail` reasons end up in the group's stop reason and three log
+  lines, so a decode failure passes `log_safe::serde`, not `{e}`. The words go to
+  the caller's answer or `debug!`. `scripts/check-no-user-data-at-info.py` enforces
+  it, `scripts/check-no-user-data-at-info.allow` lists lines whose text is the node's
+  own. Regressions: `component::tests::an_entry_that_does_not_decode_is_logged_without_its_contents`,
+  `log_safe::tests`, calimero-outbound's `log_tests`.
 - **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
   (`FileSealer`, `FileOpener`) under a random data key.
   The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
@@ -726,6 +760,11 @@ is its command line.
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
+  The owner, admin and read-only checks made after `gate` (`manages_app`,
+  `may_handle_files`, `read_only_in`) read the app's record again from that state
+  (`api::fresh_record`), never the one the handler read before the round, so a transfer
+  or move committed elsewhere holds too. Regression:
+  `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
@@ -1300,12 +1339,26 @@ is its command line.
   The component is prepared from the bundle read before the lock, so the call
   also answers a conflict when the state names another bundle by then (an
   upgrade applied in between; `call_component` compares `AppState::bundle`).
-- **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
-  timer tick, init, strong view) happens inside the group's
-  proposal lock, on the machine's read lock, from borrowed state, so it cannot
-  move to `spawn_blocking`; it goes through `block_in_place`, which hands the
-  worker's other tasks (Raft heartbeats, the system group, HTTP) to another
-  worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+- **Runs leave the async workers** (`node::off_workers`): a logged WASM run (call,
+  timer tick, init, a compute run's result method) happens inside the group's
+  proposal lock, so it cannot move to `spawn_blocking`; it goes through
+  `block_in_place`, which hands the worker's other tasks (Raft heartbeats, the system
+  group, HTTP) to another worker meanwhile. Regression:
+  `a_long_run_does_not_hold_an_async_worker`.
+- **Logged runs hold no read lock** (C2; `calimero_log::Group::propose_led_staged`,
+  `LoggedRun`): each of those proposals is staged. Its read step, under the applied
+  state's read lock, makes the checks, takes the unique ids and an owned `LoggedRun`
+  (`AppMachine::view`, an O(1) `imbl` clone, the blobs, runs provider, secrets,
+  `base_index`); its run step, with the lock released, runs the guest, pushes its files
+  and builds the entry. The proposal lock is held throughout, so calls on one app still
+  take turns and each builds on the one before (no self-conflict). An entry that commits
+  while a run runs (a barrier, a membership change) now applies at once and the app's
+  reads go on, where they waited for the whole run before (a reader queued behind the
+  waiting apply); the run's entry then fails its `base_index` check and `Node::call`
+  runs it again, its synchronous xcalls replayed under their keys. Regressions:
+  `a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app` (an entry
+  waited 1.0 s and a read 0.96 s for the run before),
+  `a_call_whose_app_moved_on_while_it_ran_runs_again_and_answers_once`.
 - **Disk work leaves the async workers** (`node/disk.rs`): a store write (a blob, a
   bundle, a file segment, a node row) waits for the disk, and RocksDB writes in
   groups, so even an unsynced one queues behind another group's fsync. The node
@@ -2107,7 +2160,13 @@ is its command line.
   `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
   argument that this is as fresh as a round of their own) instead of running
   another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  A credential that cannot be valid costs no round (`api::credential`, D4): an
+  API key not of `new_api_key`'s shape, or one a caught-up read found missing in
+  the last `UNKNOWN_API_KEY_TTL` (`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a
+  visitor credential whose signature fails, a session token its issuer did not
+  sign; a missing key waits (`sys_until`) only when the round did not catch up.
   Regressions: `a_call_costs_one_system_read_round`,
+  `a_credential_that_cannot_be_valid_costs_no_system_read_round`,
   `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
   (`tests/it/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
@@ -2343,6 +2402,14 @@ API and system group:
   `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
   (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
   messages while its app groups go on), `removed_member_stops_receiving_org_events`.
+  Every stream `gate` lets open (events, presence, a pipeline run's events, an event
+  stream proxied from another replica) also judges the principal that opened it before
+  each batch it sends, on the same fresh state (`api::still_admitted`,
+  `Principal::admitted_on`): an account no longer reaching the app, a revoked API key or
+  an ended session ends it; a session token's own expiry does not (a refresh). Regressions:
+  `a_removed_member_stops_receiving_presence`,
+  `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+  `a_removed_member_stops_receiving_a_runs_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
@@ -2430,10 +2497,15 @@ API and system group:
   for every table whose declared fields are what it was built with, across an upgrade
   too; a table that is new or whose fields changed starts from a new index and one no
   longer declared is dropped; when the keys since are unknown (the first search after a
-  start, keys the ring lost, a mark another view moved meanwhile) each index is compared
+  start, keys the ring lost, a view on an older state than the indexes hold) each index is compared
   with the state (`TableIndex::reconcile`: every record's document digest,
   `calimero_search::index::doc_digest`, against the one the index holds) and only what
-  differs is indexed again. A view that never searches indexes nothing. Indexes are kept
+  differs is indexed again. A view that never searches indexes nothing. A view searches
+  the state it reads and no other (C4): once the indexes reach its state it keeps a
+  point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
+  `AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
+  (`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the
+  shared indexes never jump past a live view's state. Indexes are kept
   under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`) only
   when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
@@ -2451,7 +2523,9 @@ API and system group:
   its uncommitted changes never reach a later commit. Regressions:
   `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `a_view_whose_indexes_a_later_upgrade_moved_searches_its_own_state`,
+  `a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes`,
+  `a_view_that_searches_after_a_later_view_did_searches_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
   `an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed`,
   `an_index_on_disk_under_other_fields_is_made_anew`. The run
@@ -2471,7 +2545,7 @@ API and system group:
   D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
   the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
   (the signed release's prefixes, the owner's approval, the operator's hosts,
-  `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
+  the credentials the release binds, attached by the gate, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
   timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
   trap or removed method fails at once; a failure sends `ActionFailed { actionId,
   method, reason }` to the starter (an event with an `Accounts` audience) and runs
@@ -2481,7 +2555,7 @@ API and system group:
 - **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
   read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
   do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
-  then the app's fetch gets an error). The host core records each exchange
+  then the app's fetch gets an error), and never past the run's deadline (below). The host core records each exchange
   (`Outcome::http`, `component::HttpRecord`: the request with its placeholders, the
   redacted response, bodies cut to 64 KiB with their lengths) in the call's entry,
   whatever its status; followers never fetch, and a keyed retry replays. Tests:
@@ -2495,13 +2569,29 @@ API and system group:
   host core's derived key, `Caller::App(source)` and `CallRequest::sync_from` (the target
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
-  (3 s) while the runtime runs it; two apps calling each other at once both time out.
+  (3 s) while the runtime runs it, and never past its own deadline; two apps calling each
+  other at once both end `Timeout` at their deadline.
   A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
   view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
   them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
   for the slowest request, not their sum; requests to one target take turns on its lock.
   Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
   (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
+- **A run's deadline covers its host calls** (C2): wasmtime's epoch deadline is checked only
+  while the guest's code runs, so a run waiting in a host call used to wait as long as the
+  host did (a sync xcall up to `SYNC_XCALL_WAIT`, past a 2 s budget). `run_with` (and the
+  action runner) take `deadline = now + budget.wall_clock` and hand it to the host core
+  (`HostCore::with_deadline`) and to every host that waits: `TimedHttp` (the lesser of its
+  `timeout` and the time left; actions' outbound goes through it too), `NodeXcall`
+  (`wait_all`) and `NodeAction` (`wait`). A wait that ends at or past the deadline ends the
+  run `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, the status an overrun in the guest's own code
+  gets. Deterministic: the deadline only decides whether the leader, before the log, gets
+  an outcome to propose; a `Timeout` is never logged (`Outcome::is_retryable`; a call,
+  tick, `init` or delivery is run again) and replicas apply the logged outcome without
+  running anything, so no entry and no apply differs, and nothing is gated. Regression:
+  `a_run_waiting_in_a_host_call_ends_at_its_own_deadline` (`tests/it/component_cluster.rs`;
+  a 600 ms run waiting on two 600 ms calls in turn answered after 1.22 s before, at its
+  deadline after).
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.

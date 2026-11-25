@@ -74,7 +74,7 @@ impl<T: Serialize + DeserializeOwned, H: ContentHash<T>, S: Store> Frozen<T, H, 
         let key = self.storage_key(hash)?;
         let fresh = self.store.get(&key).is_none();
         if fresh {
-            self.store.put(&key, &value::to_vec(value)?);
+            self.store.put(&key, &value::to_vec(value)?)?;
         }
         Ok((to_hex(&hash), fresh))
     }

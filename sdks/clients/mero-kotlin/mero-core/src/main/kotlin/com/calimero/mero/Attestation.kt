@@ -82,7 +82,7 @@ data class CloudReleasePolicy(
      * fixed.
      */
     val minReleaseVersion: String,
-    /** The image profile trusted; defaults to `locked-read-only`. */
+    /** The image profile trusted; defaults to `locked-read-only`. Not with [profiles]. */
     val profile: String = PRODUCTION_PROFILE,
     /** Trust a debug profile. Its image is readable by the operator: testing only. */
     val allowDebugProfile: Boolean = false,
@@ -116,7 +116,44 @@ data class CloudReleasePolicy(
     val issuer: String? = null,
     /** The current time in milliseconds. For tests. */
     val now: () -> Long = System::currentTimeMillis,
+    /**
+     * Trust any of these image profiles, as core's `Measurements::Release` `allowed_profiles` and
+     * mero-js `release.profiles` do: the one the node names is used when it is listed, and the
+     * quote must still be that profile's signed image, so naming another profile only gets a node
+     * refused. For a cluster whose profile the client does not know: staging's
+     * ([CloudEnvironment.STAGING]). A listed debug profile still needs [allowDebugProfile]. When
+     * set, [profile] must be left at its default.
+     */
+    val profiles: List<String>? = null,
 )
+
+/**
+ * The profile a real quote is judged against: [CloudReleasePolicy.profile], or, with
+ * [CloudReleasePolicy.profiles], the one the node names when it is listed (mero-js
+ * `trustedProfile`). Every listed debug profile needs [CloudReleasePolicy.allowDebugProfile], so the
+ * list never trusts one silently.
+ */
+@Suppress("ThrowsCount")
+internal fun trustedProfile(
+    doc: AttestationDoc,
+    policy: CloudReleasePolicy,
+): String {
+    val profiles = policy.profiles ?: return policy.profile
+    if (policy.profile != PRODUCTION_PROFILE) throw TeeTrustException("give CloudReleasePolicy.profile or profiles, not both")
+    if (profiles.isEmpty()) throw TeeTrustException("CloudReleasePolicy.profiles is empty, so no image would be trusted")
+    val debug = profiles.filter { it != PRODUCTION_PROFILE }
+    if (debug.isNotEmpty() && !policy.allowDebugProfile) {
+        throw TeeTrustException(
+            "CloudReleasePolicy.profiles lists ${debug.joinToString(", ") { "\"$it\"" }}, which an operator can read: " +
+                "pass allowDebugProfile to trust them",
+        )
+    }
+    val named = doc.release.profile
+    if (named !in profiles) {
+        throw TeeTrustException("The node runs profile \"$named\", which is not one of ${profiles.joinToString(", ")}")
+    }
+    return named
+}
 
 /** What a [CalimeroClient] trusts a node by (mero-js `CloudPolicy`). */
 data class CloudPolicy(
@@ -134,7 +171,14 @@ data class CloudPolicy(
         val development: CloudPolicy = CloudPolicy(allowMock = true)
 
         /** Real TDX quotes only, from a signed mero-tee release at or above [DEFAULT_MIN_RELEASE]. */
-        val production: CloudPolicy = CloudPolicy(release = CloudReleasePolicy(DEFAULT_MIN_RELEASE))
+        val production: CloudPolicy = CloudEnvironment.PRODUCTION.policy()
+
+        /**
+         * A staging cluster's: real quotes only, from a signed mero-tee release at or above
+         * [DEFAULT_MIN_RELEASE], of any of staging's image profiles, debug ones included
+         * ([CloudEnvironment.STAGING]). Testing only: never in a build people install from a store.
+         */
+        val staging: CloudPolicy = CloudEnvironment.STAGING.policy()
     }
 }
 
@@ -243,7 +287,7 @@ private suspend fun verifyRelease(
     val trusted =
         trustSignedRelease(
             releaseFor(version, policy, http),
-            policy.profile,
+            trustedProfile(doc, policy),
             policy.minReleaseVersion,
             policy.allowDebugProfile,
             policy.identity,

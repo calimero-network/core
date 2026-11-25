@@ -124,6 +124,7 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
 
 async fn register_begin(
     State(node): State<Arc<Node>>,
+    sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterBegin>,
 ) -> ApiResult {
     refuse_sign_up(&node, body.invite.as_deref()).await?;
@@ -154,6 +155,7 @@ async fn register_begin(
             name: name.clone(),
             expires: now_secs() + CHALLENGE_TTL,
         },
+        sealed.map(|Extension(s)| s),
     )?;
     Ok(Json(json!({
         "challengeId": id,
@@ -188,6 +190,7 @@ pub(super) struct RegisterFinish {
 
 async fn register_finish(
     State(node): State<Arc<Node>>,
+    sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterFinish>,
 ) -> ApiResult {
     // A new account approves this node's release, so only a release the
@@ -262,6 +265,7 @@ async fn register_finish(
             app,
             origin,
         },
+        sealed.map(|Extension(s)| s),
     )?;
     Err(confirm_required(
         "sign in with the new passkey to create the account",
@@ -369,7 +373,11 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     Ok(session_answer(&account_id, &token, &session))
 }
 
-async fn login_begin(State(node): State<Arc<Node>>, body: Option<Json<LoginBegin>>) -> ApiResult {
+async fn login_begin(
+    State(node): State<Arc<Node>>,
+    sealed: Option<Extension<SealedSession>>,
+    body: Option<Json<LoginBegin>>,
+) -> ApiResult {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     // The challenge states the session the sign-in opens, so the log takes
@@ -385,6 +393,7 @@ async fn login_begin(State(node): State<Arc<Node>>, body: Option<Json<LoginBegin
             statement,
             session,
         },
+        sealed.map(|Extension(s)| s),
     )?;
     Ok(Json(json!({
         "challengeId": id,
@@ -470,6 +479,7 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
             account: account.clone(),
             expires: now_secs() + CHALLENGE_TTL,
         },
+        None,
     )?;
     let (name, exclude): (String, Vec<Value>) = node.sys(|s| {
         s.accounts.get(&account).map_or_else(Default::default, |a| {

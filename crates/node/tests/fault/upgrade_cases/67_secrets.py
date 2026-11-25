@@ -21,9 +21,9 @@ class InstanceSecrets(DeepCase):
     name = "instance-secrets"
     area = "Apps"
     since = "1.0.0-rc.31"
-    seeds = ("a release that declares a secret its outbound requests name (`secrets`), an instance of it whose "
+    seeds = ("a release that binds a secret to a header of its outbound host (`secrets`), an instance of it whose "
              "owner set its own value, and one with none")
-    verifies = ("each instance's secret as its owner reads it: the declared name, `source` (`app` with the value's "
+    verifies = ("each instance's secret as its owner reads it: the declared name, its binding in words, `source` (`app` with the value's "
                 "fingerprint, `cluster` without one) and never the value; an undeclared name and a member's value "
                 "are refused; on the new release the owner sets a new value (a new fingerprint) and clears the other")
 
@@ -57,6 +57,7 @@ class InstanceSecrets(DeepCase):
             listed = sia.get(f"apps/{app}/secrets")
             check("sia-key" not in json.dumps(listed), f"the list carries a value: {listed}")
             row = (listed.get("secrets") or {}).get("API_KEY") or {}
+            eq(row.get("binding"), "sends API_KEY as the X-Api-Key header to api.example.com, any path", f"{k}'s binding")
             if s["set"][k]:
                 eq((row.get("source"), row.get("fingerprint")), ("app", s["set"][k]), f"{k}'s own value")
             else:

@@ -2,6 +2,7 @@ pub mod archive;
 mod frontend;
 #[cfg(feature = "html")]
 mod html;
+pub mod secrets;
 mod signature;
 pub mod update;
 
@@ -15,6 +16,12 @@ pub use frontend::{
 };
 #[cfg(feature = "html")]
 pub use html::check_frontend_html;
+pub use secrets::{
+    is_forbidden_header, is_secret_body_field, is_secret_format, is_secret_header, is_secret_name,
+    is_secret_path, path_covers, BundleSecret, SecretPlacement, SecretsError, FORBIDDEN_HEADERS,
+    MAX_SECRETS, MAX_SECRET_DESCRIPTION_BYTES, MAX_SECRET_FIELD_BYTES, MAX_SECRET_FORMAT_BYTES,
+    MAX_SECRET_NAME_BYTES, MAX_SECRET_PATHS, MAX_SECRET_PATH_BYTES, SECRET_FORMAT_SLOT,
+};
 pub use signature::{
     canonicalize_manifest, compute_bundle_hash, compute_signing_payload, decode_public_key,
     decode_signature, derive_signer_id_did_key, format_bundle_hash, sign_manifest_json,
@@ -121,42 +128,6 @@ pub fn is_outbound_url(url: &str) -> bool {
         && !url.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
-/// Most secrets one release declares.
-pub const MAX_SECRETS: usize = 16;
-/// Most hosts one declared secret may go to.
-pub const MAX_SECRET_HOSTS: usize = 8;
-/// Most bytes of a declared secret's description.
-pub const MAX_SECRET_DESCRIPTION_BYTES: usize = 256;
-/// Most bytes of a secret's name.
-pub const MAX_SECRET_NAME_BYTES: usize = 64;
-
-/// One secret a release declares (`BundleManifest::secrets`).
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BundleSecret {
-    /// The hosts it may be sent to: each the host of one of the release's `outbound`
-    /// prefixes, lowercase.
-    pub hosts: Vec<String>,
-    /// What it is, for whoever supplies it ("NEAR AI Cloud API key").
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    /// The app does not work without it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub required: bool,
-}
-
-/// Whether `name` may name a secret: `A-Z`, `0-9` and `_`, starting with a letter, at most
-/// [`MAX_SECRET_NAME_BYTES`]. The same names `{{secret:NAME}}` takes.
-#[must_use]
-pub fn is_secret_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_SECRET_NAME_BYTES
-        && name.starts_with(|c: char| c.is_ascii_uppercase())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
-
 /// The host of an `outbound` prefix (`https://api.example.com/v1/` -> `api.example.com`),
 /// lowercase; `None` for a prefix [`is_outbound_url`] refuses or one with a port.
 #[must_use]
@@ -170,31 +141,6 @@ pub fn outbound_host(prefix: &str) -> Option<String> {
         return None;
     }
     Some(authority.to_ascii_lowercase())
-}
-
-/// Why a manifest's `secrets` are refused.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SecretsError {
-    #[error("a release declares at most {MAX_SECRETS} secrets")]
-    TooMany,
-    #[error("secret name {0:?} must be A-Z, 0-9 and _, starting with a letter, at most {MAX_SECRET_NAME_BYTES} bytes")]
-    BadName(String),
-    #[error("secret {0} names no host")]
-    NoHosts(String),
-    #[error("secret {0} names more than {MAX_SECRET_HOSTS} hosts")]
-    TooManyHosts(String),
-    #[error("secret {name} names {host}, which no outbound prefix of the release covers")]
-    HostNotDeclared { name: String, host: String },
-    #[error("secret {0}'s description is longer than {MAX_SECRET_DESCRIPTION_BYTES} bytes")]
-    LongDescription(String),
-}
-
-impl SecretsError {
-    /// The stable code a node answers with.
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        "BAD_SECRETS"
-    }
 }
 
 /// Most apps one release references.
@@ -300,43 +246,20 @@ impl UsesError {
 }
 
 impl BundleManifest {
-    /// Checks `secrets` against the node's install rules; each host must be the host of an `outbound`
-    /// prefix, so a secret goes only where the release already says data goes.
+    /// Checks `secrets` against the node's install rules ([`secrets`]): each a credential bound
+    /// to one host, the host of an `outbound` prefix, and path prefixes there each under an
+    /// `outbound` prefix (so a secret goes only where the release already says data goes),
+    /// and one place, a header or a body field, no two in the same place.
     pub fn check_secrets(&self) -> Result<(), SecretsError> {
         let Some(secrets) = &self.secrets else {
             return Ok(());
         };
-        if secrets.len() > MAX_SECRETS {
-            return Err(SecretsError::TooMany);
-        }
         let hosts: std::collections::BTreeSet<String> = self
             .outbound
             .iter()
             .filter_map(|p| outbound_host(p))
             .collect();
-        for (name, secret) in secrets {
-            if !is_secret_name(name) {
-                return Err(SecretsError::BadName(name.clone()));
-            }
-            if secret.hosts.is_empty() {
-                return Err(SecretsError::NoHosts(name.clone()));
-            }
-            if secret.hosts.len() > MAX_SECRET_HOSTS {
-                return Err(SecretsError::TooManyHosts(name.clone()));
-            }
-            if secret.description.len() > MAX_SECRET_DESCRIPTION_BYTES {
-                return Err(SecretsError::LongDescription(name.clone()));
-            }
-            for host in &secret.hosts {
-                if !hosts.contains(host) {
-                    return Err(SecretsError::HostNotDeclared {
-                        name: name.clone(),
-                        host: host.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
+        secrets::check(secrets, &self.outbound, &hosts)
     }
 
     /// Checks `uses` against the node's install rules: names, count, own-package ban, semver range,
@@ -602,8 +525,8 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<String>,
 
-    /// Secrets the outbound requests name (`{{secret:NAME}}`) and the hosts each may go to; a node fills only a
-    /// declared name into those hosts. Absent: any secret the operator bound. An older node ignores the field.
+    /// The credentials the app's requests carry, by name ([`BundleSecret`]): each bound to one host and one
+    /// header or body field, where the node attaches it; the app never places or reads one. Absent: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<BTreeMap<String, BundleSecret>>,
     /// The other apps this release calls, by the name its code knows each by ([`BundleUse`]); signed, shown
@@ -844,59 +767,168 @@ mod tests {
         .unwrap()
     }
 
-    /// A secret goes only where the release already says data goes: each host is an
-    /// `outbound` prefix's host; names, counts and descriptions are bounded.
+    /// A secret is a credential bound to one host the release sends to, path prefixes there
+    /// under its `outbound` prefixes, and one place: a header (with a format) or a body
+    /// field; names, counts, paths, places and descriptions are bounded, and two secrets
+    /// never share a place on a path.
     #[test]
-    fn declared_secrets_name_only_hosts_the_release_sends_to() {
-        let out = ["https://cloud-api.near.ai/v1/chat/completions"];
+    fn declared_secrets_are_bound_to_one_host_and_one_place() {
+        let out = [
+            "https://api.openai.com/v1/",
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+        ];
         let ok = with_secrets(
             &out,
-            serde_json::json!({ "NEAR_AI_API_KEY": {
-                "hosts": ["cloud-api.near.ai"], "description": "NEAR AI key", "required": true } }),
+            serde_json::json!({
+                "OPENAI_API_KEY": { "host": "api.openai.com", "paths": ["/v1/"], "header": "authorization",
+                    "format": "Bearer {}", "description": "OpenAI key", "required": true },
+                "TURNSTILE_SECRET": { "host": "challenges.cloudflare.com", "paths": ["/turnstile/v0/siteverify"], "bodyField": "secret" },
+            }),
         );
         assert_eq!(ok.check_secrets(), Ok(()));
-        let s = &ok.secrets.as_ref().unwrap()["NEAR_AI_API_KEY"];
-        assert!(s.required);
+        let secrets = ok.secrets.as_ref().unwrap();
+        assert!(secrets["OPENAI_API_KEY"].required);
+        assert_eq!(
+            secrets["OPENAI_API_KEY"].placement(),
+            Some(SecretPlacement::Header {
+                name: "authorization",
+                format: "Bearer {}"
+            })
+        );
+        assert_eq!(
+            secrets["TURNSTILE_SECRET"].placement(),
+            Some(SecretPlacement::BodyField("secret"))
+        );
         // Signed as written: it reads back the same.
         let again: BundleManifest =
             serde_json::from_value(serde_json::to_value(&ok).unwrap()).unwrap();
         assert_eq!(again.secrets, ok.secrets);
 
         let err = |secrets| with_secrets(&out, secrets).check_secrets().unwrap_err();
+        let header = |h: &str| serde_json::json!({ "host": "api.openai.com", "paths": ["/v1/"], "header": h });
         assert!(matches!(
-            err(serde_json::json!({ "K": { "hosts": ["evil.example"] } })),
+            err(
+                serde_json::json!({ "K": { "host": "evil.example", "paths": ["/"], "header": "authorization" } })
+            ),
             SecretsError::HostNotDeclared { .. }
         ));
         assert!(matches!(
-            err(serde_json::json!({ "lower": { "hosts": ["cloud-api.near.ai"] } })),
+            err(serde_json::json!({ "lower": header("authorization") })),
             SecretsError::BadName(_)
         ));
+        // Exactly one place: neither, both, or a format with no header are refused.
+        for no_place in [
+            serde_json::json!({ "host": "api.openai.com", "paths": ["/v1/"] }),
+            serde_json::json!({ "host": "api.openai.com", "paths": ["/v1/"], "header": "x-key", "bodyField": "key" }),
+            serde_json::json!({ "host": "api.openai.com", "paths": ["/v1/"], "bodyField": "key", "format": "{}" }),
+        ] {
+            assert!(matches!(
+                err(serde_json::json!({ "K": no_place })),
+                SecretsError::NoPlacement(_)
+            ));
+        }
+        for bad in [
+            "Authorization",
+            "cookie",
+            "host",
+            "proxy-x",
+            "content-type",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    err(serde_json::json!({ "K": header(bad) })),
+                    SecretsError::BadHeader { .. }
+                ),
+                "{bad:?}"
+            );
+        }
         assert!(matches!(
-            err(serde_json::json!({ "K": { "hosts": [] } })),
-            SecretsError::NoHosts(_)
+            err(
+                serde_json::json!({ "K": { "host": "api.openai.com", "paths": ["/v1/"], "header": "authorization",
+                "format": "Bearer {}{}" } })
+            ),
+            SecretsError::BadFormat(_)
         ));
+        assert!(matches!(
+            err(
+                serde_json::json!({ "K": { "host": "api.openai.com", "paths": ["/v1/"], "bodyField": "a b" } })
+            ),
+            SecretsError::BadBodyField { .. }
+        ));
+        assert!(matches!(
+            err(serde_json::json!({ "A": header("x-key"), "B": header("x-key") })),
+            SecretsError::SamePlace { .. }
+        ));
+        // The same place on one host twice only on paths neither shares.
+        let on = |paths: Value| serde_json::json!({ "host": "api.openai.com", "header": "x-key", "paths": paths });
+        assert_eq!(
+            with_secrets(&out, serde_json::json!({ "A": on(serde_json::json!(["/v1/a"])), "B": on(serde_json::json!(["/v1/b"])) }))
+                .check_secrets(),
+            Ok(())
+        );
+        assert!(matches!(
+            err(
+                serde_json::json!({ "A": on(serde_json::json!(["/v1/"])), "B": on(serde_json::json!(["/v1/b"])) })
+            ),
+            SecretsError::SamePlace { .. }
+        ));
+        // Paths: required, bounded, well formed, and each under an `outbound` prefix.
+        for bad in [
+            serde_json::json!([]),
+            serde_json::json!(["v1"]),
+            serde_json::json!(["/v1/../admin"]),
+            serde_json::json!(["/v1?x"]),
+            serde_json::json!((0..=MAX_SECRET_PATHS)
+                .map(|i| format!("/v1/{i}"))
+                .collect::<Vec<_>>()),
+        ] {
+            assert!(
+                matches!(
+                    err(serde_json::json!({ "K": on(bad.clone()) })),
+                    SecretsError::BadPaths(_)
+                ),
+                "{bad}"
+            );
+        }
+        for outside in ["/", "/v2/", "/v1"] {
+            assert!(
+                matches!(
+                    err(serde_json::json!({ "K": on(serde_json::json!([outside])) })),
+                    SecretsError::PathNotDeclared { .. }
+                ),
+                "{outside}"
+            );
+        }
+        let no_paths: Result<BundleManifest, _> = serde_json::from_value(serde_json::json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+            "secrets": { "K": { "host": "api.openai.com", "header": "x-key" } },
+        }));
+        assert!(no_paths.is_err(), "paths is required");
         let many: serde_json::Map<String, Value> = (0..=MAX_SECRETS)
-            .map(|i| {
-                (
-                    format!("K{i}"),
-                    serde_json::json!({ "hosts": ["cloud-api.near.ai"] }),
-                )
-            })
+            .map(|i| (format!("K{i}"), header(&format!("x-key-{i}"))))
             .collect();
         assert_eq!(err(Value::Object(many)), SecretsError::TooMany);
         let long = "x".repeat(MAX_SECRET_DESCRIPTION_BYTES + 1);
         assert!(matches!(
             err(
-                serde_json::json!({ "K": { "hosts": ["cloud-api.near.ai"], "description": long } })
+                serde_json::json!({ "K": { "host": "api.openai.com", "paths": ["/v1/"], "header": "x-key",
+                "description": long } })
             ),
             SecretsError::LongDescription(_)
         ));
-        // An unknown key in a secret is refused when the manifest is read.
-        let unknown: Result<BundleManifest, _> = serde_json::from_value(serde_json::json!({
-            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
-            "secrets": { "K": { "hosts": [], "value": "leaked" } },
-        }));
-        assert!(unknown.is_err());
+        // The earlier shape (`hosts`, filled wherever the app wrote `{{secret:NAME}}`), or
+        // an unknown key, is refused when the manifest is read.
+        for refused in [
+            serde_json::json!({ "K": { "hosts": ["api.openai.com"] } }),
+            serde_json::json!({ "K": { "host": "api.openai.com", "paths": ["/v1/"], "header": "x-key", "value": "leaked" } }),
+        ] {
+            let read: Result<BundleManifest, _> = serde_json::from_value(serde_json::json!({
+                "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+                "secrets": refused,
+            }));
+            assert!(read.is_err());
+        }
         // No secrets: nothing to check, and nothing written.
         let none = with_secrets(&out, Value::Null);
         assert_eq!(none.check_secrets(), Ok(()));

@@ -113,9 +113,9 @@ mod orgs;
 mod updates;
 
 pub use orgs::{
-    MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject, RevokeInviteSubject,
-    SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject, SetMemberTeamsSubject,
-    MAX_SUBJECT_ID_BYTES,
+    EgressSubject, MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject,
+    RevokeInviteSubject, SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject,
+    SetMemberTeamsSubject, MAX_SUBJECT_ID_BYTES,
 };
 
 pub use diff::{capability_sheet, Side};
@@ -281,6 +281,12 @@ pub enum CreateBody {
         subject: SetAllAppsSubject,
         return_to: String,
     },
+    /// Turn an organization's egress switch, or one instance's, off or back on: on again
+    /// is made only here (`POST /orgs/{org}/egress` refuses it elsewhere).
+    SetEgress {
+        subject: EgressSubject,
+        return_to: String,
+    },
     /// Create an instance from a deployment's offer or a release: the install sheet.
     Install {
         subject: Box<InstallSubject>,
@@ -319,6 +325,7 @@ impl CreateBody {
                 (A::SetCapabilities(subject), return_to)
             }
             Self::SetAllApps { subject, return_to } => (A::SetAllApps(subject), return_to),
+            Self::SetEgress { subject, return_to } => (A::SetEgress(subject), return_to),
             other => return Err(other),
         })
     }
@@ -1235,7 +1242,8 @@ pub async fn create(
         | CreateBody::RenameOrg { .. }
         | CreateBody::DeleteOrg { .. }
         | CreateBody::SetCapabilities { .. }
-        | CreateBody::SetAllApps { .. } => {
+        | CreateBody::SetAllApps { .. }
+        | CreateBody::SetEgress { .. } => {
             return Err(ApiError::internal("an organization request went astray"));
         }
     };
@@ -1544,12 +1552,11 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             hosts(added.iter().map(String::as_str)),
         ));
     }
-    let mut secrets = strings(&sheet["secrets"]["added"]);
-    secrets.extend(strings(&sheet["secrets"]["hostsChanged"]));
+    let secrets = strings(&sheet["secrets"]["words"]);
     if !secrets.is_empty() {
         out.push(attention(
             "secrets",
-            "Asks for a new secret, or sends one to other addresses:".to_owned(),
+            "Asks for a new secret, or has one sent elsewhere or another way:".to_owned(),
             secrets,
         ));
     }
@@ -2486,6 +2493,9 @@ async fn outbound_request(
         })
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     let (scope, scope_json) = scope_of(node, account, scope)?;
+    if let ReleaseScope::Org { org } = &scope {
+        crate::api::refuse_egress_off(node, org)?;
+    }
     let facts = release_facts(node, &package, &latest).await?;
     let declared: Vec<String> = latest.outbound.clone();
     let requested = match subject.prefixes {

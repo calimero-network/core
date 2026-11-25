@@ -641,11 +641,11 @@ fn a_blob_ref_to_a_file_may_be_stored_and_one_to_nothing_may_not() {
     let files = MemoryFiles::default();
     let held = files.insert(b"hello");
     let mut h = call_host(&files);
-    h.storage_put(b"held", &blob_ref(&held)).unwrap();
+    h.storage_put(b"held", &blob_ref(&held)).unwrap().unwrap();
     let w = h.files_create().unwrap().unwrap();
     h.writer_write(w, b"fresh").unwrap().unwrap();
     let fresh = h.writer_finish(w).unwrap().unwrap();
-    h.storage_put(b"fresh", &blob_ref(&fresh)).unwrap();
+    h.storage_put(b"fresh", &blob_ref(&fresh)).unwrap().unwrap();
     denied(h.storage_put(b"none", &blob_ref(&"0".repeat(64))));
 }
 
@@ -1022,7 +1022,9 @@ fn a_published_blob_may_be_stored_in_the_run_that_published_it() {
     );
     denied(h.storage_put(b"early", &blob_ref(&plain_blob_id(b"report"))));
     let blob = h.compute_publish("sealed-name").unwrap().unwrap();
-    h.storage_put(b"published", &blob_ref(&blob)).unwrap();
+    h.storage_put(b"published", &blob_ref(&blob))
+        .unwrap()
+        .unwrap();
 }
 
 /// A store that cannot get a file's bytes now.

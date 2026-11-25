@@ -169,7 +169,7 @@ class AppsFacade internal constructor(
     /**
      * Where an app's unit may send data
      *
-     * For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+     * For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
      *
      * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
@@ -499,7 +499,7 @@ class AppsFacade internal constructor(
     /**
      * Set an app's own value of a declared secret
      *
-     * Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     * Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -520,7 +520,7 @@ class AppsFacade internal constructor(
     /**
      * The secrets an app's release declares
      *
-     * For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+     * For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -532,6 +532,26 @@ class AppsFacade internal constructor(
         app: kotlin.String,
     ): AppSecrets200Response =
         api(null, null, emptySet()).apps.appSecrets(app = app)
+
+    /**
+     * Turn one app's egress off or on
+     *
+     * As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/egress` (`app_set_egress`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun setEgress(
+        app: kotlin.String,
+        egress: kotlin.Boolean,
+        passkey: PasskeyProvider? = null,
+    ): AppSetEgress200Response =
+        api(passkey, null, emptySet()).apps.appSetEgress(app = app, appSetEgressRequest = AppSetEgressRequest(egress = egress))
 
     /**
      * What an app stores

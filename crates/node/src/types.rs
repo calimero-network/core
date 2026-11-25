@@ -551,6 +551,13 @@ pub struct AppRecord {
     /// writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_point: Option<RestorePoint>,
+    /// The instance's own egress switch, off: no outbound request leaves the cluster for
+    /// it, whatever its release declares and whatever its organization approved
+    /// (`SystemCmd::SetEgress` naming the app; [`Org::egress_off`] turns off every app of
+    /// the organization). It stays with the instance when it moves. Left out when `false`
+    /// (egress on, the default), so a record writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub egress_off: bool,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the
@@ -1241,6 +1248,15 @@ pub struct Org {
     /// `true` (the default).
     #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
     pub allow_public_links: bool,
+    /// Egress off for every app of it: no outbound request leaves the cluster for any of
+    /// them, whatever their releases declare, and over every outbound approval, which it
+    /// also refuses to add (`SystemCmd::SetEgress`; `calimero_outbound::EGRESS_OFF`). The
+    /// owner's hard guarantee that the apps' code cannot send its data out. Set by its
+    /// owner or an admin; off is instant, on again only through the consent page. Left out
+    /// when `false` (egress on, the default), so an organization from before writes as it
+    /// did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub egress_off: bool,
     /// The update policy of every app of it that sets none of its own
     /// (`SystemCmd::SetUpgradePolicy` without an app); absent, [`UpgradePolicy::default`]:
     /// nothing updates on its own and one owner's or admin's approval applies an update.

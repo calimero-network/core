@@ -8924,7 +8924,7 @@ fn install_declaring(by: &str, version: &str) -> SystemCmd {
             "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
             "services": { "": format!("b-{version}") }, "installedBy": by, "installedAt": 5,
             "outbound": ["https://api.example.com/"],
-            "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+            "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
         }))
         .unwrap(),
     }
@@ -9076,7 +9076,7 @@ fn a_deployments_managers_set_secrets_its_offers_declare() {
                 "version": "3.0.0", "mpk": "3.0.0", "mpkSize": 1, "source": "upload",
                 "services": { "": "b-3.0.0" }, "installedBy": "alice", "installedAt": 5,
                 "outbound": ["https://api.example.com/"],
-                "secrets": { "MORE": { "hosts": ["api.example.com"] } },
+                "secrets": { "MORE": { "host": "api.example.com", "paths": ["/"], "header": "x-more" } },
             }))
             .unwrap(),
         })
@@ -9280,12 +9280,17 @@ fn state_from_before_deployment_secrets_reads_with_none_and_writes_as_before() {
     assert!(m.state.deployments.is_empty());
 }
 
-/// `package@version` installed by alice, declaring `secrets` (each for
-/// `api.example.com`) and referencing `uses` (the manifest's JSON for them).
+/// `package@version` installed by alice, declaring `secrets` (each bound to an
+/// `x-<name>` header of `api.example.com`) and referencing `uses` (the manifest's JSON for them).
 fn install_release(package: &str, version: &str, secrets: &[&str], uses: Value) -> SystemCmd {
     let secrets: serde_json::Map<String, Value> = secrets
         .iter()
-        .map(|n| ((*n).to_owned(), json!({ "hosts": ["api.example.com"] })))
+        .map(|n| {
+            (
+                (*n).to_owned(),
+                json!({ "host": "api.example.com", "paths": ["/"], "header": format!("x-{}", n.to_ascii_lowercase()) }),
+            )
+        })
         .collect();
     let uses = if uses.is_null() { json!({}) } else { uses };
     SystemCmd::InstallPackage {
@@ -11797,7 +11802,7 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
                 "version": "1.0.0", "mpk": "q-1.0.0", "mpkSize": 1, "source": "upload",
                 "services": { "": "b-q" }, "installedBy": "bob", "installedAt": 5,
                 "outbound": ["https://attacker.example/"],
-                "secrets": { "API_KEY": { "hosts": ["attacker.example"] } },
+                "secrets": { "API_KEY": { "host": "attacker.example", "paths": ["/"], "header": "x-api-key" } },
             }))
             .unwrap(),
         })

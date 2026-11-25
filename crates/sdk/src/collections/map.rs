@@ -125,9 +125,9 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
             .get(&key)
             .map(|b| value::from_slice(&b))
             .transpose()?;
-        self.store.put(&key, &bytes);
+        self.store.put(&key, &bytes)?;
         if old.is_none() {
-            self.store.add(&self.count_key()?, 1);
+            self.store.add(&self.count_key()?, 1)?;
         }
         Ok(old)
     }
@@ -143,8 +143,8 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         }
         // Absent, as just read: write it and count it, without reading it again.
         let v = make();
-        self.store.put(&self.storage_key(k)?, &value::to_vec(&v)?);
-        self.store.add(&self.count_key()?, 1);
+        self.store.put(&self.storage_key(k)?, &value::to_vec(&v)?)?;
+        self.store.add(&self.count_key()?, 1)?;
         Ok(v)
     }
 
@@ -170,7 +170,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
                     if self.store.get(&key).is_none() {
                         new += 1;
                     }
-                    self.store.put(&key, &bytes);
+                    self.store.put(&key, &bytes)?;
                 }
                 Err(e) => {
                     failed = Some(e);
@@ -180,7 +180,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         }
         // The count covers what was written even when a pair failed to encode.
         if new > 0 {
-            self.store.add(&self.count_key()?, new);
+            self.store.add(&self.count_key()?, new)?;
         }
         match failed {
             Some(e) => Err(e),
@@ -205,16 +205,16 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         let existed = old.is_some();
         match f(old) {
             Some(v) => {
-                self.store.put(&key, &value::to_vec(&v)?);
+                self.store.put(&key, &value::to_vec(&v)?)?;
                 if !existed {
-                    self.store.add(&self.count_key()?, 1);
+                    self.store.add(&self.count_key()?, 1)?;
                 }
                 Ok(Some(v))
             }
             None => {
                 if existed {
-                    self.store.delete(&key);
-                    self.store.add(&self.count_key()?, -1);
+                    self.store.delete(&key)?;
+                    self.store.add(&self.count_key()?, -1)?;
                 }
                 Ok(None)
             }
@@ -226,9 +226,9 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
     /// for one run's 10,000 writes.
     pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
         let base = self.base()?;
-        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max);
+        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max)?;
         if removed > 0 {
-            self.store.add(&self.count_key()?, -(removed as i64));
+            self.store.add(&self.count_key()?, -(removed as i64))?;
         }
         Ok(Progress { removed, done })
     }
@@ -349,7 +349,7 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
             for (stored, bytes) in batch {
                 match Self::decode(&map_base, (stored.clone(), bytes)) {
                     Ok((k, v)) if !keep(&k, &v) => {
-                        self.store.delete(&stored);
+                        self.store.delete(&stored)?;
                         removed += 1;
                     }
                     Ok(_) => {}
@@ -361,7 +361,7 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
             }
         }
         if removed > 0 {
-            self.store.add(&self.count_key()?, -removed);
+            self.store.add(&self.count_key()?, -removed)?;
         }
         match failed {
             Some(e) => Err(e),
