@@ -399,11 +399,10 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::PrivateReleases
-            | Self::OffersOnly
-            | Self::UndoToInstalledRelease
-            | Self::HostFuel
-            | Self::AutoUpdateMembersStay => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
+                "1.0.0-rc.36"
+            }
+            Self::PrivateReleases | Self::HostFuel => "1.0.0-rc.37",
         }
     }
 }
@@ -1003,6 +1002,7 @@ mod tests {
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
     const RC36: &str = "1.0.0-rc.36";
+    const RC37: &str = "1.0.0-rc.37";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1555,7 +1555,7 @@ mod tests {
             .filter(|f| f.names_an_entry())
             .partition(|f| {
                 ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC37,
                 ]
                 .contains(&f.since())
             });
@@ -1645,8 +1645,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC33);
         let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
-        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+        let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
+        let (rc36, rc37): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC36);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1836,14 +1838,12 @@ mod tests {
         for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.36's for every node on rc.36: who may use a release (an rc.35 node drops both
-        // fields), an instance outside every deployment is a deployer's, an undo only to a
-        // release still installed, an update on its own that keeps the unit's members (an
-        // rc.35 node ignores the flags).
+        // rc.36's for every node on rc.36: an instance outside every deployment is a
+        // deployer's, an undo only to a release still installed, an update on its own that
+        // keeps the unit's members (an rc.35 node ignores the flags).
         assert_eq!(
             rc36,
             [
-                Feature::PrivateReleases,
                 Feature::OffersOnly,
                 Feature::UndoToInstalledRelease,
                 Feature::AutoUpdateMembersStay
@@ -1865,6 +1865,27 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc36 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.37's for every node on rc.37: who may use a release (an rc.36 node drops both
+        // fields).
+        assert_eq!(rc37, [Feature::PrivateReleases]);
+        for &feature in &rc37 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC36))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC37;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC37.into(),
+            nodes: (1..=3).map(|id| (id, RC37.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc37 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
@@ -2107,15 +2128,15 @@ mod tests {
     }
 
     /// C7: host work is charged to fuel only from the logged cluster version that brings
-    /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.35, or with none logged, runs
-    /// apps as rc.35 does. No entry names it.
+    /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.36, or with none logged, runs
+    /// apps as rc.36 does. No entry names it.
     #[test]
     fn host_fuel_follows_the_logged_cluster_version() {
         let mut state = crate::system::SystemState::default();
         assert!(!state.cluster_brings(Feature::HostFuel));
-        state.cluster_version = Some(RC35.to_owned());
-        assert!(!state.cluster_brings(Feature::HostFuel));
         state.cluster_version = Some(RC36.to_owned());
+        assert!(!state.cluster_brings(Feature::HostFuel));
+        state.cluster_version = Some(RC37.to_owned());
         assert!(state.cluster_brings(Feature::HostFuel));
         assert!(!Feature::HostFuel.names_an_entry());
     }

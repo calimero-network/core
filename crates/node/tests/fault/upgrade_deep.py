@@ -90,7 +90,7 @@ NOT_COVERED = [
      "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
     ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per run (`calimero_app_host`'s fuel table)",
      "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
-     "the log replays alike on either release, and below cluster version 1.0.0-rc.36 (`Feature::HostFuel`) "
+     "the log replays alike on either release, and below cluster version 1.0.0-rc.37 (`Feature::HostFuel`) "
      "the new release runs calls without the charges, as the old one did; a search cap answers a view, which "
      "is never logged. The deep cases' calls and searches run far within the default fuel on both releases. "
      "`tests/engine.rs` (`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "

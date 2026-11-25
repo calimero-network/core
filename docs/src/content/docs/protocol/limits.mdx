@@ -61,7 +61,7 @@ The charge is taken when the call returns; a run whose fuel cannot pay it ends
 out of fuel (`422 TRAP`, kind `OutOfFuel`) as if the guest had run out, and a run
 that finishes owing more than its budget ends the same way. A synchronous
 xcall's target runs on its own budget. The charges apply once the cluster
-version is 1.0.0-rc.36 (`Feature::HostFuel`); below it a node charges no host
+version is 1.0.0-rc.37 (`Feature::HostFuel`); below it a node charges no host
 work, as earlier releases did, so a call answers alike on every node through a
 rolling upgrade. Job nodes charge compute runs from that release on.
 

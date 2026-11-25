@@ -14483,11 +14483,11 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
             .collect()
     };
     assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
-    // rc.36 also brings who may use a release: the owner uses these, as public ones.
+    // rc.37 also brings who may use a release: the owner uses these, as public ones.
     for v in m.state.packages.get_mut("p").unwrap().versions.values_mut() {
         v.visibility = Some(super::Visibility::Public);
     }
-    m.state.cluster_version = Some(Feature::AutoUpdateMembersStay.since().into());
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().into());
     assert_eq!(versions(&m), ["1.0.2"]);
     assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED));
     // A release whose lock keeps the member where it is still applies on its own.
