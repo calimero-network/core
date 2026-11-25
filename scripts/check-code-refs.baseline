@@ -12,7 +12,6 @@ bare-tag 1 crates/app-build/tests/build.rs
 bare-tag 1 crates/app-build/tests/concurrent_cache.rs
 bare-tag 1 crates/app-engine-wasmtime/tests/guests/stubs/src/lib.rs
 bare-tag 1 crates/app-host/src/entry.rs
-bare-tag 1 crates/app-host/src/fuel.rs
 bare-tag 1 crates/app-host/src/search.rs
 bare-tag 1 crates/app-host/src/xcall.rs
 bare-tag 1 crates/app-wit/AGENTS.md
@@ -55,6 +54,7 @@ bare-tag 2 crates/node/src/api/files.rs
 bare-tag 2 crates/node/src/api/internal.rs
 bare-tag 2 crates/node/src/component/blobs.rs
 bare-tag 2 crates/node/src/component/search.rs
+bare-tag 2 crates/node/src/system/cluster_version.rs
 bare-tag 2 crates/node/src/system/tests.rs
 bare-tag 2 crates/node/src/usage.rs
 bare-tag 2 crates/node/tests/it/bench.rs
@@ -75,7 +75,6 @@ bare-tag 4 crates/app-host/src/state.rs
 bare-tag 4 crates/node/src/api.rs
 bare-tag 4 crates/node/src/api/auth.rs
 bare-tag 4 crates/node/src/api/orgs.rs
-bare-tag 4 crates/node/src/system/cluster_version.rs
 bare-tag 4 crates/node/src/types.rs
 bare-tag 5 crates/app-abi/src/ty.rs
 bare-tag 5 crates/app-engine-wasmtime/src/cache.rs
@@ -102,18 +101,18 @@ bare-tag 11 crates/node/src/component/xcall.rs
 bare-tag 12 crates/app-host/src/action.rs
 bare-tag 12 crates/node/src/component/action.rs
 bare-tag 12 crates/sdk/src/action.rs
+bare-tag 15 crates/app-host/tests/core.rs
 bare-tag 15 crates/node/src/idempotency.rs
 bare-tag 15 crates/sdk-macros/AGENTS.md
 bare-tag 16 apps/fixture-kv/src/lib.rs
+bare-tag 16 crates/app-engine-wasmtime/src/lib.rs
 bare-tag 16 crates/app-host/src/types.rs
-bare-tag 16 crates/app-host/tests/core.rs
-bare-tag 17 crates/app-engine-wasmtime/src/lib.rs
 bare-tag 17 crates/node/src/node.rs
 bare-tag 18 crates/app-engine-wasmtime/AGENTS.md
 bare-tag 21 crates/app-host/AGENTS.md
 bare-tag 21 crates/sdk/src/testing.rs
 bare-tag 30 crates/app-host/src/core.rs
 bare-tag 37 crates/sdk/AGENTS.md
-bare-tag 71 crates/node/src/node/component.rs
+bare-tag 70 crates/node/src/node/component.rs
 bare-tag 71 crates/node/tests/it/component_cluster.rs
 bare-tag 74 crates/node/src/component.rs

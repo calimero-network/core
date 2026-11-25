@@ -113,7 +113,7 @@ A reader must be able to follow every reference to its source in one click.
   ```
 
 - **Link, do not copy:** a comment does not repeat a page's prose. When a comment needs more than a sentence of why, the page is missing it: add it there and link it.
-- **No bare ids:** `(D20)`, `R8`, `C10`, `review finding F6`, `Ruling 39` and `Bugbot on #5210` lead nowhere. State the rule in words and link the page that states it; link the spec row in `docs/specs/` for the reasoning behind a decision; drop a review finding's id, since the regression test's name says what it guards and git blame leads to the PR.
+- **No bare ids:** `(D20)`, `R8`, `C10`, `review finding F6`, `Ruling 39` and `Bugbot on #5210` lead nowhere. State the rule in words and link the docs section that states it, with its reason; drop a review finding's id, since the regression test's name says what it guards and git blame leads to the PR.
 - **No issue numbers:** a bare `#4723` is not a link. Drop it where it records history; write the full issue URL for open work (`https://github.com/calimero-network/core/issues/4736`).
 - **Present tense:** a comment states what holds now. "It used to", "previously" and "was renamed" belong in the PR description. A regression test's doc says what must hold, not the bug it caught.
 - **Paths that exist:** write a repository path from the root (`crates/node/tests/it/consent_page.rs`). Moving or deleting a file, grep for its path and fix every comment that names it; renaming a heading in `docs/`, grep for its anchor.

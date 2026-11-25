@@ -1,4 +1,4 @@
-//! What host work costs in fuel (C7). The guest pays fuel for its own instructions; a host
+//! What host work costs in fuel. The guest pays fuel for its own instructions; a host
 //! call pays for the work it makes the host do: a base cost per call plus a cost per byte or
 //! per result. One fuel is about one nanosecond of host time, the rate a guest burns fuel at,
 //! so a run's fuel bounds its host work as it bounds its own. The charges always apply.
