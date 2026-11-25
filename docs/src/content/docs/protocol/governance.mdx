@@ -538,7 +538,11 @@ whoever holds `MANAGE_APPLICATION` there organization-wide (the owner and
 admins included). Each change carries the actor's own passkey consent,
 verified where it applies on every node, and is judged against the state it
 applies to, so a member whose capability was withdrawn, or who left, can no
-longer change it:
+longer change it. The deployment lists no managers (it records only who
+created it and who added each offer): they are read from the owning
+organization, so one change there covers every deployment it owns, and a
+teammate's passkey stays on their own account. The operator's key signs none
+of these changes:
 
 | Change | Route | Consent statement | Rule at apply |
 | --- | --- | --- | --- |
@@ -630,9 +634,13 @@ runs it). Records from before deployments are not moved into one.
   which of the deployment's apps and the releases they run, and when the
   first was created, and `memberCount` and `activeMembers30d` (members whose
   last sign-in or session exchange is within 30 days). Never who the members
-  are, teams, instance names or app data; instances in a personal
-  organization are only counted (`outsideOrgs`). Another deployment's
-  customers never appear, even on the same release.
+  are, teams, instance names or app data; below cluster version 1.0.0-rc.32
+  (`ordinaryOrgs`), instances in a personal organization are only counted
+  (`outsideOrgs`). Another deployment's
+  customers never appear, even on the same release. An organization is a
+  customer only through its instances: the listing is worked out from the
+  instances that record the deployment, so deleting its last one ends it,
+  with no other record to undo: the customer stays in control of it.
 - `GET /deployments/{id}/secrets`: for its managers, on fresh state: every
   secret its offered releases, or the releases they reference, declare and
   every one it holds a value of, with the offered apps that reach it, the
