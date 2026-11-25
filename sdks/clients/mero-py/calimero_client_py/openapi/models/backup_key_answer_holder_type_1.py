@@ -6,23 +6,21 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.backup_key_answer_holder_kind import BackupKeyAnswerHolderKind
-from ..types import UNSET, Unset
-from typing import Union
+from ..models.backup_key_answer_holder_type_1_kind import BackupKeyAnswerHolderType1Kind
 
-T = TypeVar("T", bound="BackupKeyAnswerHolder")
+T = TypeVar("T", bound="BackupKeyAnswerHolderType1")
 
 
 @_attrs_define
-class BackupKeyAnswerHolder:
+class BackupKeyAnswerHolderType1:
     """
     Attributes:
-        kind (BackupKeyAnswerHolderKind):
-        id (Union[Unset, str]):
+        kind (BackupKeyAnswerHolderType1Kind):
+        id (str):
     """
 
-    kind: BackupKeyAnswerHolderKind
-    id: Union[Unset, str] = UNSET
+    kind: BackupKeyAnswerHolderType1Kind
+    id: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -35,27 +33,26 @@ class BackupKeyAnswerHolder:
         field_dict.update(
             {
                 "kind": kind,
+                "id": id,
             }
         )
-        if id is not UNSET:
-            field_dict["id"] = id
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = BackupKeyAnswerHolderKind(d.pop("kind"))
+        kind = BackupKeyAnswerHolderType1Kind(d.pop("kind"))
 
-        id = d.pop("id", UNSET)
+        id = d.pop("id")
 
-        backup_key_answer_holder = cls(
+        backup_key_answer_holder_type_1 = cls(
             kind=kind,
             id=id,
         )
 
-        backup_key_answer_holder.additional_properties = d
-        return backup_key_answer_holder
+        backup_key_answer_holder_type_1.additional_properties = d
+        return backup_key_answer_holder_type_1
 
     @property
     def additional_keys(self) -> list[str]:

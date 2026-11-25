@@ -52,15 +52,24 @@ to the code on every CI run:
 - a response schema the node answers by serializing a Rust type (an app record,
   an API key, a package release reference, an organization and its teams, an
   upgrade, `Access`, `Deployer`, an attestation and its KMS evidence, an
-  account proof, a registered node, the quotas) names that type, and is held
+  account proof, a registered node, the quotas, a session, a package and its
+  releases, a team, a compute run, an update policy, a backup key, a package
+  origin, the sign-up policy and its invites, and what release, deadline,
+  outbound, uninstall and invite changes answer) names that type, and is held
   to it the same way: the same field names, a sample read into the type writes
   back as a value of the schema, and a field is optional exactly when the type
   may leave it out; one the type only serializes (a Raft group's status, the
   rollback counter) is held to real values of the type;
+- every schema an operation answers whole by name (`$ref`) is one of those:
+  a named answer built with `json!` fails the build's tests
+  (`every_component_answered_whole_is_a_types`);
 - the committed `openapi.json` is what the registry builds now.
 
-The other response schemas, those a handler builds with `json!`, are written in
-the registry from the handlers' answers and are not checked against them. A
+The other response schemas, those a handler builds inline with `json!`, are
+written in the registry from the handlers' answers and are not checked against
+them. A handler moved to a typed answer keeps its bytes: `api::golden` and the
+typed answers' own tests compare what each writes with what the `json!` it
+replaced wrote, key order included. A
 value left free-form (`{}` in the schema) is one whose shape is not the API's:
 an app's metadata, `initArgs`, a method's result, an event's data, an app's
 error value, the WebAuthn options a ceremony hands to the browser, an app's ABI
