@@ -381,7 +381,10 @@ secrets requests may carry ([Application execution](/protocol/execution/#outboun
 
 Who may **install** apps (signed packages from the registry or an upload, and
 raw bundles in development) is a rule of its own, chosen at deployment and
-attested with the rest (`Governance::deployments`, `--deployments`):
+attested with the rest (`Governance::deployments`, `--deployments`). It is
+kept apart from [sign-up](#sign-up) because people must sign up to use a
+deployer's apps: a cluster open to anyone who reaches it can still keep the
+code it runs to the deployers it granted.
 
 - **`open`** (the default): any account installs.
 - **`granted`**: an account installs only with a live **deployer grant**:
@@ -419,9 +422,23 @@ Who grants deployers (`Governance::deployers`, `--deployers`):
   `DELETE /deployers/{key}`, `412` first), and the operator's signature is
   refused.
 
-Revoking a grant stops new installs only: what the deployer installed, and
-the apps running it, stay. `GET /deployers` lists the rule, the owner and every
-grant, for the operator and for whoever acts for the owner.
+Revoking a grant stops new installs, deployments and offers only: what the
+deployer installed, and the apps running it, stay, and its deployments keep
+their offers, from which customers still create instances (that needs no
+grant). `GET /deployers` lists the rule, the owner and every grant, for the
+operator and for whoever acts for the owner.
+
+**Why `owner`.** It lets the operator keep running a dedicated cluster's
+machines without deciding who deploys on it. Every receipt key attests
+`deployers: owner`, so the customer can check from hardware quotes, without
+trusting the operator, that once it is named the operator's signature
+grants nothing. The attested governance does not name the owner: the owner
+reads that, and every grant, from `GET /deployers`, and may revoke any grant
+there, including one the operator made before naming it.
+
+A grant never lets its signer act inside a deployment: creating one,
+offering, withdrawing and deleting each carry a manager's own passkey
+consent ([Deployments](#deployments)), which the operator's key cannot make.
 
 Where deployments are `granted`, creating a [deployment](#deployments) and
 offering an app in one need the same grant, held by the account acting.
