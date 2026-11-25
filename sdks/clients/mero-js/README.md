@@ -140,7 +140,9 @@ and its quote must still be that profile's signed image.
 ## Confidential KV
 
 A service reaches a Confidential KV store from its environment
-(`CALIMERO_CLUSTER`, `CALIMERO_API_KEY`, `CALIMERO_KV_STORE`, `CALIMERO_MIN_RELEASE`):
+(`CALIMERO_CLUSTER`, `CALIMERO_API_KEY`, `CALIMERO_KV_STORE`, `CALIMERO_MIN_RELEASE`;
+on staging also `CALIMERO_ENVIRONMENT=staging`, which uses staging's directory,
+mirrors and image profiles):
 
 ```ts
 import { Calimero } from '@calimero-network/mero-js';
