@@ -1589,7 +1589,9 @@ async fn app_outbound_log(
             "only the app's owner or an org admin reads its outbound log",
         ));
     }
-    Ok(Json(node.outbound_log(&app).await))
+    Ok(Json(
+        serde_json::to_value(node.outbound_log(&app).await).unwrap_or_default(),
+    ))
 }
 
 /// This area's routes, merged into [`super::router`].
