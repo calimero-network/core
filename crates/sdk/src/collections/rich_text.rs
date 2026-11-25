@@ -35,7 +35,7 @@ pub struct Mark {
     /// Its value; `None` removes the attribute from the covered characters.
     pub value: Option<String>,
     /// The id of the first covered character: an integer when stored, a decimal string in
-    /// JSON (D20).
+    /// JSON.
     #[serde(with = "crate::json::u64_auto")]
     pub start: u64,
     /// The id of the last covered character (`end_inclusive`), or of the character after

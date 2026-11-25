@@ -33,14 +33,12 @@ bare-tag 1 crates/node/tests/auto_updates.rs
 bare-tag 1 crates/node/tests/it/deployments.rs
 bare-tag 1 crates/node/tests/it/pipeline_runs.rs
 bare-tag 1 crates/node/tests/it/sessions.rs
-bare-tag 1 crates/sdk/src/abi.rs
 bare-tag 1 crates/sdk/src/blob.rs
 bare-tag 1 crates/sdk/src/collections/counter.rs
 bare-tag 1 crates/sdk/src/commons.rs
 bare-tag 1 crates/sdk/src/encoding.rs
 bare-tag 1 crates/sdk/src/search.rs
 bare-tag 1 crates/sdk/tests/abi.rs
-bare-tag 1 crates/sdk/tests/guests/sample/src/lib.rs
 bare-tag 1 crates/sdk/tests/harness.rs
 bare-tag 1 crates/sdk/tests/json.rs
 bare-tag 1 crates/search/src/records.rs
@@ -79,7 +77,6 @@ bare-tag 4 crates/node/src/api/auth.rs
 bare-tag 4 crates/node/src/api/orgs.rs
 bare-tag 4 crates/node/src/system/cluster_version.rs
 bare-tag 4 crates/node/src/types.rs
-bare-tag 5 crates/app-abi/src/codegen/rust.rs
 bare-tag 5 crates/app-abi/src/ty.rs
 bare-tag 5 crates/app-engine-wasmtime/src/cache.rs
 bare-tag 5 crates/app-engine-wasmtime/src/errors.rs
@@ -89,7 +86,6 @@ bare-tag 5 crates/log/AGENTS.md
 bare-tag 5 crates/node/src/api/calls.rs
 bare-tag 5 crates/node/tests/it/org_app_teams.rs
 bare-tag 5 crates/sdk-macros/src/abi_type.rs
-bare-tag 5 crates/sdk-macros/src/types.rs
 bare-tag 5 crates/sdk/src/private.rs
 bare-tag 6 apps/fixture-kv/tests/harness.rs
 bare-tag 6 crates/node/src/api/apps.rs
@@ -107,13 +103,13 @@ bare-tag 12 crates/app-host/src/action.rs
 bare-tag 12 crates/node/src/component/action.rs
 bare-tag 12 crates/sdk/src/action.rs
 bare-tag 15 crates/node/src/idempotency.rs
+bare-tag 15 crates/sdk-macros/AGENTS.md
 bare-tag 16 apps/fixture-kv/src/lib.rs
 bare-tag 16 crates/app-host/src/types.rs
 bare-tag 16 crates/app-host/tests/core.rs
 bare-tag 17 crates/app-engine-wasmtime/src/lib.rs
 bare-tag 17 crates/node/src/node.rs
 bare-tag 18 crates/app-engine-wasmtime/AGENTS.md
-bare-tag 18 crates/sdk-macros/AGENTS.md
 bare-tag 21 crates/app-host/AGENTS.md
 bare-tag 21 crates/sdk/src/testing.rs
 bare-tag 30 crates/app-host/src/core.rs

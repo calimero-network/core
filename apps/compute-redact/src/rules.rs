@@ -55,7 +55,7 @@ pub struct Stats {
 pub struct Preview {
     pub header: Vec<String>,
     pub rows: Vec<Vec<String>>,
-    /// Integers when stored in a job, decimal strings in JSON (D20).
+    /// Integers when stored in a job, decimal strings in JSON.
     #[serde(with = "calimero_sdk::json::u64_auto")]
     pub total_rows: u64,
     #[serde(with = "calimero_sdk::json::u64_auto")]
