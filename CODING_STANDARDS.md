@@ -36,7 +36,9 @@ use config::ContextConfig;
 ## Modules
 
 Give each module a file named after it, and declare its children there: `crates/node/src/node.rs` holds `mod component;`, `crates/node/src/node/component.rs` holds `mod compute; mod files; mod uploads;`, and the children live in `crates/node/src/node/component/compute.rs`, `files.rs` and `uploads.rs`.
-The existing `mod.rs` files predate this rule; a new module follows it.
+The one exception is a helper module that several integration-test binaries share, `tests/common/mod.rs` (the `apps/*/tests/common` helpers): Cargo builds every `tests/*.rs` as a test binary of its own, so a `tests/common.rs` would be one.
+A helper that only one test binary uses is a module of that binary, beside its root (`crates/node/tests/it/common.rs`).
+`scripts/check-naming.sh` fails on any other `mod.rs`.
 
 Place a helper shared across a crate in a `commons.rs`-style module, and a type shared across crates in that area's `primitives` crate.
 

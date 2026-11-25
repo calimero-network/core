@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::sync::LazyLock;
 
+use calimero_sdk::AbiType;
 use csv::StringRecord;
 use hmac::{Hmac, KeyInit, Mac};
 use regex_lite::Regex;
@@ -27,7 +28,7 @@ static PHONE: LazyLock<Regex> = LazyLock::new(|| {
 pub type Result<T> = std::result::Result<T, csv::Error>;
 
 /// What happens to a column's cells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, AbiType)]
 #[serde(rename_all = "lowercase")]
 pub enum Rule {
     Drop,
@@ -37,7 +38,7 @@ pub enum Rule {
 }
 
 /// Rules by column name, and the salt the pseudonyms are keyed with. Columns not named pass through.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, AbiType)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub salt: String,
@@ -50,11 +51,14 @@ pub struct Stats {
     pub cells: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, AbiType)]
 pub struct Preview {
     pub header: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    /// Integers when stored in a job, decimal strings in JSON (D20).
+    #[serde(with = "calimero_sdk::json::u64_auto")]
     pub total_rows: u64,
+    #[serde(with = "calimero_sdk::json::u64_auto")]
     pub cells: u64,
 }
 

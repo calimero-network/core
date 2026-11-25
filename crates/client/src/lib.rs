@@ -3,6 +3,10 @@
 //! Every request goes through a sealed channel to a node whose attestation was
 //! verified first ([`attest`]). People sign in with a passkey ([`Passkey`]);
 //! machines use an API key. Calls, views and events address one app instance.
+//!
+//! Spec: [What the verifier checks](https://calimero-network.github.io/core/protocol/tee-attestation/#what-the-verifier-checks),
+//! [Networking & sealed channels](https://calimero-network.github.io/core/protocol/networking/).
+//! Crate guide: [`crates/client/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/client/AGENTS.md).
 
 use calimero_identity::{Assertion, Registration};
 use futures_util::{Stream, StreamExt};

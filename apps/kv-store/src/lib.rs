@@ -42,7 +42,7 @@ pub enum Event {
 }
 
 /// One key and its value: what `first` and `last` return.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct Entry {
     pub key: String,
     pub value: String,

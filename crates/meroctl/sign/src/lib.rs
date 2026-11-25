@@ -1,5 +1,8 @@
 //! Signing library for Calimero bundle manifests: Ed25519 keys, RFC 8785 canonicalization,
 //! did:key signerId derivation.
+//!
+//! Spec: [Packaging & signing](https://calimero-network.github.io/core/build/packaging-signing/),
+//! [The signer key is the update authority](https://calimero-network.github.io/core/build/packaging-signing/#the-signer-key-is-the-update-authority).
 
 use std::fs;
 use std::io::Read;

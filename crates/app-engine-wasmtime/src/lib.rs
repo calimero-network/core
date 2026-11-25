@@ -4,6 +4,10 @@
 //! against the world and the D44 stubs, reads its ABI and compiles it through a checked
 //! disk cache; `invoke` runs `handle` in a fresh store per call (D8) under fuel, an epoch
 //! deadline, memory, table and stack limits, and maps every failure onto one `TrapKind`.
+//!
+//! Spec: [One run](https://calimero-network.github.io/core/protocol/execution/#one-run),
+//! [Limits](https://calimero-network.github.io/core/protocol/limits/).
+//! Crate guide: [`crates/app-engine-wasmtime/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-engine-wasmtime/AGENTS.md).
 
 use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
@@ -28,14 +32,11 @@ use wasmparser::Payload;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceTable;
-use wasmtime::AsContext;
-use wasmtime::CallHook;
 use wasmtime::Config;
 use wasmtime::InstanceAllocationStrategy;
 use wasmtime::PoolingAllocationConfig;
 use wasmtime::ResourceLimiter;
 use wasmtime::Store;
-use wasmtime::StoreHookState;
 use wasmtime::StoreLimits;
 use wasmtime::StoreLimitsBuilder;
 use wasmtime::Trap;
@@ -50,6 +51,7 @@ mod bindings;
 mod cache;
 mod compute;
 mod errors;
+mod fuel;
 mod http;
 mod run;
 mod wasi;
@@ -283,6 +285,11 @@ impl WasmtimeEngine {
             World::Compute => compute::add_to_linker(&mut linker).map_err(report)?,
         }
         wasi::add_to_linker(&mut linker).map_err(report)?;
+        // Every host call that does work pays its fuel where it happens (C7, `fuel.rs`): the
+        // charged versions shadow the plain ones linked above.
+        linker.allow_shadowing(true);
+        fuel::charge_calls(&mut linker, world).map_err(report)?;
+        linker.allow_shadowing(false);
 
         let ticker_stop = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&ticker_stop);
@@ -449,7 +456,6 @@ impl WasmtimeEngine {
             StoreData::new(host, &budget, &log, self.max_memory_bytes),
         );
         store.limiter(|d| &mut d.limits);
-        store.call_hook(charge_host_fuel);
         let ticks = budget
             .wall_clock
             .as_nanos()
@@ -494,12 +500,13 @@ impl WasmtimeEngine {
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
         });
-        // The host work of the last calls is paid with the guest's fuel too: a run that
-        // finished owing more than its budget ran out of fuel.
+        // Every wrapped host call paid as it ran; what is still owed (a resource's drop, which
+        // is not wrapped) is paid now: a run that cannot pay it ran out of fuel.
+        let owed = store.data_mut().host.take_host_fuel();
         let used = budget
             .fuel
             .saturating_sub(store.get_fuel().unwrap_or(0))
-            .saturating_add(store.data().host_fuel);
+            .saturating_add(owed);
         let ran = match ran {
             Ok(Ok(_) | Err(_)) if used > budget.fuel => Err(wasmtime::Error::new(Trap::OutOfFuel)),
             Ok(result) => Ok(result),
@@ -533,31 +540,6 @@ impl WasmtimeEngine {
         };
         data.host.finish(status, result, usage)
     }
-}
-
-/// Adds what a host call owes for its work (`calimero_app_host`'s fuel table) to the run's
-/// host fuel as the call returns to the guest, and ends the run out of fuel when the fuel
-/// left cannot pay it, as a guest that runs out of its own fuel ends (C7). A call hook cannot
-/// take fuel out of the store, so the guest's own fuel and the host's are added up: here at
-/// every host call, and once more when the run ends (`within_fuel`).
-fn charge_host_fuel(
-    mut store: StoreHookState<'_, StoreData>,
-    hook: CallHook,
-) -> wasmtime::Result<()> {
-    if !matches!(hook, CallHook::ReturningFromHost) {
-        return Ok(());
-    }
-    let data = store.data_mut();
-    let owed = data.host.take_host_fuel();
-    if owed == 0 {
-        return Ok(());
-    }
-    data.host_fuel = data.host_fuel.saturating_add(owed);
-    let host_fuel = data.host_fuel;
-    if host_fuel > store.as_context().get_fuel()? {
-        return Err(wasmtime::Error::new(Trap::OutOfFuel));
-    }
-    Ok(())
 }
 
 fn compile(error: wasmtime::Error) -> PrepareError {
@@ -633,8 +615,6 @@ pub(crate) struct StoreData {
     table: ResourceTable,
     wasi: WasiCtx,
     limits: Limits,
-    /// Fuel the run's host calls owed so far (C7); the run's fuel pays it with the guest's.
-    host_fuel: u64,
 }
 
 impl StoreData {
@@ -662,7 +642,6 @@ impl StoreData {
                     .build(),
                 peak: 0,
             },
-            host_fuel: 0,
         }
     }
 }

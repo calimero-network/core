@@ -8,6 +8,8 @@
 //! and leave the other platform a silent no-op — three spellings of the same
 //! intent that had already drifted apart. This is the one place that intent
 //! lives.
+//!
+//! Spec: [Hardening & security](https://calimero-network.github.io/core/operate/security/).
 
 use std::fs::File;
 use std::io;

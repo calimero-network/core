@@ -57,6 +57,11 @@
 //! seam for a managed deployment: a secrets service next to the node (inside
 //! the same TEE, say) answers for the secrets a deployer set for their app,
 //! for every organization that runs it.
+//!
+//! Spec: [Outbound HTTPS](https://calimero-network.github.io/core/protocol/execution/#outbound-https),
+//! [Secrets](https://calimero-network.github.io/core/protocol/secrets/),
+//! [Call an external service](https://calimero-network.github.io/core/build/guides/outbound/).
+//! Crate guide: [`crates/outbound/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/outbound/AGENTS.md).
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};

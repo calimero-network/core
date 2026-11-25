@@ -54,6 +54,9 @@
 //!
 //! **Warning**: Mock attestations bypass all TEE security guarantees and should
 //! never be trusted in production environments.
+//!
+//! Spec: [TEE attestation](https://calimero-network.github.io/core/protocol/tee-attestation/).
+//! Crate guide: [`crates/tee-attestation/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/tee-attestation/AGENTS.md).
 
 mod error;
 mod evidence;

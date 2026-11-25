@@ -258,6 +258,11 @@ fn abi_types_carry_the_shapes_methods_answer_and_the_json_matches() {
                     ["checkedIn", "bool"],
                 ],
             },
+            "Meter": { "kind": "record", "fields": [["readings", "list<Reading>"]] },
+            "Reading": {
+                "kind": "record",
+                "fields": [["total", "u64"], ["delta", "option<i64>", { "optional": true }]],
+            },
             "Listing": {
                 "kind": "record",
                 "params": ["T"],
@@ -328,6 +333,30 @@ fn plain_serde_types_travel_as_their_abi_says() {
         )),
         json!({ "total": 9_007_199_254_740_993_u64, "shots": [0, 255], "note": null })
     );
+}
+
+#[test]
+fn nested_wrapped_integers_round_trip_as_decimal_strings_past_2_pow_53() {
+    let abi_json = built().abi.clone().expect("component carries an ABI");
+    assert_eq!(abi_json["methods"]["echoMeter"]["returns"], json!("Meter"));
+    // 2^53 + 1 and i64::MIN: a JSON number would round the first; the string is exact.
+    let meter = json!({ "readings": [
+        { "total": "9007199254740993", "delta": "-9223372036854775808" },
+        { "total": "18446744073709551615", "delta": null },
+    ] });
+    let mut app = App::new();
+    assert_eq!(
+        ok_json(&app.view("echoMeter", &args(json!({ "meter": meter.clone() })))),
+        meter
+    );
+    // A number where the ABI says a decimal string is refused, not rounded.
+    let (code, message) = app_error(&app.view(
+        "echoMeter",
+        &args(json!({ "meter": { "readings": [{ "total": 9_007_199_254_740_993_u64 }] } })),
+    ));
+    assert_eq!(code, "BadArgs");
+    assert!(message.contains("meter.readings[0].total"), "{message}");
+    assert!(message.contains("decimal string"), "{message}");
 }
 
 #[test]

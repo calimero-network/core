@@ -971,11 +971,18 @@ async fn internal_view(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     key: Option<Extension<calimero_sealed::PeerKey>>,
-    Json(req): Json<ViewRequest>,
+    Json(body): Json<Value>,
 ) -> ApiResult {
     let caller = peer(&node, &headers, key).await?;
+    // A view a synchronous xcall forwarded carries the searches its request has left.
+    let searches = body
+        .get("searchesLeft")
+        .and_then(Value::as_u64)
+        .map(|n| calimero_app_host::SearchBudget::with_left(u32::try_from(n).unwrap_or(u32::MAX)));
+    let req: ViewRequest = serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &format!("malformed view: {e}")))?;
     caller_may_hold_app(&node, &caller, &req.app_id).await?;
-    let a = node.view(&req).await?;
+    let a = node.view_searching(&req, searches.as_ref()).await?;
     Ok(Json(serde_json::to_value(a).unwrap_or_default()))
 }
 
