@@ -6315,8 +6315,8 @@ async fn an_instances_owner_reads_its_outbound_requests_without_values() {
         .unwrap()
         .to_owned();
 
-    // The app sends `GET .../v1/enrich?v=acme.com` with `Authorization: Bearer
-    // {{secret:ECHO_KEY}}`, which the node fills in.
+    // The app sends `GET .../v1/enrich?v=acme.com`; the node attaches ECHO_KEY in
+    // `Authorization: Bearer …` through the release's binding, so the audit lists it.
     let mut round = 0;
     let _sent = echoed_secret(&alice, &app, &mut round).await;
 
