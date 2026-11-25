@@ -213,7 +213,7 @@ class DeploymentOfferUpgrades(DeepCase):
 class DeploymentNamedToCustomers(DeepCase):
     name = "deployment-named-to-customers"
     area = "Deployments"
-    since = "1.0.0-rc.36"
+    since = "1.0.0-rc.37"
     seeds = "a deployment offering a release, and a customer's instance from it"
     verifies = ("`GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name "
                 "(names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second "
