@@ -1620,7 +1620,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
 }
 
 /// The organization routes these tests call, over the client's sealed
-/// transport (the hand-written methods are gone, #5012).
+/// transport (the hand-written methods are gone).
 #[allow(
     clippy::result_large_err,
     reason = "the client's own error, passed through for the test to read its status"

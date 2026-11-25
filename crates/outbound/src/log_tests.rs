@@ -1,6 +1,6 @@
 //! What a request writes to the node's log: merod logs at INFO, and every line
 //! ships to the operator, so no line may carry the request's URL path, query,
-//! body or a name the guest wrote (review finding F6).
+//! body or a name the guest wrote.
 
 use std::io;
 use std::sync::{Arc, Mutex};

@@ -540,7 +540,7 @@ async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfe
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
 }
 
-/// Review finding A3: `GET /attestation?app=` is in the clear and takes no
+/// `GET /attestation?app=` is in the clear and takes no
 /// credential, yet it bound any app's bundle hash, so anyone could learn that a
 /// private app exists and which release it runs (`404` against `200`). It now
 /// answers as an anonymous `GET /apps/{app}` does: an app reads exactly as an id
@@ -1119,7 +1119,7 @@ fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// Bugbot on #5210 ("lagging replica undercounts"): the node that took an upgrade's
+/// The node that took an upgrade's
 /// restore point may still host the app and be behind its group. What an undo would lose
 /// is then read from a majority of the app's replicas, the furthest counting, as where
 /// that node no longer hosts it, never from its own applied index alone: a write it has

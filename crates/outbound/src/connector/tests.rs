@@ -181,7 +181,7 @@ fn call(clients: &RunClients, name: &str, operation: &str, input: &str) -> Resul
     Ok(serde_json::from_slice(&out).unwrap())
 }
 
-/// The problem (#5349): with the key bound to its host, a raw request reaches
+/// The problem ([#5349](https://github.com/calimero-network/core/issues/5349)): with the key bound to its host, a raw request reaches
 /// any path the key allows, here a refund the owner never approved.
 #[test]
 fn without_a_connector_a_bound_stripe_key_reaches_any_stripe_path() {
@@ -595,7 +595,7 @@ mod openai {
     }
 }
 
-/// Egress off (#5357) refuses a connector call as it refuses a raw request,
+/// Egress off refuses a connector call as it refuses a raw request,
 /// before anything is built, resolved or sent, whatever was approved; turned
 /// back on, the same run's call goes out.
 #[test]

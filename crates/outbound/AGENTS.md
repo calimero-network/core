@@ -69,7 +69,7 @@ clients take the run's `EgressCheck` (`egress_gated`, `egress_gated_connectors`)
 egress off refuses a connector call with `EgressOff` as it refuses a raw request. `STRIPE`
 (PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
 `CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
-the guest's `connector.call` (#5349); the node still calls `for_run_counted`.
+the guest's `connector.call` ([#5349](https://github.com/calimero-network/core/issues/5349)); the node still calls `for_run_counted`.
 
 What it logs (every line reaches the operator): a refusal as `refusal_kind`
 (`NotApproved`, `AwaitingApproval`, `Invalid`; `ConnectorHost` for

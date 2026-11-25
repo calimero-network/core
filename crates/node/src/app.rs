@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(m.state.last_index, 1);
     }
 
-    /// Review finding A6: an answer that did not serialize was sent as empty bytes, with
+    /// An answer that did not serialize was sent as empty bytes, with
     /// nothing logged. It is now a fault that says why, readable as either `Applied`.
     #[test]
     fn an_answer_that_does_not_serialize_is_a_fault_never_empty_bytes() {

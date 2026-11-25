@@ -286,7 +286,7 @@ is its command line.
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
   `the_nodes_own_commands_cannot_be_called_as_methods`.
-- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES` and are never refused: one sealed session (`calimero_sealed::SealedSession`, set by `intercept`) holds at most `MAX_CEREMONIES_PER_SESSION`, its next begin displacing its own oldest, and a full pool displaces the oldest of the session holding the most, so a flood never locks other callers out (review finding D1). The store (`api::Ceremonies`) indexes ceremonies by expiry, by session and by each session's rank, so a begin, take, expiry or displacement is O(log n), never a scan of the pool. Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS front, where every client has the front's address, and `X-Forwarded-For` is written outside the TD. Those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`, `api::tests::one_session_only_displaces_its_own_ceremonies`, `api::tests::a_full_pool_displaces_the_biggest_holder_then_the_oldest`, `a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in` (`tests/it/sessions.rs`), `a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node` (`tests/it/consent_page.rs`: a step-up after an app-origin sign-in, asked and answered on every pair of nodes).
+- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES` and are never refused: one sealed session (`calimero_sealed::SealedSession`, set by `intercept`) holds at most `MAX_CEREMONIES_PER_SESSION`, its next begin displacing its own oldest, and a full pool displaces the oldest of the session holding the most, so a flood never locks other callers out. The store (`api::Ceremonies`) indexes ceremonies by expiry, by session and by each session's rank, so a begin, take, expiry or displacement is O(log n), never a scan of the pool. Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS front, where every client has the front's address, and `X-Forwarded-For` is written outside the TD. Those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`, `api::tests::one_session_only_displaces_its_own_ceremonies`, `api::tests::a_full_pool_displaces_the_biggest_holder_then_the_oldest`, `a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in` (`tests/it/sessions.rs`), `a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node` (`tests/it/consent_page.rs`: a step-up after an app-origin sign-in, asked and answered on every pair of nodes).
 - **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
   the exact call; the retry carries a passkey assertion, which is logged as consent.
 - **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
@@ -698,7 +698,7 @@ is its command line.
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
-- **Operator logs** (review finding F6): `merod run` logs at `info,openraft=warn` and
+- **Operator logs**: `merod run` logs at `info,openraft=warn` and
   every line ships to the operator, so `info!`, `warn!` and `error!` carry what the
   node names (ids, hosts, kinds, codes, counts, lengths), never an error's words where
   they can quote input. `log_safe::serde` names a serde_json error by category and
@@ -765,7 +765,7 @@ is its command line.
   `a_flood_of_attestations_does_not_stall_the_node` (`testing::slow_quotes` makes each
   quote block its thread).
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
-  `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
+  `GET /apps/{app}` and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
@@ -1121,7 +1121,7 @@ is its command line.
   stated in the consent, `delete_team_args`) it keeps them too, without the team's grants (a
   list left empty: the owner alone), answered as `keptApps`; absent, they are deleted. The
   API takes `grants` on `POST /apps` (absent: `[org]`; a request still naming the old `access` is refused `400 ACCESS_REMOVED`, never read as no grants: regression `guests::an_old_clients_access_field_is_refused_not_read_as_no_grants`) and `POST /apps/{app}/access`, and
-  answers them on `GET /apps/{app}` and a move. A hard cutover (#5194, rc.33, `hard-cutover:` in
+  answers them on `GET /apps/{app}` and a move. A hard cutover (rc.33, `hard-cutover:` in
   `.github/upgrade-from`): no earlier access shape is read, so clusters are recreated.
   Regressions: `system::tests::an_instances_access_is_a_list_of_grants`,
   `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`,
@@ -2237,7 +2237,7 @@ is its command line.
   `TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that organization's quota would not hold its files.
   The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default,
   is no limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It
-  is charged to the app's developer, `usage::developer` (#4839), the same identity
+  is charged to the app's developer, `usage::developer`, the same identity
   usage is billed to: the owner of the deployment an app was created from, else the
   app's organization or owner. So two payers' instances of one developer's
   deployment share one cap. The fuel lives in the app groups' usage books, so it is
@@ -2257,8 +2257,8 @@ is its command line.
   registered node's attested release is this node's or newer
   (`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
   (`api::UPGRADE_PENDING`, one code for every such release gate), judged before the
-  operator is asked to sign (`__set_quotas`, #4791): an older node would drop the
-  field and its snapshots would reset the cap. Accepted gap (#4809): an older node
+  operator is asked to sign (`__set_quotas`): an older node would drop the
+  field and its snapshots would reset the cap. Accepted gap ([#4809](https://github.com/calimero-network/core/issues/4809)): an older node
   added after the cap is set, then sent a quota change itself, writes the quotas
   without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
   and the W19 minimum-release gate closes it. Usage reads (`app_usage`,
@@ -2405,7 +2405,7 @@ API and system group:
   newest one held, so a far-future stamp never erases the real days
   (`a_far_future_entry_does_not_erase_the_real_days`); followers never measure, so
   every replica's book is the same (a snapshot carries it in `Head`). Timeouts are
-  not logged, so not counted (#4736); views are not counted (Q9); actions and compute
+  not logged, so not counted ([#4736](https://github.com/calimero-network/core/issues/4736)); views are not counted (Q9); actions and compute
   runs are not in the book yet. The API gives every figure as a decimal string (D20):
   `/apps/{app}/usage`, `bundleBytes`, `developerFuelToday`, `developerWritesToday`
   in `/auth/usage`, and `developerFuelToday`, `developerWritesToday` in
