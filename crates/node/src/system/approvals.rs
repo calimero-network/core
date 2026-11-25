@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
         SystemCmd::SetReleaseApproval {
             scope,
@@ -90,7 +87,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::SetOperatorRelease {
@@ -99,14 +96,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             proof: _,
         } => {
             if s.governance().releases != Authority::Operator {
-                return Err("this cluster's releases are approved by each app's owner");
+                return Err("this cluster's releases are approved by each app's owner".into());
             }
             let set = &mut s.operator_releases;
             if approved {
                 let _new = set.insert(version);
             } else {
                 if set.len() == 1 && set.contains(&version) {
-                    return Err("the last approved release cannot be withdrawn");
+                    return Err("the last approved release cannot be withdrawn".into());
                 }
                 let _gone = set.remove(&version);
             }
@@ -118,14 +115,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if version.len() > MAX_RELEASE_VERSION_BYTES
                 || semver::Version::parse(&version).is_err()
             {
-                return Err("a deadline names a semver release of at most 64 bytes");
+                return Err("a deadline names a semver release of at most 64 bytes".into());
             }
             match after {
                 Some(t) => {
                     if !s.release_deadlines.contains_key(&version)
                         && s.release_deadlines.len() >= MAX_RELEASE_DEADLINES
                     {
-                        return Err("too many release deadlines; lift an old one first");
+                        return Err("too many release deadlines; lift an old one first".into());
                     }
                     let _prev = s.release_deadlines.insert(version, t);
                 }
@@ -143,14 +140,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             consent: _,
         } => {
             if s.governance().releases == Authority::Operator {
-                return Err("this cluster's releases are approved by its operator");
+                return Err("this cluster's releases are approved by its operator".into());
             }
             let set = match &scope {
-                ReleaseScope::Cluster => return Err("the operator uses SetOperatorRelease"),
+                ReleaseScope::Cluster => return Err("the operator uses SetOperatorRelease".into()),
                 ReleaseScope::Org { org } => {
                     if !s.approves_releases(org, &actor) {
                         return Err(
-                            "approving releases needs APPROVE_RELEASES in the organization",
+                            "approving releases needs APPROVE_RELEASES in the organization".into(),
                         );
                     }
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
@@ -162,7 +159,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             } else {
                 // An empty set would leave the apps unrestricted.
                 if set.len() == 1 && set.contains(&version) {
-                    return Err("the last approved release cannot be withdrawn");
+                    return Err("the last approved release cannot be withdrawn".into());
                 }
                 let _gone = set.remove(&version);
             }
@@ -185,9 +182,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let operator = s.governance().outbound == Authority::Operator;
             if operator != (scope == ReleaseScope::Cluster) {
                 return Err(if operator {
-                    "this cluster's outbound hosts are approved by its operator"
+                    "this cluster's outbound hosts are approved by its operator".into()
                 } else {
-                    "this cluster's outbound hosts are approved by each app's owner"
+                    "this cluster's outbound hosts are approved by each app's owner".into()
                 });
             }
             let approvals = match &scope {
@@ -197,7 +194,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     // so only an org-wide grant reaches it.
                     if !s.manages_apps(org, &actor, None) {
                         return Err(
-                            "approving outbound hosts needs MANAGE_APPLICATION in the organization",
+                            "approving outbound hosts needs MANAGE_APPLICATION in the organization"
+                                .into(),
                         );
                     }
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;

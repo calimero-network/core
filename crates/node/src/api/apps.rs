@@ -1040,9 +1040,6 @@ fn refuse_app_invite(
     })
 }
 
-/// `409`: the instance's release or organization does not allow guests.
-pub(crate) const GUESTS_NOT_ALLOWED: &str = "GUESTS_NOT_ALLOWED";
-
 /// Mint an instance invite: whoever manages the instance's guests, with their passkey over
 /// the invite's key and terms (`412` first). The first request makes the token and keeps it
 /// with the challenge; the log records only the token's public key.

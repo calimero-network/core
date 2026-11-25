@@ -2003,10 +2003,9 @@ impl Node {
         let developer = self.sys(|s| crate::usage::Billed::of(s, app).developer);
         let used = self.developer_fuel_cached(&developer);
         (used >= limit).then(|| {
-            super::rejected(&format!(
-                "{}: fuel per developer per day ({used} of {limit})",
-                crate::system::QUOTA_PREFIX
-            ))
+            super::rejected(crate::system::Rejection::quota(&format!(
+                "fuel per developer per day ({used} of {limit})"
+            )))
         })
     }
 

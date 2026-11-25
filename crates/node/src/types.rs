@@ -1266,7 +1266,7 @@ impl Default for UpgradePolicy {
 impl UpgradePolicy {
     /// `Err` with the apply error when `hold_hours` is outside
     /// [`MIN_HOLD_HOURS`]..=[`MAX_HOLD_HOURS`].
-    pub fn check(&self) -> Result<(), &'static str> {
+    pub fn check(&self) -> Result<(), crate::system::Rejection> {
         if (MIN_HOLD_HOURS..=MAX_HOLD_HOURS).contains(&self.hold_hours) {
             Ok(())
         } else {
