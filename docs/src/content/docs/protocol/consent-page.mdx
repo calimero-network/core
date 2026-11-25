@@ -259,6 +259,7 @@ feature gate is new:
 | `deleteOrg` | `DELETE /orgs/{org}` | the owner (`403`); not while it owns a deployment (`409`) |
 | `setCapabilities` | `POST /orgs/{org}/capabilities` | with `team`: its managers or `MANAGE_MEMBERS` there; without: an admin (`403`); a team the asker sees, a member with a row there (`404`) |
 | `setAllApps` | `POST /orgs/{org}/all-apps` | an admin (`403`); a member (`404`), and a change (`409`) |
+| `setEgress` | `POST /orgs/{org}/egress`, or `POST /apps/{app}/egress` with `app` | an admin (`403`); a member (`404`), the app in the organization (`404`), and a change (`409`). Turning egress back on (`egress: true`) is made only here: the routes refuse it elsewhere `403 CONSENT_PAGE_REQUIRED` |
 
 Outside the organization every kind answers `404`, and ids longer than
 `MAX_SUBJECT_ID_BYTES` (128) are `400`. The page names people by the name
@@ -403,6 +404,7 @@ top to bottom:
 | **New organization** | The name; that the person becomes its owner |
 | **New invite** | The organization, the role, the teams by name, how many may join and until when, `allApps`, and that the app receives the link |
 | **Joining** | The organization, the role, the teams by name, the person's current role there if any (they keep the higher), `allApps` |
+| **Egress** (`setEgress`) | The organization, or the app, and what turning egress off or on means for its data; on is a red change: `attention` `egressOn` lists the hosts approved for it, which its code may then send data to, and `egress.class` is `red` |
 | **Moderation and settings** (`leaveOrg` … `setAllApps`) | The organization and the people by the name the approver sees them by; the teams and apps a member who leaves or is removed loses; the role, teams or capabilities before and after; for `deleteOrg` the counts of members, teams, invites and apps it takes (`attention`: `deletes`, `transfersOwnership`, `grantsManagement`) |
 
 Each kind's model also keeps the engineer's wording: `headline`, `before`
@@ -496,6 +498,7 @@ text only.
 | `deleteOrg` | `org:<org> / __delete_org / { org }` |
 | `setCapabilities` | a member's: `org:<org> / __set_capabilities / { team, account, capabilities }`; a default: `__set_default_capabilities / { capabilities }` or `{ team, capabilities }` |
 | `setAllApps` | `org:<org> / __set_all_apps / { account, allApps }` |
+| `setEgress` | `org:<org> / __set_egress / { app, egress }` (`app: null` for the organization) |
 
 Before asking for the passkey and again before writing, the page checks that
 what it showed still holds: the app still runs the bundle it ran, the target

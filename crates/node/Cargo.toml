@@ -79,6 +79,8 @@ calimero-outbound = { workspace = true, features = ["outbound-testing"] }
 # One synced write timed beside the cluster bench, on the disk it runs on.
 rocksdb.workspace = true
 tempfile.workspace = true
+# Captures what a code path logs, to check no input reaches the operator's log.
+tracing-subscriber.workspace = true
 # The cluster scenario runner reads `cluster.settings` (TOML) and crate manifests.
 toml.workspace = true
 rand_chacha.workspace = true

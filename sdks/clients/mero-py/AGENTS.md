@@ -63,6 +63,7 @@ Python exception only when it unwinds.
 `Cargo.toml` has its own `[workspace]`, and this directory keeps its own
 `Cargo.lock`. The crate is not a member of core's workspace (the root
 `Cargo.toml` lists its members explicitly) and must not become one.
+A change to a core crate it depends on must update this `Cargo.lock` too (CI's "App lockfiles" check).
 
 ### Core's crates: this tree's, by path
 

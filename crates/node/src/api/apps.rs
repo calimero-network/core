@@ -720,6 +720,7 @@ async fn create_instance(
                 links,
                 attached: BTreeMap::new(),
                 restore_point: None,
+                egress_off: false,
             }),
             unit_offer: body.unit_offer,
             offers_only,
@@ -1820,9 +1821,18 @@ async fn app_secrets(
         .into_iter()
         .map(|(name, d)| {
             let mut row = json!({
-                "hosts": d.hosts, "description": d.description, "required": d.required,
-                "source": "cluster",
+                "host": d.host, "paths": d.paths, "binding": d.describe(&name), "description": d.description,
+                "required": d.required, "source": "cluster",
             });
+            for (key, value) in [
+                ("header", &d.header),
+                ("format", &d.format),
+                ("bodyField", &d.body_field),
+            ] {
+                if let Some(v) = value {
+                    row[key] = json!(v);
+                }
+            }
             if let Some(o) = own.get(&name).filter(|o| o.is_object()) {
                 row["source"] = json!("app");
                 row["fingerprint"] = o["fingerprint"].clone();
@@ -1837,8 +1847,8 @@ async fn app_secrets(
     Ok(Json(json!({ "secrets": secrets })))
 }
 
-/// Set the instance's own value of a secret its release declares, sent only to that
-/// secret's declared hosts and never shown again: the owner's (or whoever manages the
+/// Set the instance's own value of a secret its release declares, attached only where
+/// that secret's binding says and never shown again: the owner's (or whoever manages the
 /// organization's apps), with a step-up over `{ name, fingerprint }` (never the value).
 async fn app_secret_set(
     State(node): State<Arc<Node>>,

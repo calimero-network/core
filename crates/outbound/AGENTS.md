@@ -14,21 +14,69 @@ A request is made only when every gate holds:
    is the app's organization (whoever holds `MANAGE_APPLICATION` org-wide, with
    a passkey assertion), or the operator where `--outbound-approvals operator`
    gives it the decision; every app is in an organization since 1.0.0-rc.20.
-4. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
-   timers and deliveries): never a view, `init`, a migration or compute.
-5. `https` on 443 to a name resolving only to public addresses, size limits from
+4. Egress is on for the app: neither its organization (`Org::egress_off`) nor the
+   instance (`AppRecord::egress_off`) turned it off (`SystemCmd::SetEgress`, an owner or
+   admin; on again only through the consent page). The node wraps every run's client in
+   `egress_gated`, which asks before each request and refuses with `EGRESS_OFF`
+   (`OutboundRefusal::EgressOff`) before any other gate, over every approval.
+5. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
+   timers and deliveries): never a view, `init`, a migration or compute (a compute run
+   has no network at all, so the switch never concerns a job node).
+6. `https` on 443 to a name resolving only to public addresses, size limits from
    `calimero_primitives::outbound`, no redirects; at most
    `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
-Secrets (`{{secret:NAME}}`) come from `EnvSecrets` or a loopback `SidecarSecrets`,
-scoped by package, signer and host, and are redacted from the response. A release
-that declares its secrets (`AppIdentity::secrets`, from its signed manifest's
-`secrets`) gets only those names, each only into a request to one of its declared
-hosts; `None` keeps the operator's bindings alone. A value set in merod for a
-declared name (`AppIdentity::own`, `OwnSecrets`: the instance owner's, else its
-deployment managers'; `calimero_node::component::run_secrets`) wins over the
-operator's for that name, still only to its declared hosts. The echo answers each
-filled-in value's length (`secretBytes`), never a value.
+Secrets are **credential bindings**: the app never places, names or reads one.
+A release's signed manifest binds each (`AppIdentity::secrets`, from `secrets`,
+`calimero_bundle::BundleSecret`) to one host, path prefixes there (whole segments,
+`applies_to` over the parsed URL's normalized path; `["/"]` for the whole host) and
+one place: a header in a
+`format` (`authorization`, `Bearer {}`) or a top-level body field of a
+form-urlencoded or JSON body (Turnstile's `secret`). `prepare` attaches each binding
+of the request's host and path itself (another path of the host gets none and goes
+out as an ordinary request: nothing of the key rides on it) (`value_of`: `AppIdentity::own`, `OwnSecrets`, the
+instance owner's else its deployment managers', `calimero_node::component::run_secrets`;
+else `EnvSecrets` or a loopback `SidecarSecrets`, scoped by package, signer and a host
+list that must hold the binding's host), and refuses a request that sets a bound
+header (any case) or body field (however spelled: decoded form keys, parsed JSON
+keys), or that writes `{{secret:` anywhere, URL (also percent-encoded), header or
+body (`PLACEHOLDER_REFUSED`, naming `SECRETS_DOCS`). A body field is appended to a
+form (`&field=value`) or spliced first into the JSON object, the app's bytes left as
+they were and the value never in a `serde_json::Value`. No value: a `required`
+binding refuses the request, another is left off. A release binding none sends
+none. Why: a placeholder the app placed could go where an honest upstream reads it
+as content and answers it back transformed (the reflection trick,
+`an_app_cannot_read_a_secret_back_through_a_reflecting_upstream`), which no
+redaction follows. The echo answers each attached value's length (`secretBytes`),
+never a value.
+
+**Connectors** (`connector.rs`, `connector/`): for a service where a key is worth
+more than the app (Stripe, an OpenAI-compatible API), the node builds the request.
+A `Connector` is a name, a pinned upstream API version, one host, the `Credential`
+it attaches (a header, attached through the credential binding
+`Connector::binding`, the connector's host, required; a call carries it alone,
+never the release's raw bindings; an input naming `{{secret:` is refused) and `Operation`s, each fixing method, path and where each
+typed `Field` (`Kind`: bounded integer, id, code, owner- or release-limited choice
+or map, chat messages) goes, and which `Output`s come back. An unknown operation
+or field, a wrong type, a value no `ConnectorGrant` limit allows is refused before
+anything is sent; the request then goes through `prepare` (operator hosts, the
+approval of the operation's prefix, `Connector::prefixes`, the secret's binding,
+bounds) and `transmit` (count, log, redaction), and the answer is cut to its
+declared outputs; a non-2xx answers only its status and `error.code`.
+`for_run_with_connectors` returns `RunClients`: the raw client refuses every
+declared connector's host, so the connector is the only way there, and both
+clients take the run's `EgressCheck` (`egress_gated`, `egress_gated_connectors`):
+egress off refuses a connector call with `EgressOff` as it refuses a raw request. `STRIPE`
+(PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
+`CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
+the guest's `connector.call` (#5349); the node still calls `for_run_counted`.
+
+What it logs (every line reaches the operator): a refusal as `refusal_kind`
+(`NotApproved`, `AwaitingApproval`, `Invalid`; `ConnectorHost` for
+a raw request to a declared connector's host) with the URL's host, a refused
+connector call as its `refusal_kind` with the connector's name, a sent request
+with the declared prefix that covers it, never the URL's path, query, body or a
+name the guest wrote; the guest gets the refusal's words (`log_tests`).
 
 A failed request reaches the guest and the `outbound request failed` log line (which
 ships to the operator) only as its `FailureKind` (`timeout`, `connect`, `too large`,
@@ -48,12 +96,16 @@ responses are read whole, so a match never spans chunks. Bounds:
 **Not covered**, so this is defence in depth, not a guarantee: any other
 transformation (another or a nested encoding, mixed-case hex, compression,
 encryption), a hash or MAC of a secret, and a partial echo (a prefix, a suffix, a
-slice). A secret should go only to a host that does not echo it.
+slice). Bindings keep the app from placing a secret where it is echoed; what the
+key may do at its bound host is still the app's to use.
 
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
+- `egress_gated(inner, EgressCheck)`: the egress switch, asked per request (so one
+  turned off reaches a run already going); test
+  `egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again`.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
   token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts

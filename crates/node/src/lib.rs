@@ -30,6 +30,7 @@ pub mod job_node;
 pub mod job_wire;
 pub mod kms;
 pub mod local;
+pub mod log_safe;
 pub mod membership;
 pub mod metrics;
 pub mod node;

@@ -31,6 +31,7 @@ use config::ContextConfig;
 - **Module granularity:** one `use` per module path (`use core::pin::Pin;`, `use std::time::Duration;`), each crate's paths on separate lines rather than one nested tree.
 - **Imported names:** bring a type in with `use std::fs::File;` and call `File::open(..)`, rather than spelling the full path at the call site.
 - **Manifests:** list `Cargo.toml` dependencies alphabetically.
+- **One version per crate:** `cargo deny check bans` fails on a crate in two versions. Unify it (`cargo update -p <crate>`, or move our dependency to the version upstream uses); only when a dependency pins the other version, add a `skip` to `deny.toml` naming that dependency.
 
 ## Modules
 
@@ -43,6 +44,7 @@ Place a helper shared across a crate in a `commons.rs`-style module, and a type 
 
 Return errors with `?`, mapping them into the crate's error type with `.map_err()`.
 Crates use `eyre`, imported as `use eyre::Result as EyreResult;`.
+`deny.toml` bans `anyhow`; the one exception is `calimero-tee-attestation`, whose collateral transports implement dcap-qvl's `HttpClient`, a trait that returns `anyhow::Result`.
 
 A panic point (`.unwrap()`, `.expect()`, `assert!`, `panic!`) is reserved for an invariant that cannot fail, or a failure where aborting the node is the right response.
 State that invariant beside it: `// SAFETY: guaranteed by X`.

@@ -10,6 +10,7 @@ use crate::files::{
     MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
     RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
+use crate::fuel::{per_byte, FUEL_HOST_CALL};
 use crate::types::{HostDenied, InvocationKind};
 
 /// A file writer handed to the guest; the WIT `writer` resource maps onto it.
@@ -86,6 +87,7 @@ impl HostCore {
     /// Opens a writer. Logged writes only.
     pub fn files_create(&mut self) -> Result<Result<WriterId, String>, HostDenied> {
         self.may_write_files("files.create")?;
+        self.burn(FUEL_HOST_CALL);
         if self.files.open_count() >= MAX_OPEN_FILES {
             return Ok(Err(FILE_TOO_MANY_OPEN.to_owned()));
         }
@@ -112,6 +114,7 @@ impl HostCore {
         bytes: &[u8],
     ) -> Result<Result<(), String>, HostDenied> {
         self.may_write_files("files.write")?;
+        self.burn_call(FUEL_HOST_CALL, bytes.len());
         let len = bytes.len() as u64;
         let written = self.files.written;
         let compute = self.is_compute();
@@ -159,6 +162,7 @@ impl HostCore {
     /// Seals the file and returns its id; the file reaches the outcome only if the run ends `Ok`.
     pub fn writer_finish(&mut self, id: WriterId) -> Result<Result<String, String>, HostDenied> {
         self.may_write_files("files.finish")?;
+        self.burn(FUEL_HOST_CALL);
         if self.files.created.len() >= MAX_NEW_FILES {
             return Ok(Err(FILE_TOO_MANY_NEW.to_owned()));
         }
@@ -197,6 +201,7 @@ impl HostCore {
         if !self.is_logged_write() {
             return Err(self.denied("runs.publish"));
         }
+        self.burn(FUEL_HOST_CALL);
         if let Some(done) = self.files.published.iter().find(|p| p.source == id) {
             return Ok(Ok(done.id.clone()));
         }
@@ -210,6 +215,7 @@ impl HostCore {
         }
         match self.provider.publish(id) {
             Ok(file) => {
+                self.burn(per_byte(usize::try_from(file.size).unwrap_or(usize::MAX)));
                 let blob = file.id.clone();
                 self.files.published.push(file);
                 Ok(Ok(blob))
@@ -227,6 +233,7 @@ impl HostCore {
     /// Opens a file the app marks. A compute run only.
     pub fn files_open(&mut self, id: &str) -> Result<Result<ReaderId, String>, HostDenied> {
         self.may_read_files("files.open", Some(id))?;
+        self.burn(FUEL_HOST_CALL);
         if self.inv.compute.is_none() {
             return Err(HostDenied::new(
                 "files.open: a sealed file is readable only inside a compute run",
@@ -302,6 +309,7 @@ impl HostCore {
                 ReadError::Corrupt => Err(HostDenied::new(FILE_CORRUPT)),
             };
         }
+        self.burn_call(FUEL_HOST_CALL, out.len());
         Ok(Ok(out))
     }
 
@@ -312,6 +320,7 @@ impl HostCore {
 
     pub fn files_info(&self, id: &str) -> Result<Option<FileInfo>, HostDenied> {
         self.may_read_files("files.info", Some(id))?;
+        self.burn(FUEL_HOST_CALL);
         Ok(self.file_info(id))
     }
 
@@ -322,6 +331,7 @@ impl HostCore {
             return Err(self.denied("runs.uploader"));
         }
         self.may_read_files("runs.uploader", None)?;
+        self.burn(FUEL_HOST_CALL);
         Ok(self.provider.uploader(id))
     }
 

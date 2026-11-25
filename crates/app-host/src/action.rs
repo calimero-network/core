@@ -53,8 +53,8 @@ pub struct HttpResponse {
 pub const MAX_RECORDED_BODY_BYTES: usize = 64 * 1024;
 
 /// One outbound request of a logged run (a call, a timer, a delivery) and what came back,
-/// as the run's log entry records it: the request as the app made it (secret placeholders,
-/// never secrets), the response as the gate handed it back (secrets redacted). Bodies are
+/// as the run's log entry records it: the request as the app made it (never the secrets the
+/// node attaches), the response as the gate handed it back (secrets redacted). Bodies are
 /// cut to [`MAX_RECORDED_BODY_BYTES`], with their full length.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpExchange {
