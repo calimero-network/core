@@ -553,6 +553,14 @@ fn run_json(
     }
 }
 
+/// `GET /apps/{app}/runs`: a page of the app's compute runs, newest first, and the cursor of
+/// the next page (`null`: none).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunList {
+    runs: Vec<RunView>,
+    next: Option<String>,
+}
+
 /// A run's record as the API shows it (`#Run`): no arguments, no keys, and the plaintext sizes
 /// and hashes of its files, its progress, queue state and failure text only to those who may
 /// list the app's files.
@@ -870,9 +878,9 @@ impl Node {
         Ok(ViewAnswer {
             index: applied,
             status: Status::Ok,
-            result: json!({
-                "runs": runs,
-                "next": next.map(|(ts, run)| format!("{ts}:{run}")),
+            result: json!(RunList {
+                runs,
+                next: next.map(|(ts, run)| format!("{ts}:{run}")),
             }),
             error: Value::Null,
             timeout: false,

@@ -9,6 +9,18 @@
 )]
 use super::*;
 
+/// What `SetDeploymentsGranted` answers: the cluster's governance after.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GovernanceSet {
+    pub governance: Governance,
+}
+
+/// What `SetClusterOwner` answers: the owner named.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClusterOwnerNamed {
+    pub owner: Deployer,
+}
+
 /// What `GrantDeployer` answers: the grant's key, whom it names and its terms.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeployerGranted {
@@ -272,7 +284,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 return Err("this cluster's deployments are granted already".into());
             }
             g.deployments = Deployments::Granted;
-            Ok(json!({ "governance": g }))
+            Ok(json!(GovernanceSet {
+                governance: g.clone()
+            }))
         }
         SystemCmd::SetClusterOwner { owner, proof: _ } => {
             if s.governance().deployers != Deployers::Owner {
@@ -287,7 +301,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 return Err("no such account or organization".into());
             }
             s.cluster_owner = Some(owner.clone());
-            Ok(json!({ "owner": owner }))
+            Ok(json!(ClusterOwnerNamed { owner }))
         }
         SystemCmd::CreateDeployment {
             id,

@@ -1628,9 +1628,9 @@ async fn org_apps(
     if !member {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(
-        scope_report(&node, &p, &account, Some(&org), &q, limit).await,
-    ))
+    Ok(Json(json!(
+        scope_report(&node, &p, &account, Some(&org), &q, limit).await
+    )))
 }
 
 /// This area's routes, merged into [`super::router`].

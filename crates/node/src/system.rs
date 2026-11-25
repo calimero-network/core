@@ -36,14 +36,17 @@ mod routing;
 mod sign_up;
 mod updates;
 
+pub use accounts::SessionsRevoked;
 pub use approvals::{
-    egress_args, ApprovedReleases, Deadlines, EgressSet, OutboundApproved, ReleaseDeadline,
+    egress_args, ApprovedReleases, Deadlines, EgressSet, OutboundApproved, VersionDeadline,
 };
 pub use deployments::{
-    AppOffered, AppWithdrawn, DeployerGranted, DeployerRevoked, DeploymentDeleted, DeploymentMade,
-    DeploymentSecretCleared, DeploymentSecretSet,
+    AppOffered, AppWithdrawn, ClusterOwnerNamed, DeployerGranted, DeployerRevoked,
+    DeploymentDeleted, DeploymentMade, DeploymentSecretCleared, DeploymentSecretSet, GovernanceSet,
 };
-pub use orgs::{OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted};
+pub use orgs::{
+    InviteRedeemed, OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted,
+};
 pub use packages::{PublisherBound, Uninstalled};
 pub use recovery::{RecoveryFinished, RecoveryStarted};
 
@@ -4430,14 +4433,14 @@ impl SystemState {
                 revoked = before - self.invites.len();
             }
         }
-        Ok(json!({
-            "appId": app_id,
-            "from": from,
-            "org": to_org,
-            "grants": access,
-            "created": created,
-            "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
-            "revokedInvites": revoked,
+        Ok(json!(AppMoved {
+            app_id: app_id.to_owned(),
+            from,
+            org: to_org.to_owned(),
+            grants: access,
+            created,
+            added: joins.into_iter().map(|(m, _)| m).collect(),
+            revoked_invites: revoked as u64,
         }))
     }
 
@@ -4562,11 +4565,11 @@ impl SystemState {
 
     /// The deadlines as the read APIs show them, oldest release first.
     #[must_use]
-    pub fn deadlines_json(&self) -> Vec<ReleaseDeadline> {
+    pub fn deadlines_json(&self) -> Vec<VersionDeadline> {
         let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
         out.sort_by(|a, b| compare_versions(a.0, b.0));
         out.into_iter()
-            .map(|(r, after)| ReleaseDeadline {
+            .map(|(r, after)| VersionDeadline {
                 version: r.clone(),
                 after: rfc3339(*after),
                 after_secs: *after,
@@ -5531,6 +5534,20 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
 /// What a person consents to when moving an app to another organization
 /// (`<app> / __move`).
 #[must_use]
+/// What `POST /apps/{app}/move` answers: where the app went, its access there, whether an app
+/// team was made, the accounts brought in and the invites revoked.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMoved {
+    app_id: String,
+    from: String,
+    org: String,
+    grants: crate::types::Access,
+    created: bool,
+    added: Vec<String>,
+    revoked_invites: u64,
+}
+
 pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }

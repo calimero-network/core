@@ -312,7 +312,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 started_at: at,
                 ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
             };
-            let out = pending.json(&account);
+            let out = json!(pending.view(&account));
             let _prev = s.account_recoveries.insert(account, pending);
             Ok(out)
         }

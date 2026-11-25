@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::runtime::NodeRuntime;
@@ -429,27 +429,34 @@ pub fn page<'a>(
 pub fn cluster_releases(
     releases: &BTreeMap<u64, Option<String>>,
     approved: Option<&BTreeSet<String>>,
-) -> Vec<Value> {
+) -> Vec<ClusterRelease> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for r in releases.values().flatten() {
         *counts.entry(r.as_str()).or_default() += 1;
     }
     counts
         .into_iter()
-        .map(|(release, nodes)| {
-            json!({
-                "release": release,
-                "nodes": nodes,
-                "approved": approved.is_none_or(|set| set.contains(release)),
-            })
+        .map(|(release, nodes)| ClusterRelease {
+            release: release.to_owned(),
+            nodes: nodes as u64,
+            approved: approved.is_none_or(|set| set.contains(release)),
         })
         .collect()
 }
 
+/// A mero-tee release the cluster's nodes run: how many run it, and whether the scope approved
+/// it (`true` where nothing was ever recorded).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClusterRelease {
+    release: String,
+    nodes: u64,
+    approved: bool,
+}
+
 /// An approved set as a report shows it.
 #[must_use]
-pub fn approved_releases(set: Option<&BTreeSet<String>>) -> Value {
-    approved_json(set)
+pub fn approved_releases(set: Option<&BTreeSet<String>>) -> Option<Vec<String>> {
+    set.map(|s| s.iter().cloned().collect())
 }
 
 #[cfg(test)]

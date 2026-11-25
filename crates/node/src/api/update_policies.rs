@@ -276,9 +276,9 @@ pub(crate) async fn approve_upgrade(
     // log keeps it.
     let logged: crate::types::PendingApproval = serde_json::from_value(logged)
         .map_err(|e| ApiError::internal(&format!("the approval logged unread: {e}")))?;
-    Ok(Json(json!({
-        "app": app.app_id,
-        "approval": super::upgrades::approval_json(&app.app_id, &logged),
+    Ok(Json(json!(ApprovalLogged {
+        approval: super::upgrades::approval_json(&app.app_id, &logged),
+        app: app.app_id.clone(),
     })))
 }
 
@@ -332,6 +332,13 @@ async fn org_updates(
         updates,
         next,
     }))
+}
+
+/// `POST /apps/{app}/upgrade-approvals`: the first approval logged.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApprovalLogged {
+    app: String,
+    approval: super::upgrades::PendingApprovalView,
 }
 
 /// `GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each

@@ -12,7 +12,7 @@ use axum::Json;
 use calimero_pipeline::{
     estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult, Principal};
@@ -258,7 +258,7 @@ pub(super) async fn validate(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<ValidateBody>,
-) -> ApiResult {
+) -> ApiResult<Json<crate::packages::pipelines::PipelineValidation>> {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     let release = match (&body.package, &body.version) {
@@ -365,23 +365,27 @@ pub(super) async fn estimate_run(
     let _caught_up = node.sys_fresh().await;
     let table = node.sys(|s| s.price_table);
     let e = estimate(&pipeline, &env, &counts, table.as_ref());
-    let steps: BTreeMap<_, _> = e
+    let steps: BTreeMap<String, StepEstimate> = e
         .steps
         .iter()
         .map(|(step, s)| {
-            let mut v = json!({ "runs": s.runs.to_string(), "fuel": s.fuel.to_string() });
-            if let Some(cost) = s.cost {
-                v["cost"] = json!(cost.to_string());
-            }
-            (step, v)
+            (
+                step.clone(),
+                StepEstimate {
+                    runs: s.runs.to_string(),
+                    fuel: s.fuel.to_string(),
+                    cost: s.cost.map(|c| c.to_string()),
+                },
+            )
         })
         .collect();
-    let mut answer = json!({ "steps": steps, "fuel": e.fuel.to_string() });
-    if let (Some(cost), Some(t)) = (e.cost, table) {
-        answer["cost"] = json!(cost.to_string());
-        answer["priceVersion"] = json!(t.version);
-    }
-    Ok(Json(answer))
+    let priced = e.cost.zip(table);
+    Ok(Json(json!(RunEstimate {
+        steps,
+        fuel: e.fuel.to_string(),
+        cost: priced.map(|(cost, _)| cost.to_string()),
+        price_version: priced.map(|(_, t)| t.version),
+    })))
 }
 
 /// Starts a run of the named pipeline of the release the app runs.
@@ -506,14 +510,12 @@ async fn start_launch(
         .await?;
     match (a.status, a.error.as_str()) {
         (Status::Ok, _) => {
-            let mut answer = json!({ "run": run });
-            if let Some(cap) = cost {
-                answer["worstCase"] = json!(cap.worst_case.to_string());
-            }
-            if let Some(of) = retry_of {
-                answer["retryOf"] = json!(of);
-            }
-            Ok((StatusCode::ACCEPTED, Json(answer)))
+            let answer = PipelineStarted {
+                run,
+                worst_case: cost.map(|cap| cap.worst_case.to_string()),
+                retry_of,
+            };
+            Ok((StatusCode::ACCEPTED, Json(json!(answer))))
         }
         (_, Some(TOO_MANY_PIPELINE_RUNS)) => Err(ApiError::new(
             429,
@@ -681,10 +683,10 @@ pub(super) async fn get(
             via: None,
         })
         .await?;
-    if answer.result.is_null() {
-        return Err(ApiError::not_found("no such pipeline run"));
+    match answer.result {
+        Value::Object(run) => Ok(Json(json!(PipelineRunView(run)))),
+        _ => Err(ApiError::not_found("no such pipeline run")),
     }
-    Ok(Json(answer.result))
 }
 
 #[derive(Deserialize)]
@@ -722,7 +724,9 @@ pub(super) async fn list(
             via: None,
         })
         .await?;
-    Ok(Json(answer.result))
+    let runs: PipelineRunList =
+        serde_json::from_value(answer.result).map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(json!(runs)))
 }
 
 /// Cancels a pipeline run: its pending steps end cancelled and its running steps' runs stop.
@@ -739,7 +743,61 @@ pub(super) async fn cancel(
     if a.status != Status::Ok {
         return Err(ApiError::not_found("no pipeline run is going by that id"));
     }
-    Ok(Json(json!({ "run": run })))
+    Ok(Json(json!(PipelineCancelled { run })))
+}
+
+/// What `POST /apps/{app}/pipelines/{name}/estimate` answers: per step its runs and fuel, the
+/// whole run's fuel, and its cost and the price table's version when the cluster has one; every
+/// figure a decimal string.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RunEstimate {
+    steps: BTreeMap<String, StepEstimate>,
+    fuel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_version: Option<u64>,
+}
+
+/// One step's estimate: its runs, fuel and (with a price table) cost, as decimal strings.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct StepEstimate {
+    runs: String,
+    fuel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<String>,
+}
+
+/// What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap,
+/// and the run it retries.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PipelineStarted {
+    run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worst_case: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_of: Option<String>,
+}
+
+/// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped
+/// for the reader (results and file hashes only to those who handle the app's files). Its keys
+/// follow the record's, so the document leaves it open.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(super) struct PipelineRunView(serde_json::Map<String, Value>);
+
+/// `GET /apps/{app}/pipeline-runs`: the app's recent pipeline runs, newest first.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PipelineRunList {
+    runs: Vec<PipelineRunView>,
+}
+
+/// What `POST /apps/{app}/pipeline-runs/{run}/cancel` answers: the run cancelled.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PipelineCancelled {
+    run: String,
 }
 
 #[cfg(test)]

@@ -1702,7 +1702,11 @@ fn redeem_app_invite(
     if !member && !state.guests_allowed(app) {
         return Err(super::GUESTS_NOT_ALLOWED);
     }
-    let answer = json!({ "app": app.app_id, "org": app.org, "member": member });
+    let answer = json!(super::InviteRedeemed {
+        app: Some(app.app_id.clone()),
+        org: app.org.clone(),
+        member: Some(member),
+    });
     // Named already: nothing changes, and the use is left for someone else.
     if app.access.names(&account) {
         return Ok(answer);

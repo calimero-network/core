@@ -8,7 +8,11 @@ use super::*;
 
 const MAX_SERVICE_QUERY_BYTES: usize = 128; // a service name in `?service=`
 
-async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Body) -> ApiResult {
+async fn bundle_put(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<Json<BundleStored>> {
     let account = installer(&node, &headers).await?.account()?;
     node.refuse_undeployable(&account).await?;
     if !node.config.allow_unsigned_bundles {
@@ -42,7 +46,7 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
             at: now_secs(),
         })
         .await?;
-    Ok(Json(json!({ "hash": hash })))
+    Ok(Json(BundleStored { hash }))
 }
 
 /// Install an uploaded, signed `.mpk`.
@@ -50,7 +54,7 @@ async fn package_upload(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     body: Body,
-) -> ApiResult {
+) -> ApiResult<Json<crate::packages::PackageInstalled>> {
     let account = installer(&node, &headers).await?.account()?;
     uploads_allowed(&node)?;
     Ok(Json(
@@ -84,7 +88,7 @@ async fn package_install(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<InstallBody>,
-) -> ApiResult {
+) -> ApiResult<Json<crate::packages::PackageInstalled>> {
     let account = installer(&node, &headers).await?.account()?;
     Ok(Json(
         node.install_from_registry(&body.package, &body.version, &account)
@@ -164,7 +168,10 @@ pub(super) struct PackageVersionView {
 
 /// The packages the caller may see (`package_json`): on a cluster several
 /// organizations share, one organization's releases are not another's to list.
-async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn package_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<PackageList>> {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     node.sys_fresh_from(principal.sys_index).await;
@@ -181,7 +188,7 @@ async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiR
             })
             .collect()
     });
-    Ok(Json(json!({ "packages": packages })))
+    Ok(Json(PackageList { packages }))
 }
 
 async fn package_get(
@@ -214,7 +221,7 @@ async fn package_pipelines(
             (frontend || s.sees_release(v, &account)).then(|| v.pipelines.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
-    Ok(Json(node.release_pipelines(&refs).await?))
+    Ok(Json(json!(node.release_pipelines(&refs).await?)))
 }
 
 #[derive(Deserialize)]
@@ -230,7 +237,7 @@ async fn package_capabilities(
     headers: HeaderMap,
     Path((package, version)): Path<(String, String)>,
     Query(q): Query<CapabilitiesQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<CapabilityCard>> {
     let principal = signed_in(&node, &headers).await?;
     if q.service
         .as_ref()
@@ -250,7 +257,7 @@ async fn package_capabilities(
             (frontend || s.sees_release(v, &account)).then(|| v.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
-    let mut card =
+    let card =
         crate::consent_page::release_capabilities(&node, &package, &release, q.service.as_deref())
             .await?;
     // Where an instance of it could send data: the release and every app its `uses`
@@ -263,16 +270,19 @@ async fn package_capabilities(
     };
     // A member release that is not installed here (`409 USES_NOT_INSTALLED` at create)
     // leaves the unit unknown: `null`, never a card the release alone would mislead with.
-    let described = match crate::egress::release_unit(&node, &at).await {
-        Ok(unit) => crate::egress::describe(&crate::egress::Placed {
-            unit,
-            apps: std::collections::BTreeMap::new(),
-        }),
-        Err(_) => json!({ "destinations": null, "members": null }),
-    };
-    for key in ["destinations", "members"] {
-        card[key] = described[key].clone();
-    }
+    let described = crate::egress::release_unit(&node, &at)
+        .await
+        .ok()
+        .map(|unit| {
+            crate::egress::describe(&crate::egress::Placed {
+                unit,
+                apps: std::collections::BTreeMap::new(),
+            })
+        });
+    let mut card: CapabilityCard =
+        serde_json::from_value(card).map_err(|e| ApiError::internal(&e.to_string()))?;
+    card.destinations = described.as_ref().map(|d| d.destinations.clone());
+    card.members = described.map(|d| d.members);
     Ok(Json(card))
 }
 
@@ -314,7 +324,7 @@ async fn ops_package_upload(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     body: Body,
-) -> ApiResult {
+) -> ApiResult<Json<crate::packages::PackageInstalled>> {
     operator(&node, &headers)?;
     uploads_allowed(&node)?;
     Ok(Json(
@@ -328,7 +338,7 @@ async fn ops_package_install(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<InstallBody>,
-) -> ApiResult {
+) -> ApiResult<Json<crate::packages::PackageInstalled>> {
     operator(&node, &headers)?;
     Ok(Json(
         node.install_from_registry(&body.package, &body.version, crate::system::OPERATOR)
@@ -338,7 +348,10 @@ async fn ops_package_install(
 
 /// The releases the operator installed: publisher metadata, no app data, and
 /// nothing an account installed.
-async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn ops_package_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<PackageList>> {
     operator(&node, &headers)?;
     // An install committed through another node is listed (read index).
     node.sys_fresh().await;
@@ -348,7 +361,7 @@ async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> 
             .filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))
             .collect()
     });
-    Ok(Json(json!({ "packages": packages })))
+    Ok(Json(PackageList { packages }))
 }
 
 /// The operator uninstalls a package it installed.
@@ -466,17 +479,26 @@ async fn publisher_binding(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(signer): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PublisherBinding>> {
     let _p = signed_in(&node, &headers).await?;
     node.sys_fresh().await;
-    Ok(Json(node.sys(|s| {
-        json!({
-            "signerId": signer,
-            "cluster": node.config.cluster,
-            "generation": s.binding_generation(&signer),
-            "bound": s.publisher_of_signer(&signer).is_some(),
-        })
+    Ok(Json(node.sys(|s| PublisherBinding {
+        generation: s.binding_generation(&signer),
+        bound: s.publisher_of_signer(&signer).is_some(),
+        signer_id: signer.clone(),
+        cluster: node.config.cluster.clone(),
     })))
+}
+
+/// `GET /publishers/{signer}`: whether a package signing key is bound to an organization here
+/// (never which), and its binding generation (`0`: never bound).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PublisherBinding {
+    signer_id: String,
+    cluster: String,
+    generation: u64,
+    bound: bool,
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -513,4 +535,43 @@ pub(super) fn routes() -> Router<Arc<Node>> {
             "/ops/packages/{package}/{version}",
             delete(ops_package_version_uninstall),
         )
+}
+
+/// `POST /bundles`: the stored WASM's hash (development only).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct BundleStored {
+    hash: String,
+}
+
+/// The packages the caller may see.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PackageList {
+    packages: Vec<PackageAnswer>,
+}
+
+/// `GET /packages/{package}/{version}/capabilities`: a release's capability card (the release,
+/// its signer, outbound prefixes, secrets, `uses` and ABI, as the consent page shows each side
+/// of an upgrade), and where an instance of it could send data (`null`: a member release is
+/// not installed here).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CapabilityCard {
+    package: String,
+    version: String,
+    service: Option<String>,
+    bundle: String,
+    mpk: String,
+    manifest_hash: String,
+    signer: String,
+    name: Option<String>,
+    author: Option<String>,
+    outbound: Vec<String>,
+    secret_bindings: Vec<String>,
+    secrets: Value,
+    uses: Value,
+    abi: Value,
+    #[serde(default)]
+    destinations: Option<Vec<String>>,
+    #[serde(default)]
+    members: Option<std::collections::BTreeMap<String, crate::egress::UnitMember>>,
 }

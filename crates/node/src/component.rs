@@ -1201,9 +1201,9 @@ impl AppMachine {
     /// waiting in its outbox and its dead letters, oldest first.
     #[must_use]
     pub fn xcalls_report(&self) -> Value {
-        json!({
-            "pending": self.state.component.head.xcall.pending(),
-            "deadLetters": self.dead_letters(),
+        json!(XcallsReport {
+            pending: self.state.component.head.xcall.pending(),
+            dead_letters: self.dead_letters(),
         })
     }
 
@@ -2108,6 +2108,14 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
         }
     }
     None
+}
+
+/// `GET /apps/{app}/xcalls`: messages waiting, and those never delivered.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XcallsReport {
+    pending: u64,
+    dead_letters: Vec<xcall::DeadLetter>,
 }
 
 #[cfg(test)]

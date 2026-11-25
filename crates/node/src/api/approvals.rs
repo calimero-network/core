@@ -421,14 +421,20 @@ async fn set_release_deadline(
 /// sealed channel, so from an attested node): the governance, and each
 /// release's end-of-new-work deadline. Users see the rules before they rely
 /// on them.
-async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult {
+async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult<Json<ClusterReleases>> {
     node.sys_fresh().await;
-    Ok(Json(node.sys(|s| {
-        json!({
-            "governance": s.governance(),
-            "deadlines": s.deadlines_json(),
-        })
+    Ok(Json(node.sys(|s| ClusterReleases {
+        governance: s.governance(),
+        deadlines: s.deadlines_json(),
     })))
+}
+
+/// `GET /releases`: the cluster's governance and the deadlines set on mero-tee releases,
+/// oldest release first.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ClusterReleases {
+    governance: crate::system::Governance,
+    deadlines: Vec<crate::system::VersionDeadline>,
 }
 
 #[derive(Deserialize)]

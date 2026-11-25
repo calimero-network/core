@@ -19,6 +19,17 @@ pub struct OrgCreated {
     pub team_id: Option<TeamId>,
 }
 
+/// What redeeming an invite answers: the organization joined; for an instance invite, the
+/// instance and whether the account is a member of its organization (else a guest).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteRedeemed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+    pub org: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<bool>,
+}
+
 /// What `DeleteOrg` answers: the instances deleted with it.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OrgDeleted {
@@ -1030,7 +1041,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 free_when_unchanged,
                 clamp_grants,
             )?;
-            Ok(json!({ "org": org }))
+            Ok(json!(InviteRedeemed {
+                app: None,
+                org,
+                member: None,
+            }))
         }
         SystemCmd::SetOrgSettings {
             org,

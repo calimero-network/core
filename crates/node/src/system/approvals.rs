@@ -32,13 +32,13 @@ pub struct ApprovedReleases {
 /// What `SetReleaseDeadline` answers (`#Deadlines`): every deadline after the change.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Deadlines {
-    pub deadlines: Vec<ReleaseDeadline>,
+    pub deadlines: Vec<VersionDeadline>,
 }
 
 /// One release deadline: `after` RFC 3339, `afterSecs` Unix seconds.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReleaseDeadline {
+pub struct VersionDeadline {
     pub version: String,
     pub after: String,
     pub after_secs: u64,
