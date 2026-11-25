@@ -29,7 +29,7 @@ const DIRECT_READS: &[&str] = &[
 /// (file under `src/`, a fragment of exactly one joined line, why no client names the release).
 #[rustfmt::skip]
 const READS_ALLOWED: &[(&str, &str, &str)] = &[
-    ("api/apps.rs", "s.packages.contains_key(pkg)", "a bound session's own package; accepted for now in the spec"),
+    ("api/apps.rs", "s.packages.contains_key(pkg)", "a bound session's own package: an app frontend stays public by name"),
     ("api/apps.rs", "s.packages.get(&r.package).and_then(|p| p.versions.get(&r.version)).cloned()", "instance_org_of: a release the create resolved"),
     ("api/apps.rs", "let v = s.packages.get(&r.package)?.versions.get(&r.version)?;", "chosen_parts: the member unit_members chose"),
     ("api/apps.rs", "s.packages.get(&release.package).and_then(|p| p.versions.get(&release.version))", "unit_members: a release its callers resolved"),
