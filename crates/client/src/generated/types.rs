@@ -1154,6 +1154,88 @@ pub struct UndoPart {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OutboundAuditEntryFailure {
+    /// `malformed`.
+    Malformed,
+    /// `refused`.
+    Refused,
+    /// `notApproved`.
+    NotApproved,
+    /// `awaitingApproval`.
+    AwaitingApproval,
+    /// `egressOff`.
+    EgressOff,
+    /// `secret`.
+    Secret,
+    /// `failed`.
+    Failed,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl OutboundAuditEntryFailure {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::Refused => "refused",
+            Self::NotApproved => "notApproved",
+            Self::AwaitingApproval => "awaitingApproval",
+            Self::EgressOff => "egressOff",
+            Self::Secret => "secret",
+            Self::Failed => "failed",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for OutboundAuditEntryFailure {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OutboundAuditEntryFailure {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "malformed" => Self::Malformed,
+            "refused" => Self::Refused,
+            "notApproved" => Self::NotApproved,
+            "awaitingApproval" => Self::AwaitingApproval,
+            "egressOff" => Self::EgressOff,
+            "secret" => Self::Secret,
+            "failed" => Self::Failed,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `egressOff` (egress turned off), `secret` (a credential binding refused, or a `{{secret:` placeholder), `failed` in transit), the names of the credential bindings the node attached in `secrets` (for a `secret` refusal, the binding refused), and the request's and response's body sizes. Never a secret value, a body, a query string or a header.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OutboundAuditEntry {
+    #[serde(rename = "atMs")]
+    pub at_ms: u64,
+    pub method: String,
+    pub host: String,
+    pub path: String,
+    #[serde(rename = "pathTruncated")]
+    pub path_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<OutboundAuditEntryFailure>,
+    pub secrets: Vec<String>,
+    #[serde(rename = "requestBytes")]
+    pub request_bytes: u64,
+    #[serde(rename = "responseBytes")]
+    pub response_bytes: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageDay {
@@ -3602,6 +3684,15 @@ pub struct AppMoveResponse {
     pub added: Vec<String>,
     #[serde(rename = "revokedInvites")]
     pub revoked_invites: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppOutboundLogResponse {
+    pub entries: Vec<OutboundAuditEntry>,
+    pub partial: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

@@ -274,6 +274,19 @@ extension CalimeroClient {
             }
         }
 
+        /// An app's outbound requests: `GET /apps/{app}/outbound-log` (`app_outbound_log`).
+        ///
+        /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+        ///
+        /// **Who:** signed in (a session or an API key).
+        @discardableResult
+        public func outboundLog(app: Swift.String) async throws -> Operations.AppOutboundLog.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppOutboundLog.Input(path: .init(app: app))
+            return try await client.perform { api in
+                try await api.appOutboundLog(input).ok.body.json
+            }
+        }
+
         /// The update policy an app follows: `GET /apps/{app}/upgrade-policy` (`app_policy`).
         ///
         /// For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.

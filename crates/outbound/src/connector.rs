@@ -30,6 +30,7 @@ use eyre::{bail, eyre, Result as EyreResult};
 use serde_json::{Map, Value};
 use tracing::warn;
 
+use crate::audit::{self, AuditEntry, AuditFailure, OutboundAudit};
 use crate::{
     egress_gated, refusal_kind, AppIdentity, Approval, EgressCheck, OutboundHost, OutboundService,
     EGRESS_OFF,
@@ -509,7 +510,9 @@ impl OutboundService {
     /// connector calls go through the same gates and the same count. Both
     /// clients ask `egress` before every request or call and refuse it with
     /// [`EGRESS_OFF`] while egress is off ([`egress_gated`]): a connector is
-    /// no way around the switch.
+    /// no way around the switch. Every request and call, sent or refused, is
+    /// recorded in `audit` under `context`; a call as its connector's host and
+    /// its operation's declared path.
     #[must_use]
     #[expect(clippy::too_many_arguments, reason = "one run's whole outbound scope")]
     pub fn for_run_with_connectors(
@@ -521,6 +524,7 @@ impl OutboundService {
         context: String,
         sent: Arc<AtomicU64>,
         egress: EgressCheck,
+        audit: Arc<OutboundAudit>,
     ) -> RunClients {
         let grants: BTreeMap<String, ConnectorGrant> = connectors
             .into_iter()
@@ -540,8 +544,16 @@ impl OutboundService {
                 approval.clone(),
                 context.clone(),
                 Arc::clone(&sent),
+                Arc::clone(&audit),
             )
-            .map(|http| egress_gated(http, Arc::clone(&egress)));
+            .map(|http| {
+                egress_gated(
+                    http,
+                    Arc::clone(&egress),
+                    Arc::clone(&audit),
+                    context.clone(),
+                )
+            });
         let connectors = (!grants.is_empty()).then(|| {
             egress_gated_connectors(
                 Arc::new(RunConnectors {
@@ -549,10 +561,13 @@ impl OutboundService {
                     app,
                     grants,
                     approval,
-                    context,
+                    context: context.clone(),
                     sent,
+                    audit: Arc::clone(&audit),
                 }),
                 egress,
+                audit,
+                context,
             )
         });
         RunClients { http, connectors }
@@ -561,25 +576,36 @@ impl OutboundService {
 
 /// `inner`, asking `off` before each call and refusing it with [`EGRESS_OFF`]
 /// while egress is off, before anything is built, resolved or sent: the
-/// connectors' side of [`egress_gated`].
+/// connectors' side of [`egress_gated`]. A refused call is recorded in `audit`
+/// under `context` ([`AuditFailure::EgressOff`]).
 #[must_use]
 pub fn egress_gated_connectors(
     inner: Arc<dyn ConnectorHost>,
     off: EgressCheck,
+    audit: Arc<OutboundAudit>,
+    context: String,
 ) -> Arc<dyn ConnectorHost> {
-    Arc::new(EgressGatedConnectors { inner, off })
+    Arc::new(EgressGatedConnectors {
+        inner,
+        off,
+        audit,
+        context,
+    })
 }
 
 /// [`egress_gated_connectors`]' host.
 struct EgressGatedConnectors {
     inner: Arc<dyn ConnectorHost>,
     off: EgressCheck,
+    audit: Arc<OutboundAudit>,
+    context: String,
 }
 
 impl fmt::Debug for EgressGatedConnectors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EgressGatedConnectors")
             .field("inner", &self.inner)
+            .field("context", &self.context)
             .finish_non_exhaustive()
     }
 }
@@ -587,6 +613,10 @@ impl fmt::Debug for EgressGatedConnectors {
 impl ConnectorHost for EgressGatedConnectors {
     fn call(&self, connector: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String> {
         if let Some(who) = (self.off)() {
+            let mut entry =
+                AuditEntry::of_call(crate::connector(connector), operation, 0, audit::now_ms());
+            entry.failure = Some(AuditFailure::EgressOff);
+            self.audit.record(&self.context, entry);
             return Err(format!(
                 "{EGRESS_OFF}: {who} turned egress off, so no request leaves the cluster \
                  for this app, whatever was approved"
@@ -605,6 +635,8 @@ struct RunConnectors {
     approval: Option<Approval>,
     context: String,
     sent: Arc<AtomicU64>,
+    /// The node's outbound audit, recorded under `context`.
+    audit: Arc<OutboundAudit>,
 }
 
 impl RunConnectors {
@@ -627,14 +659,24 @@ impl RunConnectors {
 impl ConnectorHost for RunConnectors {
     fn call(&self, name: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String> {
         let started = Instant::now();
-        let (Some(connector), Some(grant)) = (connector(name), self.grants.get(name)) else {
+        let declares = connector(name).filter(|_| self.grants.contains_key(name));
+        let mut entry = AuditEntry::of_call(declares, operation, 0, audit::now_ms());
+        let (Some(connector), Some(grant)) = (declares, self.grants.get(name)) else {
+            entry.failure = Some(AuditFailure::Refused);
+            self.audit.record(&self.context, entry);
             return Err(format!(
                 "{name} is not a connector this release declares (its manifest's `connectors`)"
             ));
         };
-        let request = connector
-            .build(grant, operation, input)
-            .map_err(|e| self.refused(name, &e))?;
+        let request = match connector.build(grant, operation, input) {
+            Ok(request) => request,
+            Err(e) => {
+                entry.failure = Some(AuditFailure::Refused);
+                self.audit.record(&self.context, entry);
+                return Err(self.refused(name, &e));
+            }
+        };
+        entry.request_bytes = request.body.len() as u64;
         // The call carries the connector's credential binding alone, attached by
         // `prepare` as it attaches a release's: never a binding the release declares
         // for its raw requests.
@@ -642,18 +684,40 @@ impl ConnectorHost for RunConnectors {
         app.secrets =
             BTreeMap::from([(connector.credential.secret.to_owned(), connector.binding())]);
         let declared: BTreeSet<String> = connector.prefixes(grant).into_iter().collect();
-        let prepared = self
+        let prepared = match self
             .service
             .prepare(&app, &declared, self.approval.as_ref(), request)
-            .map_err(|e| self.refused(name, &e))?;
-        let (status, body) = self.service.transmit(
+        {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                entry.failure = Some(audit::refusal_kind(&e));
+                entry.secrets = audit::refused_binding(&e);
+                self.audit.record(&self.context, entry);
+                return Err(self.refused(name, &e));
+            }
+        };
+        entry.secrets = audit::secret_names(&prepared.attached);
+        let answer = self.service.transmit(
             &self.app,
             &self.context,
             &self.sent,
             &declared,
             &prepared,
             started,
-        )?;
+        );
+        let (status, body) = match answer {
+            Ok(answer) => answer,
+            Err(reason) => {
+                entry.failure = Some(AuditFailure::Failed);
+                self.audit.record(&self.context, entry);
+                return Err(reason);
+            }
+        };
+        // Whatever it answered, as a raw request's status is: redacted, before it is
+        // cut to the declared outputs.
+        entry.status = Some(status);
+        entry.response_bytes = body.len() as u64;
+        self.audit.record(&self.context, entry);
         if !(200..300).contains(&status) {
             return Err(format!(
                 "{name} answered {status}{}",
