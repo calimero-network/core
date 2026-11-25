@@ -9,6 +9,13 @@
 )]
 use super::*;
 
+/// What a sign-up invite's creation or withdrawal answers (`#InviteKey`): its key.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteKeyAnswer {
+    pub invite_key: String,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
@@ -89,7 +96,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 return Err("a sign-up invite expires after it is made".into());
             }
             let _prev = s.sign_up_invites.insert(invite_key.clone(), invite);
-            Ok(json!({ "inviteKey": invite_key }))
+            Ok(json!(InviteKeyAnswer { invite_key }))
         }
         SystemCmd::RevokeSignUpInvite {
             invite_key, actor, ..
@@ -99,7 +106,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 .sign_up_invites
                 .remove(&invite_key)
                 .ok_or("no such sign-up invite")?;
-            Ok(json!({ "inviteKey": invite_key }))
+            Ok(json!(InviteKeyAnswer { invite_key }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.

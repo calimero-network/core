@@ -296,7 +296,7 @@ async fn account_recovery_finish(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RecoveryFinish>,
-) -> ApiResult {
+) -> ApiResult<Json<SessionAnswer>> {
     let Some(confirm) = body.confirm else {
         let allow = match &body.account_id {
             Some(account) => {

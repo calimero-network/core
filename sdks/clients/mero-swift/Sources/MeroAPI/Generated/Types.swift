@@ -5205,32 +5205,28 @@ public enum Components {
         /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer`.
         public struct BackupKeyAnswer: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder`.
-            public struct HolderPayload: Codable, Hashable, Sendable {
-                /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder/kind`.
-                @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                    case _operator = "operator"
-                    case org = "org"
-                    case account = "account"
-                }
-                /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder/kind`.
-                public var kind: Components.Schemas.BackupKeyAnswer.HolderPayload.KindPayload
-                /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder/id`.
-                public var id: Swift.String?
-                /// Creates a new `HolderPayload`.
-                ///
-                /// - Parameters:
-                ///   - kind:
-                ///   - id:
-                public init(
-                    kind: Components.Schemas.BackupKeyAnswer.HolderPayload.KindPayload,
-                    id: Swift.String? = nil
-                ) {
-                    self.kind = kind
-                    self.id = id
-                }
+            @frozen public enum HolderPayload: Codable, Hashable, Sendable {
                 public enum CodingKeys: String, CodingKey {
                     case kind
-                    case id
+                }
+                public init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    let discriminator = try container.decode(
+                        Swift.String.self,
+                        forKey: .kind
+                    )
+                    switch discriminator {
+                    default:
+                        throw Swift.DecodingError.unknownOneOfDiscriminator(
+                            discriminatorKey: CodingKeys.kind,
+                            discriminatorValue: discriminator,
+                            codingPath: decoder.codingPath
+                        )
+                    }
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    switch self {
+                    }
                 }
             }
             /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder`.
@@ -6881,7 +6877,7 @@ public enum Components {
                 case sha256
             }
         }
-        /// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only.
+        /// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers.
         ///
         /// - Remark: Generated from `#/components/schemas/Run`.
         public struct Run: Codable, Hashable, Sendable {
@@ -7147,6 +7143,8 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/Run/queue`.
             public var queue: Components.Schemas.Run.QueuePayload?
+            /// - Remark: Generated from `#/components/schemas/Run/logs`.
+            public var logs: [OpenAPIRuntime.OpenAPIValueContainer]?
             /// Creates a new `Run`.
             ///
             /// - Parameters:
@@ -7161,6 +7159,7 @@ public enum Components {
             ///   - final:
             ///   - progress:
             ///   - queue:
+            ///   - logs:
             public init(
                 run: Swift.String,
                 method: Swift.String,
@@ -7172,7 +7171,8 @@ public enum Components {
                 attempts: Components.Schemas.Run.AttemptsPayload,
                 final: Components.Schemas.Run.FinalPayload? = nil,
                 progress: Components.Schemas.Run.ProgressPayload? = nil,
-                queue: Components.Schemas.Run.QueuePayload? = nil
+                queue: Components.Schemas.Run.QueuePayload? = nil,
+                logs: [OpenAPIRuntime.OpenAPIValueContainer]? = nil
             ) {
                 self.run = run
                 self.method = method
@@ -7185,6 +7185,7 @@ public enum Components {
                 self.final = final
                 self.progress = progress
                 self.queue = queue
+                self.logs = logs
             }
             public enum CodingKeys: String, CodingKey {
                 case run
@@ -7198,6 +7199,7 @@ public enum Components {
                 case final
                 case progress
                 case queue
+                case logs
             }
         }
         /// A statement, signed with the answering node's receipt key (hex, Ed25519 over the statement's canonical JSON after its domain), that the account asked to bind `nonce` for `audience`, valid from `issuedAt` to `expiresAt` (Unix seconds).
@@ -8172,6 +8174,13 @@ public enum Components {
                 }
                 /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/services`.
                 public var services: Components.Schemas.Package.VersionsPayloadPayload.ServicesPayload
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/components`.
+                @frozen public enum ComponentsPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case app = "app"
+                    case computeOnly = "computeOnly"
+                }
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/components`.
+                public var components: Components.Schemas.Package.VersionsPayloadPayload.ComponentsPayload
                 /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                 ///
                 /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/metadata`.
@@ -8190,6 +8199,7 @@ public enum Components {
                 ///   - size:
                 ///   - source:
                 ///   - services:
+                ///   - components:
                 ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                 ///   - outbound:
                 ///   - installedBy:
@@ -8200,6 +8210,7 @@ public enum Components {
                     size: Swift.Int64,
                     source: Components.Schemas.Package.VersionsPayloadPayload.SourcePayload,
                     services: Components.Schemas.Package.VersionsPayloadPayload.ServicesPayload,
+                    components: Components.Schemas.Package.VersionsPayloadPayload.ComponentsPayload,
                     metadata: OpenAPIRuntime.OpenAPIValueContainer,
                     outbound: [Swift.String],
                     installedBy: Swift.String,
@@ -8210,6 +8221,7 @@ public enum Components {
                     self.size = size
                     self.source = source
                     self.services = services
+                    self.components = components
                     self.metadata = metadata
                     self.outbound = outbound
                     self.installedBy = installedBy
@@ -8221,6 +8233,7 @@ public enum Components {
                     case size
                     case source
                     case services
+                    case components
                     case metadata
                     case outbound
                     case installedBy
@@ -8979,7 +8992,7 @@ public enum Components {
                 case defaultCapabilities
             }
         }
-        /// A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).
+        /// A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's).
         ///
         /// - Remark: Generated from `#/components/schemas/TeamView`.
         public struct TeamView: Codable, Hashable, Sendable {
