@@ -10059,7 +10059,9 @@ async fn an_api_keys_scope_holds_on_every_route_not_only_calls() {
         apps.push(
             alice
                 .apps()
-                .create(typed(json!({ "name": name, "bundle": &bundle, "org": org })))
+                .create(typed(
+                    json!({ "name": name, "bundle": &bundle, "org": org }),
+                ))
                 .await
                 .map(|a| a.app_id)
                 .unwrap(),
@@ -10115,7 +10117,10 @@ async fn an_api_keys_scope_holds_on_every_route_not_only_calls() {
     // A read-only key reads its app and changes none of its settings.
     let read_only = alice
         .auth()
-        .apikey_create(typed(json!({ "readOnly": true, "apps": [kept] })), Some(&mut apk))
+        .apikey_create(
+            typed(json!({ "readOnly": true, "apps": [kept] })),
+            Some(&mut apk),
+        )
         .await
         .map(|k| k.key)
         .unwrap();

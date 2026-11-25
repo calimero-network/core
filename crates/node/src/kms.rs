@@ -215,7 +215,13 @@ mod tests {
         let id = Path::new("/id");
         let err = key_source(true, None, None, Some(("https://kms", id))).unwrap_err();
         assert!(err.to_string().contains("--dev"), "{err}");
-        assert!(key_source(true, Some(&"00".repeat(32)), None, Some(("https://kms", id))).is_err());
+        assert!(key_source(
+            true,
+            Some(&"00".repeat(32)),
+            None,
+            Some(("https://kms", id))
+        )
+        .is_err());
         assert_eq!(key_source(true, None, None, None).unwrap(), KeySource::Dev);
     }
 

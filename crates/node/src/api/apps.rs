@@ -886,7 +886,10 @@ async fn app_list(
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
-            .filter(|a| key.as_ref().is_none_or(|k| super::key_scoped_to(k, &a.app_id)))
+            .filter(|a| {
+                key.as_ref()
+                    .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
+            })
             .map(|a| (a, s.running_release(a)))
             .filter(|(_, r)| {
                 bound

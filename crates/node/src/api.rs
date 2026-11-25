@@ -799,7 +799,11 @@ impl Principal {
         node: &Node,
         app: &crate::types::AppRecord,
     ) -> Result<(), ApiError> {
-        if self.api_key.as_ref().is_some_and(|k| !key_scoped_to(k, &app.app_id)) {
+        if self
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !key_scoped_to(k, &app.app_id))
+        {
             return Err(key_not_scoped());
         }
         // A session vouches for its account only where the node that signed
