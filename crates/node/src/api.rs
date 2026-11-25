@@ -1683,8 +1683,10 @@ async fn gate(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = Confirm))]
 pub(crate) struct ConfirmBody {
     challenge_id: String,
+    #[cfg_attr(test, schema(value_type = openapi::generated::Assertion))]
     assertion: Assertion,
 }
 
@@ -1992,6 +1994,7 @@ struct MetadataBody {
 
 /// A body that carries only a passkey confirmation (after a `412`).
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = ConfirmOnly))]
 struct ConfirmOnlyBody {
     #[serde(default)]
     confirm: Option<ConfirmBody>,
