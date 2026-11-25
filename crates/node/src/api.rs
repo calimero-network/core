@@ -1505,7 +1505,7 @@ fn utc_day(secs: u64) -> Option<String> {
 
 // ---------------------------------------------------------------- account recovery
 
-// `docs/specs/account-recovery.md`: a code made with a passkey; signed out,
+// [Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery): a code made with a passkey; signed out,
 // the code and a new passkey start a recovery; within `RECOVERY_DELAY_SECS`
 // (72 h, as an organization's) a passkey the account has cancels it; after,
 // the new passkey finishes it and signs in.

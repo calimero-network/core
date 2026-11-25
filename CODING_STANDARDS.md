@@ -79,7 +79,7 @@ Delete commented-out code; add future code in the change that first uses it.
 
 ## Citing decisions
 
-Comments, strings and docs state the reason, never a decision id (`D20`, `S9`, `Ruling 31`) or a reviewer's name: a reader has no table to look one up in.
+Comments, strings and docs state the reason, never a decision id (a letter and a number from a spec, plan or review, or a ruling's number) or a reviewer's name: a reader has no table to look one up in.
 
 ## Security: trust boundaries
 

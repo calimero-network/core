@@ -22,7 +22,7 @@
 //! origin's: its own rp-id, sessions bound to the package and naming the
 //! origin, removal ending them. Its consent says so
 //! (`{ origin, rpId, served: true }`), so a consent to a plain origin never
-//! makes one served. Design: `docs/specs/custom-domains.md`.
+//! makes one served. Design: [Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

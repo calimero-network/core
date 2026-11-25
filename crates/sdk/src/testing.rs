@@ -1,4 +1,4 @@
-//! The test harness (spec section 10): the real component on the real wasmtime
+//! The test harness: the real component on the real wasmtime
 //! engine with an in-memory host, so a passing test means the same as on a node.
 //!
 //! The harness plays the node's executor: it applies a logged invocation's diff only when

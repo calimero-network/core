@@ -32,15 +32,26 @@ error the guest's host call returns.
 | Xcalls (outbox) | 100 per run; app id or method 128 bytes | `MAX_XCALLS`, `MAX_XCALL_NAME_BYTES` |
 | Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
 | Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |
-| Outbound HTTP | 8 requests per action, one per call; bodies 1 MiB; 64 KiB recorded in a call's entry; 100 headers | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
+| Outbound HTTP | 8 requests per run (an action, call, timer or delivery); bodies 1 MiB; 64 KiB of each body recorded in a logged run's entry; 100 headers; 1.5 s wait for a logged run's response (`CALL_FETCH_TIMEOUT`) | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
 | Connector calls | input 64 KiB; 64 values in one limit (metadata keys, models); each call counts as an outbound request | `MAX_CONNECTOR_INPUT`, `MAX_LIMIT_VALUES` |
 | Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
 | Declared secrets (credential bindings) | 16 per release; name 64 bytes; description 256 bytes; one host, 1 to 8 path prefixes of 256 bytes each, and one place each (a header, or a body field); header name or body field 64 bytes; header `format` 64 bytes with `{}` once; no two on one host's same place on a shared path | `MAX_SECRETS`, `MAX_SECRET_NAME_BYTES`, `MAX_SECRET_DESCRIPTION_BYTES`, `MAX_SECRET_PATHS`, `MAX_SECRET_PATH_BYTES`, `MAX_SECRET_FIELD_BYTES`, `MAX_SECRET_FORMAT_BYTES` |
 | Search | 100 hits at most; query 256 bytes; 32 searches per run (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
-| Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
+| Files | 16 open; 2 GiB each; 64 MiB written per run (2 GiB in a compute run); 1,000 new files per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_COMPUTE_FILE_BYTES`, `MAX_NEW_FILES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
 | Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
+
+A soft limit answers a fixed string, which depends only on the run's own calls,
+so every node gives the same answer. `events.emit` answers `too many events`,
+`event name too long`, `event data too large`, `too many audience accounts`,
+`malformed audience` (an empty account list, account, team or org id),
+`unknown team`, or `audience names another org`; `xcall.send` answers
+`too many xcalls` or `malformed xcall target`; `emit`, `xcall.send` and
+`start-action` past the run's bytes answer
+`entry too large: the run would write <n> bytes, over 1048576`. A refused
+call records nothing. The caps on keys, events, cursors and logs sit low on
+purpose: raising one later breaks no app, lowering one does.
 
 ### What host work costs
 
@@ -173,7 +184,8 @@ interval. A peer that stops answering keeps the figures it last reported. An app
 peer has reported yet counts as nothing, so the cap fails open rather than closed:
 refusing every call to all of a developer's apps whenever one replica of one of them
 is unreachable would be worse than a developer briefly exceeding a daily cap. The cap is a
-decimal string in JSON; a node writes a non-zero cap only once every node runs
+decimal string in JSON, as every 64-bit integer is
+([Types](/build/app-abi/#types)); a node writes a non-zero cap only once every node runs
 its release or newer (`409 UPGRADE_PENDING`).
 
 ## Roles and capabilities
@@ -181,51 +193,3 @@ its release or newer (`409 UPGRADE_PENDING`).
 Organization roles (`guest < member < admin < owner`), team row roles (`lead`,
 `member`, `read-only`) and the capability bits are on
 [Organizations, teams & access](/protocol/organizations/).
-
-## In `calimero-node`
-
-Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
-unless another crate is named. The design and its reasons are above; a module's own detail is in its
-`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
-
-### Quotas
-
-Code: `system::Quotas`, set with `POST /ops/quotas`.
-
-Live in the system state and are checked at apply, so every node enforces the same limits; refusals
-are `429 QUOTA_EXCEEDED`.
-`maxFileBytesPerOrg` counts the plaintext bytes of a component's files.
-`SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer
-(`usage::payer`), kept in step by `set_app_file_bytes`.
-`SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release
-at 0.
-`DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
-`TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that
-organization's quota would not hold its files.
-The exception is `maxFuelPerDeveloperPerDay` (`"0"`, the default, is no limit; a
-decimal string in JSON, a number refused, `system::decimal_u64`).
-It is charged to the app's developer, `usage::developer` (#4839), the same identity usage is billed
-to: the owner of the deployment an app was created from, else the app's organization or owner.
-So two payers' instances of one developer's deployment share one cap.
-The fuel lives in the app groups' usage books, so it is checked where a client's call, a delivered
-xcall or a synchronous xcall runs (`Node::fuel_quota_refusal`, from `call_local_component`, after
-the idempotent replay and the delivered-xcall check, before the run); an action's own calls are not
-refused, as its start was.
-The check asks no peer (`Node::developer_fuel_cached`): apps this node replicates are read from the
-replica, the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s) while a cap is set
-asks all peers at once (`internal/usage/today`) and keeps a silent peer's last figures; so the cap
-is approximate by one interval and an app no peer ever reported counts as nothing (fails open).
-A refused delivered xcall is the target's final answer (`deliver_one`), not a dead letter.
-The refusal is not logged, so the key is not spent; `init`, timer ticks and event handlers are never
-refused, and they still count toward the developer's day.
-The quota is fuel; wall time is information only.
-A non-zero cap is written only once every registered node's attested release is this node's or newer
-(`Node::nodes_behind_release`, as `base_seq` is gated), else `409 UPGRADE_PENDING`
-(`api::UPGRADE_PENDING`, one code for every such release gate), judged before the operator is asked
-to sign (`__set_quotas`, #4791): an older node would drop the field and its snapshots would reset
-the cap.
-Accepted gap (#4809): an older node added after the cap is set, then sent a quota change itself,
-writes the quotas without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
-and the W19 minimum-release gate closes it.
-Usage reads (`app_usage`, `internal/usage`, `replicas_usage_on`) use `replica_group`, never a group
-the node keeps after the app moved away.

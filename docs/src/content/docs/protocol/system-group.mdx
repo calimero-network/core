@@ -33,6 +33,18 @@ not one app's own data:
 | `backup_keys` | Each backup holder's X25519 public key for the recovery disk: the operator's, an organization's or an account's ([Encryption](/protocol/encryption/#the-recovery-disk)) |
 | `cluster_version`, `session_proofs_from`, `current_rules_from`, `attributes_by_release` | The logged [cluster version](/protocol/upgrades/#the-cluster-version), and the marks from which later rules hold (below) |
 
+The [release gate](/protocol/governance/#release-approvals) does not apply to
+this group (`Node::may_send`): every registered replica node, whatever its
+mero-tee release, is admitted as a learner, receives every entry and snapshot,
+and may become a voter and the leader. A rollout needs that, since new-release
+nodes become voters as the old ones leave, and a voter or leader on a release
+nobody approved can only delay or drop system writes, or answer a stale read
+index: availability, not confidentiality. It does read the whole state, which
+is why every decision it could forge is checked against a proof where it
+applies (below), and why no session it signs is taken by another node
+([Sessions](/protocol/identities/#sessions); what remains is in the
+[threat model](/protocol/security-model/#what-is-not-protected-yet)).
+
 ## Commands carry their actor
 
 A change is a `SystemCmd`, serialized as JSON and appended through the system
@@ -152,9 +164,10 @@ setting the flags, so a replica on the release before applies these entries
 the same way.
 
 Still without a proof: `RefreshReused`, `RevokeSession`, `RevokeAllSessions`,
-labels and aliases, and the rest of the account and app housekeeping; they
-are trusted from any node of the cluster. Splitting the system group into
-realms (`docs/specs/gate-system-group.md`, section 5) is the next phase.
+labels and aliases, and the rest of the account and app housekeeping
+(`CreateApp`, `DeleteApp`, `SetAccess`, `SetAppMetadata`, `CreateOrg`,
+`CreateTeam`, `SetOrgMetadata`, `PutBundle`, `InstallPackage`, …); they are
+trusted from any node of the cluster.
 
 The API checks most rules before it proposes, too, so a request that would be
 refused usually fails fast and records nothing. The check at apply is the one

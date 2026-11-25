@@ -330,14 +330,16 @@ pointing at an offer that is gone. The release stays installed. A deployment
 is deleted once it offers nothing and no instance came from it, and an
 organization that owns a deployment cannot be deleted before it.
 
-## Not done yet
+## Limits
 
-- **Migration.** Releases installed before deployments existed are not moved
-  into a deployment; offer them in one yourself.
-- **Transfer.** A deployment cannot be handed to another owner yet: create a
-  new one under the new owner and offer the same releases.
-- **Lockout guard.** Nothing yet stops an organization-owned deployment from
-  being left with no manager able to sign (the design asks for at least two
-  managers). Keep more than one `MANAGE_APPLICATION` holder in the owning
-  organization, each with more than one passkey.
-- **The consent page** does not name the deployment an instance came from.
+- **Releases from before deployments** stay outside every deployment, and
+  instances created before record none: offer the releases in a deployment
+  yourself.
+- **A deployment keeps its owner.** To move it, create a new one under the
+  new owner and offer the same releases.
+- **Keep the deployment manageable.** Every change needs a manager's
+  passkey, and nothing stops an organization-owned deployment from being left
+  with no manager able to sign. Keep more than one `MANAGE_APPLICATION`
+  holder in the owning organization, each with more than one passkey.
+- **The consent page's install sheet** names who pays for the instance (the
+  deployment's owner), not the deployment's name.

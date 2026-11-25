@@ -96,7 +96,7 @@ async fn org_members(
 pub(super) struct OrgBody {
     name: String,
     /// The organization's recovery key (base64url Ed25519 public key): the
-    /// creator keeps the seed (`docs/specs/org-recovery.md`).
+    /// creator keeps the seed ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)).
     #[serde(default)]
     recovery_key: Option<String>,
     /// What its members can do unless set for them (capability bits).

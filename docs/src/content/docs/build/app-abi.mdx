@@ -102,8 +102,11 @@ passkey assertion, `public` admits callers who are not signed in, `allowSystem`,
 `allowApps` and `allowAction` admit the node, other apps and the app's own
 actions. Free-form keys (`params`, `returns`, `doc`, `errors`, `events`, `types`) describe the
 app to clients; nodes ignore them, so `types` came without an `abiVersion` bump: a
-node of an earlier release installs an app that carries it. A field the host enforces is added only with
-an `abiVersion` bump.
+node of an earlier release installs an app that carries it. A node ignores a key
+it does not know, at the top level and in a method, and refuses a known key
+whose value has the wrong shape (`BadAbi`), so an older node still runs an app
+built by a newer SDK that adds optional metadata. A field the host enforces is
+added only with an `abiVersion` bump.
 
 ## Read it
 
@@ -154,7 +157,10 @@ serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
 
 ### Types
 
-The JSON form of every ABI type, as the SDK's macros write and read it:
+The JSON form of every ABI type, as the SDK's macros write and read it. A
+64-bit integer is a decimal string because a JavaScript number loses precision
+past 2^53; in stored state the same field is a CBOR integer
+([Tables & Collections](/build/collections/#costs-and-limits)):
 
 | ABI type | JSON | JSON Schema |
 | --- | --- | --- |
@@ -180,7 +186,7 @@ The JSON form of every ABI type, as the SDK's macros write and read it:
 | any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`): its shape from `types`, else any JSON |
 
 A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
-(it would lose precision in JavaScript), and every app type the ABI names must derive `Record` or `AbiType`,
+([SDK macros](/build/sdk-macros/#applogic)), and every app type the ABI names must derive `Record` or `AbiType`,
 whose fields are checked the same way, so the string forms above hold wherever
 these types appear; `u128`, `i128`, `usize` and `isize` do not compile at all. A
 `#[derive(AbiType)]` field marked `#[abi(plain)]` is described as plain serde

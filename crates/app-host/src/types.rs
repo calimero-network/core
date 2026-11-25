@@ -17,7 +17,7 @@ pub const DEFAULT_MEMORY_PAGES: u32 = 1_024;
 const PAGES_PER_MIB: u32 = 16;
 /// Epoch deadline for a call or a view (spec section 5).
 pub const CALL_WALL_CLOCK: Duration = Duration::from_secs(2);
-/// Epoch deadline for an action run (spec section 5).
+/// Epoch deadline for an action run.
 pub const ACTION_WALL_CLOCK: Duration = Duration::from_secs(10);
 /// The detail of a run that used its whole wall-clock budget, in its own code or waiting
 /// in a host call (`HostCore::with_deadline`).

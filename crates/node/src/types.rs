@@ -1215,7 +1215,7 @@ pub struct Org {
     #[serde(default)]
     pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
     /// The organization's recovery key and any recovery under way
-    /// (`docs/specs/org-recovery.md`); absent for an organization that never
+    /// ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)); absent for an organization that never
     /// set one, as every organization written before this field was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<OrgRecovery>,
@@ -1504,7 +1504,7 @@ pub struct PendingRecovery {
 pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
 
 /// An account recovery started with the account's recovery code, not
-/// finished or cancelled yet (`docs/specs/account-recovery.md`): the passkey
+/// finished or cancelled yet ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): the passkey
 /// it adds, [`RECOVERY_DELAY_SECS`] after the start (the same delay as an
 /// organization's), unless one of the account's passkeys cancels first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

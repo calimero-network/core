@@ -1,4 +1,4 @@
-//! The host core's policy, overlay and determinism rules (spec sections 3-5).
+//! The host core's policy, overlay and determinism rules.
 
 #![allow(
     clippy::unwrap_used,

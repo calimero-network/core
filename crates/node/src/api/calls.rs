@@ -19,7 +19,7 @@ pub(super) struct IntentBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// The 422/503 of a component's run that did not end `Ok` (spec section 5).
+/// The 422/503 of a component's run that did not end `Ok`.
 pub(super) fn component_failure(
     index: u64,
     status: &Status,

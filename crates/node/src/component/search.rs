@@ -1,4 +1,4 @@
-//! Full-text search for component apps (spec section 7): the host keeps an index of
+//! Full-text search for component apps: the host keeps an index of
 //! each table's declared text fields, derived from the app's state, and views query it
 //! through the WIT `search` interface.
 //!

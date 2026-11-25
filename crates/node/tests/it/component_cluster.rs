@@ -3996,7 +3996,7 @@ fn running_bundle(c: &Cluster, i: usize, app: &str) -> Option<String> {
         .read_local(|m, _| m.state.bundle.clone())
 }
 
-/// The node refuses every `__` method, on purpose: the spec routed `__upgrade` sent
+/// The node refuses every `__` method, on purpose: an earlier design routed `__upgrade` sent
 /// through `/intents` to the upgrade path;
 /// here `/intents` and `/views` refuse every `__` method (`400 RESERVED_METHOD`) before
 /// the app's executor is looked at, so a component's bundle is never switched by naming

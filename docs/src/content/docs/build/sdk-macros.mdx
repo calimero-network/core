@@ -281,18 +281,19 @@ pub enum Slot {
 It reads the serde attributes that change the JSON (`rename`, `rename_all`,
 `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
 `skip_serializing_if`, `default`) and refuses what it cannot describe: `flatten`, `into`,
-`from`, `try_from`, `remote`, and a `with` other than the SDK's JSON helpers. A
+`from`, `try_from`, `remote`, and a `with` other than the SDK's
+`calimero_sdk::json` helpers. A
 field `skip_serializing_if` may leave out, or `#[serde(default)]` (on the field, or
 on the struct for every field) lets a caller leave out, is optional in the shape, so
 generated argument types do not require it.
 
 A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as. Either it names
-its JSON helper (`json::u64_str`, `i64_str`, `bytes_b64url`, or their `opt_`
+its `calimero_sdk::json` helper (`json::u64_str`, `i64_str`, `bytes_b64url`, or their `opt_`
 forms: a decimal string, base64url), or it is marked `#[abi(plain)]` and keeps
 what plain serde writes, described as such: `u64_number` / `i64_number` (a JSON
 number) and `byte_list` (an array of numbers), at any depth (`Vec<u64>`,
-`Option<i64>`). `#[abi(plain)]` on the struct or enum marks every field; a decimal-string or base64url
-`with` on a field still wins. Unmarked, the field is refused: the ABI's `u64` and
+`Option<i64>`). `#[abi(plain)]` on the struct or enum marks every field; a `json`
+helper in `with` on a field still wins. Unmarked, the field is refused: the ABI's `u64` and
 `bytes` mean the strings.
 
 ```rust
@@ -310,7 +311,7 @@ pub struct ShotsView {
 A JSON number past 2^53 loses precision in JavaScript (the TypeScript client types
 `u64_number` as `number`), so `#[abi(plain)]` suits values that stay below it
 (timestamps in milliseconds, counts) or apps whose JSON is already fixed; a new
-field is better as a decimal string.
+field is better as the decimal string.
 
 Every app type in a method's parameters or result, an error's or event's fields, or
 a field of a described type needs one of the two derives (or a hand-written
@@ -318,7 +319,7 @@ a field of a described type needs one of the two derives (or a hand-written
 cannot reach an app's JSON through a struct the macros never saw.
 `u128`, `i128`, `usize` and `isize` are refused wherever the ABI describes a type,
 `#[abi(plain)]` included: serde writes them as numbers and they have no string form;
-use `u32`, or `u64` with its decimal-string helper.
+use `u32`, or `u64` with its `calimero_sdk::json` helper.
 
 ```text
 error: field `views`: plain serde writes u64/i64 as a number that loses precision past 2^53 ...

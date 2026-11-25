@@ -1,4 +1,4 @@
-//! The on-disk cache of compiled components (spec section 5 step 1).
+//! The on-disk cache of compiled components.
 //!
 //! An artifact is named `<component sha256>-<wasmtime tag>-<config hash>.cwasm`, beside a
 //! `.cwasm.mac` sidecar: HMAC-SHA256 under the caller's cache key over the artifact's file

@@ -110,7 +110,7 @@ interface blobs {
   grant: func(id: blob-id, ttl-seconds: u32) -> string;
 }
 
-// Full-text search over a table's declared fields (spec section 7): the host keeps the
+// Full-text search over a table's declared fields: the host keeps the
 // index from the app's state and answers views only. Not in the spec's section 4 world,
 // which names the index but no interface to query it.
 interface search {

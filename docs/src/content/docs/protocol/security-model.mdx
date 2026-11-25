@@ -114,14 +114,21 @@ code, and app code beyond what its owner approved.
 
 - **The system state on unapproved nodes.** Every node of the cluster, whatever
   its release, holds the whole system state: accounts, passkeys' public keys,
-  memberships, approvals, refresh-token hashes. Realms per approver are the
-  next phase (`docs/specs/gate-system-group.md`).
-- **Commands without a proof.** Commands other than the decisions above
-  (passkeys, API keys, refresh tokens, memberships, invites, node registration,
-  replicas, quotas) still name an actor any node of the cluster can claim.
+  memberships, approvals, app records, refresh-token and API-key hashes, invites.
+  Its log and snapshots are sealed at rest under K_c, which every release holds
+  ([The system group](/protocol/system-group/)).
+- **Commands without a proof.** Housekeeping commands (creating or deleting an
+  app, changing its access or metadata, creating an organization or a team,
+  uploading a bundle, installing a package, labels, aliases, session
+  revocations) still name an actor any node of the cluster can claim; the
+  decisions, credentials, memberships, invites and operator commands above
+  carry proofs ([system group](/protocol/system-group/#decisions-carry-their-proof)).
 - **Which node a client talks to.** A client checks that a node is attested,
   not that the user's approver approved its release, so it sends credentials and
-  passkey assertions to any attested node.
+  passkey assertions to any attested node. A sign-in's challenge is not bound to
+  the node that issued it: any registered node can take it from its issuer
+  (`internal/challenge/take`), so a modified image a person signs in through
+  can finish a ceremony another node began.
 
 - **Rollback, partly.** A rollback shorter than one checkpoint (1 s) looks like
   a crash; a store spliced from rows of different ages is not caught; an

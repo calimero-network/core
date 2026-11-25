@@ -4,11 +4,11 @@
 
 - **Crate**: `calimero-app-wit` (`publish = false`, prototype)
 - **Entry**: `src/lib.rs`; WIT in `wit/calimero-app.wit`, vendored WASI 0.2.12 in `wit/deps/`
-- **Spec**: `docs/specs/app-runtime-v0.14.md` section 4 is the authority
+- **Docs**: [What the host offers a cloud run](https://calimero-network.github.io/core/protocol/execution/#what-the-host-offers-a-cloud-run); the WIT in `wit/` is the authority
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.7` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine interfaces toolchains import whatever the app does, accepted at install and refused when called). Anything in neither list is refused.
+Holds the `calimero:app@0.5.7` world: the original 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine interfaces toolchains import whatever the app does, accepted at install and refused when called). Anything in neither list is refused.
 
 ## The compute world
 

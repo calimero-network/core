@@ -595,8 +595,8 @@ mod tests {
         }
         assert_eq!(
             check_wire(&parse_quote!(usize)).unwrap_err().to_string(),
-            "usize would reach JSON as a number that JavaScript reads exactly only up to 2^53 \
-             ; use u32, or u64 (a decimal string in JSON)"
+            "usize would reach JSON as a number that JavaScript reads exactly only up to 2^53; \
+             use u32, or u64 (a decimal string in JSON)"
         );
         assert_eq!(
             check_wire(&parse_quote!(Vec<u128>))

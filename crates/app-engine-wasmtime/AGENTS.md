@@ -4,7 +4,7 @@
 
 - **Crate**: `calimero-app-engine-wasmtime` (`publish = false`, prototype); wasmtime 50 (features: component-model, cranelift, parallel-compilation, pooling-allocator, runtime, std), wasmtime-wasi 50, ring (artifact MAC), subtle (its compare); no wasmtime-wasi-http
 - **Entry**: `src/lib.rs` (`WasmtimeEngine`, store data, limiter, import check); `http.rs` (`wasi:http` over buffered bodies); `compute.rs` (the `calimero:app/compute` world: its own `bindgen!`, reusing `types` and `files` from `bindings.rs`, plus `job`), `bindings.rs` (`bindgen!` over `../app-wit/wit`, the calimero interfaces, `search` and `files` included, onto `HostCore`; the `files` `writer` and `reader` resources carry the host core's handle ids as their rep, like the cursor, and dropping one closes it), `wasi.rs` (WASI wiring), `cache.rs` (checked disk cache), `errors.rs` (trap classification)
-- **Spec**: `docs/specs/app-runtime-v0.14.md` sections 4-5, D8, D19, D43, D44, S1, S2, S6, S8
+- **Docs**: [One run](https://calimero-network.github.io/core/protocol/execution/#one-run), [What the host offers a cloud run](https://calimero-network.github.io/core/protocol/execution/#what-the-host-offers-a-cloud-run), [Limits](https://calimero-network.github.io/core/protocol/limits/)
 
 ## What This Crate Does
 

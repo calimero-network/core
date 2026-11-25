@@ -5,7 +5,7 @@ import com.calimero.mero.crypto.randomBytes
 import kotlinx.serialization.Serializable
 
 /*
- * An organization's recovery key (core 1.0.0-rc.10, `docs/specs/org-recovery.md`; mero-js
+ * An organization's recovery key (core 1.0.0-rc.10, [Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery); mero-js
  * `cloud-v2/recovery.ts`): an Ed25519 key whose 32-byte seed the owner keeps offline. The node
  * stores only the public half; the seed signs, here and never on a node, the statement that hands
  * the organization to one account. Byte-for-byte core's `calimero_identity::recovery`.

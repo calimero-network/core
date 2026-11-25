@@ -1,4 +1,4 @@
-//! Full-text search (spec section 7): the host keeps an index of each table's declared
+//! Full-text search: the host keeps an index of each table's declared
 //! text fields from the app's state, and views query it. The index is derived data on the
 //! node; the host core only carries the query to it and enforces who may ask.
 

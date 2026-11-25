@@ -173,7 +173,9 @@ hands that key to every request of the session, and the request names the
 calling node (`x-calimero-node`). The receiver believes the name only once it
 has attested that node's registered address itself, with a fresh nonce, and
 found the same key there; the same quote gives it the caller's release
-(`Node::identify_peer`, cached by key). Every internal request also carries
+(`Node::identify_peer`, cached by key). The client's NK handshake never tells
+the server who is calling, and a gate on what a node answers needs exactly
+that. Every internal request also carries
 `x-cluster-auth`, the **cluster secret** `HMAC-SHA256(K_c,
 "calimero.cluster.v1|" ‖ cluster)`
 ([Encryption](/protocol/encryption/#the-cluster-key-k_c)), compared in
@@ -185,13 +187,22 @@ release gate on what a node sends:
 
 | Route | The caller must be |
 | --- | --- |
-| `internal/view`, `call`, `events`, `storage`, `blob/held`, `app-ready`, `presence` | On a release the app's owner approved ([release approvals](/protocol/governance/#release-approvals)) |
-| `internal/blob/get` | Any node of the cluster for code (a bundle, a release `.mpk`); for any other blob, on a release approved for an app hosted here that marks it |
+| `internal/view`, `call`, `events`, `storage`, `last-write`, `restore-point`, `xcalls`, `app/index`, `app-ready`, `blob/held`, `blob/pin`, `presence`, `upload/…` | On a release approved for the app's data (`caller_may_hold`; [release approvals](/protocol/governance/#release-approvals)) |
+| `internal/blob/get`, `GET internal/segment/{hash}` | Any node of the cluster for code (a bundle, a release `.mpk`); for any other blob or file segment, on a release approved for an app hosted here that marks it |
 | `internal/blob/delete` | Any node of the cluster, and no app hosted here may still mark the blob |
-| `internal/raft` | The node the RPC names as its sender (leader or candidate); for an app group also on an approved release and a replica or member of the group. The message's `target` must be this node (`421 NOT_ADDRESSEE`) |
-| `internal/system`, `system/index`, `blob`, `challenge/take` | A registered node that is not removed (or a node still in the system group's membership while its removal commits); what it proposes is judged where it applies ([system group](/protocol/system-group/)) |
+| `internal/raft`, `raft-batch` | The node the RPC names as its sender (leader or candidate); for an app group also on an approved release and a replica or member of the group. The message's `target` must be this node (`421 NOT_ADDRESSEE`). A batch carries only heartbeats, and each item is judged alone |
+| `internal/digests` | Any node of the cluster; answered only for the app groups it is a voter or learner of |
+| `internal/system`, `system/index`, `blob`, `PUT internal/segment/{hash}`, `challenge/take`, `runtime`, `usage`, `usage/today` | A registered node that is not removed (or a node still in the system group's membership while its removal commits); what it proposes is judged where it applies ([system group](/protocol/system-group/)), and a blob or segment it stores must hash to its name |
 
-An anonymous peer session (Noise NK) is refused on every internal route.
+An anonymous peer session (Noise NK) is refused on every internal route but
+`internal/cluster-key`, which a node asks before it holds the cluster secret:
+the key is delivered to the node's registered address, never answered
+([Encryption](/protocol/encryption/#the-cluster-key-k_c)).
+
+The sender check matters because openraft takes the sender a message names on
+trust, and a follower takes an append from any node with a higher term: without
+it, any node that can compute the cluster secret could overwrite an app group's
+log.
 
 Raft itself is an RPC: `POST /internal/raft { group, target, rpc }` carries an
 `AppendEntries`, `Vote` or `InstallSnapshot` request as JSON and returns the

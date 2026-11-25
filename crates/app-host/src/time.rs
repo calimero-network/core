@@ -1,4 +1,4 @@
-//! Time and randomness as the app sees them (spec section 5).
+//! Time and randomness as the app sees them.
 
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
