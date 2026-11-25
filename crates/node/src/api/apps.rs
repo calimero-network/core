@@ -2044,7 +2044,7 @@ async fn app_links(
             rows.push(link_row(&node, name, None, linked(name)));
         }
     }
-    Ok(Json(json!(AppLinks {
+    Ok(Json(json!(AppLinkList {
         app: app_id,
         links: rows,
     })))
@@ -2405,7 +2405,7 @@ pub(super) struct SecretCleared {
 
 /// `GET /apps/{app}/links`: each reference of the release the instance runs and what is linked.
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct AppLinks {
+pub(super) struct AppLinkList {
     app: String,
     links: Vec<LinkRow>,
 }

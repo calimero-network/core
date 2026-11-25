@@ -54,7 +54,7 @@ data class AppEntry (
     val owner: kotlin.String,
 
     @SerialName(value = "org")
-    val org: kotlin.String?,
+    val org: kotlin.String,
 
     @SerialName(value = "bundle")
     val bundle: kotlin.String,
@@ -66,7 +66,7 @@ data class AppEntry (
     val version: kotlin.String?,
 
     @SerialName(value = "deployment")
-    val deployment: kotlin.String? = null
+    val deployment: kotlin.String?
 
 ) {
 

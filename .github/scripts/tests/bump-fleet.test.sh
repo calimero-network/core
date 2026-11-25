@@ -906,6 +906,94 @@ expect_exit 0 "a meroctl of another release is not run" \
 expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...the client is left"
 expect_file "$UNCLAIMED" 'scripts/install-meroctl.sh && pnpm' "  ...and the report names the meroctl installer"
 
+# A release can move the WIT world the SDK writes into every app's ABI
+# (rc.37: calimero:app@0.5.6 -> 0.5.7). The apps repository commits each
+# component app's ABI (apps/<app>/logic/res/abi.json, written by
+# scripts/component-build.sh: `meroctl app build` then `meroctl app abi show`),
+# and the web and mobile clients are generated FROM it. Moving the pin and
+# rerunning `codegen` over the old ABI left all three stale (apps#1034: every
+# `Rust (<app>)` job failed the stale-ABI check). The ABI is rebuilt first, then
+# the web clients, then the mobile ones (scripts/mobile-codegen.sh).
+mkworld() {
+  local d="$1"
+  mkmeroctl "$d" 0.11.0-rc.1
+  mkdir -p "$d/apps/kv/logic/res" "$d/apps/kv/mobile/android/generated"
+  printf '{"abiVersion":1,"methods":{},"world":"calimero:app@0.5.7"}\n' > "$d/apps/kv/logic/res/abi.json"
+  printf '// from calimero:app@0.5.7\n' > "$d/apps/kv/app/src/generated/client.ts"
+  printf '// from calimero:app@0.5.7\n' > "$d/apps/kv/mobile/android/generated/KvClient.kt"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nmeroctl app build "$1" --out "$1/res/kv.wasm" --target-dir "${CARGO_TARGET_DIR:-$1/target}" >&2\nmeroctl app abi show "$1/res/kv.wasm" > "$1/res/abi.json"\n' \
+    > "$d/scripts/component-build.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nmeroctl app codegen --abi apps/kv/logic/res/abi.json --lang kotlin -o apps/kv/mobile/android/generated\n' \
+    > "$d/scripts/mobile-codegen.sh"
+  printf 'apps/*/logic/res/*.wasm\n' > "$d/.gitignore"
+  chmod +x "$d/scripts/component-build.sh" "$d/scripts/mobile-codegen.sh"
+}
+mkdir -p "$STUBS/pnpm-world" "$STUBS/meroctl-world" "$STUBS/meroctl-nobuild"
+printf '#!/usr/bin/env bash\n[ "$*" = "-r --if-present run codegen" ] || exit 9\ncd apps/kv/app && meroctl app codegen --abi ../logic/res/abi.json --lang ts -o src/generated\n' \
+  > "$STUBS/pnpm-world/pnpm"
+# The release's meroctl, whose SDK writes calimero:app@0.5.8: a build answers an
+# ABI naming it, and codegen writes the world of the ABI it was handed.
+cat > "$STUBS/meroctl-world/meroctl" <<'STUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "--version "*) echo "meroctl 0.11.0-rc.2 (0.11.0-rc.2-0-gabc, abc)" ;;
+  "app build")
+    [ -n "${MEROCTL_BUILD_FAILS:-}" ] && { echo "error: the wasm32-wasip2 target is not installed" >&2; exit 1; }
+    while [ $# -gt 0 ]; do [ "$1" = --out ] && out="$2"; shift; done
+    echo wasm > "$out" ;;
+  "app abi") printf '{"abiVersion":1,"methods":{},"world":"calimero:app@0.5.8"}\n' ;;
+  "app codegen")
+    lang=ts
+    while [ $# -gt 0 ]; do
+      case "$1" in --abi) abi="$2" ;; -o) out="$2" ;; --lang) lang="$2" ;; esac
+      shift
+    done
+    world=$(sed -n 's/.*"world":"\([^"]*\)".*/\1/p' "$abi")
+    case "$lang" in kotlin) f=KvClient.kt ;; *) f=client.ts ;; esac
+    echo "// from $world" > "$out/$f" ;;
+  *) exit 9 ;;
+esac
+STUB
+printf '#!/usr/bin/env bash\nMEROCTL_BUILD_FAILS=1 exec "%s" "$@"\n' "$STUBS/meroctl-world/meroctl" > "$STUBS/meroctl-nobuild/meroctl"
+chmod +x "$STUBS/pnpm-world/pnpm" "$STUBS/meroctl-world/meroctl" "$STUBS/meroctl-nobuild/meroctl"
+
+D=$(mkfixture world); mkworld "$D"; commit "$D"
+CH="$ROOT/changed-world.txt"
+UNCLAIMED="$ROOT/unclaimed-world.txt"
+expect_exit 0 "a release that moves the WIT world rebuilds the ABIs, then the clients made from them" \
+  env PATH="$STUBS/pnpm-world:$PATH" MERO_APP_BUILD_BIN="$STUBS/meroctl-world/meroctl" \
+  CHANGED_FILES_OUT="$CH" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/apps/kv/logic/res/abi.json" '"world":"calimero:app@0.5.8"' "  the committed ABI names the release's world"
+expect_file "$D/apps/kv/app/src/generated/client.ts" '// from calimero:app@0.5.8' "  the web client is generated from the rebuilt ABI"
+expect_file "$D/apps/kv/mobile/android/generated/KvClient.kt" '// from calimero:app@0.5.8' "  ...and so is the mobile client"
+expect_file "$CH" 'apps/kv/logic/res/abi.json' "  the ABI is staged with the bump"
+expect_file "$CH" 'apps/kv/app/src/generated/client.ts' "  ...the web client"
+expect_file "$CH" 'apps/kv/mobile/android/generated/KvClient.kt' "  ...and the mobile client"
+expect_absent "$CH" 'apps/kv/logic/res/kv.wasm' "  ...but not the build's wasm"
+expect_absent "$UNCLAIMED" 'NOT REGENERATED' "  ...and nothing is left to regenerate by hand"
+
+D=$(mkfixture world-nobuild); mkworld "$D"; commit "$D"
+UNCLAIMED="$ROOT/unclaimed-world-nobuild.txt"
+expect_exit 0 "an ABI that cannot be rebuilt still opens the pull request" \
+  env PATH="$STUBS/pnpm-world:$PATH" MERO_APP_BUILD_BIN="$STUBS/meroctl-nobuild/meroctl" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/scripts/install-meroctl.sh" ':-0.11.0-rc.2}' "  the pin is the release"
+expect_file "$D/apps/kv/logic/res/abi.json" '"world":"calimero:app@0.5.7"' "  the ABI is left as it was, not emptied"
+expect_file "$UNCLAIMED" 'NOT REGENERATED' "  ...the report says so"
+expect_file "$UNCLAIMED" 'the ABIs of apps/kv/logic' "  ...names the app"
+expect_file "$UNCLAIMED" 'xargs -n1 scripts/component-build.sh' "  ...and the step to run"
+
+D=$(mkfixture world-no-codegen); mkworld "$D"; commit "$D"
+UNCLAIMED="$ROOT/unclaimed-world-no-codegen.txt"
+expect_exit 0 "--no-codegen leaves the ABIs and clients for later" \
+  env PATH="$STUBS/pnpm-world:$PATH" MERO_APP_BUILD_BIN="$STUBS/meroctl-world/meroctl" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock --no-codegen
+expect_file "$D/apps/kv/logic/res/abi.json" '"world":"calimero:app@0.5.7"' "  the ABI is left"
+expect_file "$UNCLAIMED" 'scripts/component-build.sh' "  ...the report names the ABI step"
+expect_file "$UNCLAIMED" 'pnpm -r --if-present run codegen' "  ...the web clients"
+expect_file "$UNCLAIMED" 'scripts/mobile-codegen.sh' "  ...and the mobile clients"
+
 # ─────────────────────────────────────────────────────────────────────────────
 echo "mobile: the native apps' Swift and Kotlin SDK pins"
 # ─────────────────────────────────────────────────────────────────────────────

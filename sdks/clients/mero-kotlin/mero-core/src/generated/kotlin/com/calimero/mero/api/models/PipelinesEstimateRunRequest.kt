@@ -46,7 +46,7 @@ data class PipelinesEstimateRunRequest (
     val counts: kotlin.collections.Map<kotlin.String, kotlin.Long>? = null,
 
     @Contextual @SerialName(value = "params")
-    val params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null
+    val params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>? = null
 
 ) {
 

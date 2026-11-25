@@ -167,7 +167,7 @@ fn app_answers_answer_as_before() {
         "app": "a2", "version": "1.0.0", "inRange": true });
     let gone = json!({ "name": "old", "package": null, "range": null, "mode": null,
         "app": "a3", "version": null, "inRange": null });
-    writes_as_before::<super::apps::AppLinks>(&json!({ "app": "a1", "links": [link, gone] }));
+    writes_as_before::<super::apps::AppLinkList>(&json!({ "app": "a1", "links": [link, gone] }));
     writes_as_before::<crate::system::AppMoved>(&json!({
         "appId": "a1", "from": "o1", "org": "o2", "grants": [{ "kind": "org" }],
         "created": true, "added": ["b"], "revokedInvites": 0,

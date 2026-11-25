@@ -31,6 +31,7 @@ import com.calimero.mero.api.models.AllAppsBody
 import com.calimero.mero.api.models.AppTeamList
 import com.calimero.mero.api.models.AppTeamsScoped
 import com.calimero.mero.api.models.ApprovedReleases
+import com.calimero.mero.api.models.AppsReport
 import com.calimero.mero.api.models.BackupKeyAnswer
 import com.calimero.mero.api.models.BackupKeyBody
 import com.calimero.mero.api.models.CapabilitiesBody
@@ -40,12 +41,11 @@ import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteBody
 import com.calimero.mero.api.models.InviteList
 import com.calimero.mero.api.models.InviteMade
-import com.calimero.mero.api.models.InviteRedeem200Response
+import com.calimero.mero.api.models.InviteRedeemed
 import com.calimero.mero.api.models.MemberBody
 import com.calimero.mero.api.models.MemberSecurityList
 import com.calimero.mero.api.models.MetadataBody
 import com.calimero.mero.api.models.Org
-import com.calimero.mero.api.models.OrgApps200Response
 import com.calimero.mero.api.models.OrgBody
 import com.calimero.mero.api.models.OrgCreated
 import com.calimero.mero.api.models.OrgDeleted
@@ -415,7 +415,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Join with an invite
      * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; unless the instance&#39;s release says &#x60;guests: allowed&#x60; and its organization&#39;s &#x60;allowGuests&#x60; is on, judged as the redemption applies.  **Who:** a passkey session (an API key is refused).
      * @param token 
-     * @return InviteRedeem200Response
+     * @return InviteRedeemed
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -424,11 +424,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun inviteRedeem(token: kotlin.String) : InviteRedeem200Response = withContext(Dispatchers.IO) {
+    suspend fun inviteRedeem(token: kotlin.String) : InviteRedeemed = withContext(Dispatchers.IO) {
         val localVarResponse = inviteRedeemWithHttpInfo(token = token)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteRedeem200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteRedeemed
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -447,16 +447,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Join with an invite
      * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; unless the instance&#39;s release says &#x60;guests: allowed&#x60; and its organization&#39;s &#x60;allowGuests&#x60; is on, judged as the redemption applies.  **Who:** a passkey session (an API key is refused).
      * @param token 
-     * @return ApiResponse<InviteRedeem200Response?>
+     * @return ApiResponse<InviteRedeemed?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun inviteRedeemWithHttpInfo(token: kotlin.String) : ApiResponse<InviteRedeem200Response?> = withContext(Dispatchers.IO) {
+    suspend fun inviteRedeemWithHttpInfo(token: kotlin.String) : ApiResponse<InviteRedeemed?> = withContext(Dispatchers.IO) {
         val localVariableConfig = inviteRedeemRequestConfig(token = token)
 
-        return@withContext request<Unit, InviteRedeem200Response>(
+        return@withContext request<Unit, InviteRedeemed>(
             localVariableConfig
         )
     }
@@ -887,7 +887,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * @param org 
      * @param after  (optional)
      * @param limit  (optional)
-     * @return OrgApps200Response
+     * @return AppsReport
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -896,11 +896,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgApps(org: kotlin.String, after: kotlin.String? = null, limit: kotlin.Long? = null) : OrgApps200Response = withContext(Dispatchers.IO) {
+    suspend fun orgApps(org: kotlin.String, after: kotlin.String? = null, limit: kotlin.Long? = null) : AppsReport = withContext(Dispatchers.IO) {
         val localVarResponse = orgAppsWithHttpInfo(org = org, after = after, limit = limit)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgApps200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppsReport
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -921,16 +921,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * @param org 
      * @param after  (optional)
      * @param limit  (optional)
-     * @return ApiResponse<OrgApps200Response?>
+     * @return ApiResponse<AppsReport?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgAppsWithHttpInfo(org: kotlin.String, after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<OrgApps200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgAppsWithHttpInfo(org: kotlin.String, after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<AppsReport?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgAppsRequestConfig(org = org, after = after, limit = limit)
 
-        return@withContext request<Unit, OrgApps200Response>(
+        return@withContext request<Unit, AppsReport>(
             localVariableConfig
         )
     }

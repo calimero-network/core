@@ -31,7 +31,7 @@ class AuthFacade internal constructor(
     suspend fun accountApps(
         after: kotlin.String? = null,
         limit: kotlin.Long? = null,
-    ): AccountApps200Response =
+    ): AppsReport =
         api(null, null, emptySet()).accounts.accountApps(after = after, limit = limit)
 
     /**
@@ -78,7 +78,7 @@ class AuthFacade internal constructor(
      */
     suspend fun accountRecoveryBegin(
         code: kotlin.String,
-    ): RegisterBegin200Response =
+    ): PasskeyChallenge =
         api(null, null, emptySet()).accounts.accountRecoveryBegin(accountRecoveryBeginRequest = AccountRecoveryBeginRequest(code = code))
 
     /**
@@ -133,7 +133,7 @@ class AuthFacade internal constructor(
         challengeId: kotlin.String,
         code: kotlin.String,
         registration: Registration,
-    ): AccountRecoveryStart200Response =
+    ): AccountRecoveryPending =
         api(null, null, emptySet()).accounts.accountRecoveryStart(accountRecoveryStartRequest = AccountRecoveryStartRequest(challengeId = challengeId, code = code, registration = registration))
 
     /**
@@ -168,7 +168,7 @@ class AuthFacade internal constructor(
      */
     suspend fun activityList(
         after: kotlin.Long? = null,
-    ): ActivityList200Response =
+    ): ActivityList =
         api(null, null, emptySet()).accounts.activityList(after = after)
 
     /**
@@ -196,7 +196,7 @@ class AuthFacade internal constructor(
      */
     suspend fun aliasGet(
         alias: kotlin.String,
-    ): AliasGet200Response =
+    ): AliasView =
         api(null, null, emptySet()).accounts.aliasGet(alias = alias)
 
     /**
@@ -208,7 +208,7 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun aliasList(): AliasList200Response =
+    suspend fun aliasList(): AliasList =
         api(null, null, emptySet()).accounts.aliasList()
 
     /**
@@ -249,7 +249,7 @@ class AuthFacade internal constructor(
         upgrades: ApikeyCreateRequestUpgrades? = null,
         then: kotlin.collections.List<ApikeyCreateRequestThenInner>? = null,
         passkey: PasskeyProvider? = null,
-    ): ApikeyCreate200Response =
+    ): ApiKeyMade =
         api(passkey, null, emptySet()).accounts.apikeyCreate(apikeyCreateRequest = ApikeyCreateRequest(label = label, apps = apps, methods = methods, readOnly = readOnly, allowConfirm = allowConfirm, ttlSecs = ttlSecs, upgrades = upgrades, then = then))
 
     /**
@@ -261,7 +261,7 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun apikeyList(): ApikeyList200Response =
+    suspend fun apikeyList(): ApiKeyList =
         api(null, null, emptySet()).accounts.apikeyList()
 
     /**
@@ -294,7 +294,7 @@ class AuthFacade internal constructor(
      */
     suspend fun loginBegin(
         origin: kotlin.String? = null,
-    ): LoginBegin200Response =
+    ): PasskeyChallenge =
         api(null, null, emptySet()).accounts.loginBegin(loginBeginRequest = LoginBeginRequest(origin = origin))
 
     /**
@@ -335,7 +335,7 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun logoutAll(): LogoutAll200Response =
+    suspend fun logoutAll(): SessionsRevoked =
         api(null, null, emptySet()).accounts.logoutAll()
 
     /**
@@ -349,7 +349,7 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun me(): Me200Response =
+    suspend fun me(): AccountView =
         api(null, null, emptySet()).accounts.me()
 
     /**
@@ -363,7 +363,7 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun passkeyAddBegin(): RegisterBegin200Response =
+    suspend fun passkeyAddBegin(): PasskeyChallenge =
         api(null, null, emptySet()).accounts.passkeyAddBegin()
 
     /**
@@ -383,7 +383,7 @@ class AuthFacade internal constructor(
         challengeId: kotlin.String,
         registration: Registration,
         passkey: PasskeyProvider? = null,
-    ): PasskeyAddFinish200Response =
+    ): PasskeyAdded =
         api(passkey, null, emptySet()).accounts.passkeyAddFinish(passkeyAddFinishRequest = PasskeyAddFinishRequest(challengeId = challengeId, registration = registration))
 
     /**
@@ -435,7 +435,7 @@ class AuthFacade internal constructor(
      */
     suspend fun recoveryCreate(
         passkey: PasskeyProvider? = null,
-    ): RecoveryCreate200Response =
+    ): RecoveryCode =
         api(passkey, null, emptySet()).accounts.recoveryCreate()
 
     /**
@@ -485,7 +485,7 @@ class AuthFacade internal constructor(
         name: kotlin.String? = null,
         origin: kotlin.String? = null,
         invite: kotlin.String? = null,
-    ): RegisterBegin200Response =
+    ): PasskeyChallenge =
         api(null, null, emptySet()).accounts.registerBegin(registerBeginRequest = RegisterBeginRequest(name = name, origin = origin, invite = invite))
 
     /**
@@ -536,7 +536,7 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun sessionsList(): SessionsList200Response =
+    suspend fun sessionsList(): SessionList =
         api(null, null, emptySet()).accounts.sessionsList()
 
     /**
@@ -550,6 +550,6 @@ class AuthFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun usage(): Usage200Response =
+    suspend fun usage(): AccountUsage =
         api(null, null, emptySet()).accounts.usage()
 }

@@ -8,12 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_job_node_attestation_response_200_type_0 import (
-    OpsJobNodeAttestationResponse200Type0,
-)
-from ...models.ops_job_node_attestation_response_200_type_1 import (
-    OpsJobNodeAttestationResponse200Type1,
-)
+from ...models.job_node_verdict_type_0 import JobNodeVerdictType0
+from ...models.job_node_verdict_type_1 import JobNodeVerdictType1
 from typing import cast
 from typing import cast, Union
 
@@ -34,38 +30,29 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[
-    Union[
-        Error,
-        Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ],
-    ]
-]:
+) -> Optional[Union[Error, Union["JobNodeVerdictType0", "JobNodeVerdictType1"]]]:
     if response.status_code == 200:
 
         def _parse_response_200(
             data: object,
-        ) -> Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ]:
+        ) -> Union["JobNodeVerdictType0", "JobNodeVerdictType1"]:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                response_200_type_0 = OpsJobNodeAttestationResponse200Type0.from_dict(
-                    data
+                componentsschemas_job_node_verdict_type_0 = (
+                    JobNodeVerdictType0.from_dict(data)
                 )
 
-                return response_200_type_0
+                return componentsschemas_job_node_verdict_type_0
             except:  # noqa: E722
                 pass
             if not isinstance(data, dict):
                 raise TypeError()
-            response_200_type_1 = OpsJobNodeAttestationResponse200Type1.from_dict(data)
+            componentsschemas_job_node_verdict_type_1 = JobNodeVerdictType1.from_dict(
+                data
+            )
 
-            return response_200_type_1
+            return componentsschemas_job_node_verdict_type_1
 
         response_200 = _parse_response_200(response.json())
 
@@ -99,15 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[
-    Union[
-        Error,
-        Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ],
-    ]
-]:
+) -> Response[Union[Error, Union["JobNodeVerdictType0", "JobNodeVerdictType1"]]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -120,15 +99,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Response[
-    Union[
-        Error,
-        Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ],
-    ]
-]:
+) -> Response[Union[Error, Union["JobNodeVerdictType0", "JobNodeVerdictType1"]]]:
     """Whether the cluster accepts a job node
 
      Runs the check the leader makes before it sends a job node work: a quote that passes the release
@@ -150,7 +121,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, Union['OpsJobNodeAttestationResponse200Type0', 'OpsJobNodeAttestationResponse200Type1']]]
+        Response[Union[Error, Union['JobNodeVerdictType0', 'JobNodeVerdictType1']]]
     """
 
     kwargs = _get_kwargs(
@@ -168,15 +139,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[
-    Union[
-        Error,
-        Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ],
-    ]
-]:
+) -> Optional[Union[Error, Union["JobNodeVerdictType0", "JobNodeVerdictType1"]]]:
     """Whether the cluster accepts a job node
 
      Runs the check the leader makes before it sends a job node work: a quote that passes the release
@@ -198,7 +161,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, Union['OpsJobNodeAttestationResponse200Type0', 'OpsJobNodeAttestationResponse200Type1']]
+        Union[Error, Union['JobNodeVerdictType0', 'JobNodeVerdictType1']]
     """
 
     return sync_detailed(
@@ -211,15 +174,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Response[
-    Union[
-        Error,
-        Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ],
-    ]
-]:
+) -> Response[Union[Error, Union["JobNodeVerdictType0", "JobNodeVerdictType1"]]]:
     """Whether the cluster accepts a job node
 
      Runs the check the leader makes before it sends a job node work: a quote that passes the release
@@ -241,7 +196,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, Union['OpsJobNodeAttestationResponse200Type0', 'OpsJobNodeAttestationResponse200Type1']]]
+        Response[Union[Error, Union['JobNodeVerdictType0', 'JobNodeVerdictType1']]]
     """
 
     kwargs = _get_kwargs(
@@ -257,15 +212,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[
-    Union[
-        Error,
-        Union[
-            "OpsJobNodeAttestationResponse200Type0",
-            "OpsJobNodeAttestationResponse200Type1",
-        ],
-    ]
-]:
+) -> Optional[Union[Error, Union["JobNodeVerdictType0", "JobNodeVerdictType1"]]]:
     """Whether the cluster accepts a job node
 
      Runs the check the leader makes before it sends a job node work: a quote that passes the release
@@ -287,7 +234,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, Union['OpsJobNodeAttestationResponse200Type0', 'OpsJobNodeAttestationResponse200Type1']]
+        Union[Error, Union['JobNodeVerdictType0', 'JobNodeVerdictType1']]
     """
 
     return (

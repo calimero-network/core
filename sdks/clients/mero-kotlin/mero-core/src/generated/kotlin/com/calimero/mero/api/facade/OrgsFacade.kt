@@ -108,7 +108,7 @@ class OrgsFacade internal constructor(
      */
     suspend fun inviteRedeem(
         token: kotlin.String,
-    ): InviteRedeem200Response =
+    ): InviteRedeemed =
         api(null, null, emptySet()).organizations.inviteRedeem(token = token)
 
     /**
@@ -225,7 +225,7 @@ class OrgsFacade internal constructor(
         org: kotlin.String,
         after: kotlin.String? = null,
         limit: kotlin.Long? = null,
-    ): OrgApps200Response =
+    ): AppsReport =
         api(null, null, emptySet()).organizations.orgApps(org = org, after = after, limit = limit)
 
     /**

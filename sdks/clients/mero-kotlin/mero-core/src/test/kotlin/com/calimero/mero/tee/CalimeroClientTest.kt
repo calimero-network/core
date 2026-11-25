@@ -42,7 +42,7 @@ import com.calimero.mero.UnavailableError
 import com.calimero.mero.WebAuthenticationCancelled
 import com.calimero.mero.WrongNode
 import com.calimero.mero.api.models.ApikeyCreateRequestUpgrades
-import com.calimero.mero.api.models.ConsentPageResult200Response
+import com.calimero.mero.api.models.ConsentResult as ConsentResultAnswer
 import com.calimero.mero.api.models.SignUp
 import com.calimero.mero.app.CalimeroAppBackend
 import com.calimero.mero.app.OrgConsentNotApproved
@@ -716,7 +716,7 @@ class CalimeroClientTest {
 
     @Test
     fun `types the facade's consent result outcome`() {
-        fun answer(text: String) = Json.decodeFromString(ConsentPageResult200Response.serializer(), text)
+        fun answer(text: String) = Json.decodeFromString(ConsentResultAnswer.serializer(), text)
         val renamed = ConsentResult.from(answer("""{"requestId":"r","kind":"renameOrg","status":"approved","decidedAt":1,"outcome":{"orgId":"o","name":"n"}}"""))
         assertEquals(ConsentOutcome.OrgRenamed("o", "n"), renamed.outcome)
         val deleted = ConsentResult.from(answer("""{"requestId":"r","kind":"deleteOrg","status":"approved","decidedAt":1,"outcome":{"apps":["a"]}}"""))

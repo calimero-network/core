@@ -30,7 +30,7 @@ class AppsFacade internal constructor(
      */
     suspend fun abi(
         app: kotlin.String,
-    ): AppAbi200Response =
+    ): AppAbi =
         api(null, null, emptySet()).apps.appAbi(app = app)
 
     /**
@@ -68,7 +68,7 @@ class AppsFacade internal constructor(
         version: kotlin.String,
         unit: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): AppApproveUpgrade200Response =
+    ): ApprovalLogged =
         api(passkey, null, emptySet()).apps.appApproveUpgrade(app = app, appApproveUpgradeRequest = AppApproveUpgradeRequest(version = version, unit = unit))
 
     /**
@@ -85,7 +85,7 @@ class AppsFacade internal constructor(
     suspend fun attestation(
         app: kotlin.String,
         nonce: kotlin.String,
-    ): AppAttestation200Response =
+    ): AppAttestations =
         api(null, null, emptySet()).apps.appAttestation(app = app, nonce = nonce)
 
     /**
@@ -111,7 +111,7 @@ class AppsFacade internal constructor(
         initArgs: kotlinx.serialization.json.JsonElement? = null,
         metadata: kotlinx.serialization.json.JsonElement? = null,
         deployment: kotlin.String? = null,
-    ): AppCreate200Response =
+    ): AppCreated =
         api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, newOrg = newOrg, grants = grants, initArgs = initArgs, metadata = metadata, deployment = deployment))
 
     /**
@@ -131,7 +131,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         target: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppDelegate200Response =
+    ): DelegationMade =
         api(passkey, null, emptySet()).apps.appDelegate(app = app, target = target, appDelegateRequest = AppDelegateRequest())
 
     /**
@@ -147,7 +147,7 @@ class AppsFacade internal constructor(
      */
     suspend fun delegations(
         app: kotlin.String,
-    ): AppDelegations200Response =
+    ): Delegations =
         api(null, null, emptySet()).apps.appDelegations(app = app)
 
     /**
@@ -163,7 +163,7 @@ class AppsFacade internal constructor(
      */
     suspend fun delete(
         app: kotlin.String,
-    ): AppDelete200Response =
+    ): AppDeleted =
         api(null, null, emptySet()).apps.appDelete(app = app)
 
     /**
@@ -179,7 +179,7 @@ class AppsFacade internal constructor(
      */
     suspend fun egress(
         app: kotlin.String,
-    ): AppEgress200Response =
+    ): EgressView =
         api(null, null, emptySet()).apps.appEgress(app = app)
 
     /**
@@ -217,7 +217,7 @@ class AppsFacade internal constructor(
         uses: kotlin.Long? = null,
         scope: kotlinx.serialization.json.JsonElement? = null,
         passkey: PasskeyProvider? = null,
-    ): AppInviteCreate200Response =
+    ): AppInviteMade =
         api(passkey, null, emptySet()).apps.appInviteCreate(app = app, appInviteCreateRequest = AppInviteCreateRequest(ttlSecs = ttlSecs, uses = uses, scope = scope))
 
     /**
@@ -233,7 +233,7 @@ class AppsFacade internal constructor(
      */
     suspend fun inviteList(
         app: kotlin.String,
-    ): AppInviteList200Response =
+    ): AppInviteList =
         api(null, null, emptySet()).apps.appInviteList(app = app)
 
     /**
@@ -274,7 +274,7 @@ class AppsFacade internal constructor(
         name: kotlin.String,
         bodyApp: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppLink200Response =
+    ): LinkRow =
         api(passkey, null, emptySet()).apps.appLink(app = app, name = name, appLinkRequest = AppLinkRequest(app = bodyApp))
 
     /**
@@ -290,7 +290,7 @@ class AppsFacade internal constructor(
      */
     suspend fun links(
         app: kotlin.String,
-    ): AppLinks200Response =
+    ): AppLinkList =
         api(null, null, emptySet()).apps.appLinks(app = app)
 
     /**
@@ -307,7 +307,7 @@ class AppsFacade internal constructor(
     suspend fun list(
         `package`: kotlin.String? = null,
         bundle: kotlin.String? = null,
-    ): AppList200Response =
+    ): AppList =
         api(null, null, emptySet()).apps.appList(`package` = `package`, bundle = bundle)
 
     /**
@@ -348,7 +348,7 @@ class AppsFacade internal constructor(
         consistency: AppMethodRequest.Consistency? = null,
         minIndex: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): AppMethod200Response =
+    ): MethodResult =
         api(passkey, null, emptySet()).apps.appMethod(app = app, method = method, appMethodRequest = AppMethodRequest(args = args, idempotencyKey = idempotencyKey, consistency = consistency, minIndex = minIndex))
 
     /**
@@ -369,7 +369,7 @@ class AppsFacade internal constructor(
         toOrg: kotlin.String,
         bringMembers: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): AppMove200Response =
+    ): AppMoved =
         api(passkey, null, emptySet()).apps.appMove(app = app, appMoveRequest = AppMoveRequest(toOrg = toOrg, bringMembers = bringMembers))
 
     /**
@@ -385,7 +385,7 @@ class AppsFacade internal constructor(
      */
     suspend fun openapi(
         app: kotlin.String,
-    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?> =
+    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> =
         api(null, null, emptySet()).apps.appOpenapi(app = app)
 
     /**
@@ -455,7 +455,7 @@ class AppsFacade internal constructor(
     suspend fun runLogs(
         app: kotlin.String,
         run: kotlin.String,
-    ): AppRunLogs200Response =
+    ): RunLogs =
         api(null, null, emptySet()).apps.appRunLogs(app = app, run = run)
 
     /**
@@ -473,7 +473,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         limit: kotlin.String? = null,
         before: kotlin.String? = null,
-    ): AppRuns200Response =
+    ): RunList =
         api(null, null, emptySet()).apps.appRuns(app = app, limit = limit, before = before)
 
     /**
@@ -493,7 +493,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         name: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppSecretClear200Response =
+    ): SecretCleared =
         api(passkey, null, emptySet()).apps.appSecretClear(app = app, name = name)
 
     /**
@@ -514,7 +514,7 @@ class AppsFacade internal constructor(
         name: kotlin.String,
         value: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppSecretSet200Response =
+    ): SecretSet =
         api(passkey, null, emptySet()).apps.appSecretSet(app = app, name = name, appSecretSetRequest = AppSecretSetRequest(value = value))
 
     /**
@@ -530,7 +530,7 @@ class AppsFacade internal constructor(
      */
     suspend fun secrets(
         app: kotlin.String,
-    ): AppSecrets200Response =
+    ): AppSecrets =
         api(null, null, emptySet()).apps.appSecrets(app = app)
 
     /**
@@ -566,7 +566,7 @@ class AppsFacade internal constructor(
      */
     suspend fun storage(
         app: kotlin.String,
-    ): AppStorage200Response =
+    ): AppStorage =
         api(null, null, emptySet()).apps.appStorage(app = app)
 
     /**
@@ -622,7 +622,7 @@ class AppsFacade internal constructor(
     suspend fun undo(
         app: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppUndo200Response =
+    ): UndoDone =
         api(passkey, null, emptySet()).apps.appUndo(app = app, appUndoRequest = AppUndoRequest())
 
     /**
@@ -638,7 +638,7 @@ class AppsFacade internal constructor(
      */
     suspend fun undoView(
         app: kotlin.String,
-    ): AppUndoView200Response =
+    ): UndoView =
         api(null, null, emptySet()).apps.appUndoView(app = app)
 
     /**
@@ -674,7 +674,7 @@ class AppsFacade internal constructor(
      */
     suspend fun update(
         app: kotlin.String,
-    ): AppUpdate200Response =
+    ): UpdateView =
         api(null, null, emptySet()).apps.appUpdate(app = app)
 
     /**
@@ -698,7 +698,7 @@ class AppsFacade internal constructor(
         service: kotlin.String? = null,
         migrate: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): AppUpgrade200Response =
+    ): UpgradeApplied =
         api(passkey, null, emptySet()).apps.appUpgrade(app = app, appUpgradeRequest = AppUpgradeRequest(bundle = bundle, `package` = `package`, version = version, service = service, migrate = migrate))
 
     /**
@@ -734,7 +734,7 @@ class AppsFacade internal constructor(
      */
     suspend fun usage(
         app: kotlin.String,
-    ): AppUsage200Response =
+    ): AppUsage =
         api(null, null, emptySet()).apps.appUsage(app = app)
 
     /**
@@ -750,7 +750,7 @@ class AppsFacade internal constructor(
      */
     suspend fun xcalls(
         app: kotlin.String,
-    ): AppXcalls200Response =
+    ): XcallsReport =
         api(null, null, emptySet()).apps.appXcalls(app = app)
 
     /**
@@ -767,7 +767,7 @@ class AppsFacade internal constructor(
     suspend fun blobDelete(
         app: kotlin.String,
         id: kotlin.String,
-    ): BlobDelete200Response =
+    ): Logged =
         api(null, null, emptySet()).apps.blobDelete(app = app, id = id)
 
     /**
@@ -800,7 +800,7 @@ class AppsFacade internal constructor(
     suspend fun blobInfo(
         app: kotlin.String,
         id: kotlin.String,
-    ): BlobInfo200Response =
+    ): BlobView =
         api(null, null, emptySet()).apps.blobInfo(app = app, id = id)
 
     /**
@@ -816,7 +816,7 @@ class AppsFacade internal constructor(
      */
     suspend fun blobList(
         app: kotlin.String,
-    ): BlobList200Response =
+    ): BlobList =
         api(null, null, emptySet()).apps.blobList(app = app)
 
     /**
@@ -833,7 +833,7 @@ class AppsFacade internal constructor(
     suspend fun blobRevoke(
         app: kotlin.String,
         id: kotlin.String,
-    ): BlobDelete200Response =
+    ): Logged =
         api(null, null, emptySet()).apps.blobRevoke(app = app, id = id)
 
     /**
@@ -851,7 +851,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         body: kotlin.ByteArray,
         sealed: kotlin.Boolean? = null,
-    ): BlobUpload200Response =
+    ): BlobStored =
         api(null, null, emptySet()).apps.blobUpload(app = app, body = body, sealed = sealed)
 
     /**
@@ -886,7 +886,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         id: kotlin.String,
         recipient: kotlin.String,
-    ): ExportsExport200Response =
+    ): FileExport =
         api(null, null, emptySet()).apps.exportsExport(app = app, id = id, exportsExportRequest = ExportsExportRequest(recipient = recipient))
 
     /**
@@ -921,7 +921,7 @@ class AppsFacade internal constructor(
     suspend fun fileInfo(
         app: kotlin.String,
         id: kotlin.String,
-    ): FileInfo200Response =
+    ): FileView =
         api(null, null, emptySet()).apps.fileInfo(app = app, id = id)
 
     /**
@@ -935,7 +935,7 @@ class AppsFacade internal constructor(
      */
     suspend fun filesList(
         app: kotlin.String,
-    ): FilesList200Response =
+    ): FileList =
         api(null, null, emptySet()).apps.filesList(app = app)
 
     /**
@@ -952,7 +952,7 @@ class AppsFacade internal constructor(
     suspend fun filesUpload(
         app: kotlin.String,
         body: kotlin.ByteArray,
-    ): FilesUpload200Response =
+    ): FileStored =
         api(null, null, emptySet()).apps.filesUpload(app = app, body = body)
 
     /**
@@ -974,7 +974,7 @@ class AppsFacade internal constructor(
         args: kotlinx.serialization.json.JsonElement? = null,
         idempotencyKey: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): Intents200Response =
+    ): IntentResult =
         api(passkey, null, emptySet()).apps.intents(app = app, intentsRequest = IntentsRequest(method = method, args = args, idempotencyKey = idempotencyKey))
 
     /**
@@ -1009,7 +1009,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         run: kotlin.String,
         version: kotlin.Long? = null,
-    ): PipelineReceiptReceipt200Response =
+    ): SignedPipelineReceipt =
         api(null, null, emptySet()).apps.pipelineReceiptReceipt(app = app, run = run, version = version)
 
     /**
@@ -1026,7 +1026,7 @@ class AppsFacade internal constructor(
     suspend fun pipelinesCancel(
         app: kotlin.String,
         run: kotlin.String,
-    ): PipelinesCancel200Response =
+    ): PipelineCancelled =
         api(null, null, emptySet()).apps.pipelinesCancel(app = app, run = run)
 
     /**
@@ -1045,8 +1045,8 @@ class AppsFacade internal constructor(
         name: kotlin.String,
         inputs: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>>? = null,
         counts: kotlin.collections.Map<kotlin.String, kotlin.Long>? = null,
-        params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
-    ): PipelinesEstimateRun200Response =
+        params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>? = null,
+    ): RunEstimate =
         api(null, null, emptySet()).apps.pipelinesEstimateRun(app = app, name = name, pipelinesEstimateRunRequest = PipelinesEstimateRunRequest(inputs = inputs, counts = counts, params = params))
 
     /**
@@ -1080,7 +1080,7 @@ class AppsFacade internal constructor(
     suspend fun pipelinesList(
         app: kotlin.String,
         limit: kotlin.String? = null,
-    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> =
+    ): PipelineRunList =
         api(null, null, emptySet()).apps.pipelinesList(app = app, limit = limit)
 
     /**
@@ -1099,7 +1099,7 @@ class AppsFacade internal constructor(
         run: kotlin.String,
         limits: kotlin.collections.Map<kotlin.String, PipelinesRetryRequestLimitsValue>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesRetry200Response =
+    ): PipelineStarted =
         api(null, null, emptySet()).apps.pipelinesRetry(app = app, run = run, pipelinesRetryRequest = PipelinesRetryRequest(limits = limits, maxCost = maxCost))
 
     /**
@@ -1119,7 +1119,7 @@ class AppsFacade internal constructor(
         inputs: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>>? = null,
         params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesStart200Response =
+    ): PipelineStarted =
         api(null, null, emptySet()).apps.pipelinesStart(app = app, name = name, pipelinesStartRequest = PipelinesStartRequest(inputs = inputs, params = params, maxCost = maxCost))
 
     /**
@@ -1137,7 +1137,7 @@ class AppsFacade internal constructor(
         source: kotlin.String,
         `package`: kotlin.String? = null,
         version: kotlin.String? = null,
-    ): PipelinesValidate200Response =
+    ): PipelineValidation =
         api(null, null, emptySet()).apps.pipelinesValidate(pipelinesValidateRequest = PipelinesValidateRequest(source = source, `package` = `package`, version = version))
 
     /**
@@ -1153,7 +1153,7 @@ class AppsFacade internal constructor(
      */
     suspend fun presenceGet(
         app: kotlin.String,
-    ): PresenceGet200Response =
+    ): PresenceList =
         api(null, null, emptySet()).apps.presenceGet(app = app)
 
     /**
@@ -1207,7 +1207,7 @@ class AppsFacade internal constructor(
         expiresAt: kotlin.Long? = null,
         ratePerMinute: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): PublicLinkCreate200Response =
+    ): PublicLinkMade =
         api(passkey, null, emptySet()).apps.publicLinkCreate(app = app, publicLinkCreateRequest = PublicLinkCreateRequest(label = label, expiresAt = expiresAt, ratePerMinute = ratePerMinute))
 
     /**
@@ -1223,7 +1223,7 @@ class AppsFacade internal constructor(
      */
     suspend fun publicLinkList(
         app: kotlin.String,
-    ): PublicLinkList200Response =
+    ): PublicLinks =
         api(null, null, emptySet()).apps.publicLinkList(app = app)
 
     /**
@@ -1275,7 +1275,7 @@ class AppsFacade internal constructor(
     suspend fun uploadBegin(
         app: kotlin.String,
         propertySize: kotlin.Long,
-    ): UploadBegin200Response =
+    ): UploadView =
         api(null, null, emptySet()).apps.uploadBegin(app = app, uploadBeginRequest = UploadBeginRequest(propertySize = propertySize))
 
     /**
@@ -1292,7 +1292,7 @@ class AppsFacade internal constructor(
     suspend fun uploadComplete(
         app: kotlin.String,
         upload: kotlin.String,
-    ): UploadComplete200Response =
+    ): FileStored =
         api(null, null, emptySet()).apps.uploadComplete(app = app, upload = upload)
 
     /**
@@ -1311,7 +1311,7 @@ class AppsFacade internal constructor(
         upload: kotlin.String,
         k: kotlin.String,
         body: kotlin.ByteArray,
-    ): UploadPart200Response =
+    ): PartTaken =
         api(null, null, emptySet()).apps.uploadPart(app = app, upload = upload, k = k, body = body)
 
     /**
@@ -1326,7 +1326,7 @@ class AppsFacade internal constructor(
     suspend fun uploadStatus(
         app: kotlin.String,
         upload: kotlin.String,
-    ): UploadStatus200Response =
+    ): UploadStatus =
         api(null, null, emptySet()).apps.uploadStatus(app = app, upload = upload)
 
     /**
@@ -1346,6 +1346,6 @@ class AppsFacade internal constructor(
         args: kotlinx.serialization.json.JsonElement? = null,
         consistency: ViewsRequest.Consistency? = null,
         minIndex: kotlin.Long? = null,
-    ): Views200Response =
+    ): ViewResult =
         api(null, null, emptySet()).apps.views(app = app, viewsRequest = ViewsRequest(method = method, args = args, consistency = consistency, minIndex = minIndex))
 }

@@ -27,59 +27,58 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
+import com.calimero.mero.api.models.AppRestored
 import com.calimero.mero.api.models.ApprovedReleases
 import com.calimero.mero.api.models.BackupKeyAnswer
+import com.calimero.mero.api.models.BackupWritten
+import com.calimero.mero.api.models.ClusterIdentity
+import com.calimero.mero.api.models.ClusterOwnerNamed
 import com.calimero.mero.api.models.Deadlines
 import com.calimero.mero.api.models.DeployerBody
+import com.calimero.mero.api.models.DeployerGranted
+import com.calimero.mero.api.models.DeployerRevoked
 import com.calimero.mero.api.models.Error
+import com.calimero.mero.api.models.GovernanceSet
 import com.calimero.mero.api.models.InviteKey
-import com.calimero.mero.api.models.OpsApps200Response
-import com.calimero.mero.api.models.OpsBackup200Response
-import com.calimero.mero.api.models.OpsCluster200Response
-import com.calimero.mero.api.models.OpsClusterOwner200Response
+import com.calimero.mero.api.models.NodeRemoved
+import com.calimero.mero.api.models.OpsApps
 import com.calimero.mero.api.models.OpsClusterOwnerRequest
-import com.calimero.mero.api.models.OpsDeployerGrant200Response
-import com.calimero.mero.api.models.OpsDeployerRevokeDelete200Response
-import com.calimero.mero.api.models.OpsDeploymentsGranted200Response
-import com.calimero.mero.api.models.OpsOrgs200Response
+import com.calimero.mero.api.models.OpsOrgs
 import com.calimero.mero.api.models.OpsOutboundRequest
-import com.calimero.mero.api.models.OpsPackageInstall200Response
 import com.calimero.mero.api.models.OpsPackageInstallRequest
-import com.calimero.mero.api.models.OpsPackageList200Response
-import com.calimero.mero.api.models.OpsPackageUpload200Response
-import com.calimero.mero.api.models.OpsPlacement200Response
-import com.calimero.mero.api.models.OpsPoolsGet200Response
+import com.calimero.mero.api.models.OpsPools
 import com.calimero.mero.api.models.OpsPoolsSetRequest
-import com.calimero.mero.api.models.OpsPricesGet200Response
 import com.calimero.mero.api.models.OpsPricesSetRequest
-import com.calimero.mero.api.models.OpsReceiptKey200Response
-import com.calimero.mero.api.models.OpsRecover200Response
 import com.calimero.mero.api.models.OpsRecoverRequest
-import com.calimero.mero.api.models.OpsRecoveryFiles200Response
 import com.calimero.mero.api.models.OpsRegisterNodeRequest
 import com.calimero.mero.api.models.OpsReleaseDeadlineRequest
 import com.calimero.mero.api.models.OpsReleaseRequest
-import com.calimero.mero.api.models.OpsRemoveNode200Response
-import com.calimero.mero.api.models.OpsRestore200Response
 import com.calimero.mero.api.models.OpsRestoreRequest
-import com.calimero.mero.api.models.OpsServed200Response
 import com.calimero.mero.api.models.OpsSetBackupKeyRequest
-import com.calimero.mero.api.models.OpsSetReplicas200Response
 import com.calimero.mero.api.models.OpsSetReplicasRequest
 import com.calimero.mero.api.models.OpsSignUpInviteCreateRequest
-import com.calimero.mero.api.models.OpsSignUpInviteList200Response
 import com.calimero.mero.api.models.OpsSignUpSetRequest
-import com.calimero.mero.api.models.OpsStatus200Response
-import com.calimero.mero.api.models.OpsUpgrade200Response
+import com.calimero.mero.api.models.OpsStatus
 import com.calimero.mero.api.models.OpsUpgradeRequest
 import com.calimero.mero.api.models.OrgUpgradeBody
 import com.calimero.mero.api.models.OutboundApproved
+import com.calimero.mero.api.models.PackageInstalled
+import com.calimero.mero.api.models.PackageList
+import com.calimero.mero.api.models.Placement
+import com.calimero.mero.api.models.PriceTableView
 import com.calimero.mero.api.models.ProofOnly
 import com.calimero.mero.api.models.QuotaChanges
 import com.calimero.mero.api.models.QuotaSettings
+import com.calimero.mero.api.models.ReceiptKey
+import com.calimero.mero.api.models.RecoveryFiles
+import com.calimero.mero.api.models.ReplicasSet
+import com.calimero.mero.api.models.ServedOrigins
 import com.calimero.mero.api.models.SignUpInvite
+import com.calimero.mero.api.models.SignUpInviteList
 import com.calimero.mero.api.models.SignUpSet
+import com.calimero.mero.api.models.SystemRecovered
 import com.calimero.mero.api.models.Uninstalled
+import com.calimero.mero.api.models.UpgradeApplied
 import com.calimero.mero.api.models.UpgradeRun
 
 import kotlinx.serialization.SerialName
@@ -116,7 +115,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Each app&#39;s bundle, package, publisher, who holds its upgrades and release approvals, its last upgrade, approved releases, replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** the ops token.
      * @param after  (optional)
      * @param limit  (optional)
-     * @return OpsApps200Response
+     * @return OpsApps
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -125,11 +124,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsApps(after: kotlin.String? = null, limit: kotlin.Long? = null) : OpsApps200Response = withContext(Dispatchers.IO) {
+    suspend fun opsApps(after: kotlin.String? = null, limit: kotlin.Long? = null) : OpsApps = withContext(Dispatchers.IO) {
         val localVarResponse = opsAppsWithHttpInfo(after = after, limit = limit)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsApps200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsApps
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -149,16 +148,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Each app&#39;s bundle, package, publisher, who holds its upgrades and release approvals, its last upgrade, approved releases, replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** the ops token.
      * @param after  (optional)
      * @param limit  (optional)
-     * @return ApiResponse<OpsApps200Response?>
+     * @return ApiResponse<OpsApps?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsAppsWithHttpInfo(after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<OpsApps200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsAppsWithHttpInfo(after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<OpsApps?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsAppsRequestConfig(after = after, limit = limit)
 
-        return@withContext request<Unit, OpsApps200Response>(
+        return@withContext request<Unit, OpsApps>(
             localVariableConfig
         )
     }
@@ -199,7 +198,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Snapshot the apps this node leads
      * Into &#x60;--backup-dir&#x60;. With &#x60;all&#x3D;true&#x60;, every group this node holds, leader or not: what a node of a cluster that lost a majority still has, to found the cluster again from (&#x60;merod --bootstrap --restore-from&#x60;). &#x60;written&#x60;: how many snapshots it wrote.  **Who:** the ops token.
      * @param all  (optional)
-     * @return OpsBackup200Response
+     * @return BackupWritten
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -208,11 +207,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsBackup(all: kotlin.Boolean? = null) : OpsBackup200Response = withContext(Dispatchers.IO) {
+    suspend fun opsBackup(all: kotlin.Boolean? = null) : BackupWritten = withContext(Dispatchers.IO) {
         val localVarResponse = opsBackupWithHttpInfo(all = all)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsBackup200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as BackupWritten
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -231,16 +230,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Snapshot the apps this node leads
      * Into &#x60;--backup-dir&#x60;. With &#x60;all&#x3D;true&#x60;, every group this node holds, leader or not: what a node of a cluster that lost a majority still has, to found the cluster again from (&#x60;merod --bootstrap --restore-from&#x60;). &#x60;written&#x60;: how many snapshots it wrote.  **Who:** the ops token.
      * @param all  (optional)
-     * @return ApiResponse<OpsBackup200Response?>
+     * @return ApiResponse<BackupWritten?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsBackupWithHttpInfo(all: kotlin.Boolean?) : ApiResponse<OpsBackup200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsBackupWithHttpInfo(all: kotlin.Boolean?) : ApiResponse<BackupWritten?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsBackupRequestConfig(all = all)
 
-        return@withContext request<Unit, OpsBackup200Response>(
+        return@withContext request<Unit, BackupWritten>(
             localVariableConfig
         )
     }
@@ -346,7 +345,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/cluster
      * The cluster&#39;s identity
      * The cluster&#39;s name and the identity this replica holds (hex).  **Who:** the ops token.
-     * @return OpsCluster200Response
+     * @return ClusterIdentity
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -355,11 +354,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsCluster() : OpsCluster200Response = withContext(Dispatchers.IO) {
+    suspend fun opsCluster() : ClusterIdentity = withContext(Dispatchers.IO) {
         val localVarResponse = opsClusterWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsCluster200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ClusterIdentity
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -377,16 +376,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/cluster
      * The cluster&#39;s identity
      * The cluster&#39;s name and the identity this replica holds (hex).  **Who:** the ops token.
-     * @return ApiResponse<OpsCluster200Response?>
+     * @return ApiResponse<ClusterIdentity?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsClusterWithHttpInfo() : ApiResponse<OpsCluster200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsClusterWithHttpInfo() : ApiResponse<ClusterIdentity?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsClusterRequestConfig()
 
-        return@withContext request<Unit, OpsCluster200Response>(
+        return@withContext request<Unit, ClusterIdentity>(
             localVariableConfig
         )
     }
@@ -417,7 +416,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Name the cluster&#39;s owner
      * The account or organization that then runs sign-up and deployers with passkeys; once.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param opsClusterOwnerRequest 
-     * @return OpsClusterOwner200Response
+     * @return ClusterOwnerNamed
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -426,11 +425,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsClusterOwner(opsClusterOwnerRequest: OpsClusterOwnerRequest) : OpsClusterOwner200Response = withContext(Dispatchers.IO) {
+    suspend fun opsClusterOwner(opsClusterOwnerRequest: OpsClusterOwnerRequest) : ClusterOwnerNamed = withContext(Dispatchers.IO) {
         val localVarResponse = opsClusterOwnerWithHttpInfo(opsClusterOwnerRequest = opsClusterOwnerRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsClusterOwner200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ClusterOwnerNamed
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -449,16 +448,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Name the cluster&#39;s owner
      * The account or organization that then runs sign-up and deployers with passkeys; once.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param opsClusterOwnerRequest 
-     * @return ApiResponse<OpsClusterOwner200Response?>
+     * @return ApiResponse<ClusterOwnerNamed?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsClusterOwnerWithHttpInfo(opsClusterOwnerRequest: OpsClusterOwnerRequest) : ApiResponse<OpsClusterOwner200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsClusterOwnerWithHttpInfo(opsClusterOwnerRequest: OpsClusterOwnerRequest) : ApiResponse<ClusterOwnerNamed?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsClusterOwnerRequestConfig(opsClusterOwnerRequest = opsClusterOwnerRequest)
 
-        return@withContext request<OpsClusterOwnerRequest, OpsClusterOwner200Response>(
+        return@withContext request<OpsClusterOwnerRequest, ClusterOwnerNamed>(
             localVariableConfig
         )
     }
@@ -491,7 +490,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Grant a deployer
      * An account or organization that may install where deployments are granted, &#x60;until&#x60; an RFC 3339 time.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param deployerBody 
-     * @return OpsDeployerGrant200Response
+     * @return DeployerGranted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -500,11 +499,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsDeployerGrant(deployerBody: DeployerBody) : OpsDeployerGrant200Response = withContext(Dispatchers.IO) {
+    suspend fun opsDeployerGrant(deployerBody: DeployerBody) : DeployerGranted = withContext(Dispatchers.IO) {
         val localVarResponse = opsDeployerGrantWithHttpInfo(deployerBody = deployerBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsDeployerGrant200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerGranted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -523,16 +522,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Grant a deployer
      * An account or organization that may install where deployments are granted, &#x60;until&#x60; an RFC 3339 time.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param deployerBody 
-     * @return ApiResponse<OpsDeployerGrant200Response?>
+     * @return ApiResponse<DeployerGranted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsDeployerGrantWithHttpInfo(deployerBody: DeployerBody) : ApiResponse<OpsDeployerGrant200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsDeployerGrantWithHttpInfo(deployerBody: DeployerBody) : ApiResponse<DeployerGranted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsDeployerGrantRequestConfig(deployerBody = deployerBody)
 
-        return@withContext request<DeployerBody, OpsDeployerGrant200Response>(
+        return@withContext request<DeployerBody, DeployerGranted>(
             localVariableConfig
         )
     }
@@ -566,7 +565,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param key 
      * @param proofOnly May be absent. (optional)
-     * @return OpsDeployerRevokeDelete200Response
+     * @return DeployerRevoked
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -575,11 +574,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsDeployerRevokeDelete(key: kotlin.String, proofOnly: ProofOnly? = null) : OpsDeployerRevokeDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun opsDeployerRevokeDelete(key: kotlin.String, proofOnly: ProofOnly? = null) : DeployerRevoked = withContext(Dispatchers.IO) {
         val localVarResponse = opsDeployerRevokeDeleteWithHttpInfo(key = key, proofOnly = proofOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsDeployerRevokeDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerRevoked
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -599,16 +598,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param key 
      * @param proofOnly May be absent. (optional)
-     * @return ApiResponse<OpsDeployerRevokeDelete200Response?>
+     * @return ApiResponse<DeployerRevoked?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsDeployerRevokeDeleteWithHttpInfo(key: kotlin.String, proofOnly: ProofOnly?) : ApiResponse<OpsDeployerRevokeDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsDeployerRevokeDeleteWithHttpInfo(key: kotlin.String, proofOnly: ProofOnly?) : ApiResponse<DeployerRevoked?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsDeployerRevokeDeleteRequestConfig(key = key, proofOnly = proofOnly)
 
-        return@withContext request<ProofOnly, OpsDeployerRevokeDelete200Response>(
+        return@withContext request<ProofOnly, DeployerRevoked>(
             localVariableConfig
         )
     }
@@ -643,7 +642,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * The same as the &#x60;DELETE&#x60;, for an HTTP client whose &#x60;DELETE&#x60; carries no body.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param key 
      * @param proofOnly May be absent. (optional)
-     * @return OpsDeployerRevokeDelete200Response
+     * @return DeployerRevoked
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -652,11 +651,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsDeployerRevokePost(key: kotlin.String, proofOnly: ProofOnly? = null) : OpsDeployerRevokeDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun opsDeployerRevokePost(key: kotlin.String, proofOnly: ProofOnly? = null) : DeployerRevoked = withContext(Dispatchers.IO) {
         val localVarResponse = opsDeployerRevokePostWithHttpInfo(key = key, proofOnly = proofOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsDeployerRevokeDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerRevoked
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -676,16 +675,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * The same as the &#x60;DELETE&#x60;, for an HTTP client whose &#x60;DELETE&#x60; carries no body.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param key 
      * @param proofOnly May be absent. (optional)
-     * @return ApiResponse<OpsDeployerRevokeDelete200Response?>
+     * @return ApiResponse<DeployerRevoked?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsDeployerRevokePostWithHttpInfo(key: kotlin.String, proofOnly: ProofOnly?) : ApiResponse<OpsDeployerRevokeDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsDeployerRevokePostWithHttpInfo(key: kotlin.String, proofOnly: ProofOnly?) : ApiResponse<DeployerRevoked?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsDeployerRevokePostRequestConfig(key = key, proofOnly = proofOnly)
 
-        return@withContext request<ProofOnly, OpsDeployerRevokeDelete200Response>(
+        return@withContext request<ProofOnly, DeployerRevoked>(
             localVariableConfig
         )
     }
@@ -719,7 +718,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Require deployer grants
      * From now on only granted deployers install; once.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param proofOnly May be absent. (optional)
-     * @return OpsDeploymentsGranted200Response
+     * @return GovernanceSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -728,11 +727,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsDeploymentsGranted(proofOnly: ProofOnly? = null) : OpsDeploymentsGranted200Response = withContext(Dispatchers.IO) {
+    suspend fun opsDeploymentsGranted(proofOnly: ProofOnly? = null) : GovernanceSet = withContext(Dispatchers.IO) {
         val localVarResponse = opsDeploymentsGrantedWithHttpInfo(proofOnly = proofOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsDeploymentsGranted200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as GovernanceSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -751,16 +750,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Require deployer grants
      * From now on only granted deployers install; once.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param proofOnly May be absent. (optional)
-     * @return ApiResponse<OpsDeploymentsGranted200Response?>
+     * @return ApiResponse<GovernanceSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsDeploymentsGrantedWithHttpInfo(proofOnly: ProofOnly?) : ApiResponse<OpsDeploymentsGranted200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsDeploymentsGrantedWithHttpInfo(proofOnly: ProofOnly?) : ApiResponse<GovernanceSet?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsDeploymentsGrantedRequestConfig(proofOnly = proofOnly)
 
-        return@withContext request<ProofOnly, OpsDeploymentsGranted200Response>(
+        return@withContext request<ProofOnly, GovernanceSet>(
             localVariableConfig
         )
     }
@@ -1014,7 +1013,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * **Who:** the ops token.
      * @param after  (optional)
      * @param limit  (optional)
-     * @return OpsOrgs200Response
+     * @return OpsOrgs
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1023,11 +1022,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsOrgs(after: kotlin.String? = null, limit: kotlin.Long? = null) : OpsOrgs200Response = withContext(Dispatchers.IO) {
+    suspend fun opsOrgs(after: kotlin.String? = null, limit: kotlin.Long? = null) : OpsOrgs = withContext(Dispatchers.IO) {
         val localVarResponse = opsOrgsWithHttpInfo(after = after, limit = limit)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsOrgs200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsOrgs
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1047,16 +1046,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * **Who:** the ops token.
      * @param after  (optional)
      * @param limit  (optional)
-     * @return ApiResponse<OpsOrgs200Response?>
+     * @return ApiResponse<OpsOrgs?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsOrgsWithHttpInfo(after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<OpsOrgs200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsOrgsWithHttpInfo(after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<OpsOrgs?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsOrgsRequestConfig(after = after, limit = limit)
 
-        return@withContext request<Unit, OpsOrgs200Response>(
+        return@withContext request<Unit, OpsOrgs>(
             localVariableConfig
         )
     }
@@ -1171,7 +1170,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Install a release from the registry as the operator
      * **Who:** the ops token.
      * @param opsPackageInstallRequest 
-     * @return OpsPackageInstall200Response
+     * @return PackageInstalled
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1180,11 +1179,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsPackageInstall(opsPackageInstallRequest: OpsPackageInstallRequest) : OpsPackageInstall200Response = withContext(Dispatchers.IO) {
+    suspend fun opsPackageInstall(opsPackageInstallRequest: OpsPackageInstallRequest) : PackageInstalled = withContext(Dispatchers.IO) {
         val localVarResponse = opsPackageInstallWithHttpInfo(opsPackageInstallRequest = opsPackageInstallRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPackageInstall200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageInstalled
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1203,16 +1202,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Install a release from the registry as the operator
      * **Who:** the ops token.
      * @param opsPackageInstallRequest 
-     * @return ApiResponse<OpsPackageInstall200Response?>
+     * @return ApiResponse<PackageInstalled?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsPackageInstallWithHttpInfo(opsPackageInstallRequest: OpsPackageInstallRequest) : ApiResponse<OpsPackageInstall200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsPackageInstallWithHttpInfo(opsPackageInstallRequest: OpsPackageInstallRequest) : ApiResponse<PackageInstalled?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsPackageInstallRequestConfig(opsPackageInstallRequest = opsPackageInstallRequest)
 
-        return@withContext request<OpsPackageInstallRequest, OpsPackageInstall200Response>(
+        return@withContext request<OpsPackageInstallRequest, PackageInstalled>(
             localVariableConfig
         )
     }
@@ -1244,7 +1243,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/packages
      * The releases the operator installed
      * **Who:** the ops token.
-     * @return OpsPackageList200Response
+     * @return PackageList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1253,11 +1252,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsPackageList() : OpsPackageList200Response = withContext(Dispatchers.IO) {
+    suspend fun opsPackageList() : PackageList = withContext(Dispatchers.IO) {
         val localVarResponse = opsPackageListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPackageList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1275,16 +1274,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/packages
      * The releases the operator installed
      * **Who:** the ops token.
-     * @return ApiResponse<OpsPackageList200Response?>
+     * @return ApiResponse<PackageList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsPackageListWithHttpInfo() : ApiResponse<OpsPackageList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsPackageListWithHttpInfo() : ApiResponse<PackageList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsPackageListRequestConfig()
 
-        return@withContext request<Unit, OpsPackageList200Response>(
+        return@withContext request<Unit, PackageList>(
             localVariableConfig
         )
     }
@@ -1388,7 +1387,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Install an uploaded release as the operator
      * **Who:** the ops token.
      * @param body the &#x60;.mpk&#x60;
-     * @return OpsPackageUpload200Response
+     * @return PackageInstalled
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1397,11 +1396,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsPackageUpload(body: kotlin.ByteArray) : OpsPackageUpload200Response = withContext(Dispatchers.IO) {
+    suspend fun opsPackageUpload(body: kotlin.ByteArray) : PackageInstalled = withContext(Dispatchers.IO) {
         val localVarResponse = opsPackageUploadWithHttpInfo(body = body)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPackageUpload200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageInstalled
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1420,16 +1419,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Install an uploaded release as the operator
      * **Who:** the ops token.
      * @param body the &#x60;.mpk&#x60;
-     * @return ApiResponse<OpsPackageUpload200Response?>
+     * @return ApiResponse<PackageInstalled?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsPackageUploadWithHttpInfo(body: kotlin.ByteArray) : ApiResponse<OpsPackageUpload200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsPackageUploadWithHttpInfo(body: kotlin.ByteArray) : ApiResponse<PackageInstalled?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsPackageUploadRequestConfig(body = body)
 
-        return@withContext request<kotlin.ByteArray, OpsPackageUpload200Response>(
+        return@withContext request<kotlin.ByteArray, PackageInstalled>(
             localVariableConfig
         )
     }
@@ -1537,7 +1536,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/placement
      * Where every app&#39;s replicas are
      * Ids and counts only, read after a read index (&#x60;fresh&#x60;: this node caught up with the system leader); &#x60;release&#x60; is a node&#39;s attested release; &#x60;clusterVersion&#x60; is the logged cluster version (&#x60;null&#x60; until the system leader logs one).  **Who:** the ops token.
-     * @return OpsPlacement200Response
+     * @return Placement
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1546,11 +1545,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsPlacement() : OpsPlacement200Response = withContext(Dispatchers.IO) {
+    suspend fun opsPlacement() : Placement = withContext(Dispatchers.IO) {
         val localVarResponse = opsPlacementWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPlacement200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as Placement
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1568,16 +1567,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/placement
      * Where every app&#39;s replicas are
      * Ids and counts only, read after a read index (&#x60;fresh&#x60;: this node caught up with the system leader); &#x60;release&#x60; is a node&#39;s attested release; &#x60;clusterVersion&#x60; is the logged cluster version (&#x60;null&#x60; until the system leader logs one).  **Who:** the ops token.
-     * @return ApiResponse<OpsPlacement200Response?>
+     * @return ApiResponse<Placement?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsPlacementWithHttpInfo() : ApiResponse<OpsPlacement200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsPlacementWithHttpInfo() : ApiResponse<Placement?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsPlacementRequestConfig()
 
-        return@withContext request<Unit, OpsPlacement200Response>(
+        return@withContext request<Unit, Placement>(
             localVariableConfig
         )
     }
@@ -1607,7 +1606,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/pools
      * Compute pools
      * The pools by name (absent: none set, one legacy pool), and each pool&#39;s capacity: how many runs its job nodes take at once.  **Who:** the ops token.
-     * @return OpsPoolsGet200Response
+     * @return OpsPools
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1616,11 +1615,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsPoolsGet() : OpsPoolsGet200Response = withContext(Dispatchers.IO) {
+    suspend fun opsPoolsGet() : OpsPools = withContext(Dispatchers.IO) {
         val localVarResponse = opsPoolsGetWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPoolsGet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPools
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1638,16 +1637,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/pools
      * Compute pools
      * The pools by name (absent: none set, one legacy pool), and each pool&#39;s capacity: how many runs its job nodes take at once.  **Who:** the ops token.
-     * @return ApiResponse<OpsPoolsGet200Response?>
+     * @return ApiResponse<OpsPools?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsPoolsGetWithHttpInfo() : ApiResponse<OpsPoolsGet200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsPoolsGetWithHttpInfo() : ApiResponse<OpsPools?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsPoolsGetRequestConfig()
 
-        return@withContext request<Unit, OpsPoolsGet200Response>(
+        return@withContext request<Unit, OpsPools>(
             localVariableConfig
         )
     }
@@ -1751,7 +1750,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/prices
      * The price table
      * In micro-units of the billing currency; &#x60;{}&#x60; until one is set.  **Who:** the ops token.
-     * @return OpsPricesGet200Response
+     * @return PriceTableView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1760,11 +1759,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsPricesGet() : OpsPricesGet200Response = withContext(Dispatchers.IO) {
+    suspend fun opsPricesGet() : PriceTableView = withContext(Dispatchers.IO) {
         val localVarResponse = opsPricesGetWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPricesGet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PriceTableView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1782,16 +1781,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/prices
      * The price table
      * In micro-units of the billing currency; &#x60;{}&#x60; until one is set.  **Who:** the ops token.
-     * @return ApiResponse<OpsPricesGet200Response?>
+     * @return ApiResponse<PriceTableView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsPricesGetWithHttpInfo() : ApiResponse<OpsPricesGet200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsPricesGetWithHttpInfo() : ApiResponse<PriceTableView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsPricesGetRequestConfig()
 
-        return@withContext request<Unit, OpsPricesGet200Response>(
+        return@withContext request<Unit, PriceTableView>(
             localVariableConfig
         )
     }
@@ -2040,7 +2039,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * A node&#39;s receipt key
      * **Who:** the ops token.
      * @param id 
-     * @return OpsReceiptKey200Response
+     * @return ReceiptKey
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2049,11 +2048,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsReceiptKey(id: kotlin.String) : OpsReceiptKey200Response = withContext(Dispatchers.IO) {
+    suspend fun opsReceiptKey(id: kotlin.String) : ReceiptKey = withContext(Dispatchers.IO) {
         val localVarResponse = opsReceiptKeyWithHttpInfo(id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsReceiptKey200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ReceiptKey
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2072,16 +2071,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * A node&#39;s receipt key
      * **Who:** the ops token.
      * @param id 
-     * @return ApiResponse<OpsReceiptKey200Response?>
+     * @return ApiResponse<ReceiptKey?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsReceiptKeyWithHttpInfo(id: kotlin.String) : ApiResponse<OpsReceiptKey200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsReceiptKeyWithHttpInfo(id: kotlin.String) : ApiResponse<ReceiptKey?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsReceiptKeyRequestConfig(id = id)
 
-        return@withContext request<Unit, OpsReceiptKey200Response>(
+        return@withContext request<Unit, ReceiptKey>(
             localVariableConfig
         )
     }
@@ -2113,7 +2112,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Found the cluster again from its recovery disk
      * On the founder started with &#x60;--bootstrap --recover-from DIR&#x60;, its system state empty: the newest &#x60;system&#x60; file in &#x60;DIR/operator/&#x60; and the apps&#39; &#x60;code&#x60; files, each with the data key the operator opened from it (hex). Checked as founding from backups is (governance, operator key, no node of the old cluster answering), then the system group is seeded; each app waits for &#x60;POST /ops/apps/{app}/restore { recovery }&#x60;.  **Who:** the ops token.
      * @param opsRecoverRequest 
-     * @return OpsRecover200Response
+     * @return SystemRecovered
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2122,11 +2121,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsRecover(opsRecoverRequest: OpsRecoverRequest) : OpsRecover200Response = withContext(Dispatchers.IO) {
+    suspend fun opsRecover(opsRecoverRequest: OpsRecoverRequest) : SystemRecovered = withContext(Dispatchers.IO) {
         val localVarResponse = opsRecoverWithHttpInfo(opsRecoverRequest = opsRecoverRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsRecover200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SystemRecovered
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2145,16 +2144,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Found the cluster again from its recovery disk
      * On the founder started with &#x60;--bootstrap --recover-from DIR&#x60;, its system state empty: the newest &#x60;system&#x60; file in &#x60;DIR/operator/&#x60; and the apps&#39; &#x60;code&#x60; files, each with the data key the operator opened from it (hex). Checked as founding from backups is (governance, operator key, no node of the old cluster answering), then the system group is seeded; each app waits for &#x60;POST /ops/apps/{app}/restore { recovery }&#x60;.  **Who:** the ops token.
      * @param opsRecoverRequest 
-     * @return ApiResponse<OpsRecover200Response?>
+     * @return ApiResponse<SystemRecovered?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsRecoverWithHttpInfo(opsRecoverRequest: OpsRecoverRequest) : ApiResponse<OpsRecover200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsRecoverWithHttpInfo(opsRecoverRequest: OpsRecoverRequest) : ApiResponse<SystemRecovered?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsRecoverRequestConfig(opsRecoverRequest = opsRecoverRequest)
 
-        return@withContext request<OpsRecoverRequest, OpsRecover200Response>(
+        return@withContext request<OpsRecoverRequest, SystemRecovered>(
             localVariableConfig
         )
     }
@@ -2187,7 +2186,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * The recovery files a node reads
      * In &#x60;--recover-from&#x60;, else &#x60;--recovery-dir&#x60;, of &#x60;holder&#x60; (&#x60;operator&#x60;, the default; &#x60;org:&lt;id&gt;&#x60;; &#x60;account:&lt;id&gt;&#x60;): each file&#39;s name, its header as signed (JSON text) and the node&#39;s Ed25519 signature over &#x60;calimero.recovery-backup.v1\\0&#x60; and those bytes (hex), for the holder&#39;s device to check before it opens a key with its own.  **Who:** the ops token.
      * @param holder  (optional)
-     * @return OpsRecoveryFiles200Response
+     * @return RecoveryFiles
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2196,11 +2195,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsRecoveryFiles(holder: kotlin.String? = null) : OpsRecoveryFiles200Response = withContext(Dispatchers.IO) {
+    suspend fun opsRecoveryFiles(holder: kotlin.String? = null) : RecoveryFiles = withContext(Dispatchers.IO) {
         val localVarResponse = opsRecoveryFilesWithHttpInfo(holder = holder)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsRecoveryFiles200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryFiles
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2219,16 +2218,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * The recovery files a node reads
      * In &#x60;--recover-from&#x60;, else &#x60;--recovery-dir&#x60;, of &#x60;holder&#x60; (&#x60;operator&#x60;, the default; &#x60;org:&lt;id&gt;&#x60;; &#x60;account:&lt;id&gt;&#x60;): each file&#39;s name, its header as signed (JSON text) and the node&#39;s Ed25519 signature over &#x60;calimero.recovery-backup.v1\\0&#x60; and those bytes (hex), for the holder&#39;s device to check before it opens a key with its own.  **Who:** the ops token.
      * @param holder  (optional)
-     * @return ApiResponse<OpsRecoveryFiles200Response?>
+     * @return ApiResponse<RecoveryFiles?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsRecoveryFilesWithHttpInfo(holder: kotlin.String?) : ApiResponse<OpsRecoveryFiles200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsRecoveryFilesWithHttpInfo(holder: kotlin.String?) : ApiResponse<RecoveryFiles?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsRecoveryFilesRequestConfig(holder = holder)
 
-        return@withContext request<Unit, OpsRecoveryFiles200Response>(
+        return@withContext request<Unit, RecoveryFiles>(
             localVariableConfig
         )
     }
@@ -2568,7 +2567,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * One no app keeps a replica on; the system leader (elsewhere &#x60;421 NOT_LEADER&#x60;); signed over &#x60;__remove_node / { id }&#x60;.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param id 
      * @param proofOnly May be absent. (optional)
-     * @return OpsRemoveNode200Response
+     * @return NodeRemoved
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2577,11 +2576,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsRemoveNode(id: kotlin.String, proofOnly: ProofOnly? = null) : OpsRemoveNode200Response = withContext(Dispatchers.IO) {
+    suspend fun opsRemoveNode(id: kotlin.String, proofOnly: ProofOnly? = null) : NodeRemoved = withContext(Dispatchers.IO) {
         val localVarResponse = opsRemoveNodeWithHttpInfo(id = id, proofOnly = proofOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsRemoveNode200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as NodeRemoved
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2601,16 +2600,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * One no app keeps a replica on; the system leader (elsewhere &#x60;421 NOT_LEADER&#x60;); signed over &#x60;__remove_node / { id }&#x60;.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param id 
      * @param proofOnly May be absent. (optional)
-     * @return ApiResponse<OpsRemoveNode200Response?>
+     * @return ApiResponse<NodeRemoved?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsRemoveNodeWithHttpInfo(id: kotlin.String, proofOnly: ProofOnly?) : ApiResponse<OpsRemoveNode200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsRemoveNodeWithHttpInfo(id: kotlin.String, proofOnly: ProofOnly?) : ApiResponse<NodeRemoved?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsRemoveNodeRequestConfig(id = id, proofOnly = proofOnly)
 
-        return@withContext request<ProofOnly, OpsRemoveNode200Response>(
+        return@withContext request<ProofOnly, NodeRemoved>(
             localVariableConfig
         )
     }
@@ -2645,7 +2644,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Signed over &#x60;&lt;app&gt; / __restore_app / { backup, sha256 }&#x60;. The receiving node holds the backup (&#x60;backup&#x60;, else the newest, in &#x60;{backup-dir}/{app}/&#x60;) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (&#x60;format&#x60; 0, with &#x60;merod&#x60; and &#x60;release&#x60; &#x60;null&#x60;, for one written before manifests) and the app group&#39;s Raft status. &#x60;recovery&#x60; restores from a recovery-disk file instead (in the app&#39;s holder&#39;s directory under &#x60;--recover-from&#x60;, else &#x60;--recovery-dir&#x60;), opened with the data key its holder opened from it (hex); &#x60;backup&#x60; is then the file&#39;s name and &#x60;sha256&#x60; its body&#39;s.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsRestoreRequest 
-     * @return OpsRestore200Response
+     * @return AppRestored
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2654,11 +2653,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsRestore(app: kotlin.String, opsRestoreRequest: OpsRestoreRequest) : OpsRestore200Response = withContext(Dispatchers.IO) {
+    suspend fun opsRestore(app: kotlin.String, opsRestoreRequest: OpsRestoreRequest) : AppRestored = withContext(Dispatchers.IO) {
         val localVarResponse = opsRestoreWithHttpInfo(app = app, opsRestoreRequest = opsRestoreRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsRestore200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppRestored
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2678,16 +2677,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Signed over &#x60;&lt;app&gt; / __restore_app / { backup, sha256 }&#x60;. The receiving node holds the backup (&#x60;backup&#x60;, else the newest, in &#x60;{backup-dir}/{app}/&#x60;) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (&#x60;format&#x60; 0, with &#x60;merod&#x60; and &#x60;release&#x60; &#x60;null&#x60;, for one written before manifests) and the app group&#39;s Raft status. &#x60;recovery&#x60; restores from a recovery-disk file instead (in the app&#39;s holder&#39;s directory under &#x60;--recover-from&#x60;, else &#x60;--recovery-dir&#x60;), opened with the data key its holder opened from it (hex); &#x60;backup&#x60; is then the file&#39;s name and &#x60;sha256&#x60; its body&#39;s.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsRestoreRequest 
-     * @return ApiResponse<OpsRestore200Response?>
+     * @return ApiResponse<AppRestored?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsRestoreWithHttpInfo(app: kotlin.String, opsRestoreRequest: OpsRestoreRequest) : ApiResponse<OpsRestore200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsRestoreWithHttpInfo(app: kotlin.String, opsRestoreRequest: OpsRestoreRequest) : ApiResponse<AppRestored?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsRestoreRequestConfig(app = app, opsRestoreRequest = opsRestoreRequest)
 
-        return@withContext request<OpsRestoreRequest, OpsRestore200Response>(
+        return@withContext request<OpsRestoreRequest, AppRestored>(
             localVariableConfig
         )
     }
@@ -2720,7 +2719,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/served-origins
      * Custom domains to serve
      * Every served origin a package&#39;s manager registered, by the package&#39;s label, never its name; &#x60;addedAt&#x60; is RFC 3339.  **Who:** the ops token.
-     * @return OpsServed200Response
+     * @return ServedOrigins
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2729,11 +2728,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsServed() : OpsServed200Response = withContext(Dispatchers.IO) {
+    suspend fun opsServed() : ServedOrigins = withContext(Dispatchers.IO) {
         val localVarResponse = opsServedWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsServed200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ServedOrigins
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2751,16 +2750,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/served-origins
      * Custom domains to serve
      * Every served origin a package&#39;s manager registered, by the package&#39;s label, never its name; &#x60;addedAt&#x60; is RFC 3339.  **Who:** the ops token.
-     * @return ApiResponse<OpsServed200Response?>
+     * @return ApiResponse<ServedOrigins?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsServedWithHttpInfo() : ApiResponse<OpsServed200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsServedWithHttpInfo() : ApiResponse<ServedOrigins?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsServedRequestConfig()
 
-        return@withContext request<Unit, OpsServed200Response>(
+        return@withContext request<Unit, ServedOrigins>(
             localVariableConfig
         )
     }
@@ -2866,7 +2865,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Signed over &#x60;&lt;app&gt; / __set_replicas / { replicas }&#x60; (sorted); at least &#x60;min(3, nodes)&#x60; registered nodes, each on a release the app&#39;s owner approved. The set it already has answers &#x60;unchanged: true&#x60;. &#x60;status&#x60; is the app group&#39;s Raft status when the move finished (as the leader saw it).  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsSetReplicasRequest 
-     * @return OpsSetReplicas200Response
+     * @return ReplicasSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2875,11 +2874,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsSetReplicas(app: kotlin.String, opsSetReplicasRequest: OpsSetReplicasRequest) : OpsSetReplicas200Response = withContext(Dispatchers.IO) {
+    suspend fun opsSetReplicas(app: kotlin.String, opsSetReplicasRequest: OpsSetReplicasRequest) : ReplicasSet = withContext(Dispatchers.IO) {
         val localVarResponse = opsSetReplicasWithHttpInfo(app = app, opsSetReplicasRequest = opsSetReplicasRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsSetReplicas200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ReplicasSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2899,16 +2898,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Signed over &#x60;&lt;app&gt; / __set_replicas / { replicas }&#x60; (sorted); at least &#x60;min(3, nodes)&#x60; registered nodes, each on a release the app&#39;s owner approved. The set it already has answers &#x60;unchanged: true&#x60;. &#x60;status&#x60; is the app group&#39;s Raft status when the move finished (as the leader saw it).  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsSetReplicasRequest 
-     * @return ApiResponse<OpsSetReplicas200Response?>
+     * @return ApiResponse<ReplicasSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsSetReplicasWithHttpInfo(app: kotlin.String, opsSetReplicasRequest: OpsSetReplicasRequest) : ApiResponse<OpsSetReplicas200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsSetReplicasWithHttpInfo(app: kotlin.String, opsSetReplicasRequest: OpsSetReplicasRequest) : ApiResponse<ReplicasSet?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsSetReplicasRequestConfig(app = app, opsSetReplicasRequest = opsSetReplicasRequest)
 
-        return@withContext request<OpsSetReplicasRequest, OpsSetReplicas200Response>(
+        return@withContext request<OpsSetReplicasRequest, ReplicasSet>(
             localVariableConfig
         )
     }
@@ -3015,7 +3014,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/sign-up/invites
      * Cluster sign-up invites
      * **Who:** the ops token.
-     * @return OpsSignUpInviteList200Response
+     * @return SignUpInviteList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3024,11 +3023,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsSignUpInviteList() : OpsSignUpInviteList200Response = withContext(Dispatchers.IO) {
+    suspend fun opsSignUpInviteList() : SignUpInviteList = withContext(Dispatchers.IO) {
         val localVarResponse = opsSignUpInviteListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsSignUpInviteList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3046,16 +3045,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/sign-up/invites
      * Cluster sign-up invites
      * **Who:** the ops token.
-     * @return ApiResponse<OpsSignUpInviteList200Response?>
+     * @return ApiResponse<SignUpInviteList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsSignUpInviteListWithHttpInfo() : ApiResponse<OpsSignUpInviteList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsSignUpInviteListWithHttpInfo() : ApiResponse<SignUpInviteList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsSignUpInviteListRequestConfig()
 
-        return@withContext request<Unit, OpsSignUpInviteList200Response>(
+        return@withContext request<Unit, SignUpInviteList>(
             localVariableConfig
         )
     }
@@ -3313,7 +3312,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/status
      * The node and the cluster
      * Counts, Raft status and governance; never app state, names or credentials. &#x60;groups&#x60;: the app groups this node hosts; &#x60;apps&#x60; and &#x60;accounts&#x60; are counts; &#x60;rollback&#x60; is this node&#39;s rollback counter, &#x60;null&#x60; on a node without one.  **Who:** the ops token.
-     * @return OpsStatus200Response
+     * @return OpsStatus
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3322,11 +3321,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsStatus() : OpsStatus200Response = withContext(Dispatchers.IO) {
+    suspend fun opsStatus() : OpsStatus = withContext(Dispatchers.IO) {
         val localVarResponse = opsStatusWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsStatus200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsStatus
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3344,16 +3343,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * GET /ops/status
      * The node and the cluster
      * Counts, Raft status and governance; never app state, names or credentials. &#x60;groups&#x60;: the app groups this node hosts; &#x60;apps&#x60; and &#x60;accounts&#x60; are counts; &#x60;rollback&#x60; is this node&#39;s rollback counter, &#x60;null&#x60; on a node without one.  **Who:** the ops token.
-     * @return ApiResponse<OpsStatus200Response?>
+     * @return ApiResponse<OpsStatus?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsStatusWithHttpInfo() : ApiResponse<OpsStatus200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsStatusWithHttpInfo() : ApiResponse<OpsStatus?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsStatusRequestConfig()
 
-        return@withContext request<Unit, OpsStatus200Response>(
+        return@withContext request<Unit, OpsStatus>(
             localVariableConfig
         )
     }
@@ -3385,7 +3384,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * To a release the operator installed, where the operator holds app upgrades. &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsUpgradeRequest 
-     * @return OpsUpgrade200Response
+     * @return UpgradeApplied
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3394,11 +3393,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsUpgrade(app: kotlin.String, opsUpgradeRequest: OpsUpgradeRequest) : OpsUpgrade200Response = withContext(Dispatchers.IO) {
+    suspend fun opsUpgrade(app: kotlin.String, opsUpgradeRequest: OpsUpgradeRequest) : UpgradeApplied = withContext(Dispatchers.IO) {
         val localVarResponse = opsUpgradeWithHttpInfo(app = app, opsUpgradeRequest = opsUpgradeRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsUpgrade200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UpgradeApplied
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3418,16 +3417,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * To a release the operator installed, where the operator holds app upgrades. &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsUpgradeRequest 
-     * @return ApiResponse<OpsUpgrade200Response?>
+     * @return ApiResponse<UpgradeApplied?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsUpgradeWithHttpInfo(app: kotlin.String, opsUpgradeRequest: OpsUpgradeRequest) : ApiResponse<OpsUpgrade200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsUpgradeWithHttpInfo(app: kotlin.String, opsUpgradeRequest: OpsUpgradeRequest) : ApiResponse<UpgradeApplied?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsUpgradeRequestConfig(app = app, opsUpgradeRequest = opsUpgradeRequest)
 
-        return@withContext request<OpsUpgradeRequest, OpsUpgrade200Response>(
+        return@withContext request<OpsUpgradeRequest, UpgradeApplied>(
             localVariableConfig
         )
     }

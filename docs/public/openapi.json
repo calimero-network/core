@@ -3926,7 +3926,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AppLinks"
+                  "$ref": "#/components/schemas/AppLinkList"
                 }
               }
             }
@@ -27661,6 +27661,53 @@
         "description": "A policy to set at one scope; `null` drops it (an app then follows its organization's, an organization the defaults).",
         "additionalProperties": false
       },
+      "ReplicaAttestation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "node": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "attestation": {
+                "$ref": "#/components/schemas/AttestationDoc"
+              }
+            },
+            "required": [
+              "node",
+              "attestation"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "node": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "node",
+              "error"
+            ]
+          }
+        ],
+        "description": "One replica's receipt-key attestation, or the error fetching it."
+      },
+      "UseMode": {
+        "type": "string",
+        "enum": [
+          "create",
+          "attach"
+        ],
+        "description": "How a release holds an app it references (`uses`): `create`, made with the instance and upgraded with it as one unit; `attach`, an app its owner already runs, linked."
+      },
       "AppAbi": {
         "type": "object",
         "properties": {
@@ -27696,42 +27743,7 @@
           "replicas": {
             "type": "array",
             "items": {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "node": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "attestation": {
-                      "$ref": "#/components/schemas/AttestationDoc"
-                    }
-                  },
-                  "required": [
-                    "node",
-                    "attestation"
-                  ]
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "node": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "node",
-                    "error"
-                  ]
-                }
-              ]
+              "$ref": "#/components/schemas/ReplicaAttestation"
             }
           }
         },
@@ -27899,7 +27911,7 @@
         ],
         "description": "An instance invite: its key, uses left, expiry, maker and the grant scope it carries."
       },
-      "AppLinks": {
+      "AppLinkList": {
         "type": "object",
         "properties": {
           "app": {
@@ -28645,14 +28657,13 @@
             ]
           },
           "mode": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "create",
-              "attach",
-              null
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UseMode"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "app": {
@@ -29314,10 +29325,7 @@
               "type": "object",
               "properties": {
                 "name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string"
                 },
                 "header": {
                   "type": "string"

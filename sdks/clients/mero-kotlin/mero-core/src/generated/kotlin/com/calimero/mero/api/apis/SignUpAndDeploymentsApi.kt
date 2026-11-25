@@ -47,10 +47,10 @@ import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
 import com.calimero.mero.api.models.OfferBody
 import com.calimero.mero.api.models.PublicDeployment
-import com.calimero.mero.api.models.SignUpInviteCreate200Response
 import com.calimero.mero.api.models.SignUpInviteCreateRequest
-import com.calimero.mero.api.models.SignUpInviteList200Response
-import com.calimero.mero.api.models.SignUpPublic200Response
+import com.calimero.mero.api.models.SignUpInviteList
+import com.calimero.mero.api.models.SignUpInviteMade
+import com.calimero.mero.api.models.SignUpPublic
 import com.calimero.mero.api.models.SignUpSet
 import com.calimero.mero.api.models.SignUpSetRequest
 
@@ -1065,7 +1065,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Issue a cluster sign-up invite
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param signUpInviteCreateRequest 
-     * @return SignUpInviteCreate200Response
+     * @return SignUpInviteMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1074,11 +1074,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun signUpInviteCreate(signUpInviteCreateRequest: SignUpInviteCreateRequest) : SignUpInviteCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteCreate(signUpInviteCreateRequest: SignUpInviteCreateRequest) : SignUpInviteMade = withContext(Dispatchers.IO) {
         val localVarResponse = signUpInviteCreateWithHttpInfo(signUpInviteCreateRequest = signUpInviteCreateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1097,16 +1097,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Issue a cluster sign-up invite
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param signUpInviteCreateRequest 
-     * @return ApiResponse<SignUpInviteCreate200Response?>
+     * @return ApiResponse<SignUpInviteMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun signUpInviteCreateWithHttpInfo(signUpInviteCreateRequest: SignUpInviteCreateRequest) : ApiResponse<SignUpInviteCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteCreateWithHttpInfo(signUpInviteCreateRequest: SignUpInviteCreateRequest) : ApiResponse<SignUpInviteMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = signUpInviteCreateRequestConfig(signUpInviteCreateRequest = signUpInviteCreateRequest)
 
-        return@withContext request<SignUpInviteCreateRequest, SignUpInviteCreate200Response>(
+        return@withContext request<SignUpInviteCreateRequest, SignUpInviteMade>(
             localVariableConfig
         )
     }
@@ -1138,7 +1138,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up/invites
      * Cluster sign-up invites
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return SignUpInviteList200Response
+     * @return SignUpInviteList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1147,11 +1147,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun signUpInviteList() : SignUpInviteList200Response = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteList() : SignUpInviteList = withContext(Dispatchers.IO) {
         val localVarResponse = signUpInviteListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1169,16 +1169,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up/invites
      * Cluster sign-up invites
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<SignUpInviteList200Response?>
+     * @return ApiResponse<SignUpInviteList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun signUpInviteListWithHttpInfo() : ApiResponse<SignUpInviteList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteListWithHttpInfo() : ApiResponse<SignUpInviteList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = signUpInviteListRequestConfig()
 
-        return@withContext request<Unit, SignUpInviteList200Response>(
+        return@withContext request<Unit, SignUpInviteList>(
             localVariableConfig
         )
     }
@@ -1285,7 +1285,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up
      * The sign-up policy
      * Who may create an account here, the cluster&#39;s name and the tag a sign-in uses to pick the person&#39;s passkey for it.  **Who:** anyone.
-     * @return SignUpPublic200Response
+     * @return SignUpPublic
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1294,11 +1294,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun signUpPublic() : SignUpPublic200Response = withContext(Dispatchers.IO) {
+    suspend fun signUpPublic() : SignUpPublic = withContext(Dispatchers.IO) {
         val localVarResponse = signUpPublicWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpPublic200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpPublic
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1316,16 +1316,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up
      * The sign-up policy
      * Who may create an account here, the cluster&#39;s name and the tag a sign-in uses to pick the person&#39;s passkey for it.  **Who:** anyone.
-     * @return ApiResponse<SignUpPublic200Response?>
+     * @return ApiResponse<SignUpPublic?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun signUpPublicWithHttpInfo() : ApiResponse<SignUpPublic200Response?> = withContext(Dispatchers.IO) {
+    suspend fun signUpPublicWithHttpInfo() : ApiResponse<SignUpPublic?> = withContext(Dispatchers.IO) {
         val localVariableConfig = signUpPublicRequestConfig()
 
-        return@withContext request<Unit, SignUpPublic200Response>(
+        return@withContext request<Unit, SignUpPublic>(
             localVariableConfig
         )
     }

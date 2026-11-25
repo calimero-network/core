@@ -261,7 +261,7 @@ class DeploymentsFacade internal constructor(
         uses: kotlin.Long? = null,
         ttlSecs: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): SignUpInviteCreate200Response =
+    ): SignUpInviteMade =
         api(passkey, null, emptySet()).signUpAndDeployments.signUpInviteCreate(signUpInviteCreateRequest = SignUpInviteCreateRequest(uses = uses, ttlSecs = ttlSecs))
 
     /**
@@ -273,7 +273,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpInviteList(): SignUpInviteList200Response =
+    suspend fun signUpInviteList(): SignUpInviteList =
         api(null, null, emptySet()).signUpAndDeployments.signUpInviteList()
 
     /**
@@ -304,7 +304,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpPublic(): SignUpPublic200Response =
+    suspend fun signUpPublic(): SignUpPublic =
         api(null, null, emptySet()).signUpAndDeployments.signUpPublic()
 
     /**

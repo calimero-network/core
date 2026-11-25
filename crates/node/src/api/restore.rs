@@ -334,7 +334,10 @@ pub(super) async fn ops_recovery_files(
                 continue;
             };
             out.push(RecoveryFile {
-                name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 header: String::from_utf8_lossy(&opened.header_bytes).into_owned(),
                 signature: hex::encode(opened.signature),
             });
@@ -676,7 +679,7 @@ pub(super) struct RecoveryFiles {
 /// A recovery file: its name, its header (JSON text) and the node's signature over it (hex).
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct RecoveryFile {
-    name: Option<String>,
+    name: String,
     header: String,
     signature: String,
 }

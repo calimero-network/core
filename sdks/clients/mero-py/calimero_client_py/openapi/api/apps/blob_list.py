@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.blob_list_response_200 import BlobListResponse200
+from ...models.blob_list import BlobList
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[BlobListResponse200, Error]]:
+) -> Optional[Union[BlobList, Error]]:
     if response.status_code == 200:
-        response_200 = BlobListResponse200.from_dict(response.json())
+        response_200 = BlobList.from_dict(response.json())
 
         return response_200
 
@@ -52,7 +52,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[BlobListResponse200, Error]]:
+) -> Response[Union[BlobList, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[BlobListResponse200, Error]]:
+) -> Response[Union[BlobList, Error]]:
     """List an app's blobs
 
      Plain blobs only.
@@ -80,7 +80,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[BlobListResponse200, Error]]
+        Response[Union[BlobList, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -98,7 +98,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[BlobListResponse200, Error]]:
+) -> Optional[Union[BlobList, Error]]:
     """List an app's blobs
 
      Plain blobs only.
@@ -113,7 +113,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[BlobListResponse200, Error]
+        Union[BlobList, Error]
     """
 
     return sync_detailed(
@@ -126,7 +126,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[BlobListResponse200, Error]]:
+) -> Response[Union[BlobList, Error]]:
     """List an app's blobs
 
      Plain blobs only.
@@ -141,7 +141,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[BlobListResponse200, Error]]
+        Response[Union[BlobList, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -157,7 +157,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[BlobListResponse200, Error]]:
+) -> Optional[Union[BlobList, Error]]:
     """List an app's blobs
 
      Plain blobs only.
@@ -172,7 +172,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[BlobListResponse200, Error]
+        Union[BlobList, Error]
     """
 
     return (

@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_apps_response_200 import OpsAppsResponse200
+from ...models.ops_apps import OpsApps
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsAppsResponse200]]:
+) -> Optional[Union[Error, OpsApps]]:
     if response.status_code == 200:
-        response_200 = OpsAppsResponse200.from_dict(response.json())
+        response_200 = OpsApps.from_dict(response.json())
 
         return response_200
 
@@ -63,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsAppsResponse200]]:
+) -> Response[Union[Error, OpsApps]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -77,7 +77,7 @@ def sync_detailed(
     client: AuthenticatedClient,
     after: Union[Unset, str] = UNSET,
     limit: Union[Unset, int] = UNSET,
-) -> Response[Union[Error, OpsAppsResponse200]]:
+) -> Response[Union[Error, OpsApps]]:
     """What each app runs
 
      Each app's bundle, package, publisher, who holds its upgrades and release approvals, its last
@@ -94,7 +94,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsAppsResponse200]]
+        Response[Union[Error, OpsApps]]
     """
 
     kwargs = _get_kwargs(
@@ -114,7 +114,7 @@ def sync(
     client: AuthenticatedClient,
     after: Union[Unset, str] = UNSET,
     limit: Union[Unset, int] = UNSET,
-) -> Optional[Union[Error, OpsAppsResponse200]]:
+) -> Optional[Union[Error, OpsApps]]:
     """What each app runs
 
      Each app's bundle, package, publisher, who holds its upgrades and release approvals, its last
@@ -131,7 +131,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsAppsResponse200]
+        Union[Error, OpsApps]
     """
 
     return sync_detailed(
@@ -146,7 +146,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient,
     after: Union[Unset, str] = UNSET,
     limit: Union[Unset, int] = UNSET,
-) -> Response[Union[Error, OpsAppsResponse200]]:
+) -> Response[Union[Error, OpsApps]]:
     """What each app runs
 
      Each app's bundle, package, publisher, who holds its upgrades and release approvals, its last
@@ -163,7 +163,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsAppsResponse200]]
+        Response[Union[Error, OpsApps]]
     """
 
     kwargs = _get_kwargs(
@@ -181,7 +181,7 @@ async def asyncio(
     client: AuthenticatedClient,
     after: Union[Unset, str] = UNSET,
     limit: Union[Unset, int] = UNSET,
-) -> Optional[Union[Error, OpsAppsResponse200]]:
+) -> Optional[Union[Error, OpsApps]]:
     """What each app runs
 
      Each app's bundle, package, publisher, who holds its upgrades and release approvals, its last
@@ -198,7 +198,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsAppsResponse200]
+        Union[Error, OpsApps]
     """
 
     return (

@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.deployer_body import DeployerBody
+from ...models.deployer_granted import DeployerGranted
 from ...models.error import Error
-from ...models.ops_deployer_grant_response_200 import OpsDeployerGrantResponse200
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Optional[Union[DeployerGranted, Error]]:
     if response.status_code == 200:
-        response_200 = OpsDeployerGrantResponse200.from_dict(response.json())
+        response_200 = DeployerGranted.from_dict(response.json())
 
         return response_200
 
@@ -63,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Response[Union[DeployerGranted, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -76,7 +76,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: DeployerBody,
-) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Response[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -93,7 +93,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsDeployerGrantResponse200]]
+        Response[Union[DeployerGranted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -111,7 +111,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: DeployerBody,
-) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Optional[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -128,7 +128,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsDeployerGrantResponse200]
+        Union[DeployerGranted, Error]
     """
 
     return sync_detailed(
@@ -141,7 +141,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: DeployerBody,
-) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Response[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -158,7 +158,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsDeployerGrantResponse200]]
+        Response[Union[DeployerGranted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -174,7 +174,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: DeployerBody,
-) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Optional[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -191,7 +191,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsDeployerGrantResponse200]
+        Union[DeployerGranted, Error]
     """
 
     return (

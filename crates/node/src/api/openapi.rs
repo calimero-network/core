@@ -748,6 +748,18 @@ fn components() -> Vec<Component> {
         .closed_body(),
         // ---------------------------------------------------------------- typed answers (E7)
         component(
+            "ReplicaAttestation",
+            "One replica's receipt-key attestation, or the error fetching it.",
+            "{ node: uint, attestation: #AttestationDoc } | { node: uint, error: string }",
+        )
+        .of::<super::apps::ReplicaAttestation>(),
+        component(
+            "UseMode",
+            "How a release holds an app it references (`uses`): `create`, made with the instance and upgraded with it as one unit; `attach`, an app its owner already runs, linked.",
+            r#""create" | "attach""#,
+        )
+        .of::<calimero_bundle::UseMode>(),
+        component(
             "AppAbi",
             "`GET /apps/{app}/abi`: the bundle the app group runs and the ABI it embeds (`null`: none).",
             "{ bundle: string, abi: any | null }",
@@ -756,7 +768,7 @@ fn components() -> Vec<Component> {
         component(
             "AppAttestations",
             "`GET /apps/{app}/attestation`: the app, the cluster each replica's quote must bind, and each replica's receipt-key attestation (or why it could not be fetched).",
-            "{ appId: string, cluster: string, replicas: ({ node: uint, attestation: #AttestationDoc } | { node: uint, error: string })[] }",
+            "{ appId: string, cluster: string, replicas: #ReplicaAttestation[] }",
         )
         .of::<super::apps::AppAttestations>(),
         component(
@@ -796,11 +808,11 @@ fn components() -> Vec<Component> {
         )
         .of::<super::apps::AppInviteView>(),
         component(
-            "AppLinks",
+            "AppLinkList",
             "`GET /apps/{app}/links`: each reference of the release the instance runs and what is linked.",
             "{ app: string, links: #LinkRow[] }",
         )
-        .of::<super::apps::AppLinks>(),
+        .of::<super::apps::AppLinkList>(),
         component(
             "AppList",
             "`GET /apps`: the instances the caller reaches.",
@@ -930,7 +942,7 @@ fn components() -> Vec<Component> {
         component(
             "LinkRow",
             "One link of an instance: the reference (`null` fields for one its release no longer names), the app linked, its release and whether it is in the reference's range (`null`: nothing linked).",
-            "{ name: string, package: string | null, range: string | null, mode: \"create\" | \"attach\" | null, app: string | null, version: string | null, inRange: bool | null }",
+            "{ name: string, package: string | null, range: string | null, mode: #UseMode | null, app: string | null, version: string | null, inRange: bool | null }",
         )
         .of::<super::apps::LinkRow>(),
         component(
@@ -1056,7 +1068,7 @@ fn components() -> Vec<Component> {
         component(
             "RecoveryFiles",
             "`GET /ops/recovery-files`: a holder and its recovery files, each with its signed header.",
-            "{ holder: { kind: \"org\", id: string } | { kind: \"account\", id: string } | { kind: \"operator\" }, files: { name: string | null, header: string, signature: string }[] }",
+            "{ holder: { kind: \"org\", id: string } | { kind: \"account\", id: string } | { kind: \"operator\" }, files: { name: string, header: string, signature: string }[] }",
         )
         .of::<super::restore::RecoveryFiles>(),
         component(
@@ -2660,7 +2672,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
         get("/apps/{app}/links", "app_links", AppAccess, "List an app's links to the apps its release uses")
             .about("One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.")
-            .ok("#AppLinks"),
+            .ok("#AppLinkList"),
         put("/apps/{app}/links/{name}", "app_link", AccountHolder, "Attach an app to one of an app's references")
             .about("`name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.")
             .json::<super::apps::LinkBody>("{ app: string, confirm?: #Confirm }")

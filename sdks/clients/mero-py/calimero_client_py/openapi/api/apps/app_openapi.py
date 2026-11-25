@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_openapi_response_200 import AppOpenapiResponse200
+from ...models.app_open_api import AppOpenApi
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppOpenapiResponse200, Error]]:
+) -> Optional[Union[AppOpenApi, Error]]:
     if response.status_code == 200:
-        response_200 = AppOpenapiResponse200.from_dict(response.json())
+        response_200 = AppOpenApi.from_dict(response.json())
 
         return response_200
 
@@ -67,7 +67,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppOpenapiResponse200, Error]]:
+) -> Response[Union[AppOpenApi, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -80,7 +80,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppOpenapiResponse200, Error]]:
+) -> Response[Union[AppOpenApi, Error]]:
     """An app's OpenAPI document
 
      Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST
@@ -97,7 +97,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppOpenapiResponse200, Error]]
+        Response[Union[AppOpenApi, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -115,7 +115,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppOpenapiResponse200, Error]]:
+) -> Optional[Union[AppOpenApi, Error]]:
     """An app's OpenAPI document
 
      Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST
@@ -132,7 +132,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppOpenapiResponse200, Error]
+        Union[AppOpenApi, Error]
     """
 
     return sync_detailed(
@@ -145,7 +145,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppOpenapiResponse200, Error]]:
+) -> Response[Union[AppOpenApi, Error]]:
     """An app's OpenAPI document
 
      Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST
@@ -162,7 +162,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppOpenapiResponse200, Error]]
+        Response[Union[AppOpenApi, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -178,7 +178,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppOpenapiResponse200, Error]]:
+) -> Optional[Union[AppOpenApi, Error]]:
     """An app's OpenAPI document
 
      Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST
@@ -195,7 +195,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppOpenapiResponse200, Error]
+        Union[AppOpenApi, Error]
     """
 
     return (

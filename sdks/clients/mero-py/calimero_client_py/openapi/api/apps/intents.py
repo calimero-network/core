@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
+from ...models.intent_result import IntentResult
 from ...models.intents_body import IntentsBody
-from ...models.intents_response_200 import IntentsResponse200
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, IntentsResponse200]]:
+) -> Optional[Union[Error, IntentResult]]:
     if response.status_code == 200:
-        response_200 = IntentsResponse200.from_dict(response.json())
+        response_200 = IntentResult.from_dict(response.json())
 
         return response_200
 
@@ -106,7 +106,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, IntentsResponse200]]:
+) -> Response[Union[Error, IntentResult]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -120,7 +120,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: IntentsBody,
-) -> Response[Union[Error, IntentsResponse200]]:
+) -> Response[Union[Error, IntentResult]]:
     """Call a method
 
      A logged call: the result, the events of the call the caller receives, and the answering node's
@@ -143,7 +143,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, IntentsResponse200]]
+        Response[Union[Error, IntentResult]]
     """
 
     kwargs = _get_kwargs(
@@ -163,7 +163,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: IntentsBody,
-) -> Optional[Union[Error, IntentsResponse200]]:
+) -> Optional[Union[Error, IntentResult]]:
     """Call a method
 
      A logged call: the result, the events of the call the caller receives, and the answering node's
@@ -186,7 +186,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, IntentsResponse200]
+        Union[Error, IntentResult]
     """
 
     return sync_detailed(
@@ -201,7 +201,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: IntentsBody,
-) -> Response[Union[Error, IntentsResponse200]]:
+) -> Response[Union[Error, IntentResult]]:
     """Call a method
 
      A logged call: the result, the events of the call the caller receives, and the answering node's
@@ -224,7 +224,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, IntentsResponse200]]
+        Response[Union[Error, IntentResult]]
     """
 
     kwargs = _get_kwargs(
@@ -242,7 +242,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: IntentsBody,
-) -> Optional[Union[Error, IntentsResponse200]]:
+) -> Optional[Union[Error, IntentResult]]:
     """Call a method
 
      A logged call: the result, the events of the call the caller receives, and the answering node's
@@ -265,7 +265,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, IntentsResponse200]
+        Union[Error, IntentResult]
     """
 
     return (

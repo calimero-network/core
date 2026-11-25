@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.passkey_add_begin_response_200 import PasskeyAddBeginResponse200
+from ...models.passkey_challenge import PasskeyChallenge
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PasskeyAddBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     if response.status_code == 200:
-        response_200 = PasskeyAddBeginResponse200.from_dict(response.json())
+        response_200 = PasskeyChallenge.from_dict(response.json())
 
         return response_200
 
@@ -53,7 +53,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PasskeyAddBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PasskeyAddBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start adding a passkey
 
      Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn
@@ -78,7 +78,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PasskeyAddBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs()
@@ -93,7 +93,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PasskeyAddBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start adding a passkey
 
      Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn
@@ -106,7 +106,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PasskeyAddBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return sync_detailed(
@@ -117,7 +117,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PasskeyAddBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start adding a passkey
 
      Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn
@@ -130,7 +130,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PasskeyAddBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs()
@@ -143,7 +143,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PasskeyAddBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start adding a passkey
 
      Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn
@@ -156,7 +156,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PasskeyAddBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return (

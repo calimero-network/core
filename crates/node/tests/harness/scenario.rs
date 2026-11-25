@@ -38,7 +38,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use calimero_client::types::{
-    OutboundSelection, OutboundSelectionManifest, TeamJoin, ViewsRequestConsistency, ViewsResponse,
+    OutboundSelection, OutboundSelectionManifest, TeamJoin, ViewResult, ViewsRequestConsistency,
 };
 use calimero_client::{Client, Error as ClientError, Request, Session};
 use calimero_identity::testing::SoftAuthenticator;
@@ -1850,7 +1850,7 @@ impl<'a> Runner<'a> {
         cl: &Client,
         step: &Map<String, Value>,
         args: Value,
-    ) -> Result<ViewsResponse, Box<ClientError>> {
+    ) -> Result<ViewResult, Box<ClientError>> {
         let (consistency, min_index) = if truthy(step.get("stale")) {
             let min_index = step
                 .get("min_index")

@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.ops_recover_body import OpsRecoverBody
-from ...models.ops_recover_response_200 import OpsRecoverResponse200
+from ...models.system_recovered import SystemRecovered
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsRecoverResponse200]]:
+) -> Optional[Union[Error, SystemRecovered]]:
     if response.status_code == 200:
-        response_200 = OpsRecoverResponse200.from_dict(response.json())
+        response_200 = SystemRecovered.from_dict(response.json())
 
         return response_200
 
@@ -68,7 +68,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsRecoverResponse200]]:
+) -> Response[Union[Error, SystemRecovered]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -81,7 +81,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsRecoverBody,
-) -> Response[Union[Error, OpsRecoverResponse200]]:
+) -> Response[Union[Error, SystemRecovered]]:
     """Found the cluster again from its recovery disk
 
      On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest
@@ -100,7 +100,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRecoverResponse200]]
+        Response[Union[Error, SystemRecovered]]
     """
 
     kwargs = _get_kwargs(
@@ -118,7 +118,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: OpsRecoverBody,
-) -> Optional[Union[Error, OpsRecoverResponse200]]:
+) -> Optional[Union[Error, SystemRecovered]]:
     """Found the cluster again from its recovery disk
 
      On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest
@@ -137,7 +137,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRecoverResponse200]
+        Union[Error, SystemRecovered]
     """
 
     return sync_detailed(
@@ -150,7 +150,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsRecoverBody,
-) -> Response[Union[Error, OpsRecoverResponse200]]:
+) -> Response[Union[Error, SystemRecovered]]:
     """Found the cluster again from its recovery disk
 
      On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest
@@ -169,7 +169,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRecoverResponse200]]
+        Response[Union[Error, SystemRecovered]]
     """
 
     kwargs = _get_kwargs(
@@ -185,7 +185,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: OpsRecoverBody,
-) -> Optional[Union[Error, OpsRecoverResponse200]]:
+) -> Optional[Union[Error, SystemRecovered]]:
     """Found the cluster again from its recovery disk
 
      On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest
@@ -204,7 +204,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRecoverResponse200]
+        Union[Error, SystemRecovered]
     """
 
     return (

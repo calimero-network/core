@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.ops_set_replicas_body import OpsSetReplicasBody
-from ...models.ops_set_replicas_response_200 import OpsSetReplicasResponse200
+from ...models.replicas_set import ReplicasSet
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsSetReplicasResponse200]]:
+) -> Optional[Union[Error, ReplicasSet]]:
     if response.status_code == 200:
-        response_200 = OpsSetReplicasResponse200.from_dict(response.json())
+        response_200 = ReplicasSet.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsSetReplicasResponse200]]:
+) -> Response[Union[Error, ReplicasSet]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -95,7 +95,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsSetReplicasBody,
-) -> Response[Union[Error, OpsSetReplicasResponse200]]:
+) -> Response[Union[Error, ReplicasSet]]:
     """Move an app's replicas
 
      Signed over `<app> / __set_replicas / { replicas }` (sorted); at least `min(3, nodes)` registered
@@ -115,7 +115,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsSetReplicasResponse200]]
+        Response[Union[Error, ReplicasSet]]
     """
 
     kwargs = _get_kwargs(
@@ -135,7 +135,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: OpsSetReplicasBody,
-) -> Optional[Union[Error, OpsSetReplicasResponse200]]:
+) -> Optional[Union[Error, ReplicasSet]]:
     """Move an app's replicas
 
      Signed over `<app> / __set_replicas / { replicas }` (sorted); at least `min(3, nodes)` registered
@@ -155,7 +155,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsSetReplicasResponse200]
+        Union[Error, ReplicasSet]
     """
 
     return sync_detailed(
@@ -170,7 +170,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsSetReplicasBody,
-) -> Response[Union[Error, OpsSetReplicasResponse200]]:
+) -> Response[Union[Error, ReplicasSet]]:
     """Move an app's replicas
 
      Signed over `<app> / __set_replicas / { replicas }` (sorted); at least `min(3, nodes)` registered
@@ -190,7 +190,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsSetReplicasResponse200]]
+        Response[Union[Error, ReplicasSet]]
     """
 
     kwargs = _get_kwargs(
@@ -208,7 +208,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: OpsSetReplicasBody,
-) -> Optional[Union[Error, OpsSetReplicasResponse200]]:
+) -> Optional[Union[Error, ReplicasSet]]:
     """Move an app's replicas
 
      Signed over `<app> / __set_replicas / { replicas }` (sorted); at least `min(3, nodes)` registered
@@ -228,7 +228,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsSetReplicasResponse200]
+        Union[Error, ReplicasSet]
     """
 
     return (
