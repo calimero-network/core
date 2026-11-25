@@ -155,7 +155,7 @@ for (const [path, item] of Object.entries(doc.paths)) {
     if (op['x-calimero-operator']) extras.push('Answers `428 OPERATOR_SIGNATURE_REQUIRED` first: give `operatorProof` (here or on the client).');
     if (op['x-calimero-retry-safe']) {
       extras.push(
-        `Retried on \`503\` (D70)${op['x-calimero-retry-requires'] ? `, with its \`${op['x-calimero-retry-requires']}\` (one is made when none is given)` : ''}.`,
+        `Retried on \`503\`${op['x-calimero-retry-requires'] ? `, with its \`${op['x-calimero-retry-requires']}\` (one is made when none is given)` : ''}.`,
       );
     }
     if (op.responses['421']?.description?.includes('WRONG_NODE')) {
@@ -206,8 +206,8 @@ out.push('  };');
 out.push('}');
 out.push('');
 out.push('/**');
-out.push(" * The routes the document marks `x-calimero-retry-safe`: the transport sends them again on a `503`");
-out.push(" * (D70), and one that `requires` an `idempotencyKey` is given one before it is first sent.");
+out.push(" * The routes the document marks `x-calimero-retry-safe`: the transport sends them again on a `503`,");
+out.push(" * and one that `requires` an `idempotencyKey` is given one before it is first sent.");
 out.push(' */');
 out.push(`export const RETRY_SAFE_ROUTES: ReadonlyArray<{ method: string; path: string; requires?: string }> = ${JSON.stringify(retrySafe)};`);
 out.push('');

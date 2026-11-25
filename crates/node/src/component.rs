@@ -11,16 +11,16 @@
 //! applies a component's diff to an SDK 0.12 app's state (which no longer runs,
 //! [`crate::app::WASMER_GONE`]) or the other way round.
 //!
-//! Storage (D46): the component's keys are hidden rows of the group's state (sealed,
+//! Storage: the component's keys are hidden rows of the group's state (sealed,
 //! keyed by an HMAC), and a replica keeps them in memory too,
 //! ordered, as a persistent map ([`Kv`]): a run gets the current version as its
 //! `StateView` (ordered `range` scans), and `apply` writes the next one sharing
 //! everything it does not change, so a run holding the previous one costs a write
-//! O(log n) copied nodes, never a copy of the whole state (B7). The map is rebuilt from the rows on a restart and after a
+//! O(log n) copied nodes, never a copy of the whole state. The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
-//! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees (D39).
+//! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees.
 //!
-//! Usage (Q20): every logged `init`, call and tick carries what its run cost
+//! Usage: every logged `init`, call and tick carries what its run cost
 //! ([`RunUsage`]), measured by the leader. A replica adds the entry's figures to the
 //! app's usage book ([`ComponentHead::usage`], a [`UsageBook`], per UTC day of the entry's timestamp)
 //! as it applies the entry and never measures anything itself, so every replica holds
@@ -68,7 +68,7 @@ pub use step_cache::{
     MAX_CACHE_ENTRIES,
 };
 
-/// An event a run emitted, with its audience (R9).
+/// An event a run emitted, with its audience.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventOut {
     pub kind: String,
@@ -93,20 +93,20 @@ pub struct Outcome {
     // No app log: the run's log lines (`env::log`, stdout, stderr) may hold user data, so the
     // entry keeps none, and apply never read them. An entry an earlier release logged carries a
     // `logs` key, which is ignored on read (`a_runs_log_lines_never_reach_its_entry`).
-    /// The xcalls the run sent (D25); empty unless `Ok`.
+    /// The xcalls the run sent; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub xcalls: Vec<XcallOut>,
-    /// The actions the run started (D17); empty unless `Ok`.
+    /// The actions the run started; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionOut>,
-    /// The run's outbound requests and what came back (D76), kept whatever the status:
+    /// The run's outbound requests and what came back, kept whatever the status:
     /// the entry is their record, so followers and replays never fetch again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub http: Vec<HttpRecord>,
     /// The files the run finished: their marks only, the ciphertext never enters the log.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileMark>,
-    /// What the run cost, as the leader measured it (Q20). Absent in an entry
+    /// What the run cost, as the leader measured it. Absent in an entry
     /// written before: nothing.
     #[serde(default)]
     pub usage: RunUsage,
@@ -122,7 +122,7 @@ pub struct Outcome {
     pub compute_cancels: Vec<String>,
 }
 
-/// One outbound request of a logged run and its response (D76), as the entry records it:
+/// One outbound request of a logged run and its response, as the entry records it:
 /// the request as the app made it (secret placeholders, never secrets), the response as
 /// the outbound gate handed it back (secrets redacted); bodies cut to
 /// `calimero_app_host::MAX_RECORDED_BODY_BYTES`, with their full lengths.
@@ -232,7 +232,7 @@ pub struct PublishedMark {
     pub size: u64,
 }
 
-/// What one logged run cost (Q20), measured by the leader and stored in its entry;
+/// What one logged run cost, measured by the leader and stored in its entry;
 /// a follower adds these figures up and never measures them again. `fuel`,
 /// `wall_ms` and `writes` are the run's whatever its status (`writes` is the host
 /// core's count of `put`s and `delete`s); `bytes_written` (keys and values of the
@@ -242,7 +242,7 @@ pub struct PublishedMark {
 #[serde(rename_all = "camelCase")]
 pub struct RunUsage {
     pub fuel: u64,
-    /// Wall-clock milliseconds on the leader, for information only (D76: the quota
+    /// Wall-clock milliseconds on the leader, for information only (the quota
     /// counts fuel): not deterministic, so never compared between replicas, only
     /// carried.
     pub wall_ms: u64,
@@ -384,7 +384,7 @@ impl Outcome {
         outcome
     }
 
-    /// `self` replaced by a `HostDenied` trap (an entry too large for the log, D50):
+    /// `self` replaced by a `HostDenied` trap (an entry too large for the log):
     /// nothing of it applies, but the run's cost stays on the entry.
     #[must_use]
     pub fn denied(&self, detail: &str) -> Self {
@@ -481,7 +481,7 @@ impl Outcome {
     }
 
     /// Whether the run hit its wall-clock deadline or the node could not serve it (no
-    /// instance, memory or file bytes): never logged, the idempotency key not spent (D23).
+    /// instance, memory or file bytes): never logged, the idempotency key not spent.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         self.status == Status::Trap
@@ -525,22 +525,22 @@ pub struct CallEntry {
     /// The passkey assertion that approved this call, for confirm methods.
     #[serde(default)]
     pub consent: Option<Value>,
-    /// The entry timestamp the run saw (D16, D19).
+    /// The entry timestamp the run saw.
     pub ts_ms: u64,
     /// The index of the app's last entry when the leader ran it
     /// (`AppState::last_index`); `apply` refuses it on any other state.
     pub base_index: u64,
     /// The leader's term and per-term execution counter the run's unique ids
-    /// were made from (D52).
+    /// were made from.
     pub id_term: u64,
     pub id_seq: u64,
     pub outcome: Outcome,
-    /// A delivered xcall (D25): which message of which source app it is.
+    /// A delivered xcall: which message of which source app it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xcall: Option<XcallFrom>,
 }
 
-/// A timer tick as recorded in the log (D34).
+/// A timer tick as recorded in the log.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TickEntry {
@@ -551,10 +551,10 @@ pub struct TickEntry {
     /// The timer's last applied slot when the leader ran the tick.
     #[serde(default)]
     pub previous_ms: Option<u64>,
-    /// The entry timestamp (app clock, D16), at or after the slot.
+    /// The entry timestamp (app clock), at or after the slot.
     pub ts_ms: u64,
     pub base_index: u64,
-    /// The ids the tick ran with (D52), as for a call.
+    /// The ids the tick ran with, as for a call.
     pub id_term: u64,
     pub id_seq: u64,
     pub outcome: Outcome,
@@ -594,20 +594,20 @@ pub enum ComponentCmd {
         compute_bundle: Option<String>,
         base_index: u64,
         ts_ms: u64,
-        /// The ids `init` ran with (D52), as for a call.
+        /// The ids `init` ran with, as for a call.
         id_term: u64,
         id_seq: u64,
         outcome: Box<Outcome>,
     },
     #[serde(rename = "componentCall")]
     Call(Box<CallEntry>),
-    /// A timer tick (D34), run by the leader as `System` for the slot
+    /// A timer tick, run by the leader as `System` for the slot
     /// `scheduled_ms`. Applied only if that slot is later than the timer's last
     /// applied one; then recorded whatever its status (a failed tick counts as
     /// applied). A tick that timed out is never proposed.
     #[serde(rename = "componentTick")]
     Tick(Box<TickEntry>),
-    /// Switch to a new bundle, code only (migrations are rebuilds, D38, not in
+    /// Switch to a new bundle, code only (migrations are rebuilds, not in
     /// this milestone). The bundle is a component too: an upgrade across
     /// executors is refused before it is proposed.
     #[serde(rename = "componentUpgrade")]
@@ -618,7 +618,7 @@ pub enum ComponentCmd {
         compute_bundle: Option<String>,
         base_index: u64,
     },
-    /// A blob uploaded for the app (R8; its bytes are in the blob store already): the
+    /// A blob uploaded for the app (its bytes are in the blob store already): the
     /// app holds it, idle until a value refers to it ([`blobs`]).
     #[serde(rename = "componentBlob")]
     Blob {
@@ -626,7 +626,7 @@ pub enum ComponentCmd {
         id: String,
         size: u64,
         mime: String,
-        /// The entry timestamp (D16): its idle time starts here.
+        /// The entry timestamp: its idle time starts here.
         ts_ms: u64,
     },
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
@@ -640,7 +640,7 @@ pub enum ComponentCmd {
     #[serde(rename = "componentFile")]
     File {
         mark: FileMark,
-        /// The entry timestamp (D16): its idle time starts here.
+        /// The entry timestamp: its idle time starts here.
         ts_ms: u64,
         /// The request's idempotency key: a retry of a committed command replays its answer.
         #[serde(default)]
@@ -663,7 +663,7 @@ pub enum ComponentCmd {
     SecretClear { name: String },
     #[serde(rename = "componentBarrier")]
     Barrier,
-    /// An action's attempt timed out (`retry`, D22), or the action ended: done, or failed
+    /// An action's attempt timed out (`retry`), or the action ended: done, or failed
     /// with `failed`'s reason.
     #[serde(rename = "componentActionEnd")]
     ActionEnd {
@@ -674,7 +674,7 @@ pub enum ComponentCmd {
         retry: bool,
         ts_ms: u64,
     },
-    /// The leader finished with the outbox's head message (D25, D29): delivered, or
+    /// The leader finished with the outbox's head message: delivered, or
     /// dead-lettered with `dead`'s reason.
     #[serde(rename = "componentXcallDone")]
     XcallDone {
@@ -764,7 +764,7 @@ pub struct Applied {
     /// The entry was built on a state that was no longer current; nothing changed.
     #[serde(default)]
     pub conflict: bool,
-    /// The run is retryable (wall clock or node unavailable): nothing was logged (D23); answered
+    /// The run is retryable (wall clock or node unavailable): nothing was logged; answered
     /// `503 TIMEOUT`.
     #[serde(default)]
     pub timeout: bool,
@@ -798,7 +798,8 @@ impl Applied {
     }
 }
 
-/// A component call's idempotency record: its answer, and when it expires (D74).
+/// A component call's idempotency record: its answer, and when it expires
+/// (`crate::idempotency`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IdemRecord {
@@ -806,7 +807,7 @@ struct IdemRecord {
     expires_ms: u64,
 }
 
-/// Where a component's idempotency records live (D74's rule, `crate::idempotency`).
+/// Where a component's idempotency records live (the retention rule, `crate::idempotency`).
 const IDEM_ROWS: idempotency::Rows = idempotency::Rows {
     tag: rows::CIDEM,
     ring: rows::corder,
@@ -821,7 +822,7 @@ fn stamps(raw: &[u8]) -> Option<(u64, u64)> {
 
 /// An app's stored keys and values, shared between the machine and the runs reading it.
 ///
-/// A persistent ordered map (B7): a clone is O(1) and shares every node, and a
+/// A persistent ordered map: a clone is O(1) and shares every node, and a
 /// write to a version a run still reads copies only the path to the key it
 /// changes, O(log n), never the whole state. Iterated and ranged in key order,
 /// as a `BTreeMap` is.
@@ -886,16 +887,16 @@ const fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// A component's host records (D39), kept in the group's `Head`, so a snapshot
+/// A component's host records, kept in the group's `Head`, so a snapshot
 /// carries them like every other row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentHead {
-    /// The newest entry timestamp applied (D16): the next entry is stamped
-    /// after it, and views see it (D19).
+    /// The newest entry timestamp applied: the next entry is stamped
+    /// after it, and views see it.
     #[serde(default)]
     pub last_ts_ms: u64,
-    /// The timestamp (D16) of the newest entry that wrote the app's data: a
+    /// The timestamp of the newest entry that wrote the app's data: a
     /// call that applied with a diff or files, or an uploaded blob or file
     /// the app took. The leader stamps it into the entry, so every replica
     /// keeps the same one. Zero before the first write, and in a state
@@ -903,7 +904,7 @@ pub struct ComponentHead {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub last_write_ms: u64,
     /// The highest `(id_term, id_seq)` any logged run carried, conflicted ones
-    /// included (D52, Ruling 29): a node leading the same term again after a
+    /// included: a node leading the same term again after a
     /// restart continues after it instead of reusing an id.
     #[serde(default)]
     pub last_id: (u64, u64),
@@ -914,21 +915,21 @@ pub struct ComponentHead {
     /// Zero for a group never restored, and left out then.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub id_term_base: u64,
-    /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
+    /// The timestamp of the applied `init` entry: timer slots are aligned to it.
     #[serde(default)]
     pub install_ts_ms: u64,
     /// The compute component of the release the group's bundle ships in, set with `bundle` by
     /// the same entry, so the pair never mixes releases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_bundle: Option<String>,
-    /// Each timer's last applied slot (D34).
+    /// Each timer's last applied slot.
     #[serde(default)]
     pub timers: BTreeMap<String, u64>,
     /// The idempotency keys of each class (caller, `node:`) in the order they were
-    /// recorded (D74).
+    /// recorded, for retention (`crate::idempotency`).
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
-    /// Blobs the app forgot (idle past their time, R8) whose bytes the leader has yet to
+    /// Blobs the app forgot (idle past their time) whose bytes the leader has yet to
     /// collect, hex; at most [`MAX_COLLECT_QUEUE`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collect: Vec<String>,
@@ -939,7 +940,7 @@ pub struct ComponentHead {
     /// The xcall outbox, dead letters and the watermarks of the apps that send here.
     #[serde(default)]
     pub xcall: XcallHead,
-    /// The actions started and not ended (D17).
+    /// The actions started and not ended.
     #[serde(default)]
     pub actions: ActionsHead,
     /// The ids of the runs that are queued or running (at most `MAX_ACTIVE_RUNS`).
@@ -957,9 +958,9 @@ pub struct ComponentHead {
     /// Keys of the pipeline step cache, oldest first.
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     pub step_cache: VecDeque<String>,
-    /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
+    /// The app's usage book: the summed [`RunUsage`] of its applied `init`,
     /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
-    /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
+    /// Outside the app's keyspace; a snapshot carries it with the rest of the
     /// head.
     #[serde(default, skip_serializing_if = "UsageBook::is_empty")]
     pub usage: UsageBook,
@@ -1023,9 +1024,9 @@ impl ComponentHead {
 pub struct ComponentState {
     pub head: ComponentHead,
     /// The app's data, stored keys (generation prefix included). Shared with
-    /// running calls and views as their `StateView` (D46).
+    /// running calls and views as their `StateView`.
     pub kv: Kv,
-    /// The blobs the app holds (R8), host records.
+    /// The blobs the app holds, host records.
     pub blobs: BlobTable,
 }
 
@@ -1108,13 +1109,13 @@ impl AppMachine {
             .map(|r| r.applied)
     }
 
-    /// The state a component's run reads (D46): the current version, shared.
+    /// The state a component's run reads: the current version, shared.
     #[must_use]
     pub fn view(&self) -> Arc<dyn host::StateView> {
         Arc::new(self.state.component.kv.clone())
     }
 
-    /// The blobs a component's run sees (R8): the current records, shared.
+    /// The blobs a component's run sees: the current records, shared.
     #[must_use]
     pub fn blob_view(&self) -> blobs::Blobs {
         Arc::clone(&self.state.component.blobs.records)
@@ -1131,7 +1132,7 @@ impl AppMachine {
         serde_json::from_slice(&raw).ok()
     }
 
-    /// The pending actions (D17), by id.
+    /// The pending actions, by id.
     #[must_use]
     pub fn pending_actions(&self) -> Vec<ActionRecord> {
         self.state
@@ -1144,7 +1145,7 @@ impl AppMachine {
             .collect()
     }
 
-    /// An action failed for good (D22): an `ActionFailed` event to whoever started it.
+    /// An action failed for good: an `ActionFailed` event to whoever started it.
     fn action_failed(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -1184,7 +1185,7 @@ impl AppMachine {
         serde_json::from_slice(&raw).ok()
     }
 
-    /// The app's dead letters, oldest first (D29).
+    /// The app's dead letters, oldest first.
     #[must_use]
     pub fn dead_letters(&self) -> Vec<xcall::DeadLetter> {
         let h = &self.state.component.head.xcall;
@@ -1260,9 +1261,9 @@ impl AppMachine {
                 }
             }
             if !outcome.diff.is_empty() {
-                // References to blobs move with the values that hold them (R8).
+                // References to blobs move with the values that hold them.
                 let mut deltas = BTreeMap::new();
-                // Copies only the paths a run's view still shares (B7).
+                // Copies only the paths a run's view still shares.
                 let kv = &mut c.kv;
                 for w in &outcome.diff {
                     // Search catches up from the records an entry touched.
@@ -1342,7 +1343,7 @@ impl AppMachine {
     }
 
     /// Remember a call's answer under its idempotency key until its class's time
-    /// (D74) is past its entry's timestamp.
+    /// (`crate::idempotency`) is past its entry's timestamp.
     fn remember_component(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -1352,7 +1353,7 @@ impl AppMachine {
         applied: &Applied,
     ) {
         let id = idem_key(caller, key);
-        // The class (and so the TTL) is the call's key's prefix (D74, spec v0.26).
+        // The class (and so the TTL) is the call's key's prefix.
         let class = idempotency::class_of(key);
         let record = IdemRecord {
             applied: applied.clone(),
@@ -1371,7 +1372,7 @@ impl AppMachine {
         }
     }
 
-    /// Forget what D74 lets go, against the earlier of the newest applied entry's
+    /// Forget what idempotency retention lets go, against the earlier of the newest applied entry's
     /// timestamp and this entry's own (`idempotency::expiry_now`).
     fn expire_component(&mut self, tx: &mut StateTx<'_>, entry_ts_ms: Option<u64>) {
         let now = idempotency::expiry_now(self.state.component.head.last_ts_ms, entry_ts_ms);
@@ -1392,7 +1393,7 @@ impl AppMachine {
 
     /// A tick for a slot at or before the timer's last applied one changes
     /// nothing (two leaders around a failover proposed it); any other is applied
-    /// like a call and its slot recorded, whatever its status (D34).
+    /// like a call and its slot recorded, whatever its status.
     fn apply_tick(&mut self, tx: &mut StateTx<'_>, index: u64, tick: &TickEntry) -> Applied {
         if self.tick_applied(&tick.timer, tick.scheduled_ms) {
             return Applied::conflict(index, "slot already applied");
@@ -1624,7 +1625,7 @@ impl AppMachine {
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
                 }
-                // Whatever its status, a delivered xcall was answered (D29).
+                // Whatever its status, a delivered xcall was answered.
                 if let (Some(from), false) = (&call.xcall, a.conflict) {
                     self.state.component.head.xcall.delivered(from);
                 }
@@ -1899,7 +1900,7 @@ impl SecretValue {
     }
 }
 
-/// An instance's own value of a declared secret ([`rows::CSECRET`]): the value, and what
+/// An instance's own value of a declared secret (`rows::CSECRET`): the value, and what
 /// the routes answer of it (never the value).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1955,7 +1956,7 @@ fn put_instance_secrets(tx: &mut StateTx<'_>, all: &InstanceSecrets) {
 }
 
 impl AppMachine {
-    /// The instance's own secrets ([`rows::CSECRET`]), as applied here.
+    /// The instance's own secrets (`rows::CSECRET`), as applied here.
     #[must_use]
     pub fn instance_secrets(&self) -> InstanceSecrets {
         self.state
@@ -2051,7 +2052,7 @@ impl host::Directory for SysDirectory {
         self.with_org(|o| o.teams.contains_key(team))
     }
 
-    /// The app's own organization only (D75, spec v0.26): for `account`, at most the
+    /// The app's own organization only: for `account`, at most the
     /// app's org with the account's role in it. A component runs code the platform
     /// doesn't vet, so it never maps its callers' memberships in other tenants.
     fn orgs_of(&self, account: &str) -> Vec<(String, host::OrgRole)> {
@@ -2118,7 +2119,7 @@ mod tests {
     mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
 
-    /// C10: the test harness, which has no log, refuses a run whose entry would be over the
+    /// The test harness, which has no log, refuses a run whose entry would be over the
     /// log's cap by measuring it with `calimero_app_host::entry_bytes`. That must be the
     /// length of the entry this node writes for the same run, for every status and every
     /// part a harness run can produce (keys and values in base64, events with each audience,
@@ -2393,7 +2394,7 @@ mod tests {
         assert!(mark.segment_hashes().is_none());
     }
 
-    /// D76: a logged run's outbound exchange is part of the outcome its entry carries,
+    /// A logged run's outbound exchange is part of the outcome its entry carries,
     /// whatever the status, and reads back from the entry's bytes as it was recorded.
     #[test]
     fn a_runs_outbound_exchange_is_recorded_in_its_entry() {
@@ -2584,7 +2585,7 @@ mod tests {
         assert!(!Outcome::default().is_retryable());
     }
 
-    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// Regression: a row an apply read but could not decode read as absent, and
     /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
     /// call ran again, an idempotency record was dropped). It now fails the batch.
     #[test]
@@ -2890,7 +2891,7 @@ mod tests {
         assert_eq!(held(&r), [fid(1)]);
     }
 
-    /// Reproduction (B4): an app entry this replica cannot decode (a later
+    /// Reproduction: an app entry this replica cannot decode (a later
     /// release's command) was skipped, and the replica went on serving a state
     /// the others no longer had. Its batch now fails and the group stops there.
     #[test]
@@ -2907,7 +2908,7 @@ mod tests {
         assert!(!r.apply(2, &ok).conflict);
     }
 
-    /// Reproduction (F6): the error that stops the group quoted the entry it could not
+    /// Reproduction: the error that stops the group quoted the entry it could not
     /// decode (serde_json's `invalid type: string "…"`), and the node logged it at ERROR
     /// and again as the group's stop reason, which ship to the operator's log.
     #[test]
@@ -3409,7 +3410,7 @@ mod tests {
         assert_eq!(r.machine.view().get(b"k"), Some(b"2".to_vec()));
     }
 
-    /// The persistent map answers every read as the `BTreeMap` it replaced (B7):
+    /// The persistent map answers every read as the `BTreeMap` it replaced:
     /// the same values, ranges in the same order both ways, the same empty and
     /// unbounded ends, after the same writes and deletes.
     #[test]
@@ -3455,7 +3456,7 @@ mod tests {
 
     /// A write while a view holds the state costs about what one with no view
     /// does: apply shares the unchanged part of a large state with the view
-    /// instead of copying all of it (B7).
+    /// instead of copying all of it.
     #[test]
     fn a_write_under_a_view_does_not_copy_the_whole_state() {
         const KEYS: usize = 100_000;
@@ -3531,7 +3532,8 @@ mod tests {
             .is_some()
     }
 
-    /// D74 on a component: a `node:` key is honoured for 10 minutes of entry time, a
+    /// Idempotency retention on a component: a `node:` key is honoured for 10 minutes of entry
+    /// time, a
     /// caller's own key for 24 hours, judged by the newest applied entry's timestamp
     /// (with the per-class floors at zero).
     #[test]
@@ -3563,8 +3565,8 @@ mod tests {
         assert!(honoured(&r, "x3"));
     }
 
-    /// D74's cap (scaled down here to 3 records through `Limits::cap`; the real one is
-    /// 100,000), spec v0.27: past it `node:` records go first, then the oldest
+    /// Idempotency retention's cap (scaled down here to 3 records through `Limits::cap`;
+    /// the real one is 100,000): past it `node:` records go first, then the oldest
     /// caller record.
     #[test]
     fn the_idempotency_cap_drops_node_keys_first_then_the_oldest() {
@@ -3641,7 +3643,7 @@ mod tests {
         assert!(!honoured(&r, "k0"));
     }
 
-    /// D74 (v0.27): a burst of keyless calls (`node:` keys) past the cap never
+    /// Idempotency retention: a burst of keyless calls (`node:` keys) past the cap never
     /// evicts a caller's own record, even when the caller class is above its floor:
     /// `node:` records go first (scaled: cap 6, floors 2 caller / 1 node, 4 caller
     /// records, then 20 `node:` keys).
@@ -3674,7 +3676,7 @@ mod tests {
         }
     }
 
-    /// D74 (v0.26): the cap never takes a class below its floor. A burst of keyless
+    /// Idempotency retention: the cap never takes a class below its floor. A burst of keyless
     /// calls (`node:` keys) past the cap (scaled to 5, floors to 2 caller / 1 node)
     /// leaves a caller's own record, inside its 24 h, to answer its retry.
     #[test]
@@ -3702,7 +3704,7 @@ mod tests {
         assert!(rings[0].next - rings[0].first >= 1 && rings[1].next - rings[1].first >= 1);
     }
 
-    /// D74 (v0.26): a record expires against the earlier of the newest applied entry's
+    /// Idempotency retention: a record expires against the earlier of the newest applied entry's
     /// timestamp and the applying entry's own, so one entry stamped 25 h ahead by a
     /// skewed leader can't expire what is written after it.
     #[test]
@@ -3725,7 +3727,7 @@ mod tests {
         assert!(honoured(&r, "later"));
     }
 
-    /// D74 (v0.26): a key's class is decided by its prefix. A caller's own key that
+    /// Idempotency retention: a key's class is decided by its prefix. A caller's own key that
     /// merely contains `node:` (`sync-node:42`) keeps its 24 hours.
     #[test]
     fn a_callers_key_containing_node_is_kept_24_hours() {
@@ -4012,6 +4014,7 @@ mod tests {
         assert_eq!(pair(&rig), (Some("b4".into()), None));
     }
 
+    /// An SDK 0.12 (wasmer) entry in a component app's log stops the group instead of applying to it.
     #[test]
     fn a_wasmer_entry_never_applies_to_a_component_app() {
         let mut r = Rig::new();

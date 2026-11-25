@@ -77,6 +77,10 @@ Delete commented-out code; add future code in the change that first uses it.
 - **Removing dead code:** run the **dead-code-cleanup** skill (`.cursor/skills/dead-code-cleanup/SKILL.md`); it proves there are no references before deleting.
 - **Unreachable islands:** items that cite each other while the outermost edge points at a route, command or registration that does not exist are invisible to the compiler and clippy; find them with the **unreachable-subsystems** skill (`.cursor/skills/unreachable-subsystems/SKILL.md`).
 
+## Citing decisions
+
+Comments, strings and docs state the reason, never a decision id (a letter and a number from a spec, plan or review, or a ruling's number) or a reviewer's name: a reader has no table to look one up in.
+
 ## Security: trust boundaries
 
 A PR touching a path in `TRUST_BOUNDARY_PATHS` ([`scripts/check-trust-boundary.py`](scripts/check-trust-boundary.py)) must answer the PR template's Trust boundary block; CI fails without it.

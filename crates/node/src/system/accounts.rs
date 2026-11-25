@@ -353,7 +353,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             acc.passkeys.retain(|c| c.id != credential_id);
             let _gone = acc.passkey_times.remove(&credential_id);
             let _prev = s.credentials.remove(&credential_id);
-            // A removed device keeps no session (Xil's review, issue 5).
+            // A removed device keeps no session.
             let sessions: BTreeSet<String> = s
                 .refresh
                 .values()

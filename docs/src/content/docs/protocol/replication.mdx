@@ -393,3 +393,87 @@ log that holds an app outside one is not read: clusters are recreated on this
 release, and nothing written before it is replayed ([changelog](https://github.com/calimero-network/core/blob/5757c837baf65fc1b58c79b111c489acfb05a300/CHANGELOG.md)). The
 migrations above matter only within that line.
 :::
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Placement
+
+Code: `Node::place`, `placement::choose`.
+
+Among the approved nodes, a new app's `--replicas` span as many zones (`NodeRecord::zone`, from
+`POST /ops/nodes`) as they are in, least loaded (then lower id) first within that; zoneless nodes
+share one unknown zone, so a cluster without zones is placed by load as before.
+
+### Joining nodes
+
+A node started without `--bootstrap` waits; once `/ops/nodes` registers it, the system leader adds
+it to the system group as a learner (`Node::admit_registered_nodes`, from `reconcile`), it catches
+up and learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put apps on it.
+While the system group has fewer than `membership::SYSTEM_VOTERS` (3) voters, the system leader
+promotes registered learners at most `membership::PROMOTE_MAX_LAG` (16) entries behind its log so
+that it has exactly 3, in one membership change (`Node::promote_learners`, from `reconcile`; the
+choice is `membership::grow_voters`: zones no voter is in first, then no zone, then the rest).
+Never 2 (no failure tolerated, every write waits on both): a cluster started on one node waits for
+two learners, then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
+
+### Removing nodes
+
+`DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused
+while an app keeps a replica there) and changes the system group's voters, promoting a registered
+learner while fewer than 3 are left; `SystemState::removed_nodes` records it; only the operator's
+signed `/ops/nodes` registers it again.
+
+### Ops replica moves
+
+Run on the app group's leader; any other replica answers `421 NOT_LEADER` with `details.leaderUrl`
+before writing anything.
+A move to the set the app already has writes nothing (`unchanged: true`); a second move of an app
+while one runs on this leader is refused `409 MOVE_IN_PROGRESS` (`Node::begin_move`, a guard the
+move's own task holds, so it runs to the end even if its caller disconnects).
+Before the new nodes become learners, the leader hands them the app's bundle and the blobs its state
+marks (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while the cluster was
+one node is held by that node alone ("a majority" of one).
+Every replica set a move records keeps the current replicas first, in their order, then the new ones
+(`move_replicas`): `replicas[0]` is the node that initializes the group (`Node::ensure_app_group`),
+and a sorted union made a newcomer with a lower id form an empty group of its own, which a majority
+of newcomers elected and which then overwrote the real group's log.
+
+### A stopped group
+
+Code: `calimero-log` restarts it.
+
+A group whose Raft core stopped (a disk error, a machine that panicked, an entry it could not apply)
+reads its state back from the disk and restarts on its own, after 1 s, up to 5 min as it stops
+again.
+Meanwhile `Node::replica_group` answers `None` for it, so the node forwards that app's calls and
+views to the other replicas as a non-replica does; a stopped system group serves the state of its
+last checkpoint, and fresh reads wait for it to apply again.
+`SystemMachine::restore(&[])` is its starting state.
+Metrics: `calimero_group_stopped`, `calimero_group_restarts_total`.
+
+### Stopping
+
+Code: `Running::stop`.
+
+Cancel the tasks, drain the server (2 s), stop the groups, then wait (up to `STOP_WAIT`, 10 s) until
+the store is closed (`Engine::store_watch`): a task still running holds the RocksDB lock that
+`inspect` or a restart in the same process needs.
+
+### State digests
+
+Code: `node/digests.rs`, `calimero_log::digest`.
+
+Every `DIGEST_COMPARE_EVERY` (60 s, `lib.rs`) the leader of each app group asks each other replica
+for its digests (`POST /internal/digests { groups }`, `Node::digests_for`: only groups the caller is
+a voter or learner of, at most `DIGEST_GROUPS_PER_ASK`) and compares them at the latest index both
+recorded (`Node::compare_digests`).
+A difference logs an error once per (group, peer) and sets `calimero_group_diverged{group,peer}`
+(the index) until a comparison agrees (`metrics::digest_compared`);
+`calimero_group_divergences_total` counts them, and `calimero_group_digest_comparisons_total{group}`
+every comparison that agreed or differed.
+A peer that answers `404` (a release before) or another `DIGEST_VERSION` is not compared.
+The system group is not (in-memory machine).

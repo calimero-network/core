@@ -5,7 +5,7 @@
 //! shape   := alt ('|' alt)*                       one of these
 //! alt     := atom '[]'*                           '[]': a list of it
 //! atom    := 'string' | 'int' | 'uint' | 'number' | 'bool' | 'null' | 'any'
-//!          | 'u64'                                a decimal string (D20)
+//!          | 'u64'                                a decimal string
 //!          | 'b64url'                             base64url without padding
 //!          | '"text"'                             this string
 //!          | '#Name'                              components/schemas/Name
@@ -225,7 +225,7 @@ impl Shape {
             Self::U64 => json!({
                 "type": "string",
                 "pattern": "^(0|[1-9][0-9]*)$",
-                "description": "an unsigned 64-bit integer as a decimal string (D20)",
+                "description": "an unsigned 64-bit integer as a decimal string, exact past 2^53",
             }),
             // Not `format: byte`, which is standard base64 (RFC 4648 section 4) with padding.
             Self::B64url => json!({
@@ -417,7 +417,7 @@ mod tests {
                     "b": {
                         "type": ["string", "null"],
                         "pattern": "^(0|[1-9][0-9]*)$",
-                        "description": "an unsigned 64-bit integer as a decimal string (D20)",
+                        "description": "an unsigned 64-bit integer as a decimal string, exact past 2^53",
                     },
                     "c": { "type": "array", "items": { "type": "string", "enum": ["x", "y"] } },
                     "d": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/T" } },

@@ -1302,7 +1302,7 @@ async fn a_registry_release_is_pinned_to_its_publisher_and_its_signed_bytes() {
     for i in 0..3 {
         let cl = c.client(i);
         cl.use_session(session.clone()).await;
-        // Sent once: the client sends a view again while the node answers `503` (D70), and
+        // Sent once: the client sends a view again while the node answers `503`, and
         // a refused release answers the same every time.
         match cl
             .transport()
@@ -1748,7 +1748,9 @@ async fn a_reused_refresh_token_revokes_the_session_on_a_lagging_node() {
     }
 }
 
-/// Xil's review, issues 5, 6 and 7, each reproduced as the review ran it.
+/// (5) A removed passkey keeps no session, (6) a confirm method needs a confirmation,
+/// and (7) a read-only or app-scoped key installs nothing, each reproduced as first
+/// reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn sessions_confirmations_and_key_scopes_hold() {
     let c = Cluster::start(3).await;
@@ -2952,7 +2954,7 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .unwrap();
 
     // A failed upgrade is recorded with its reason, and a retry runs it again: a
-    // component's upgrade that names a migration is refused (D38).
+    // component's upgrade that names a migration is refused.
     let _ = alice
         // A bundle of its own: an app's package is the first release naming its bundle.
         .packages().upload(mpk(
@@ -3779,7 +3781,7 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
 /// (`/health`), the system leader logs it once all of them do (`/ops/placement`,
 /// and every replica's system state), and a node that joins later on the same
 /// build is admitted at it (`system::cluster_version`).
-/// B4: a gated command is admitted only once the version that brings it is in
+/// A gated command is admitted only once the version that brings it is in
 /// the log, the version that keeps older nodes out of the system group, so no
 /// node joins below an entry it cannot decode. Asked right after the cluster
 /// starts, before the leader's own raise, the gate logs it itself.
@@ -3796,6 +3798,8 @@ async fn a_feature_is_admitted_only_once_its_version_is_logged() {
     );
 }
 
+/// The system leader logs the cluster version every node's `/health` supports, and every node
+/// applies it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_cluster_version_rises_to_what_every_node_supports() {
     let mut c = Cluster::start(3).await;
@@ -4405,7 +4409,7 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     );
 }
 
-/// B8: a move must not let a node that has not joined the app's group form one
+/// A move must not let a node that has not joined the app's group form one
 /// of its own. Growing an app on node 3 to nodes 1, 2 and 3 first records the
 /// union of the replica sets, and every node of it starts the group. With the
 /// union sorted, node 1, a newcomer, was `replicas[0]`, the node that
@@ -5164,6 +5168,9 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
 
 /// `merod inspect`: a stopped node's data directory, read
 /// offline. The raw layout without the key; with it, each group's metadata.
+/// It also guards `Running::stop` waiting until the store is closed: a task
+/// still running held the RocksDB lock that `inspect` needs (about 1 run in 32
+/// failed under load).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stopped_nodes_store_can_be_inspected() {
     let mut c = Cluster::start(3).await;
@@ -5255,7 +5262,7 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     assert_eq!(status(laptop.auth().me().await.unwrap_err()), 401);
 }
 
-/// D70: the client gives every call a key of its own (resent unchanged on a
+/// The client gives every call a key of its own (resent unchanged on a
 /// 503), so two calls made without one are two calls, never one replayed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn calls_without_a_key_each_run_once() {
@@ -6795,7 +6802,7 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
 /// now answered by another node of the cluster: a reused port, a node moved or
 /// replaced), is refused there, never handled as that node's own. It comes over
 /// the real peer path (`peer_post`: an identified channel, `api::peer`) from
-/// the genuine leader, so the sender and membership checks (F4) pass: only the
+/// the genuine leader, so the sender and membership checks pass: only the
 /// addressee is wrong. A message without an addressee (a peer on the previous
 /// release) is still handled, and both are counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -6890,7 +6897,7 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
 }
 
-/// B6: heartbeats travel batched per peer (`internal/raft-batch`): the system
+/// Heartbeats travel batched per peer (`internal/raft-batch`): the system
 /// group keeps its leader and term over several election timeouts on them
 /// alone, every node receives batches, and writes commit. (A peer that
 /// refuses batches, answered item by item: `calimero-log`'s
@@ -7341,7 +7348,7 @@ async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
     assert!(!node.digests_for(peer, &[id]).groups.is_empty());
 }
 
-/// Review finding B2: a node whose system-group core stopped on a write the disk
+/// Regression: a node whose system-group core stopped on a write the disk
 /// refused (EIO, ENOSPC) stayed out of the cluster until the process restarted:
 /// openraft treats it as fatal, and nothing started the core again. Now the group
 /// reads its state again from the disk and restarts the core, waiting

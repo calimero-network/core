@@ -97,7 +97,7 @@ export function withTheApi(client: CalimeroClient): Promise<string | null>[] {
   return [readKey(api), readKey({ get: async ({ key }) => key })];
 }
 
-// The app types are what serde writes: records with D20 fields, each enum representation,
+// The app types are what serde writes: records with decimal-string and base64url fields, each enum representation,
 // generics instantiated where used.
 export const shapes = {
   status: ['Open', { Closed: { at: '1' } }, { Moved: 'x' }, { Span: [1, 2] }] satisfies Status[],

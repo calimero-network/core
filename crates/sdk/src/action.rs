@@ -1,4 +1,4 @@
-//! Actions (spec D12, D17, D22, D27): methods that run outside the log, on the leader, with
+//! Actions: methods that run outside the log, on the leader, with
 //! outbound HTTP and no state access.
 //!
 //! ```ignore
@@ -16,12 +16,12 @@
 //! A client starts one through the API (`POST /apps/{app}/intents` naming it), and a call
 //! or a timer with [`crate::env::start_action`]. The platform logs that it started, runs it,
 //! retries a timeout (5 attempts) and logs that it ended; an app error or a trap fails it at
-//! once (D22). Each `call` is its own log entry under a key derived from the action's key,
-//! the method, the arguments and how many identical calls came before (D27), so a retried
+//! once. Each `call` is its own log entry under a key derived from the action's key,
+//! the method, the arguments and how many identical calls came before, so a retried
 //! action's calls replay instead of applying twice. `fetch` reaches only hosts the app's
-//! signed manifest declares and its owner approved (S9); a credential the manifest binds to
+//! signed manifest declares and its owner approved; a credential the manifest binds to
 //! the host (`secrets`: a header or a body field) is attached by the node, and the app never
-//! names or reads it (R14). Only the leader runs actions: they are
+//! names or reads it. Only the leader runs actions: they are
 //! at-least-once, so send `ctx.key()` as the remote side's idempotency key.
 
 use serde::de::DeserializeOwned;
@@ -120,7 +120,7 @@ impl ActionCtx {
         Self { _private: () }
     }
 
-    /// This action's key: the same on every attempt (D17). Send it as the idempotency key
+    /// This action's key: the same on every attempt. Send it as the idempotency key
     /// of outbound requests.
     #[must_use]
     pub fn key(&self) -> String {
@@ -143,8 +143,8 @@ impl ActionCtx {
         decode(&out)
     }
 
-    /// Run `method` of this app as one logged call with the action's caller (D13), keyed
-    /// for at-least-once (D27); its JSON result.
+    /// Run `method` of this app as one logged call with the action's caller, keyed
+    /// for at-least-once; its JSON result.
     ///
     /// # Errors
     ///
@@ -161,7 +161,7 @@ impl ActionCtx {
         decode(&out)
     }
 
-    /// Send `request` over `wasi:http` (S9): only to a host the app's signed manifest
+    /// Send `request` over `wasi:http`: only to a host the app's signed manifest
     /// declares and its owner approved; the response is read whole.
     ///
     /// # Errors

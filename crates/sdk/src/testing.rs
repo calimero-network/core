@@ -1,10 +1,10 @@
-//! The test harness (spec section 10, R17): the real component on the real wasmtime
+//! The test harness: the real component on the real wasmtime
 //! engine with an in-memory host, so a passing test means the same as on a node.
 //!
 //! The harness plays the node's executor: it applies a logged invocation's diff only when
 //! it ends `Ok`, gives every logged invocation a fresh `id_seq` (and a seed derived from
-//! [`TestApp::seed`], so runs repeat), shows views the last logged entry's timestamp (D19),
-//! and resolves event audiences against the org when events are read (R9).
+//! [`TestApp::seed`], so runs repeat), shows views the last logged entry's timestamp,
+//! and resolves event audiences against the org when events are read.
 
 mod directory;
 #[cfg(feature = "releases")]
@@ -39,7 +39,7 @@ pub use scenario::{run_migration, run_scenario};
 
 use directory::HarnessDir;
 
-/// The harness's blobs (R8): what `upload_blob` recorded; a grant is `"<id>.<expires_ms>"`.
+/// The harness's blobs: what `upload_blob` recorded; a grant is `"<id>.<expires_ms>"`.
 struct HarnessBlobs(BTreeMap<[u8; 32], BlobInfo>);
 
 impl BlobHost for HarnessBlobs {
@@ -131,7 +131,7 @@ impl SearchHost for HarnessSearch {
     }
 }
 
-/// The node's last check of a logged run (D50): its log entry, JSON with keys and values in
+/// The node's last check of a logged run: its log entry, JSON with keys and values in
 /// base64, over `MAX_ENTRY_BYTES` is logged as a `HostDenied` trap with nothing applied,
 /// whatever `MAX_RUN_BYTES` let through. The harness has no log, so it measures the entry
 /// the node would write ([`calimero_app_host::entry_bytes`], pinned against the node's by
@@ -146,7 +146,7 @@ fn entry_checked(
     ids: EntryIds,
     out: Outcome,
 ) -> Outcome {
-    // A run that timed out or could not be served is not logged (D23).
+    // A run that timed out or could not be served is not logged.
     if matches!(
         out.status,
         Status::Trap {
@@ -214,13 +214,13 @@ pub enum Failure {
     /// A `confirm` method was called without `.confirmed()`.
     ConfirmRequired,
     /// The platform refused before the app ran, with the node's HTTP status and API code
-    /// (Rulings 32, 35): `401 UNAUTHENTICATED` for an anonymous caller (the harness app is an
+    /// (the node is the reference): `401 UNAUTHENTICATED` for an anonymous caller (the harness app is an
     /// org app), `404 NOT_FOUND` for an account the app's org does not hold.
     Refused { status: u16, code: String },
 }
 
 const APP_ID: &str = "test-app";
-/// The largest call arguments a node runs (`node::MAX_ARGS_BYTES`, Ruling 30).
+/// The largest call arguments a node runs (`node::MAX_ARGS_BYTES`).
 const MAX_ARGS_BYTES: usize = 512 * 1024;
 /// Method names the node keeps for the platform (`node::RESERVED_PREFIX`).
 const RESERVED_PREFIX: &str = "__";
@@ -231,7 +231,7 @@ struct Logged {
     data: Value,
     audience: HostAudience,
     emitter: Option<String>,
-    /// Who an org audience reached, fixed when the org changed after the emit (R9).
+    /// Who an org audience reached, fixed when the org changed after the emit.
     frozen: Option<Vec<String>>,
 }
 
@@ -251,7 +251,7 @@ pub struct TestApp {
     usage: Usage,
     blobs: BTreeMap<[u8; 32], BlobInfo>,
     outbox: Vec<SentXcall>,
-    /// Actions logged runs started, with their caller (D17), not run yet.
+    /// Actions logged runs started, with their caller, not run yet.
     started: Vec<(HostCaller, ActionStart)>,
     /// The person the run being finished passes on to the xcalls it sends.
     forwarding: Option<HostCaller>,
@@ -399,7 +399,7 @@ impl calimero_app_host::XcallHost for HarnessApps {
 /// What `mock_http` answers a host's requests with.
 pub type HttpHandler = Arc<dyn Fn(&HttpRequest) -> HttpResponse + Send + Sync>;
 
-/// An action's view of the app (D12): its sub-calls run on the harness itself, which the
+/// An action's view of the app: its sub-calls run on the harness itself, which the
 /// action lends out while it runs (`TestApp::action`).
 struct HarnessAction {
     app: Arc<std::sync::Mutex<TestApp>>,
@@ -473,7 +473,7 @@ impl HttpHost for HarnessHttp {
     }
 }
 
-/// An xcall a logged run sent (D25), as the platform would deliver it.
+/// An xcall a logged run sent, as the platform would deliver it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SentXcall {
     /// The target app.
@@ -496,7 +496,7 @@ fn shared_engine() -> &'static WasmtimeEngine {
             // SAFETY: a test harness cannot continue without its engine; panicking fails the test.
             let dir = tempfile::tempdir().expect("harness cache dir");
             // The cache lives in a directory this process just created and owns, so a
-            // fixed key is enough to authenticate its artifacts (S8 binds nodes, not tests).
+            // fixed key is enough to authenticate its artifacts (a node's key binds its own cache).
             // SAFETY: as above.
             let engine =
                 WasmtimeEngine::new(dir.path().to_path_buf(), &[0; 32]).expect("wasmtime engine");
@@ -645,7 +645,7 @@ impl TestApp {
             Vec::new(),
             Some(ctx),
         );
-        // A failed tick counts as applied (D34).
+        // A failed tick counts as applied.
         if !matches!(
             res,
             Err(Failure::Trap(TrapKind::Timeout | TrapKind::Unavailable))
@@ -655,7 +655,7 @@ impl TestApp {
         res
     }
 
-    /// The events `account` receives, audiences resolved now against the org (R9).
+    /// The events `account` receives, audiences resolved now against the org.
     #[must_use]
     pub fn events_for(&self, account: &str) -> Vec<(String, Value)> {
         let role = self.org.role(account);
@@ -747,12 +747,12 @@ impl TestApp {
     }
 
     /// The xcalls logged runs sent so far and the harness has not handed out yet, oldest
-    /// first; the node would deliver them in this order (D25).
+    /// first; the node would deliver them in this order.
     pub fn take_xcalls(&mut self) -> Vec<SentXcall> {
         std::mem::take(&mut self.outbox)
     }
 
-    /// Delivers an xcall from app `from` (D13: `Caller::App(from)`, kind `xcall-deliver`),
+    /// Delivers an xcall from app `from` (`Caller::App(from)`, kind `xcall-deliver`),
     /// after the node's checks: the method must exist, be a call or a view and allow `from`
     /// (`allow(app = ..)`), else `Forbidden`.
     ///
@@ -825,7 +825,7 @@ impl TestApp {
         )
     }
 
-    /// Answers an action's HTTP requests to `host` (D12) with `handler`; a request to a
+    /// Answers an action's HTTP requests to `host` with `handler`; a request to a
     /// host without one fails in the action (`Fetch`).
     pub fn mock_http(
         &mut self,
@@ -858,7 +858,7 @@ impl TestApp {
             .collect()
     }
 
-    /// Runs `method` as an action (D12) for `caller`, with key `key`: no state access,
+    /// Runs `method` as an action for `caller`, with key `key`: no state access,
     /// views and calls on this harness as `caller`, HTTP through `mock_http`. Retries and
     /// the 10 s budget are the node's.
     fn action_as(
@@ -918,7 +918,7 @@ impl TestApp {
             .is_some_and(|m| m.kind == MethodKind::Action)
     }
 
-    /// Log the start of action `method` (D17) as a call would: its key, queued for
+    /// Log the start of action `method` as a call would: its key, queued for
     /// `run_started_actions`.
     fn start(&mut self, caller: HostCaller, method: &str, args: Vec<u8>) -> Value {
         self.seq += 1;
@@ -1135,7 +1135,7 @@ impl TestApp {
                 ..
             }
         ) {
-            // A timeout is not logged (D23): it consumes no `id_seq` and moves no entry time.
+            // A timeout is not logged: it consumes no `id_seq` and moves no entry time.
             self.seq = seq_before;
             self.last_entry_ms = entry_before;
         } else if !is_view {
@@ -1216,7 +1216,7 @@ impl TestApp {
         }
     }
 
-    /// The checks a node makes before `handle`, with its codes (Rulings 32, 35). First the
+    /// The checks a node makes before `handle`, with its codes (the node is the reference). First the
     /// platform's access gate: the harness app is an org app, so an account the org does not
     /// hold (never in it, or removed) is `404 NOT_FOUND`, and every anonymous caller is
     /// `401 UNAUTHENTICATED`, whatever the method's `public` flag (on a node no access grant
@@ -1346,7 +1346,7 @@ impl As<'_> {
         {
             return Err(f);
         }
-        // A call of an action starts it, as on a node (D17): logged, run later.
+        // A call of an action starts it, as on a node: logged, run later.
         if self.app.is_action(method) {
             return Ok(self.app.start(self.caller.clone(), method, args));
         }

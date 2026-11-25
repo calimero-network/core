@@ -48,7 +48,7 @@
   test double). The app's events, errors (`Event`, `Refusal`) and types are nested in it,
   so two clients share a module or package without clashing; an app type named like a type
   the file uses is renamed (`Names::reserve`). `u64`/`i64`/`bytes` are native types written
-  in their D20 form by `DecimalString`/`Base64URL` (Swift) and `U64AsString`/`I64AsString`/
+  as decimal strings and base64url by `DecimalString`/`Base64URL` (Swift) and `U64AsString`/`I64AsString`/
   `Base64Url` serializers (Kotlin). A type with a shape in `types` is a nested
   `Codable, Sendable, Equatable` struct or enum (Swift: hand-written `init(from:)`/`encode(to:)`
   per serde tagging, `indirect` or `@Indirect` where it holds itself) or a data class or sealed
@@ -69,7 +69,7 @@
   `calimero_sdk::__private::serde`, boxing a field that holds its own type inline), a type the
   ABI names without a shape as `serde_json::Value`, and `Error`: the target's errors (decoded
   from `XcallFailed { code, fields }` through a private `__Wire` enum) plus `Other(AppError)`, and
-  back to the same `XcallFailed` shape for `?`. D20 at the top level of an argument, result or
+  back to the same `XcallFailed` shape for `?`. A `u64`, `i64` or `bytes` at the top level of an argument, result or
   field goes through `calimero_sdk::json`'s `with` modules; nested, it fails generation. An app
   type named like one the module declares (`Client`, `Error`, `Sender`, ..) gets `_` appended.
   Golden: `tests/golden/kitchen-sink.uses.rs` (every method opened to apps).
@@ -86,7 +86,7 @@
 ## Rules
 
 - The JSON forms in the type table (u64/i64 decimal strings, bytes base64url) are the SDK's
-  (`crates/sdk-macros/src/types.rs`, D20); change them only with it.
+  (`crates/sdk-macros/src/types.rs`); change them only with it.
 - Generated output is pinned by golden files: `tests/fixtures/<app>.abi.json` (ABIs of
   `apps/kv-store`, `apps/rooms`, `apps/forum`, and a crafted `kitchen-sink`)
   against `tests/golden/` (plus `kitchen-sink.plugin.kt`, the Kotlin client for the

@@ -17,7 +17,7 @@ The short list. Each item links to the page that explains it.
   ([SDK macros](/build/sdk-macros/#applogic)).
 - A `u64` inside your own plain serde struct reaches JSON as a number, which
   JavaScript may round. Use a `Record`, whose derive converts it; on a
-  `#[derive(AbiType)]` type, give the field its D20 helper or mark it
+  `#[derive(AbiType)]` type, give the field its decimal-string helper or mark it
   `#[abi(plain)]` so the ABI says it is a number (unmarked, it does not compile;
   [SDK macros](/build/sdk-macros/#deriveabitype)).
 - Arguments are camelCase (`room_id` → `roomId`), and unknown keys are refused

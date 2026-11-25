@@ -5,7 +5,7 @@
 //! A synchronous call is not atomic with the run that makes it: the target's entry commits
 //! first, whatever the caller's run then does. Its key is derived from the caller's key,
 //! the target, the method, the arguments and how many identical calls came before in the
-//! run (as D27 does for actions), so a re-run of the caller (a retry, a leader race)
+//! run (as an action's sub-call keys are), so a re-run of the caller (a retry, a leader race)
 //! replays the target's answer instead of applying it twice. A run that is itself
 //! delivered from another app (`kind = xcall-deliver`) makes none, so a chain is one hop
 //! deep.

@@ -285,7 +285,7 @@ const WIRE: &str = r#"
     }
 "#;
 
-/// Whether the SDK's macros convert the type itself (D20): `u64`, `i64` and `bytes` have a
+/// Whether the SDK's macros convert the type itself: `u64`, `i64` and `bytes` have a
 /// string form only here or directly inside an `Option`.
 fn converted(ty: &Type) -> bool {
     matches!(ty, Type::Int(Int::U64 | Int::I64) | Type::Bytes)
@@ -308,7 +308,7 @@ struct Sw<'a> {
 impl Sw<'_> {
     /// The Swift type of an ABI type. At the top of a parameter, result or field (`top`), a
     /// `u64`, `i64` or `bytes` (or an option of one) is `UInt64`, `Int64` or `Data`; deeper,
-    /// where the SDK refuses them (Ruling 27), it keeps its wire type.
+    /// where the SDK refuses them, it keeps its wire type.
     fn ty(&mut self, ty: &Type, top: bool) -> String {
         match ty {
             // `null` on the wire.

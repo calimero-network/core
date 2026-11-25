@@ -4,7 +4,7 @@
 #   <file> | <a piece of the statement, as the check prints it on one line> | <why>
 #
 # The piece is usually the message; an entry that matches nothing is reported.
-# `TODO(F6)` marks a site still to fix; anything else is safe as it stands.
+# `TODO` marks a site still to fix; anything else is safe as it stands.
 # Before adding a line, prefer logging a kind, code, id or length
 # (crates/node/src/log_safe.rs, calimero_outbound::refusal_kind).
 
@@ -34,7 +34,7 @@ crates/node/src/node.rs | "file bytes not deleted" | io errors of the segment st
 crates/node/src/node.rs | "blob not deleted" | io errors of the blob store; the blob is named by its hash
 crates/node/src/node/restore_points.rs | "could not drop a restore point" | io errors; the file name is the node's (app id and index)
 crates/node/src/component/search.rs | "a search writer not released" | tantivy's index-writer and io errors; no document text
-crates/node/src/component/search.rs | "component search not brought up to date" | TODO(F6): tantivy errors are of the index, but a reindex error could quote a field it failed on; map to a kind
+crates/node/src/component/search.rs | "component search not brought up to date" | TODO: tantivy errors are of the index, but a reindex error could quote a field it failed on; map to a kind
 crates/node/src/component/search.rs | "search indexes not removed from disk" | io errors under the node's index directory
 crates/node/src/rollback.rs | "rollback checkpoint failed: {e:#}" | mero-kms's counter API, an attested node service; its errors carry epochs and marks
 crates/node/src/rollback.rs | "--accept-rollback: starting on a store mero-kms had seen newer ({why})" | the node's own rollback verdict: epochs and marks
@@ -57,7 +57,7 @@ crates/node/src/node/cluster_version.rs | "could not raise the cluster version y
 crates/node/src/node/component/compute.rs | "assignment not built" | build_assignment: hex decoding, the node's key unwrap and signing; inputs are named by their file ids
 crates/node/src/node/component/compute/pipelines.rs | "step decision not logged" | a proposal error (not leader, timeout, the group stopped)
 crates/node/src/job_node/exec.rs | "cannot start a compute run's thread" | std::thread spawn error (io)
-crates/node/src/job_node/exec.rs | "a compute run could not be served" | TODO(F6): the engine's error (compile, instantiate, inputs); a guest's trap goes to the outcome, not here, but a host error may quote an import name
+crates/node/src/job_node/exec.rs | "a compute run could not be served" | TODO: the engine's error (compile, instantiate, inputs); a guest's trap goes to the outcome, not here, but a host error may quote an import name
 crates/node/src/job_node/exec.rs | "cannot sign a report" | the job node's own signing key
 crates/node/src/job_node/exec.rs | "cannot remove a run file" | io errors; the path is the node's run directory
 crates/node/src/job_node/runs.rs | "cannot remove a run's directory" | io errors; the path is the node's run directory
@@ -84,6 +84,6 @@ crates/tee-attestation/src/verify.rs | "Quote cryptographic verification: FAILED
 crates/tee-attestation/src/verify.rs | "Failed to convert TDX quote to serializable format" | a node's quote
 crates/tee-release/src/fetch.rs | "transient release asset fetch failure, retrying" | GitHub release asset fetch status; no user input
 crates/tee-release/src/sigstore_verify.rs | "Skipping unsupported Rekor key from Sigstore trust root" | Sigstore's public trust root
-crates/bundle/src/archive.rs | "Failed to read tar archive entries (possible corruption): {}" | TODO(F6): a tar error of a signed bundle being unpacked; io/format only, but the bundle is an app developer's
-crates/bundle/src/archive.rs | "Failed to read tar entry {}: {}" | TODO(F6): as above
+crates/bundle/src/archive.rs | "Failed to read tar archive entries (possible corruption): {}" | TODO: a tar error of a signed bundle being unpacked; io/format only, but the bundle is an app developer's
+crates/bundle/src/archive.rs | "Failed to read tar entry {}: {}" | TODO: as above
 crates/app-downloader/src/downloader.rs | "failed to release a rejected blob" | blob store io error; the blob is named by its hash

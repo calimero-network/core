@@ -1,4 +1,4 @@
-//! Test guest: exercises the nine D44 stubs (stdin, exit, terminals, filesystem).
+//! Test guest: exercises the nine refusing WASI stubs (stdin, exit, terminals, filesystem).
 
 use wasi::cli::{environment, exit, stdin, terminal_stderr, terminal_stdin, terminal_stdout};
 use wasi::filesystem::preopens;

@@ -2058,7 +2058,7 @@ async fn a_second_passkey_is_another_device_of_the_same_account() {
     assert_eq!(b["passkeys"].as_array().unwrap().len(), 2);
 }
 
-/// The `u64` a fixture returned (a decimal string in JSON, D20).
+/// The `u64` a fixture returned (a decimal string in JSON).
 fn as_u64(v: &Value) -> u64 {
     v.as_str().unwrap().parse().unwrap()
 }
@@ -2264,7 +2264,7 @@ async fn methods_run_as_intents_and_views_and_the_openapi_document_lists_them() 
 }
 
 /// `POST /apps/{app}/intents` sent once. `apps().call` sends a call again while the node
-/// answers `503` (D70), so a method that always hits its deadline would take seven deadlines
+/// answers `503`, so a method that always hits its deadline would take seven deadlines
 /// and the waits between them there; a test of the timeout itself needs one.
 async fn call_once(
     client: &Client,
@@ -2375,7 +2375,7 @@ async fn oversized_entry_is_host_denied() {
         .unwrap();
     // 1,000 keys of 1,000 bytes, each with its event: within every per-run limit
     // (writes, events, event size), but about 2 MB of diff and events. The write or event
-    // that would pass the run's 1 MiB is the typed `RunLimit` the app passes on (C10), not
+    // that would pass the run's 1 MiB is the typed `RunLimit` the app passes on, not
     // a trap.
     let e = alice
         .apps()
@@ -2406,7 +2406,7 @@ async fn oversized_entry_is_host_denied() {
         .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
     assert_eq!(e.details().unwrap()["kind"], "HostDenied", "{e}");
-    // The write after the run's 10,000th: the typed `RunLimit` with its number (C10).
+    // The write after the run's 10,000th: the typed `RunLimit` with its number.
     let e = alice
         .apps()
         .call(
@@ -2516,6 +2516,7 @@ async fn entry_timestamps_never_go_backwards() {
     assert!(as_u64(&seen.result) >= t2, "a view saw an earlier time");
 }
 
+/// A member removed from the organization stops receiving its apps' events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn removed_member_stops_receiving_org_events() {
     let c = Cluster::start(3).await;
@@ -2771,7 +2772,7 @@ async fn acme_with_bob_and_carol(
     (org, app, bob_id)
 }
 
-/// G4: the presence stream was judged once, when it was opened. A member removed from the
+/// The presence stream was judged once, when it was opened. A member removed from the
 /// organization kept receiving who else was present in the app, and the state each of them
 /// published, for as long as the stream stayed open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -2828,7 +2829,7 @@ async fn a_removed_member_stops_receiving_presence() {
     );
 }
 
-/// G4: an event stream judged its subscriber's account, never the credential that opened it.
+/// An event stream judged its subscriber's account, never the credential that opened it.
 /// A stream opened with an API key, or a session, went on after the key was revoked or the
 /// session ended, so revoking a leaked key did not stop it reading the app's events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -3016,7 +3017,7 @@ async fn a_system_caller_is_refused_where_the_abi_does_not_allow_it() {
     assert_eq!(v.result, json!(0));
 }
 
-/// Refusals before the app runs carry the platform's codes (Ruling 32): an anonymous
+/// Refusals before the app runs carry the platform's codes: an anonymous
 /// caller of a method that is not public is `401 UNAUTHENTICATED`, also on a public app
 /// (where the caller reaches the app and the ABI refuses), and an account the app does not
 /// let in is `404 NOT_FOUND`.
@@ -3075,7 +3076,7 @@ async fn refusals_before_the_app_carry_the_platforms_codes() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
-/// `(id_term, id_seq, n)` of a `unique_id` (D52).
+/// `(id_term, id_seq, n)` of a `unique_id`.
 fn id_parts(v: &Value) -> (u64, u64, u64) {
     let parts: Vec<u64> = v
         .as_str()
@@ -3088,7 +3089,7 @@ fn id_parts(v: &Value) -> (u64, u64, u64) {
 
 /// A node that leads the same term again after a restart (a one-replica group:
 /// openraft restores it as leader without an election) must not issue an
-/// `id_seq` it issued before (D52, Ruling 29).
+/// `id_seq` it issued before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unique_ids_survive_a_restart_into_the_same_term() {
     let mut c = Cluster::start(1).await;
@@ -3153,7 +3154,7 @@ async fn unique_ids_survive_a_restart_into_the_same_term() {
     }
 }
 
-/// D52 in a three-replica group (Ruling 34): the app's leader restarts before any
+/// Unique ids in a three-replica group: the app's leader restarts before any
 /// follower's election timer fires, so openraft restores it as leader of its committed term
 /// without an election (openraft 0.9.25 `Engine::startup`, "Previously it is a leader.
 /// restore it as leader at once"). Preconditions, asserted: the term is the same on every
@@ -3305,7 +3306,8 @@ async fn unique_ids_continue_when_a_leader_restarts_into_its_term_in_a_three_rep
     }
 }
 
-/// Args over 512 KiB are refused before anything runs (Ruling 30).
+/// Args over 512 KiB are refused before anything runs, so the entry that logs the
+/// refusal always fits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_args_are_refused_before_running() {
     let c = Cluster::start(3).await;
@@ -3415,7 +3417,7 @@ async fn large_args_whose_entry_overflows_are_host_denied() {
         .unwrap();
 }
 
-/// The node refuses what the ABI does not offer (Ruling 31): an unknown method,
+/// The node refuses what the ABI does not offer (default-deny): an unknown method,
 /// and `init` through `/intents` or `/views`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_methods_and_init_are_refused_by_the_node() {
@@ -3536,7 +3538,7 @@ async fn compute_and_compute_result_methods_are_refused_to_clients() {
     assert_eq!(v.result, json!("0"));
 }
 
-/// Upgrades switch the bundle, code only; a named migration is refused (D38).
+/// Upgrades switch the bundle, code only; a named migration is refused.
 /// The upgrade route is the node's: a passkey assertion over the exact
 /// upgrade (412 first), and a refusal answered `422 UPGRADE_FAILED` with the
 /// leader's answer in its details.
@@ -3616,7 +3618,7 @@ async fn upgrades_switch_the_bundle_and_refuse_migrations() {
     );
 }
 
-// ---- Timers (D34). The kv fixture's `beat` ticks every hour of app time; the tests
+// ---- Timers. The kv fixture's `beat` ticks every hour of app time; the tests
 // move every node's app clock forward instead of sleeping.
 
 const HOUR: i64 = 3_600_000;
@@ -3981,7 +3983,7 @@ async fn a_timed_out_tick_is_not_logged_and_its_slot_runs_again() {
     assert!(ran_at >= until, "{rows:?} until {until}");
 }
 
-// ---- Final-review fixes (C1, I1, I2, I3).
+// ---- Reserved methods, the running bundle's ABI, emit-only calls, async workers.
 
 /// The bundle the app group of `app` runs on node `i`.
 fn running_bundle(c: &Cluster, i: usize, app: &str) -> Option<String> {
@@ -3994,8 +3996,8 @@ fn running_bundle(c: &Cluster, i: usize, app: &str) -> Option<String> {
         .read_local(|m, _| m.state.bundle.clone())
 }
 
-/// C1 (Ruling 36; Xabi's decision: keep the node's refusal of every
-/// `__` method). The spec routed `__upgrade` sent through `/intents` to the upgrade path;
+/// The node refuses every `__` method, on purpose: an earlier design routed `__upgrade` sent
+/// through `/intents` to the upgrade path;
 /// here `/intents` and `/views` refuse every `__` method (`400 RESERVED_METHOD`) before
 /// the app's executor is looked at, so a component's bundle is never switched by naming
 /// one, by anyone, its owner included; upgrades take `POST /apps/{app}/upgrade`.
@@ -4075,7 +4077,7 @@ async fn upgrades_through_intents_are_refused_for_everyone() {
     );
 }
 
-/// I2 (Ruling 40): the ABI checks read the bundle the app group runs, not the directory's
+/// The ABI checks read the bundle the app group runs, not the directory's
 /// record of it. Here the two disagree (the directory's second write of an upgrade has
 /// not happened): the directory says team-space, the group runs kv.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4172,7 +4174,7 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
     );
 }
 
-/// I3 (Ruling 41): a read-only team member's call that only emits events is refused, like
+/// A read-only team member's call that only emits events is refused, like
 /// one that writes keys; nothing is logged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_only_members_emit_only_call_is_refused() {
@@ -4250,7 +4252,7 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         .unwrap();
 }
 
-/// I1 (Ruling 39): calls run off the async workers. With two workers and two calls that
+/// Calls run off the async workers. With two workers and two calls that
 /// each run to the 2 s deadline at once, other tasks (Raft heartbeats, HTTP) keep running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_calls_do_not_stall_the_async_workers() {
@@ -4310,7 +4312,7 @@ async fn slow_calls_do_not_stall_the_async_workers() {
     );
 }
 
-/// Ruling 44: concurrent first uses of a bundle wait for one prepare. Without this, 200
+/// Concurrent first uses of a bundle wait for one prepare. Without this, 200
 /// first calls compiled Rooms ~130 times at once and overflowed rayon's stacks in debug.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
@@ -4334,7 +4336,7 @@ async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
     assert_eq!(node.prepares() - before, 1, "prepared more than once");
 }
 
-/// C1 on the node's upgrade path (Xabi's decision: keep the node's check). Who
+/// On the node's upgrade path the node keeps its own check. Who
 /// may upgrade is judged where the system log applies `UpgradeApp`, on every replica
 /// (`SystemState::may_upgrade`: an owner or admin of the app's organization, from
 /// `Feature::OwnerApprovedUpgrades` on, which the logged cluster version brings here),
@@ -4521,7 +4523,7 @@ async fn hosted_on(
     panic!("node {i} never hosted {app}");
 }
 
-/// C2: a logged run does not hold its app's applied state while it runs. The leader runs a
+/// A logged run does not hold its app's applied state while it runs. The leader runs a
 /// call's guest inside the proposal, and it ran on the state machine's read lock, so an
 /// entry that commits meanwhile (here a barrier, as `delete_unmarked_outputs` writes) waited
 /// for the whole run to apply, and every read of the app's state (`read_local`: a view's
@@ -4614,7 +4616,7 @@ async fn a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_ap
     tokio::time::sleep(WALL * 2).await;
 }
 
-/// C2: a logged run takes the app's state in its proposal's read step and runs with the
+/// A logged run takes the app's state in its proposal's read step and runs with the
 /// read lock released, so an entry can commit between that snapshot and the run's own
 /// append. The run's entry then fails its `base_index` check (`conflict`), and the call runs
 /// again on the state that includes it and answers once: its synchronous xcalls replay
@@ -4715,7 +4717,7 @@ async fn new_id(cl: &Client, app: &str) -> (u64, u64, u64) {
     panic!("no newId answer");
 }
 
-/// D52, the crash this branch's log makes possible, made deterministic. The log
+/// The crash this branch's log makes possible, made deterministic. The log
 /// does not sync the commit index or the applied batch on every write; one test
 /// hook (`Engine::lose_unsynced_writes`) drops both for the app's group, as a
 /// crash right after the leader appended an entry would: the entry is in the
@@ -4845,7 +4847,7 @@ async fn unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk() {
     }
 }
 
-/// D52, D34 and the host records through a snapshot install: a follower that was
+/// Unique ids, timer slots and the host records through a snapshot install: a follower that was
 /// down while the log moved past what the leader keeps installs the leader's
 /// snapshot, then leads. Its `last_id`, timer slots, `install_ts_ms` and
 /// executor came with the snapshot: no unique id is reused, and no timer slot
@@ -5024,9 +5026,9 @@ async fn a_core_module_bundle_is_refused_as_an_sdk_0_12_app() {
         .unwrap();
 }
 
-/// Decision 14: the endpoints that read an app's code or storage answer for a
+/// The endpoints that read an app's code or storage answer for a
 /// component: `/abi` is the ABI the component embeds, `/storage` counts its
-/// keys, and the blob routes refuse it (no blobs before R8).
+/// keys, and the blob routes refuse it (components had no blobs then).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     let c = Cluster::start(3).await;
@@ -5073,7 +5075,7 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     );
     assert_eq!(storage["blobs"], json!(0));
 
-    // The blob routes answer for a component (R8): nothing uploaded yet.
+    // The blob routes answer for a component: nothing uploaded yet.
     assert_eq!(
         alice.apps().blob_list(&app).await.map(wire).unwrap()["blobs"],
         json!([])
@@ -5089,7 +5091,7 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
-/// R8: a component's blob is uploaded through the node, referred to from state by a
+/// A component's blob is uploaded through the node, referred to from state by a
 /// typed `BlobRef`, read and granted from runs, and held for as long as state refers
 /// to it; once idle past its time every replica forgets it and the bytes go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -5369,7 +5371,7 @@ async fn views_search_a_components_tables_as_they_change() {
     assert_eq!(sorted(r.result), ["2", "3"]);
 }
 
-/// D25/D29: a component's xcalls wait in its outbox and are delivered after the entry
+/// A component's xcalls wait in its outbox and are delivered after the entry
 /// commits, in order, as `Caller::App(source)` to a method that allows it; one that can
 /// never be delivered (a missing target, another organization's app) is dead-lettered and
 /// the source's `onXcallFailed` is told; a target's refusal is its final answer.
@@ -5779,7 +5781,7 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
 }
 
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
-/// URL prefixes `outbound` (S9), signed by `key`.
+/// URL prefixes `outbound`, signed by `key`.
 pub(crate) fn mpk_declaring(
     package: &str,
     version: &str,
@@ -5946,7 +5948,7 @@ pub(crate) async fn eventually(
     .await
 }
 
-/// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
+/// An action runs on the app's leader outside the log, reads
 /// through a view, calls out over `wasi:http` only to a prefix the signed manifest
 /// declares and the owner approved (with a secret its manifest binds to a header, which
 /// the node attaches and redacts), and
@@ -6082,7 +6084,7 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
 
-    // An app error fails an action at once (D22).
+    // An app error fails an action at once.
     let _r = alice
         .apps()
         .call(&app, "explode", Some(json!({})), None, None)
@@ -7627,13 +7629,13 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
 /// both start together, where the same two calls to one app take turns on that app's
 /// proposal lock (the second starts once the first committed), which is what a host running
 /// a batch one after another would do with any two. Each target applies its call once, and a re-run of the caller (the same key after
-/// a timeout, which is not logged, D23) replays both answers instead of counting again.
+/// a timeout, which is not logged) replays both answers instead of counting again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
     // The stalled run must end on the wall clock (`TIMEOUT`, not logged), and `slowBump`'s
     // body is sized in wall time. Both draw host randomness, which costs fuel per byte
-    // (C7), so their fuel is lifted, as `timeouts_are_not_logged` lifts it: the wall clock
-    // ends them, never the fuel.
+    // (host work is charged to fuel), so their fuel is lifted, as `timeouts_are_not_logged`
+    // lifts it: the wall clock ends them, never the fuel.
     let c = Cluster::start_with(3, |cfg| {
         cfg.budget = Some(calimero_app_host::Budget {
             fuel: u64::MAX,
@@ -7761,7 +7763,7 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
     );
 
     // A run that times out after both calls: each target applied its call once. Sent
-    // once, raw: `apps().call` sends a call again while the node answers `503` (D70), and
+    // once, raw: `apps().call` sends a call again while the node answers `503`, and
     // a timeout is one, so through it the stalled run would run seven times, about 20 s.
     let key = "replay".to_owned();
     let stalled = alice
@@ -7786,7 +7788,7 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
     assert_eq!(count(right, &key).await, json!("1"));
 }
 
-/// C2: a run's wall clock is a deadline its host calls keep too, not only its guest code
+/// A run's wall clock is a deadline its host calls keep too, not only its guest code
 /// (the engine's epoch deadline is checked only while the guest runs). `bumpBoth` on one
 /// target twice waits for that target's two calls in turn, each of which runs to its own
 /// deadline: twice the budget, which the caller used to wait out in full (up to
@@ -7859,7 +7861,7 @@ async fn a_run_waiting_in_a_host_call_ends_at_its_own_deadline() {
     tokio::time::sleep(WALL * 2).await;
 }
 
-/// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
+/// A call makes an outbound request itself. The forms app (kv) asks the captcha
 /// service (a signed release declaring Turnstile's siteverify, and binding
 /// `TURNSTILE_SECRET` to its `secret` body field) inside its call; the service checks the
 /// token with Turnstile from its own call, through the outbound gate (declared, approved,
@@ -8015,7 +8017,7 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     );
 }
 
-/// R8: the owner deletes a component's blob; it is gone whatever refers to it.
+/// The owner deletes a component's blob; it is gone whatever refers to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_owner_deletes_a_components_blob() {
     let c = Cluster::start(3).await;
@@ -8070,7 +8072,7 @@ async fn an_owner_deletes_a_components_blob() {
 }
 
 /// The engine tests' `spin` guest (`crates/app-engine-wasmtime/tests/guests/spin`): its
-/// `handle` never returns, so every run of it, `init` included, times out (D23).
+/// `handle` never returns, so every run of it, `init` included, times out.
 fn spin_component() -> Vec<u8> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../app-engine-wasmtime/tests/guests/spin");
@@ -8080,8 +8082,8 @@ fn spin_component() -> Vec<u8> {
         .component
 }
 
-/// Review item 2: a component app whose `init` has not applied (every run of its
-/// bundle times out, D23, so `reconcile` keeps retrying) is still a component at
+/// A component app whose `init` has not applied (every run of its
+/// bundle times out, which is not logged, so `reconcile` keeps retrying) is still a component at
 /// upgrade: the app record's executor decides until the group's state names one. A
 /// component bundle is taken, and `init` then runs on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -8210,7 +8212,8 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
     }
 }
 
-/// Review item 3, D75 (spec v0.26): `orgs-of` answers only the app's own organization.
+/// `orgs-of` answers only the app's own organization: a component runs code the platform
+/// does not vet, so it never learns its callers' memberships elsewhere.
 /// Carol is a member of the app's org and the owner of another; a component in the
 /// app's org learns only her role there, and an app in an organization of Alice's own
 /// (made with it, `newOrg`) learns only that one: Alice's role, nothing of Carol's.
@@ -8308,7 +8311,7 @@ async fn a_component_sees_no_organization_but_its_own() {
     );
 }
 
-/// Review nit: the blob routes judge access first. A caller who can't reach a private
+/// The blob routes judge access first. A caller who can't reach a private
 /// component app gets `404` on every blob route (as on any route), never an answer
 /// that would tell them it exists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -8364,14 +8367,14 @@ async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
         not_found,
         "upload"
     );
-    // Its owner gets the app's blobs (R8).
+    // Its owner gets the app's blobs.
     assert_eq!(
         alice.apps().blob_list(&app).await.map(wire).unwrap()["blobs"],
         json!([])
     );
 }
 
-/// Review nit (D70): a same-key retry is answered from its record even when an upgrade
+/// A same-key retry is answered from its record even when an upgrade
 /// since removed the method: the replay comes before the ABI check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
@@ -8445,7 +8448,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
     }
 }
 
-/// Review nit, codes: a confirm method a stale front node did not know is confirm
+/// A confirm method a stale front node did not know is confirm
 /// (here: a node that hosts no replica reads the directory's bundle, team-space,
 /// while the group runs kv, whose `wipe` is a confirm method) still answers the
 /// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge,
@@ -8514,7 +8517,7 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
     );
 }
 
-/// Review nit, codes: a component the engine refuses at `POST /bundles` is a
+/// A component the engine refuses at `POST /bundles` is a
 /// `400 BAD_BUNDLE` (a core module is `400 UNSUPPORTED_BUNDLE`,
 /// [`a_core_module_bundle_is_refused_as_an_sdk_0_12_app`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -8537,14 +8540,14 @@ async fn a_refused_component_upload_is_a_400() {
     assert_eq!((status, e.code()), (400, Some("BAD_BUNDLE")), "{e}");
 }
 
-// --- Usage (Q20): in the log, to the owner, in quotas -----------------------------------
+// --- Usage: in the log, to the owner, in quotas -----------------------------------
 
 /// `GET /apps/{app}/usage` through `cl`: today's row and the 30 days before it.
 async fn app_usage(cl: &Client, app: &str) -> Value {
     cl.apps().usage(app).await.map(wire).unwrap()
 }
 
-/// A usage figure: a decimal string (D20), never a JSON number.
+/// A usage figure: a decimal string, never a JSON number.
 fn figure(v: &Value) -> u64 {
     v.as_str()
         .unwrap_or_else(|| panic!("not a decimal string: {v}"))
@@ -8561,7 +8564,7 @@ fn usage_totals(u: &Value) -> (u64, u64) {
 }
 
 /// Sets the cluster's `maxFuelPerDeveloperPerDay` through the ops API (a decimal
-/// string, D20).
+/// string).
 async fn set_fuel_limit(ops: &Client, limit: u64) {
     let mut quotas = ops.ops().quotas_get().await.map(wire).unwrap();
     quotas["maxFuelPerDeveloperPerDay"] = json!(limit.to_string());
@@ -8632,7 +8635,7 @@ async fn usage_on_every_node(
     out
 }
 
-/// Q20: every logged run's usage is in its entry, and a replica only adds up what
+/// Every logged run's usage is in its entry, and a replica only adds up what
 /// the entries say. A replica that installed a snapshot, and the replicas left after
 /// the leader goes, answer the same book, wall-clock milliseconds included, and it
 /// counts each run once: the `init`, every call that committed and the tick.
@@ -8751,10 +8754,10 @@ async fn developer_usage(cl: &Client, app: &str) -> Value {
     cl.orgs().usage(&org).await.map(wire).unwrap()
 }
 
-/// Q20: a developer at its daily fuel quota gets `429 QUOTA_EXCEEDED` on a call to
+/// A developer at its daily fuel quota gets `429 QUOTA_EXCEEDED` on a call to
 /// any of its apps, before the call runs (here the owner's personal organization,
-/// where her instances go); its apps' timers still tick and `init` still runs
-/// (Xabi), and both still count.
+/// where her instances go); its apps' timers still tick and `init` still runs,
+/// and both still count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
     let c = Cluster::start(3).await;
@@ -8865,7 +8868,7 @@ async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
-/// Q20: a limit of 0 (the default) never refuses; a refusal is not logged, so the
+/// A limit of 0 (the default) never refuses; a refusal is not logged, so the
 /// same idempotency key runs once the limit is lifted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fuel_limit_of_zero_never_refuses() {
@@ -8946,7 +8949,7 @@ async fn a_fuel_limit_of_zero_never_refuses() {
     assert_eq!(got, json!("v"), "the key the refusal did not spend ran");
 }
 
-/// Q20: an app's usage is its owner's and its organization's admins' to read; a
+/// An app's usage is its owner's and its organization's admins' to read; a
 /// member gets 403, someone who doesn't reach the app 404.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_the_owner_and_org_admins_read_an_apps_usage() {
@@ -9082,7 +9085,7 @@ async fn join_org(
     let _r = who.orgs().invite_redeem(&token).await.unwrap();
 }
 
-/// D78: an org app's runs are the organization's, not its owner's. An instance made
+/// An org app's runs are the organization's, not its owner's. An instance made
 /// without naming an organization is in the owner's personal organization, so its
 /// runs are that organization's too; the owner's `/auth/usage` counts only apps
 /// outside any organization, and each organization's admins read its own.
@@ -9145,7 +9148,7 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     assert_eq!(figure(&org["developerFuelToday"]), app_fuel, "{org}");
 }
 
-/// D78: the daily fuel cap holds per developer. An org app made from a release has
+/// The daily fuel cap holds per developer. An org app made from a release has
 /// the org as its developer: over the cap it gets 429, while its owner's apps in her
 /// personal organization, another developer under the cap, still run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -9224,7 +9227,7 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
         .unwrap();
 }
 
-/// D78: an organization's usage is its admins' (and owner's) to read; a member gets
+/// An organization's usage is its admins' (and owner's) to read; a member gets
 /// 403, someone outside it 404, and a demoted admin 403 at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_an_orgs_admins_read_its_usage() {
@@ -9259,7 +9262,7 @@ async fn only_an_orgs_admins_read_its_usage() {
     assert_eq!(err.code(), Some("FORBIDDEN"), "a demoted admin: {err}");
 }
 
-// --- Sandi's 10-30 review of the fuel cap -------------------------------------------------
+// --- The fuel cap under a hanging peer, xcalls, read-only members and old nodes ---------
 
 /// Two apps of `cl`'s account on different nodes of a cluster that keeps one replica per
 /// app: `(app, its node's index)` for each.
@@ -9324,7 +9327,7 @@ async fn warm(cl: &Client, app: &str) {
     panic!("{app} never answered");
 }
 
-/// Sandi 10-30 (1): the cap never asks a peer during a call, so a replica of another
+/// The cap never asks a peer during a call, so a replica of another
 /// of the developer's apps that hangs adds nothing to the call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs() {
@@ -9364,7 +9367,7 @@ async fn the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs() {
     );
 }
 
-/// Sandi 10-30 (1): a developer over its cap is refused within one refresh, and a peer
+/// A developer over its cap is refused within one refresh, and a peer
 /// that stops answering keeps the figure it last reported, so the cap does not fail
 /// open the moment one replica is down.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -9427,7 +9430,7 @@ async fn an_over_cap_developer_is_refused_within_one_refresh_while_a_peer_hangs(
     );
 }
 
-/// Sandi 10-30 (4): an xcall delivered into an app whose developer is over its fuel
+/// An xcall delivered into an app whose developer is over its fuel
 /// cap is refused like a client's call (`429 QUOTA_EXCEEDED`), and does not run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_delivered_xcall_into_an_over_cap_developers_app_is_refused() {
@@ -9496,7 +9499,7 @@ async fn a_delivered_xcall_into_an_over_cap_developers_app_is_refused() {
     assert!(got.is_null(), "the refused xcall wrote: {got}");
 }
 
-/// Sandi 10-30 (5): a read-only member's call to any method but a view is refused
+/// A read-only member's call to any method but a view is refused
 /// before it runs, so it burns no fuel uncounted; a view still answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_read_only_members_call_is_refused_before_it_runs() {
@@ -9562,7 +9565,7 @@ async fn a_read_only_members_call_is_refused_before_it_runs() {
         .unwrap();
 }
 
-/// Sandi 10-30 (6): the fuel cap is a decimal string in JSON (D20, D76), kept exact
+/// The fuel cap is a decimal string in JSON, kept exact
 /// past 2^53; a number is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_fuel_cap_is_a_decimal_string() {
@@ -9619,8 +9622,8 @@ async fn the_fuel_cap_is_a_decimal_string() {
     }
 }
 
-/// Sandi 10-30 (3) / option A: a fuel cap is written only once every node runs this
-/// release or newer, as D71 gates `base_seq`; an older node would drop it.
+/// A fuel cap is written only once every node runs this release or newer, as the
+/// cluster version gates `base_seq`; an older node would drop it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
     let mut c = Cluster::start_with(3, |cfg| {

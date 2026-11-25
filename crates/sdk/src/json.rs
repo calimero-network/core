@@ -1,4 +1,4 @@
-//! serde helpers for JSON (D20): 64-bit integers are decimal strings and bytes are base64url.
+//! serde helpers for JSON: 64-bit integers are decimal strings and bytes are base64url.
 //!
 //! Use as `#[serde(with = "u64_str")]` (and `i64_str`, `opt_u64_str`, `opt_i64_str`,
 //! `bytes_b64url`, `opt_bytes_b64url`); the `app` macros apply them to method arguments and
@@ -296,7 +296,7 @@ pub mod opt_bytes_auto {
 /// Bytes as a value in state or in a plain serde type: a CBOR byte string when stored (one
 /// byte per byte), base64url in JSON. A bare `Vec<u8>` in a `Cell`, a map value or a plain
 /// struct is stored as a CBOR list of numbers, about twice its size; records and method
-/// parameters already convert `Vec<u8>` (D20), collections and plain structs need this.
+/// parameters already convert `Vec<u8>`, collections and plain structs need this.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Bytes(pub Vec<u8>);
 

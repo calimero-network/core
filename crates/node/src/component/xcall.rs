@@ -1,18 +1,18 @@
-//! A component app's xcalls (D13, D25, D29): the outbox a run fills, the order and
+//! A component app's xcalls: the outbox a run fills, the order and
 //! deduplication of delivery, and the dead letters.
 //!
 //! - **Outbox**: an `Ok` entry's xcalls (`Outcome::xcalls`) are appended, in order, to the
-//!   source app's outbox: host rows `rows::COUT ‖ seq` (D39), `ComponentHead::outbox`
+//!   source app's outbox: host rows `rows::COUT ‖ seq`, `ComponentHead::outbox`
 //!   naming the first and next sequence numbers. A failed run sends nothing.
 //! - **Delivery**: the source's leader delivers the outbox head, one message at a time, so
 //!   messages leave each source in order (`Node::deliver_xcalls`). The target runs the
 //!   method as `kind = xcall-deliver` with `Caller::App(source)`; its ABI must allow the
-//!   source (`allowApps`, D13). Only within one organization (`same_boundary`); every
+//!   source (`allowApps`). Only within one organization (`same_boundary`); every
 //!   app is in one since 1.0.0-rc.20.
-//! - **Deduplication** (D25): the target keeps, per source app, the highest sequence number
+//! - **Deduplication**: the target keeps, per source app, the highest sequence number
 //!   it applied (`ComponentHead::watermarks`); a message at or below it is answered as
 //!   delivered without running, so a leader change on either side never runs one twice.
-//! - **Retry and dead letters** (D29): a timeout or an unreachable target is retried with
+//! - **Retry and dead letters**: a timeout or an unreachable target is retried with
 //!   backoff for up to [`XCALL_WINDOW_MS`] from the send; then, or at once for a deleted
 //!   target, one outside the organization, or one that is not a component, the message
 //!   goes to the source's dead letters (`rows::CDEAD`, the newest [`MAX_DEAD_LETTERS`]) and
@@ -43,7 +43,7 @@ pub const DELIVER_BATCH: usize = 16;
 /// Bytes of a dead letter's reason.
 pub const MAX_REASON_BYTES: usize = 512;
 
-/// An xcall as a run's outcome carries it (D25).
+/// An xcall as a run's outcome carries it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct XcallOut {
     pub app: String,
@@ -72,7 +72,7 @@ pub struct Outgoing {
     pub on_behalf_of: Option<crate::types::Caller>,
 }
 
-/// A message that was never delivered (D29).
+/// A message that was never delivered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeadLetter {
@@ -106,7 +106,7 @@ pub struct XcallHead {
     pub dead_first: u64,
     #[serde(default)]
     pub dead_next: u64,
-    /// Per source app, the highest sequence number applied here (D25).
+    /// Per source app, the highest sequence number applied here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub watermarks: BTreeMap<String, u64>,
 }
@@ -224,7 +224,7 @@ impl XcallHead {
         }
     }
 
-    /// Whether message `seq` from `source` was applied here already (D25).
+    /// Whether message `seq` from `source` was applied here already.
     #[must_use]
     pub fn seen(&self, from: &XcallFrom) -> bool {
         self.watermarks

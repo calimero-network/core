@@ -113,7 +113,7 @@ await client.orgs.setMember({ org: orgId, account, role: 'member' }, { confirm: 
 The second argument, `{ confirm, operatorProof, signal }`, answers this call's
 `412 CONFIRM_REQUIRED` or `428 OPERATOR_SIGNATURE_REQUIRED`;
 `new CalimeroClient(options, { confirm, operatorProof })` answers every call that
-gives none. Routes the document marks retry-safe are retried on `503` (D70), and
+gives none. Routes the document marks retry-safe are retried on `503`, and
 one that requires an idempotency key gets one. The event streams stay on the transport.
 `createRoutes(createRouteClient(transport))` builds the groups on any
 `NodeTransport`.
@@ -338,7 +338,7 @@ Every generated method, by group (`?` marks an optional argument):
 
 Every request goes through `client.transport`, a `Transport` from
 `@calimero-network/mero-js/runtime`: attestation, the sealed channel, the
-session and its refresh, `421` moves, D70 retries, the `412` step-up, error
+session and its refresh, `421` moves, `503` retries, the `412` step-up, error
 mapping and server-sent events, behind `request(method, path, options)`,
 `json(method, path, options)` and `events(path, options)`; `exchange(method,
 path, options)` answers a refusal as the node's response, which is what the

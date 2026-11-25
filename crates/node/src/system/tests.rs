@@ -1728,7 +1728,7 @@ fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
     assert_eq!(m.state.refresh[&hash].account, "alice");
 }
 
-/// Review finding B1: every sign-in's proof stayed in `used_proofs` for good, so
+/// Regression: every sign-in's proof stayed in `used_proofs` for good, so
 /// the system state (one snapshot row) only grew. From the `ExpireProofs` mark
 /// on, a sign-in's proof is forgotten once the session it opened expires (at an
 /// entry's own time, never a clock), and a sign-in whose session expired by
@@ -2458,7 +2458,7 @@ fn a_create_org_entry_from_before_takes_any_name() {
 /// The status a client sees for a refusal comes from what the log refused it
 /// for, never from its wording: a quota refusal worded otherwise is still
 /// `429 QUOTA_EXCEEDED`, and a refusal of another kind whose wording happens
-/// to start like a quota's is still `400 REJECTED` (review finding E4).
+/// to start like a quota's is still `400 REJECTED`.
 #[test]
 fn a_refusals_status_comes_from_its_kind_not_its_wording() {
     let (mut m, _alice, _bob, _carol) = proven_cluster();
@@ -12104,7 +12104,7 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
     );
 }
 
-/// C8's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
+/// The second-approval fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
 /// member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and destinations
 /// (green), `p@1.1.0` adds a telemetry host (red).
 fn classified() -> SystemMachine {
@@ -12515,7 +12515,8 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
 
 // ------------------------------------------------------- updates on their own, undo
 
-/// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
+/// The automatic-update fixture: `publishing`'s customer `cust` (cora its owner, eve an admin,
+/// dan a
 /// member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1 and 2. No release sends
 /// data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and `1.0.2` (`b3` again) are
 /// green, `1.1.0` (`b2`) adds a telemetry host.

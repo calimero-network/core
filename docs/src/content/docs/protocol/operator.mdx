@@ -278,7 +278,7 @@ appends `componentRestored`, snapshots and purges its log through that entry,
 then adds the other replicas, which can only catch up from that snapshot, and
 makes them voters; `FinishRestore` ends it. The new group's Raft terms start
 again at 1, so `componentRestored` moves the base of run ids past every term
-the restored state carries (D52). The old group is dropped everywhere.
+the restored state carries. The old group is dropped everywhere.
 
 The system group's leader backs up the system group the same way
 (`{dir}/system/`), with the code it names and K_c wrapped for its release;

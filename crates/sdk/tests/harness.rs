@@ -422,7 +422,7 @@ fn team_events_reach_team_members() {
 }
 
 /// The harness runs the node's `HostCore`, so an event naming more than 1,000 accounts
-/// gets the same soft error as on a node (Ruling 43).
+/// gets the same soft error as on a node.
 #[test]
 fn an_event_names_at_most_a_thousand_accounts() {
     let mut t = app();
@@ -461,7 +461,7 @@ fn not_found() -> Failure {
     }
 }
 
-/// The platform's refusals come before the app runs, with the node's codes (Rulings 32, 35):
+/// The platform's refusals come before the app runs, with the node's codes:
 /// the harness app is an org app, so every anonymous caller is `401 UNAUTHENTICATED`, a
 /// `public` method included (the node's access gate refuses before the ABI is read); an
 /// account the app's org does not hold (never in it, or removed) is `404 NOT_FOUND`. A guest

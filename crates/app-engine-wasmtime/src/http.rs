@@ -1,11 +1,11 @@
-//! `wasi:http/types` and `wasi:http/outgoing-handler` (D12, S9), over `HostCore`.
+//! `wasi:http/types` and `wasi:http/outgoing-handler`, over `HostCore`.
 //!
 //! Every body is a bounded in-memory buffer (`MAX_HTTP_BODY_BYTES`): a write past it fails
 //! the stream instead of blocking, and every pollable is ready at once, so no guest can
 //! park a node thread past its epoch deadline (the reason wasmtime-wasi-http is not used).
 //! Building fields, requests and bodies works in every run; `outgoing-handler.handle`
 //! asks `HostCore::http_send`, which actions, calls, timers and deliveries pass (views,
-//! `init` and migrations trap `HostDenied`, S9, D76) and which hands the request to the
+//! `init` and migrations trap `HostDenied`) and which hands the request to the
 //! node's outbound gate. The response
 //! is read whole before `handle` returns. The server side (incoming requests, outgoing
 //! responses) is not part of the world's use and traps.
@@ -656,7 +656,7 @@ impl outgoing_handler::Host for StoreData {
             headers,
             body: request.body.contents().to_vec(),
         };
-        // Anything but an action traps here (S9).
+        // Anything but an action traps here.
         let answer = match self.host.http_send(&outgoing).map_err(denied)? {
             Ok(response) => {
                 if response.body.len() > MAX_HTTP_BODY_BYTES {

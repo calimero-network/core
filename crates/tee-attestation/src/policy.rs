@@ -805,7 +805,7 @@ mod tests {
         );
     }
 
-    /// D3: a collateral source (`CALIMERO_TEE_COLLATERAL_URL` can name any
+    /// Regression: a collateral source (`CALIMERO_TEE_COLLATERAL_URL` can name any
     /// PCCS) serving an older, still Intel-signed TCB baseline makes an
     /// out-of-date platform read `UpToDate`. The verdict is only as good as the
     /// baseline it was computed against, so one below the floor admits nothing.

@@ -405,7 +405,7 @@ export class CalimeroClient {
    * The runtime every route of this client is sent through
    * (`@calimero-network/mero-js/runtime`): the attested, sealed channel to each
    * node, the credential and its refresh, the `412 CONFIRM_REQUIRED` step-up,
-   * D70 retries and error mapping. A route layer of its own (one generated from
+   * `503` retries and error mapping. A route layer of its own (one generated from
    * the node's OpenAPI document, say) sends through it and shares this
    * client's session.
    */

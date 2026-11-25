@@ -1,5 +1,5 @@
 /**
- * What the cloud node's refusals mean to a caller (spec D64, D70).
+ * What the cloud node's refusals mean to a caller.
  *
  * The node answers an error as `{ error: CODE, message, details }` with an HTTP
  * status. {@link errorFrom} is the one place the client turns that into an
@@ -452,7 +452,7 @@ function record(value: unknown): Record<string, unknown> {
 /**
  * The app's code and named fields. The node puts them in `details` as
  * `{ code, fields }`; an older node nests the app's error under `details.error`.
- * Positional payloads (`"0"`, `"1"`) are never read as fields (D63).
+ * Positional payloads (`"0"`, `"1"`) are never read as fields.
  */
 function appErrorOf(details: Record<string, unknown>): { appCode: string; fields: Record<string, unknown> } {
   const source = typeof details.code === 'string' ? details : record(details.error);

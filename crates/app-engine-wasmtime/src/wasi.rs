@@ -1,4 +1,4 @@
-//! The WASI side of the world (D19, D43, D44): which interfaces come from wasmtime-wasi
+//! The WASI side of the world: which interfaces come from wasmtime-wasi
 //! and which the engine serves itself over `HostCore`.
 //!
 //! - wasmtime-wasi: `io/{error, poll, streams}`, `cli/*` (empty environment, empty stdin,
@@ -9,7 +9,7 @@
 //!   a sleep is ready at once and never blocks a node thread), `random/random` and
 //!   `random/insecure-seed` (the host core's RNG).
 //! - `http/types` and `http/outgoing-handler`: `http.rs`, buffered bodies that never block,
-//!   requests sent only from actions (D12, S9). wasmtime-wasi-http is not linked: its body
+//!   requests sent only from actions. wasmtime-wasi-http is not linked: its body
 //!   streams can block a node thread past the epoch deadline.
 //!
 //! `wasi:sockets` and `wasi:random/insecure` are never linked, and `prepare` refuses any
@@ -61,7 +61,8 @@ const CLOCK_RESOLUTION_NS: u64 = 1_000_000;
 /// the run's log is full, never refused (a full log must not fail the app).
 const LOG_WRITE_PERMIT: usize = 64 * 1024;
 
-/// Links every WASI interface the world imports, plus the D44 stubs.
+/// Links every WASI interface the world imports, plus the stubs that refuse (the nine
+/// interfaces toolchains import whatever the app does).
 pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     let l = linker;
     wasi_sync::io::error::add_to_linker::<StoreData, HasTable>(l, |d| &mut d.table)?;
@@ -98,7 +99,7 @@ impl HasData for HasTable {
     type Data<'a> = &'a mut ResourceTable;
 }
 
-// --- clocks and randomness (D19) -------------------------------------------------------
+// --- clocks and randomness -------------------------------------------------------
 
 impl wall_clock::Host for StoreData {
     fn now(&mut self) -> Result<wall_clock::Datetime> {

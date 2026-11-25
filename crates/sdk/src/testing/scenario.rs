@@ -10,7 +10,7 @@
 //! `expect` may also be `{ "confirmRequired": true }`, `{ "error": code, "fields": {..} }` (fields compared exactly)
 //! or `{ "refused": "<API code>" }`: the platform refused before the app ran, with the node's code
 //! (`UNAUTHENTICATED` for an anonymous caller of the org app, `NOT_FOUND` for an account the app's org
-//! does not hold; Rulings 32, 35).
+//! does not hold; the node is the reference).
 //! A `tick` always runs as the system: `as` on a tick is refused.
 //! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms),
 //! `removeMember` (`args` is the account) or `upgrade` (a migration scenario only).

@@ -573,7 +573,7 @@ async fn create_instance(
     if executor != crate::types::Executor::Component {
         return Err(ApiError::unsupported_bundle());
     }
-    // A component's confirm methods are its ABI's (S5), never the request's.
+    // A component's confirm methods are its ABI's, never the request's.
     if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len()) > crate::node::MAX_ARGS_BYTES {
         return Err(crate::node::args_too_large());
     }
@@ -1427,7 +1427,7 @@ async fn app_metadata(
     Ok(Json(json!({})))
 }
 
-/// A component app's xcalls (D25, D29): messages waiting in its outbox and its dead
+/// A component app's xcalls: messages waiting in its outbox and its dead
 /// letters, newest last. The app's owner's or an org admin's, from a replica.
 async fn app_xcalls(
     State(node): State<Arc<Node>>,
@@ -1517,8 +1517,8 @@ async fn app_openapi(
     Ok(Json(calimero_app_abi::openapi::document(&abi, &info)))
 }
 
-/// One day of an app's usage book on the wire: every figure a decimal string (D20).
-/// `wallMs` is for information only; the quota counts fuel (D76).
+/// One day of an app's usage book on the wire: every figure a decimal string.
+/// `wallMs` is for information only; the quota counts fuel.
 fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
     json!({
         "date": crate::component::utc_date(day),
@@ -1531,7 +1531,7 @@ fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
     })
 }
 
-/// What an app's runs used (Q20), for its owner and the admins of its organization
+/// What an app's runs used, for its owner and the admins of its organization
 /// only: `today` and `days`, the last 30 days before it (oldest first), each UTC on
 /// the node's app time; a day nothing ran is zeros, and so is every day of an app
 /// recorded before components (SDK 0.12, no longer run).

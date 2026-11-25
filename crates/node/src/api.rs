@@ -58,7 +58,7 @@ const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 /// (`Config::refresh_rotate_after`): younger, a refresh mints a session on the
 /// system state at a read index and writes nothing to the system log; older,
 /// it is exchanged for a new token in the log (`UseRefresh`). Each active
-/// session then writes once per this, not once per [`SESSION_TTL`].
+/// session then writes once per this, not once per `SESSION_TTL`.
 pub const REFRESH_ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const CHALLENGE_TTL: u64 = 5 * 60;
 /// The code of a create or upgrade by bundle hash whose releases ship different compute components.
@@ -238,7 +238,7 @@ pub enum Pending {
         expires: u64,
         /// What the retry needs that is not signed and never logged (a new
         /// API key, an invite token, the registered credential), for a
-        /// step-up whose arguments the node made ([`consent_minted`]).
+        /// step-up whose arguments the node made (`consent_minted`).
         #[serde(default)]
         carry: Option<Value>,
     },
@@ -276,9 +276,9 @@ impl Pending {
 /// The most ceremonies a node holds open for callers it does not know yet
 /// (sign-in, sign-up, a recovery's finish). Each lives at most
 /// `CHALLENGE_TTL`; past this a new one displaces the oldest of the caller
-/// holding the most ([`admit_pending`]), so the pool never grows without bound
-/// (Xil's review, issue 12) and a flood never locks the others out (review
-/// finding D1). Ceremonies of known accounts do not count here, so a full
+/// holding the most (`admit_pending`), so the pool never grows without bound
+/// and a flood never locks the others out. Ceremonies of known accounts do not count here, so a
+/// full
 /// anonymous pool never blocks an account's step-up.
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
 /// The most anonymous ceremonies one sealed session holds open; its next
@@ -640,8 +640,7 @@ fn rp(node: &Node) -> RelyingParty {
 }
 
 /// A confirmation (step-up) needs the user verified (PIN or biometric), not
-/// just present: a touch alone is not consent to a confirm method (Xil's
-/// review, issue 6).
+/// just present: a touch alone is not consent to a confirm method.
 pub(crate) fn rp_step_up(node: &Node) -> RelyingParty {
     RelyingParty {
         require_uv: true,
@@ -798,7 +797,7 @@ impl Principal {
     ) -> Result<(), ApiError> {
         // A session vouches for its account only where the node that signed
         // it may hold the data: a node on an unapproved release cannot mint
-        // its way into an app (F1).
+        // its way into an app.
         if let Some(release) = &self.issuer_release {
             if !node.sys(|s| s.release_may_hold(app, Some(release))) {
                 return Err(ApiError::unauthenticated(
@@ -899,7 +898,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// [`Node::sys_fresh_index`]): a session or key revoked through another node is
 /// refused here at once, not once this replica catches up. What needs no state
 /// is checked before that round, so a credential that cannot be valid costs the
-/// system leader nothing (D4): an API key's shape ([`api_key_shaped`]) and the
+/// system leader nothing: an API key's shape ([`api_key_shaped`]) and the
 /// keys a fresh read found missing ([`UnknownApiKeys`]), a visitor's signature,
 /// a session token's signature under its issuer's attested key and its expiry.
 async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
@@ -966,7 +965,7 @@ pub(crate) const MAX_UNKNOWN_API_KEYS: usize = 4096;
 pub(crate) const UNKNOWN_API_KEY_TTL: Duration = Duration::from_secs(60);
 
 /// The hashes of API keys a caught-up read found no key for, each kept
-/// [`UNKNOWN_API_KEY_TTL`], at most [`MAX_UNKNOWN_API_KEYS`] (past that a
+/// `UNKNOWN_API_KEY_TTL`, at most `MAX_UNKNOWN_API_KEYS` (past that a
 /// missing key is not remembered, and costs a round each time). A key it holds
 /// is refused with no system read. It never refuses a key that exists: a hash is
 /// added only after a read caught up to an index past every write committed
@@ -1157,8 +1156,7 @@ pub(crate) async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Princi
 
 /// Who may install code or create apps: a passkey session, or an API key
 /// scoped to no app and no method and not read-only. A key handed to one app
-/// (or read-only) must not install bundles or start new apps (Xil's review,
-/// issue 7).
+/// (or read-only) must not install bundles or start new apps.
 async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = signed_in(node, headers).await?;
     p.unbound()?;
@@ -1560,7 +1558,7 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
 /// Whether `account` holds a read-only row in the team `app` belongs to
 /// (checked again against the latest system state before saying yes: at or
 /// past `sys_index`, the index the request's round named, else a round's).
-/// The record is read again from that state ([`fresh_record`]): the one in hand
+/// The record is read again from that state (`fresh_record`): the one in hand
 /// can predate a change of its access or owner.
 pub async fn read_only_in(
     node: &Node,
@@ -1638,8 +1636,8 @@ async fn gate(
     let account = p.as_ref().and_then(|p| p.caller.account());
     // Access is judged on the cluster's latest system state (a read index): a
     // removal or revocation committed through another node holds before the
-    // next request, read or write, and a grant is seen at once (Xil's review:
-    // access judged on lagging local state). `principal` already read fresh
+    // next request, read or write, and a grant is seen at once, never judged on
+    // lagging local state. `principal` already read fresh
     // for a request that carries a credential.
     let sys_index = match &p {
         Some(p) => p.sys_index,
@@ -1683,8 +1681,10 @@ async fn gate(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = Confirm))]
 pub(crate) struct ConfirmBody {
     challenge_id: String,
+    #[cfg_attr(test, schema(value_type = openapi::generated::Assertion))]
     assertion: Assertion,
 }
 
@@ -1887,11 +1887,11 @@ pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> 
 }
 
 /// How many events that reached this replica together one freshness round
-/// ([`Node::sys_caught_up`]) in [`local_events`] covers.
+/// ([`Node::sys_caught_up`]) in `local_events` covers.
 pub const MAX_EVENT_BATCH: usize = 256;
 
 /// The app's events from `from`, then live. A component's event carries its
-/// audience (R9) and goes to `subscriber` (`None`: anonymous) only if the system
+/// audience and goes to `subscriber` (`None`: anonymous) only if the system
 /// state says it still reaches the app and is in the audience, so a member removed
 /// from the org or the team stops receiving at once. That state is fresh for each
 /// event: a read-index round begun after the event reached this replica, applied
@@ -1992,8 +1992,10 @@ struct MetadataBody {
 
 /// A body that carries only a passkey confirmation (after a `412`).
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = ConfirmOnly))]
 struct ConfirmOnlyBody {
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     confirm: Option<ConfirmBody>,
 }
 
@@ -2853,6 +2855,7 @@ mod tests {
         assert!(put(&mut c, sign_up(100), session(1), 0).is_ok());
     }
 
+    /// An id people type never starts with `-`, which `meroctl` would read as a flag.
     #[test]
     fn a_typed_id_never_starts_with_a_dash() {
         for _ in 0..10_000 {

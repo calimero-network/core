@@ -2,8 +2,8 @@
 //!
 //! The derive implements `calimero_sdk::Record` and serde for the struct: field names
 //! are camelCase in both CBOR (stored values) and JSON (results); `u64`/`i64` fields are
-//! integers in CBOR and decimal strings in JSON (D20, Ruling 25). `partition` is reserved
-//! and refused (D48). It also implements `AbiType`: the record's JSON shape, for the ABI's
+//! integers in CBOR and decimal strings in JSON. `partition` is reserved
+//! and refused. It also implements `AbiType`: the record's JSON shape, for the ABI's
 //! `types`.
 
 use proc_macro2::{Span, TokenStream};
@@ -78,7 +78,7 @@ fn parse_table(input: &DeriveInput) -> syn::Result<TableAttr> {
                 table.search = field_list(&meta)?;
                 Ok(())
             } else if meta.path.is_ident("partition") {
-                Err(meta.error("partition is reserved (D48)"))
+                Err(meta.error("partition is reserved for opt-in partitioning later"))
             } else {
                 Err(meta.error("expected `key`, `unique`, `index`, `count` or `search`"))
             }

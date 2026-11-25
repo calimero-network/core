@@ -246,7 +246,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // Timer ticks (D34) of the component apps this node leads.
+    // Timer ticks of the component apps this node leads.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();
     drop(tokio::spawn(async move {
@@ -279,7 +279,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // What the peers' replicas used today, for the fuel cap (D76, D78), every
+    // What the peers' replicas used today, for the developer's fuel cap, every
     // `USAGE_REFRESH` while a cap is set: the cap never asks a peer during a call.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

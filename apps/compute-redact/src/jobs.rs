@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn decode_reads_a_done_runs_result_and_names_a_failure() {
-        // A redact run's result: its counts are decimal strings (D20).
+        // A redact run's result: its counts are decimal strings.
         let body = STANDARD.encode(r#"{"rows":"3","cells":"2"}"#);
         let r: crate::Redacted = decode(&outcome(serde_json::json!({ "result": body }))).unwrap();
         assert_eq!((r.rows, r.cells), (3, 2));

@@ -364,3 +364,195 @@ sessions](/protocol/identities/#package-bound-sessions)). Its step-ups come
 only from its own origin. What it may not do itself, such as approving an
 upgrade or creating an organization, it asks the node's
 [consent page](/protocol/consent-page/) for.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Packages
+
+Code: `packages.rs`, `system::PackageRecord`.
+
+- `POST /packages` (uploads) needs `Config::allow_package_uploads`, on with `--dev`.
+- `minRuntimeVersion` is compared with `CALIMERO_RELEASE_VERSION`, set by `build.rs`.
+- `Node::release_wasm` fetches a release this node does not hold: from the registry for a registry release, never a peer; from a peer for an upload.
+
+#### Compiling
+
+Every compile (each service's component and compute component, and a raw `POST /bundles`) goes through the node's one `compile::Compiler` (`Node::compile`) on the blocking pool.
+
+| Limit | Value | On breach |
+| --- | --- | --- |
+| `MAX_CONCURRENT_COMPILES` | 1 at a time | — |
+| `MAX_QUEUED_COMPILES`, `COMPILE_WAIT` | 4 waiting, 10 s each | `503 BUSY` |
+| `COMPILE_TIMEOUT` | 60 s | `422 COMPILE_TIMEOUT`, the service in `details`; the slot is held until the thread returns |
+| `MAX_COMPONENT_BYTES` | 47 MiB unpacked (a blob) | `413 TOO_LARGE` before compiling, since it could not reach another node |
+
+A component app's first-use prepare (`Node::prepare_bytes`) stays outside the compiler, off the workers through `spawn_blocking`.
+
+#### Compute components and compute-only packages
+
+- A compute component is prepared on `Node::compute_engine` only.
+- A compute-only release has `PackageVersion::components = ComputeOnly`, empty `services`, and `compute[""]` holding the hash.
+- It needs `require_upgraded_nodes` (`409 CLUSTER_NOT_UPGRADED`): an older node drops `components` and would apply it as an app's release.
+- App-level lookups read `PackageVersion::app_parts`, so a compute-only app's `bundle` and `compute_bundle` are both the compute hash.
+- Its app has `AppRecord::components = ComputeOnly`; `AppRecord::require_app_component` refuses a call, view, intent, init or tick (`422 NO_APP_COMPONENT`).
+- An upgrade between compute-only releases only moves the directory record; one that adds or drops the app component is `409 COMPONENTS_CHANGED`.
+- `PackageVersion::compute` maps service to hash; its `BundleRecord` has `PackageRef::compute = true`, so `resolve_release`, `CreateApp` and `UpgradeApp` never treat it as a service.
+- `release_facts` reads a compute-only release's ABI from its compute component, as `GET /apps/{app}/abi` does.
+
+#### Pipelines
+
+Code: `packages/pipelines.rs`.
+
+Install compiles each pipeline (`calimero_pipeline::compile`) against an `Env`:
+
+- `self`: the package's compute methods and caps, the default module for a step;
+- one module per other package a step names, resolved by `Node::resolve_modules` to a release the installer sees (newest when unversioned) that ships one compute component, else `UNKNOWN_MODULE`;
+- the cluster's pool memory ceilings.
+
+Errors are `400 BAD_PIPELINE` with `details: [{file, path, code, message}]`, including `NO_COMPUTE` and `DUPLICATE_NAME`.
+A named service declaring pipelines is `422 PIPELINES_NEED_ONE_SERVICE`.
+`PackageVersion::pipelines` maps name to `PipelineRef { hash, worstCaseFuel, modules }`, each module a `ModulePin { package, version, compute }`.
+`InstallPackage` applies only while every pinned release is installed, and uninstalling a pinned one is `409 MODULE_IN_USE` (`SystemState::module_pinned`).
+The canonical JSON is a blob under its hash; `Node::pipeline_json(hash)` reads it, else recompiles from the `.mpk`.
+A release with pipelines also needs `409 CLUSTER_NOT_UPGRADED` cleared.
+
+#### Release reads
+
+- `GET /packages/{package}/{version}/pipelines` answers `{ name: { hash, worstCaseFuel, modules, pipeline } }` (`meroctl app pipelines`).
+- `GET /packages/{package}/{version}/capabilities` answers the release's card before any app of it exists, to whoever sees the release or a session bound to the package.
+  It is read through `consent_page::release_capabilities`; its first eight keys match `consent_page::diff::side`, and `abi` is the embedded `calimero:abi` verbatim.
+  `?service=` picks the service; an unknown name, or none on a multi-service release, is `400 NO_SUCH_SERVICE` (`packages::no_such_service`).
+  A name over `MAX_SERVICE_QUERY_BYTES` is `400 BAD_REQUEST`, checked first.
+
+### An instance's release
+
+Code: `AppRecord::release`, a `system::PackageRef`.
+
+`AppRecord::release` is set at create and by every `UpgradeApp`, which checks that the release ships the bundle (`SystemState::release_ships`).
+Releases may share a WASM, so `bundle` alone does not say which release runs, and moving to a release with the same WASM is an ordinary upgrade.
+An org run writes such an `UpgradeApp` without running anything on the app's group.
+
+- `Node::release_of_app` and `report::release_of_app` read it, as does `GET /apps`.
+- A record without it (older, or a raw upload) falls back to the only release shipping its bundle (`SystemState::running_release`), and to none when several do.
+- The apply-side `SystemState::governing` still takes the bundle's first recorded release for such a record.
+- `UpgradeRecord::from_release` and `to_release` name both ends of an upgrade.
+- Create and upgrade carry the compute hash of the release they name (`resolve_release_parts`); apply checks the pair with `SystemState::ships_compute`.
+- By bundle hash alone, `SystemState::compute_of` resolves the compute part; `400 AMBIGUOUS_COMPUTE` when releases differ, `compute: false` when none ships one.
+- `ComponentCmd::Init` and `Upgrade` carry `compute_bundle` into `ComponentHead::compute_bundle`, so a run pins what the group runs, not the system record.
+- A release's parts are charged at their own sizes (`PackageVersion::part_sizes`); an older release counts the whole `.mpk` per part.
+
+**Who sees a release** is `SystemState::sees_release`, over `installed_by` and `PackageVersion::installers`.
+For anyone else, `resolve_release` treats the release as missing, `sees_bundle` hides its WASM, and upgrade runs skip it (`api::upgrade_sees`).
+
+### Deployments
+
+Code: `SystemState::deployments`, `system::Deployment`, `Offer`, `api/deployments.rs`.
+
+- Managers are whoever `acts_for` the owner (a `Deployer`); create and offer also need `may_deploy` where deployments are granted.
+- `CreateDeployment`'s id is `system::deployment_id` of the consent's nonce.
+- Bounds: `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT`; names `deployment_name_fits`, app names and ids `deployment_segment_fits`.
+- `POST /apps { deployment, ... }` resolves through `api::offered_bundle`; `CreateApp` checks the offer again (`offers_bundle`).
+- `upgrade_app` resolves a deployment instance's target with `api::apps::offered_bundle`; `node::outside_deployment` answers `409 OUTSIDE_DEPLOYMENT`.
+- At apply, `SystemState::within_deployment` judges `UpgradeApp` when its `in_deployment` flag is set (`Feature::UpgradeInDeployment`, `in_deployment_rule`) or `SystemState::cluster_brings` the rule.
+- The consent page's `upgrade` and `upgradeUnit` take `toVersion` as optional (`UpgradeSubject::to_version`) and resolve it in `consent_page::requested_release`.
+  Another instance still names it (`400 VERSION_REQUIRED`).
+- `UninstallPackage` refuses an offered release (`offered`).
+
+### Deployment secrets
+
+Code: `SystemState::deployment_secrets` (deployment id → name → `component::InstanceSecret`); `api/deployments.rs`: `deployment_secrets`, `deployment_secret_set`, `deployment_secret_clear`.
+
+- `SetDeploymentSecret` and `ClearDeploymentSecret`; `authorize` recomputes the fingerprint from the value the entry carries, so no node swaps it.
+- Refused: `system::UNDECLARED_SECRET`.
+- Bounds: `component::MAX_SECRET_VALUE_BYTES` (shared with instance secrets), `MAX_SECRETS_PER_DEPLOYMENT`, `MAX_DEPLOYMENT_SECRETS`.
+- Gates: `Feature::DeploymentSecrets` and, for names reached through `uses`, `Feature::DeploymentUsedSecrets`.
+- The API sets `SetDeploymentSecret { used: true }` only when no offered release declares the name; apply then checks `SystemState::deployment_uses_declare` over `used_releases`.
+- `InstallPackage` records `uses` (`system::ReleaseUse`) only once the feature is active (`record_release` drops it before); reinstalling the same `.mpk` fills it in.
+- `GET` adds `declaredBy` (`deployment_declarers`).
+- Lookup at run time: `Node::outbound_for` → `component::run_secrets`.
+  The deployment's value comes from `SystemState::deployment_secrets_of` on this node's system state, not the app's log, and only where `SystemState::deployment_covers`.
+- The gate attaches a value where `PackageVersion::secrets` binds it: one host and one header or body field each (a hard cutover in 1.0.0-rc.37).
+- `SecretValue`'s `Debug` hides the value, and `apply`'s answers never carry it.
+
+### Instance secrets
+
+Code: `api/apps.rs`: `app_secrets`, `app_secret_set`, `app_secret_clear`; `component.rs`: `ComponentCmd::SecretSet`/`SecretClear`, `InstanceSecret`, `rows::CSECRET`.
+
+- The owner, or whoever manages the organization's apps, sets a value with a step-up over `{ name, fingerprint }`.
+- The host commands `__secret_set` and `__secret_clear` write one hidden row on the replicas (`AppMachine::instance_secrets`) that no host function reads.
+- A call's or tick's run reads it with the state it sees (`RunExtras::secrets`); an action reads it on the leader.
+- `outbound_for` hands it to the gate as `calimero_outbound::OwnSecrets`.
+- `GET` answers through the leader's reserved view `__secrets`: fingerprints, never values.
+- Set and clear need `require_upgraded_nodes`.
+
+### Units
+
+Code: `api/apps.rs`: `create_instance`, `unit_members`; `api/upgrades.rs`: `app_upgrade_unit`.
+
+#### Creating and deleting
+
+- `create_instance` creates each `mode: create` reference first, at most `MAX_UNIT_DEPTH` deep; a missing release is `409 USES_NOT_INSTALLED`.
+- It records them in `AppRecord::links` (`Feature::AppLinks`) and passes their ids as `links` in `initArgs` when `init` takes them; a client's own `links` there is refused.
+- A failure after a member was made leaves it in place.
+- With `Feature::WholeUnits`, members of a deployment instance carry its deployment, and their `CreateApp` names `unit_offer`, checked at apply in place of the member's own release.
+  `CreateAppBody::unit_offer` is `serde(skip)`: only the node sets it.
+- `DELETE /apps/{app}` of an instance deletes its unit (`SystemState::unit_of`, over `links` transitively) and answers it in `members`.
+  `DeleteApp { members }` must match at apply (`UNIT_NOT_AS_NAMED`), and the actor must be allowed to delete each one.
+- A member (`unit_parent`) deleted alone is `409 UNIT_MEMBER` at the API and `UNIT_MEMBER` at apply.
+- The API sends `members` once the cluster version brings the feature, or for an instance with members (else `409 FEATURE_NOT_ACTIVE`).
+- A member finds its instance with `env::unit_of` (WIT `context.unit-of`; `SysDirectory::unit_of`), derived from the system state, so nothing new is stored.
+
+#### Upgrading a unit
+
+- `POST /apps/{app}/upgrade-unit` starts a run whose consent (`org:<org> / __upgrade_unit / { app, package, version, targets }`) names each member's release (`UpgradeRun::targets`, `RunTarget`, `Feature::UnitUpgrade`).
+- Apply derives the apps from `links` (`upgrade_run_apps`); `run_may_move` and `UpgradeApp { run }` judge each by `UpgradeRun::target_of`.
+- A member upgraded alone outside its instance's range is `409 OUTSIDE_UNIT_RANGE` (`refuse_off_unit_range`).
+- The consent page's `upgradeUnit` (`unit_upgrade_request`) builds one model from `api::unit_plan` and each app's sheet; members skip the bound session's `within`.
+  `Action::UpgradeUnit` is stale when a bundle or the targets moved, and `act` runs `api::upgrade_unit`.
+
+#### Attached apps
+
+- An `attach` reference is held in `AppRecord::attached`, apart from `links`, so unit upgrades and deletes never touch it.
+- `SystemCmd::LinkApp { app_id, name, target }` (`Feature::AttachApp`; consent `<app> / __link / { name, target }`, `system::link_app_args`) sets it; `target: null` detaches.
+- Apply requires: whoever manages both apps, the same organization, a name (`calimero_bundle::is_use_name`) that is not a unit member's, and at most `MAX_ATTACHED`.
+- `PUT|DELETE /apps/{app}/links/{name}` (`app_link`, `app_unlink`) also need an `attach` reference of the running release (`release_uses`; `409 NOT_AN_ATTACH_REFERENCE`) and an app of that package (`409 WRONG_PACKAGE`).
+  An app outside the range is attached and answered `inRange: false`.
+- `GET /apps/{app}/links` lists each reference (`link_row`).
+- `remove_app` detaches a deleted app everywhere.
+- The upgrade sheet's `attachedOutOfRange` comes from `attached_outside`.
+- Runs read links with `env::linked` (`SysDirectory::linked`: `links`, then `attached`).
+
+### App frontends
+
+Code: `app_host.rs`.
+
+- Files come from `Node::release_mpk`, verified before a byte is served; opened ones are cached, and so is a release shipping none.
+- `FrontendCache::get_or_load` runs one load per release and at most `FRONTEND_LOADS` at once.
+- `/app/{app}/` of a record without `AppRecord::release` goes to the newest release shipping its WASM, by `compare_versions`.
+- `/d/{deployment}/` is looked up again on fresh state when nothing matches.
+- Every redirect keeps the request's query, after any `deployment` it adds, so `/?invite=...` reaches the page.
+- The mirror in `connect-src` is `ATTESTATION_MIRROR`.
+- Cluster hosts are `cluster_label(config.cluster, package)`; deployment hosts are `deployment_label(id)`, served as an `app_host::Site`.
+
+#### Package-bound sessions
+
+- The session's package is `SessionClaims::app`, carried by refresh.
+- `Principal::within` keeps it to that package's apps: gate, app reads and writes, listings.
+- `unbound` and `holder` refuse it everything the design lists, plus redeeming invites, an app's delete and its access.
+- The exception is its own package's teams (`Principal::within_team`, `OwnTeam`, `Org::package_of_team`):
+  - `team_create` under one;
+  - `team_update` of a team below the app team, never the app team itself, with a move only within;
+  - `team_set_member` and `team_remove_member` on any of them;
+  - `team_delete` below the app team when every app in its subtree is the package's;
+  - `app_access` of a package app between two such teams.
+- Step-ups are over one of the package's apps, or `org:{org}` for `BOUND_TEAM_STEP_UPS` (`__set_team_member`, `__remove_team_member`, `__delete_team`); `step_up` judges `within_team` again.
+
+### Smaller rules
+
+- **Init**: `initArgs` is kept on the `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
+- **Typed ids** (accounts, apps, organizations, teams, upgrade runs, API keys) are base64url that never starts with `-` (`api::typed_id`), which meroctl would read as a flag.
+- **Context ids**: an app answers to `hex(SHA-256(app_id))` wherever the API takes an app id (`Node::canonical_app_id`); a component reads its id with `env::app_id`.
+- **Inspection**: `GET /apps/{app}/storage`, `GET /apps/{app}/abi`, `GET /auth/usage` (with `developerFuelToday` and `developerWritesToday`), `GET /orgs/{org}/usage` (admins) and `GET /apps/{app}/usage` (owner and org admins; see [Execution](/protocol/execution/)).

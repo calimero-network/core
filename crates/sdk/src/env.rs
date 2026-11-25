@@ -24,7 +24,7 @@ pub mod mock;
 #[cfg(not(target_arch = "wasm32"))]
 use mock as backend;
 
-/// Who invoked the method (D13).
+/// Who invoked the method.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
     /// A signed-in account.
@@ -186,7 +186,7 @@ pub fn applied_index() -> u64 {
     backend::applied_index()
 }
 
-/// A unique id: `<leader term>.<call seq>.<n>` (D52). Prefer it to `Counter::increment` (D47).
+/// A unique id: `<leader term>.<call seq>.<n>`. Prefer it to `Counter::increment`.
 pub fn unique_id() -> String {
     backend::unique_id()
 }
@@ -205,7 +205,7 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
     backend::random_bytes(len)
 }
 
-/// Emit an `#[app::event]` value: its variant name and JSON data (D20: 64-bit integers as
+/// Emit an `#[app::event]` value: its variant name and JSON data (64-bit integers as
 /// decimal strings).
 ///
 /// # Errors
@@ -224,7 +224,7 @@ pub fn emit_raw<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience)
     backend::emit(name, data, audience)
 }
 
-/// Send `args` (serialized as JSON) to `method` of app `app` (D25): the message waits in
+/// Send `args` (serialized as JSON) to `method` of app `app`: the message waits in
 /// this run's outbox and the platform delivers it after the entry commits, only if the run
 /// succeeds, at least once and in order per sending app, as `Caller::App(<this app>)`. The
 /// target app must be in the same organization (or, for a personal app, have the same
@@ -310,10 +310,10 @@ fn xcall_failure(message: &str) -> AppError {
     AppError::with_fields("XcallFailed", fields)
 }
 
-/// Send `request` over `wasi:http` from a call, a timer or a delivery (D76), as an action's
+/// Send `request` over `wasi:http` from a call, a timer or a delivery, as an action's
 /// `ctx.fetch` does: only to a URL under a prefix the app's signed manifest declares and its
 /// organization approved, with the credentials its manifest binds to the host (`secrets`)
-/// attached by the node, never by the app (R14; a request writing the retired
+/// attached by the node, never by the app (a request writing the retired
 /// `{{secret:NAME}}`, or setting a bound header or field itself, is refused), at most 8
 /// requests per run (`MAX_HTTP_REQUESTS`) and within the call's time budget. The exchange is recorded in the call's log
 /// entry: followers and a retry with the same idempotency key read the recorded answer and
@@ -328,7 +328,7 @@ pub fn fetch(request: &crate::action::Request) -> Result<crate::action::Response
         .map_err(|message| AppError::with_fields("Fetch", json!({ "message": message })))
 }
 
-/// Start the `#[app::action]` `method` with `args` (D17): logged as started with this run's
+/// Start the `#[app::action]` `method` with `args`: logged as started with this run's
 /// entry, only if the run succeeds, then run by the leader outside the log with this run's
 /// caller. Calls and timers only. Returns the action's key.
 ///
@@ -367,7 +367,7 @@ pub(crate) fn backend_fetch(
     backend::fetch(request)
 }
 
-/// Blob `id`'s metadata, if the app holds it (R8). Prefer [`crate::BlobRef::info`].
+/// Blob `id`'s metadata, if the app holds it. Prefer [`crate::BlobRef::info`].
 pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
     backend::blob_info(id)
 }
@@ -400,7 +400,7 @@ pub fn set_timer(info: Option<TimerInfo>) {
     TIMER.with(|t| t.set(info));
 }
 
-/// Write a line to the run's log (stderr; the host keeps 64 KiB per run, D50).
+/// Write a line to the run's log (stderr; the host keeps 64 KiB per run).
 pub fn log(message: &str) {
     // The host owns the sink; a failed write to it has nowhere to be reported.
     let _ = writeln!(std::io::stderr(), "{message}");

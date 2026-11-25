@@ -25,7 +25,7 @@ pub enum MethodKind {
     Call,
     View,
     Timer,
-    /// Runs outside the log on the leader, with outbound HTTP (D12); started, never called.
+    /// Runs outside the log on the leader, with outbound HTTP; started, never called.
     Action,
     /// Runs on a job node under these caps; only the node starts it.
     Compute(ComputeCaps),
@@ -49,11 +49,11 @@ pub struct MethodAbi {
     pub confirm: bool,
     /// Callable without signing in.
     pub public: bool,
-    /// A timer's interval (D34); `Some` exactly for timers.
+    /// A timer's interval; `Some` exactly for timers.
     pub every: Option<Duration>,
     /// Accepts `Caller::System`.
     pub allow_system: bool,
-    /// The apps whose xcalls it accepts (`Caller::App`, D13); `"*"` is any app the
+    /// The apps whose xcalls it accepts (`Caller::App`); `"*"` is any app the
     /// platform delivers from.
     pub allow_apps: Vec<String>,
     /// `allow(action)`: called only by this app's actions, never directly by clients.
@@ -63,7 +63,7 @@ pub struct MethodAbi {
 }
 
 impl MethodAbi {
-    /// Whether a delivered xcall from `app` may run it (D13).
+    /// Whether a delivered xcall from `app` may run it.
     #[must_use]
     pub fn allows_app(&self, app: &str) -> bool {
         self.allow_apps.iter().any(|a| a == "*" || a == app)
@@ -82,8 +82,8 @@ pub struct Abi {
 
 impl Abi {
     /// Reads the `calimero:abi` JSON. `abiVersion` is required and must be supported.
-    /// Unknown keys, top level or per method, are ignored so newer builds stay readable
-    /// (Ruling 14); a known key with a value of the wrong shape is refused.
+    /// Unknown keys, top level or per method, are ignored so newer builds stay readable;
+    /// a known key with a value of the wrong shape is refused.
     pub fn from_json(json: &Value) -> Result<Self, PrepareError> {
         let top = object(json, "abi")?;
         let version = match top.get("abiVersion") {

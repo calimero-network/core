@@ -22,7 +22,7 @@ import HTTPTypes
 ///
 /// **Retries.** `x-calimero-retry-safe` marks the operations a client may send again after a `503` or a lost answer (`x-calimero-retry-requires` names the body field that makes it so, an idempotency key). The sealed channel's own `503` (`{ error: { code: "busy", message } }`, outside the envelope: too many sealed requests or sessions at once; the schema `x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route, and so does `GET /attestation`'s `503 BUSY` (too many quotes at once); the node's `503 UNAVAILABLE` answers carry none. `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` where it applies only sometimes) and `x-calimero-operator` mark the two-round operations below.
 ///
-/// **Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings (D20); every other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.
+/// **Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings; every other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.
 public struct Client: APIProtocol {
     /// The underlying HTTP client.
     private let client: UniversalClient

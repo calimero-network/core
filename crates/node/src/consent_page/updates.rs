@@ -1,5 +1,5 @@
-//! The consent page's install and update pages (C10 of the "Apps, private services and
-//! owner-approved updates" design): what an update is in plain words, the install sheet,
+//! The consent page's install and update pages (docs: protocol consent page "Installs,
+//! updates and update policies"): what an update is in plain words, the install sheet,
 //! a change of update policy, and the node's updates page.
 //!
 //! - **Words** ([`reason_words`], [`update_summary`], [`policy_words`]): the classifier's

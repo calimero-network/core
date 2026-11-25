@@ -4,7 +4,7 @@
  * sealed, streamed answers, as core's cloud node speaks them. Synthetic data only.
  *
  * Covers the mapping of every refusal the node sends to the client's typed
- * errors (D64, D70). The abort test is in `events-abort.test.ts`.
+ * errors. The abort test is in `events-abort.test.ts`.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -52,7 +52,7 @@ const signingPasskey: PasskeyProvider = {
 };
 
 
-describe('refusals map to typed errors in one place (D64)', () => {
+describe('refusals map to typed errors in one place', () => {
   it('401 UNAUTHENTICATED is LoginRequired', async () => {
     node.answer = () => refused(401, 'UNAUTHENTICATED');
     const error = await failure(client().apps.view({ app: 'app-1', method: 'availability', args: {} }));
@@ -250,7 +250,7 @@ describe('refusals map to typed errors in one place (D64)', () => {
   });
 });
 
-describe('503s are retried with the same key, then UnavailableError (D70)', () => {
+describe('503s are retried with the same key, then UnavailableError', () => {
   const cases: Array<[string, Record<string, unknown> | undefined, string, Committed, number | undefined]> = [
     ['TIMEOUT', { retryAfter: 0.001 }, 'timeout', false, 0.001],
     ['MIGRATING', { retryAfter: 0.002 }, 'migrating', false, 0.002],
@@ -292,7 +292,7 @@ describe('503s are retried with the same key, then UnavailableError (D70)', () =
   });
 });
 
-describe('the retry budget is the Rust client\'s (D70)', () => {
+describe('the retry budget is the Rust client\'s', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('6 retries, from 200 ms doubling to at most 2 s, no jitter', () => {
@@ -322,7 +322,7 @@ describe('the retry budget is the Rust client\'s (D70)', () => {
   });
 });
 
-describe('a connection that fails is retried like a 503 (D70)', () => {
+describe('a connection that fails is retried like a 503', () => {
   it('a dropped connection is sent again with the same key, then succeeds', async () => {
     let attempts = 0;
     node.answer = () => (++attempts <= 2 ? { status: 0, drop: true } : { status: 200, json: { index: 5, result: 'b1', events: [] } });

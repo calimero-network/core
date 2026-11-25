@@ -1,16 +1,16 @@
-//! Tables with declared indexes, unique constraints and counts (D9).
+//! Tables with declared indexes, unique constraints and counts.
 //!
 //! Key layout, every key starting with the table name as a string part:
 //!
 //! - `(table, "r", key..)` is the record, a deterministic CBOR value;
 //! - `(table, "i", index, fields.., key..)` is an index entry, holding the record's storage key;
 //! - `(table, "u", name, fields..)` is a unique entry, holding the record's storage key;
-//! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add` (D47);
+//! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add`;
 //! - `(table, "n")` is how many records the table holds, a CBOR integer: written once by the
 //!   first write that finds it missing (by counting the records), then changed only with
 //!   `Store::add`;
 //! - `(table, "l")` holds CBOR `null` once `(table, "n")` is kept: a write reads it, never
-//!   `(table, "n")`, so inserts into one table do not conflict over the length (D47).
+//!   `(table, "n")`, so inserts into one table do not conflict over the length.
 //!
 //! A table written before the length existed has neither row until its first insert or
 //! removal; until then [`Table::len`] counts its records.

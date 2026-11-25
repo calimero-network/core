@@ -299,3 +299,38 @@ the app's organization or owner account).
 The file format is in [Storage schema](/protocol/storage/#recovery-files);
 the procedure in [Recover after every key service is
 gone](/operate/runbooks/#recover-after-every-key-service-is-gone).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Storage key
+
+Code: `kms.rs`.
+
+K_r = HKDF(KMS key, cluster).
+A TDX node takes it from mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need
+`--dev`), fetched by merod itself (`--kms-url --kms-identity`; `calimero-kms-client`:
+release-policy-verified KMS, key sealed to the TD).
+The boot script uses the same client for the data disk's key (`merod kms disk-key`).
+The cluster's nodes share the disk identity, so the nodes of one release share K_r; every release
+has its own mero-kms root, so K_r changes at each release upgrade.
+
+### Cluster key
+
+Code: `cluster_key.rs`.
+
+K_c seals the store, snapshots, backups and feeds the cluster secret, TEE, member and
+component-cache keys, so data outlives a release.
+Kept in `<data_dir>/cluster-key`, wrapped under K_r.
+The founder (`--bootstrap`) and a store from before K_c take K_c = K_r (nothing on disk changes).
+A node on an empty data directory (`run`, before `Node::start`) serves only `/health` (`waiting`),
+`/attestation` and `/internal/cluster-key/deliver` while it asks its `--peers` (`POST
+/internal/cluster-key { cluster, node, token }`, no cluster secret); a peer never answers with K_c
+but delivers it (`cluster_key::deliver`) to the address registered for that node id, else the system
+group's membership's (`cluster_key::recipient_addr`; its own `--peers` only before genesis, while
+the founding nodes ask the founder; never a removed or job node), over a fresh sealed channel
+attested under the peer policy, with the token (`MAX_CONCURRENT_KEY_RELEASES`).
+A K_r that does not unwrap the file stops the node: no in-place move to a new release.

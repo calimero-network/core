@@ -27,7 +27,7 @@ pub enum Caller {
     /// The app itself: an `xcall` from app `app` (then the caller is the calling
     /// app). Never from a client: the API builds callers from credentials.
     App { app: AppId },
-    /// The platform itself: a component's timer ticks (D34), which reach only
+    /// The platform itself: a component's timer ticks, which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
     /// An anonymous visitor through one of the instance's public links
@@ -71,7 +71,7 @@ impl Caller {
         matches!(self, Self::Account { .. } | Self::ApiKey { .. })
     }
 
-    /// The caller as the component host core sees it (the WIT `caller`, D13).
+    /// The caller as the component host core sees it (the WIT `caller`).
     #[must_use]
     pub fn to_host(&self) -> calimero_app_host::Caller {
         use calimero_app_host::Caller as H;
@@ -1000,7 +1000,7 @@ impl KeyFollowUp {
 }
 
 /// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
-/// salt, then [`KeyFollowUp::args_bytes`]): the system log reaches nodes
+/// salt, then `KeyFollowUp::args_bytes`): the system log reaches nodes
 /// the app's organization never approved, so it holds none of an app's data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1869,7 +1869,7 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// Who receives an event (R9). Resolved when the event is sent to a
+/// Who receives an event. Resolved when the event is sent to a
 /// subscriber, against the system state of that moment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1917,7 +1917,7 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
-    /// A component's event: who receives it (R9), checked when it is sent.
+    /// A component's event: who receives it, checked when it is sent.
     /// `None` for an event that goes to everyone who reaches the app (one an SDK
     /// 0.12 app recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]

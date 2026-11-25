@@ -190,7 +190,7 @@ fn save(dir: &Path, storage_key: &[u8; 32], cluster_key: &[u8; 32]) -> eyre::Res
 
 /// This node's K_c and the listener it serves on: unwrapped from its data
 /// directory, minted (a founder, or a store from before K_c), or delivered by
-/// a peer (a new node, which serves [`waiting_router`] on `listener` meanwhile).
+/// a peer (a new node, which serves `waiting_router` on `listener` meanwhile).
 pub async fn resolve(
     config: &Config,
     listener: TcpListener,

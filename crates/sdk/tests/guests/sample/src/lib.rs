@@ -58,7 +58,7 @@ pub struct Tally {
     pub note: Option<String>,
 }
 
-/// One reading, its 64-bit integers in their D20 form: decimal strings in JSON, exact past
+/// One reading, its 64-bit integers as decimal strings in JSON, exact past
 /// 2^53.
 #[derive(serde::Serialize, serde::Deserialize, AbiType)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +70,7 @@ pub struct Reading {
 }
 
 /// Readings nested in another plain serde type: each one's shape is checked through its
-/// `AbiType` (D20).
+/// `AbiType`.
 #[derive(serde::Serialize, serde::Deserialize, AbiType)]
 pub struct Meter {
     pub readings: Vec<Reading>,
@@ -385,7 +385,8 @@ impl Rooms {
         })
     }
 
-    /// A timer without `allow(system)`: `every` implies it (Ruling 26).
+    /// A timer without `allow(system)`: `every` implies it, since a timer's caller is
+    /// always `System`.
     #[app::every("30s")]
     pub fn heartbeat(&mut self) -> app::Result<()> {
         Ok(())

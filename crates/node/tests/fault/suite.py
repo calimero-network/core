@@ -479,7 +479,7 @@ def kv_soak(ctx, cl):
 
 @test("rooms-fault", 7610, "(core) rooms_fault.py: randomized nemesis, linearizability, idempotency", pr=False)
 def rooms_fault(ctx, cl):
-    """Rooms under random kills and freezes of leader and followers (rooms_fault.py, A4)."""
+    """Rooms under random kills and freezes of leader and followers (rooms_fault.py)."""
     cl.stop()  # the fault test starts its own cluster on this test's ports
     # Its base port before WORKFLOW_PORT_OFFSET, which rooms_fault.py adds itself.
     args = [sys.executable, "-I", str(HERE / "rooms_fault.py"), "--iterations", str(ctx.rooms_iterations),

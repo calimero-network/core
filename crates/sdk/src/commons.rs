@@ -12,7 +12,7 @@ use crate::table::{FindOpts, Iter, DEFAULT_LIMIT, MAX_LIMIT};
 /// One key-value entry read from the store.
 pub(crate) type Entry = (Vec<u8>, Vec<u8>);
 
-/// `parts` encoded, refused over [`MAX_SDK_KEY_BYTES`] (D50).
+/// `parts` encoded, refused over [`MAX_SDK_KEY_BYTES`].
 pub(crate) fn encode(parts: &[KeyPart]) -> Result<Vec<u8>, StorageError> {
     let encoded = key::encode(parts);
     check_key(&encoded)?;

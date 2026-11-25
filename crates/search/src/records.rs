@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::index::{ContextIndex, SchemaOptions};
 
-/// Bytes of the generation prefix on a stored key (D39).
+/// Bytes of the generation prefix on a stored key.
 pub const GENERATION_PREFIX: usize = 8;
 /// Bytes of text one document field is indexed from at most; the rest is cut.
 pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;

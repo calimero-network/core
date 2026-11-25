@@ -358,7 +358,7 @@ impl Ctx {
         json!({ "type": "object", "properties": props, "required": required })
     }
 
-    /// The JSON Schema of `ty` as it travels in JSON (D20).
+    /// The JSON Schema of `ty` as it travels in JSON.
     fn schema(&mut self, ty: &Type) -> Value {
         match ty {
             Type::Unit => json!({ "type": "null" }),

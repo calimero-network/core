@@ -252,7 +252,7 @@ fn admit_raft(
 ) -> Result<(), ApiError> {
     // openraft takes the sender an RPC names on trust, and a follower takes
     // an append from any node with a higher term: the sender must be the
-    // caller, and a member of the group (F4).
+    // caller, and a member of the group.
     if rpc.sender() != Some(caller.node) {
         return Err(ApiError::forbidden(
             "a Raft message names another node than the one that sent it",
@@ -304,8 +304,8 @@ struct RaftItem {
     rpc: calimero_log::RpcRequest,
 }
 
-/// Heartbeats of several groups from one peer (`PeerTransport::send_batch`,
-/// B6), answered in order. Each item passes the checks a message alone does
+/// Heartbeats of several groups from one peer (`PeerTransport::send_batch`),
+/// answered in order. Each item passes the checks a message alone does
 /// ([`admit_raft`]) and only a heartbeat (an append with no entries) travels
 /// in one; an item that fails is answered with its error, and the others
 /// still go to their groups.
@@ -955,11 +955,18 @@ async fn internal_view(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     key: Option<Extension<calimero_sealed::PeerKey>>,
-    Json(req): Json<ViewRequest>,
+    Json(body): Json<Value>,
 ) -> ApiResult {
     let caller = peer(&node, &headers, key).await?;
+    // A view a synchronous xcall forwarded carries the searches its request has left.
+    let searches = body
+        .get("searchesLeft")
+        .and_then(Value::as_u64)
+        .map(|n| calimero_app_host::SearchBudget::with_left(u32::try_from(n).unwrap_or(u32::MAX)));
+    let req: ViewRequest = serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &format!("malformed view: {e}")))?;
     caller_may_hold_app(&node, &caller, &req.app_id).await?;
-    let a = node.view(&req).await?;
+    let a = node.view_searching(&req, searches.as_ref()).await?;
     Ok(Json(serde_json::to_value(a).unwrap_or_default()))
 }
 

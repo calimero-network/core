@@ -1,4 +1,4 @@
-//! What a node's Raft traffic costs as it hosts more groups (B6): `n` groups on
+//! What a node's Raft traffic costs as it hosts more groups: `n` groups on
 //! three engines in one process (the in-memory transport of `tests/cluster.rs`),
 //! each led by node 1, idle, on the production timing (`Config::default()`).
 //! For 1, 100 and 1,000 groups (`HEARTBEAT_GROUPS=1,100,1000`) it prints the

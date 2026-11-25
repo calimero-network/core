@@ -19,7 +19,7 @@ pub(super) struct IntentBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
+/// The 422/503 of a component's run that did not end `Ok`.
 pub(super) fn component_failure(
     index: u64,
     status: &Status,
@@ -65,7 +65,7 @@ fn applied_refusal(a: &crate::component::Applied) -> Option<ApiError> {
 }
 
 /// A component call's answer. Its events are the ones the caller is in the
-/// audience of (R9).
+/// audience of.
 fn component_answer(
     node: &Node,
     app_id: &str,
@@ -92,7 +92,8 @@ fn component_answer(
 }
 
 /// `/intents` for a component app: the ABI of the bundle the app group runs
-/// (Ruling 40) decides whether it is a view and whether it needs a passkey.
+/// (not the directory's record, which an upgrade writes second) decides whether it is a view
+/// and whether it needs a passkey.
 async fn component_intents(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -141,7 +142,7 @@ async fn component_intents(
             },
         ));
     }
-    // Confirm flags come from the running bundle's ABI (S5), never from the app record.
+    // Confirm flags come from the running bundle's ABI, never from the app record.
     let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
         Some(consent(node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {
@@ -287,7 +288,7 @@ pub(super) struct EventsQuery {
     from: u64,
 }
 
-/// The most event streams one node serves at once (Xil's review, issue 12).
+/// The most event streams one node serves at once, so streams cannot exhaust the node.
 pub const MAX_EVENT_STREAMS: usize = 4096;
 
 /// One open event stream, counted until the stream is dropped.

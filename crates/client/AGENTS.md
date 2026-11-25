@@ -85,7 +85,7 @@ restart keeps its key, and a stopped node's sessions verify on the others
 (node `AGENTS.md`, "Sessions are node-signed"). Test:
 `a_removed_nodes_sessions_are_refused` (node `tests/it/cluster.rs`).
 
-Calls are retried with the same key (D70): `client.apps().call` (and
+Calls are retried with the same key: `client.apps().call` (and
 `apps().method`, the routes the document marks `x-calimero-retry-requires:
 idempotencyKey`) always sends an idempotency key (the caller's, else a new
 `node:c-…` key, which the node keeps in its short-lived class, 10 minutes) and
@@ -161,7 +161,7 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
   Passkey>` (`None` sends as is and returns the `412`; `confirm` is never an
   argument), `x-calimero-operator` adds `operator: Option<&OperatorSigner>`
   (`operatorProof` likewise), `x-calimero-retry-safe` resends while
-  `Error::is_unavailable` (`retry_unavailable`, D70) unless approving, with the
+  `Error::is_unavailable` (`retry_unavailable`) unless approving, with the
   `x-calimero-retry-requires` key made when none is given (`new_call_key`), and
   `x-calimero-sealed: false` (`/health`, `/attestation`) goes in the clear
   (`route::clear`). Event streams are not methods: `Client::events`,

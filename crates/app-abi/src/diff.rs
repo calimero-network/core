@@ -7,7 +7,7 @@
 //! cannot read, which only a state version bump (and its migration) may do.
 //!
 //! The app types those name are compared by their shapes in `types`, with the same rule in
-//! the direction each one travels ([`shapes`]).
+//! the direction each one travels (`shapes`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -644,7 +644,7 @@ mod tests {
         assert!(!widens(&t("u32"), &t("u16")));
         assert!(widens(&t("list<u16>"), &t("list<u32>")));
         assert!(widens(&t("char"), &t("string")));
-        // A JSON number and D20's decimal string are different forms.
+        // A JSON number and a decimal string are different forms.
         assert!(!widens(&t("u64"), &t("u64_number")));
         assert!(!widens(&t("u64_number"), &t("u64")));
         assert!(widens(&t("u32"), &t("u64_number")));

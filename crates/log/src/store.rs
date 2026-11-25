@@ -18,7 +18,7 @@
 //! Sealing every value under the storage key as well (format 1 and before)
 //! encrypted the same bytes twice, and is no longer read ([`crate::format`]).
 //! What leaves this disk is still sealed here: a snapshot file's frames, and the
-//! rows in them, under the storage key ([`Db::seal_state`]), so any node of the
+//! rows in them, under the storage key (`Db::seal_state`), so any node of the
 //! cluster opens it and a backup copied elsewhere stays sealed. The format row
 //! stays sealed too, so a store opened under another key is refused at once.
 //! A machine's private keys can be hidden ([`hide`]): the row is keyed by an
@@ -1650,7 +1650,7 @@ mod apply_reads {
         GroupState::new(Db::open(dir.path(), &[1; 32]).unwrap(), 5, 0)
     }
 
-    /// Review finding B3: a read that failed inside an apply read as absent and
+    /// Regression: a read that failed inside an apply read as absent and
     /// the batch committed. It now fails the batch.
     #[test]
     fn a_read_fault_fails_the_batch_instead_of_reading_absent() {
