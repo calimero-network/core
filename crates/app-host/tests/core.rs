@@ -12,11 +12,12 @@ use std::time::Instant;
 
 use calimero_app_host::{
     stored_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
-    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
-    Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
-    EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION, MAX_AUDIENCE_ACCOUNTS,
-    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RANGE_BATCH,
-    MAX_RANGE_BATCH_BYTES, MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, RunLimit,
+    RunLimitKind, Status, TimerCtx, Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE,
+    EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG, EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM,
+    GENERATION, MAX_AUDIENCE_ACCOUNTS, MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES,
+    MAX_KEY_BYTES, MAX_RANGE_BATCH, MAX_RANGE_BATCH_BYTES, MAX_RUN_BYTES, MAX_WRITES,
+    SUPPORTED_ABI_VERSIONS,
 };
 use calimero_app_host::{
     subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, TrapKind, ACTION_WALL_CLOCK,
@@ -110,41 +111,60 @@ fn view_writes_are_denied() {
     assert_eq!(host.storage_get(b"k"), Ok(None));
 }
 
+/// C10: the write past `MAX_WRITES` is a soft error naming the limit and the write's number,
+/// not a trap, and nothing of it is kept; the trapping `put` of components built before
+/// WIT 0.5.7 keeps its old detail (`RunLimit::denied`).
 #[test]
-fn eleven_thousand_writes_trap_after_ten_thousand() {
+fn the_write_after_ten_thousand_is_a_soft_error_with_its_number() {
     let state = base(&[]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
     for i in 0..MAX_WRITES {
-        host.storage_put(&i.to_be_bytes(), b"v").unwrap();
+        host.storage_put(&i.to_be_bytes(), b"v").unwrap().unwrap();
     }
     assert_eq!(MAX_WRITES, 10_000);
-    assert!(matches!(
-        host.storage_put(b"one-more", b"v"),
-        Err(HostDenied(_))
-    ));
-    assert!(matches!(
-        host.storage_delete(b"one-more"),
-        Err(HostDenied(_))
-    ));
-    assert!(matches!(
-        host.storage_add(b"one-more", 1),
-        Err(HostDenied(_))
-    ));
+    let over = RunLimit {
+        limit: RunLimitKind::Writes,
+        max: 10_000,
+        attempted: 10_001,
+    };
+    assert_eq!(host.storage_put(b"one-more", b"v"), Ok(Err(over)));
+    assert_eq!(host.storage_delete(b"one-more"), Ok(Err(over)));
+    assert_eq!(host.storage_add(b"one-more", 1), Ok(Err(over)));
+    assert_eq!(
+        over.denied(),
+        HostDenied("more than 10,000 writes in one run".to_owned())
+    );
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.diff.len(), 10_000);
+    assert!(out.diff.iter().all(|w| !w.key.ends_with(b"one-more")));
 }
 
 /// C2 (Ruling 37): a run's writes are counted as they are made and refused at the host
-/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that.
+/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that. C10:
+/// the refusal is a soft error with the run's total, which the guest can handle.
 #[test]
 fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     assert_eq!(MAX_RUN_BYTES, 1024 * 1024);
     let state = base(&[]);
     let inv = inv(InvocationKind::Call);
+    let bytes = |attempted: usize| RunLimit {
+        limit: RunLimitKind::Bytes,
+        max: MAX_RUN_BYTES as u64,
+        attempted: attempted as u64,
+    };
 
     // One value larger than the cap: refused, nothing kept.
     let mut host = core_for(&state, &inv);
     let big = vec![0u8; MAX_RUN_BYTES + 1];
-    assert!(matches!(host.storage_put(b"k", &big), Err(HostDenied(_))));
+    assert_eq!(
+        host.storage_put(b"k", &big),
+        Ok(Err(bytes(MAX_RUN_BYTES + 2)))
+    );
+    assert_eq!(
+        bytes(MAX_RUN_BYTES + 2).denied(),
+        HostDenied("entry too large".to_owned())
+    );
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     assert!(out.diff.is_empty());
 
@@ -154,30 +174,43 @@ fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     let mut accepted = 0usize;
     let refused = loop {
         match host.storage_put(b"k", &chunk) {
-            Ok(()) => accepted += 1,
-            Err(e) => break e,
+            Ok(Ok(())) => accepted += 1,
+            Ok(Err(limit)) => break limit,
+            Err(e) => panic!("trapped: {e:?}"),
         }
         assert!(accepted <= MAX_RUN_BYTES / chunk.len(), "never refused");
     };
-    assert_eq!(refused, HostDenied("entry too large".to_owned()));
     assert_eq!(accepted, MAX_RUN_BYTES / (chunk.len() + 1));
+    assert_eq!(refused, bytes((accepted + 1) * (chunk.len() + 1)));
 
-    // Event names and data count too, as do `add` and `delete` keys.
+    // Event names and data count too, as do `add` and `delete` keys; an event past the cap
+    // is the soft string with the total.
     let mut host = core_for(&state, &inv);
     host.storage_put(b"k", &vec![2u8; MAX_RUN_BYTES - 64])
+        .unwrap()
         .unwrap();
     let mut e = event();
     e.data = vec![b'x'; 128];
-    assert!(matches!(host.emit(e), Err(HostDenied(_))));
-    assert!(matches!(
+    let name = e.name.len();
+    assert_eq!(
+        host.emit(e),
+        Ok(Err(format!(
+            "entry too large: the run would write {} bytes, over {MAX_RUN_BYTES}",
+            MAX_RUN_BYTES - 63 + name + 128
+        )))
+    );
+    assert_eq!(
         host.storage_add(&[3u8; 64], 1),
-        Err(HostDenied(_))
-    ));
-    assert!(matches!(
+        Ok(Err(bytes(MAX_RUN_BYTES - 63 + 64 + 1)))
+    );
+    assert_eq!(
         host.storage_delete(&[4u8; 64]),
-        Err(HostDenied(_))
-    ));
-    host.storage_delete(b"small").unwrap();
+        Ok(Err(bytes(MAX_RUN_BYTES - 63 + 64)))
+    );
+    host.storage_delete(b"small").unwrap().unwrap();
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.diff.len(), 2);
+    assert!(out.events.is_empty());
 }
 
 /// N1 (Ruling 43): an event's audience is kept with it, so its account strings count
@@ -195,8 +228,8 @@ fn audience_accounts_count_against_the_run_and_are_capped() {
         e.audience = Audience::Accounts(vec![huge.clone()]);
         match host.emit(e) {
             Ok(Ok(())) => kept += huge.len(),
-            Ok(Err(soft)) => panic!("soft error {soft}"),
-            Err(HostDenied(_)) => break,
+            Ok(Err(soft)) if soft.starts_with("entry too large: ") => break,
+            other => panic!("not the run-bytes soft error: {other:?}"),
         }
     }
     assert!(kept <= MAX_RUN_BYTES, "kept {kept} bytes of audience");
@@ -206,10 +239,11 @@ fn audience_accounts_count_against_the_run_and_are_capped() {
     // Small accounts add up too: the run's budget is shared with writes.
     let mut host = core_for(&state, &inv);
     host.storage_put(b"k", &vec![0u8; MAX_RUN_BYTES - 32])
+        .unwrap()
         .unwrap();
     let mut e = event();
     e.audience = Audience::Accounts(vec!["x".repeat(64)]);
-    assert!(matches!(host.emit(e), Err(HostDenied(_))));
+    assert!(matches!(host.emit(e), Ok(Err(soft)) if soft.starts_with("entry too large: ")));
 
     // The count cap is a soft error; at the cap the event is kept.
     let mut host = core_for(&state, &inv);
@@ -227,7 +261,7 @@ fn failed_status_drops_diff_and_events() {
     let state = base(&[]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"k", b"v").unwrap();
+    host.storage_put(b"k", b"v").unwrap().unwrap();
     host.emit(event()).unwrap().unwrap();
     let mut host = host.with_logs(true);
     host.log("kept".to_owned());
@@ -245,7 +279,7 @@ fn failed_status_drops_diff_and_events() {
     assert_eq!(out.logs, vec!["kept".to_owned()]);
 
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"k", b"v").unwrap();
+    host.storage_put(b"k", b"v").unwrap().unwrap();
     host.emit(event()).unwrap().unwrap();
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     assert_eq!(out.diff.len(), 1);
@@ -257,8 +291,8 @@ fn range_sees_overlay_writes_and_deletes() {
     let state = base(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"bb", b"9").unwrap();
-    host.storage_delete(b"c").unwrap();
+    host.storage_put(b"bb", b"9").unwrap().unwrap();
+    host.storage_delete(b"c").unwrap().unwrap();
 
     let cursor = host.range_open(b"a", b"d", false).unwrap();
     let first = host.range_next(cursor, 2).unwrap();
@@ -290,8 +324,8 @@ fn range_ignores_writes_made_between_batches() {
     let mut host = core_for(&state, &inv);
     let cursor = host.range_open(b"", b"", false).unwrap();
     assert_eq!(host.range_next(cursor, 1).unwrap().len(), 1);
-    host.storage_put(b"b", b"2").unwrap();
-    host.storage_delete(b"c").unwrap();
+    host.storage_put(b"b", b"2").unwrap().unwrap();
+    host.storage_delete(b"c").unwrap().unwrap();
     let keys: Vec<_> = host
         .range_next(cursor, 10)
         .unwrap()
@@ -377,9 +411,9 @@ fn add_counts_as_one_write_and_sums() {
     let state = base(&[(b"k", &cbor(5)), (b"s", b"\x61x")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_add(b"k", 3).unwrap();
-    host.storage_add(b"k", 3).unwrap();
-    host.storage_add(b"fresh", -2).unwrap();
+    host.storage_add(b"k", 3).unwrap().unwrap();
+    host.storage_add(b"k", 3).unwrap().unwrap();
+    host.storage_add(b"fresh", -2).unwrap().unwrap();
     assert!(matches!(host.storage_add(b"s", 1), Err(HostDenied(_))));
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     assert_eq!(out.usage.writes, 3);
@@ -426,7 +460,7 @@ fn stored_keys_carry_the_generation() {
     assert_eq!(host.storage_get(b"old"), Ok(None));
     let all = host.range_open(b"", b"", false).unwrap();
     assert!(host.range_next(all, 10).unwrap().is_empty());
-    host.storage_put(b"k", b"v").unwrap();
+    host.storage_put(b"k", b"v").unwrap().unwrap();
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     let mut expected = 0u64.to_be_bytes().to_vec();
     expected.extend_from_slice(b"k");
@@ -527,7 +561,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.6",
+        "world": "calimero:app@0.5.7",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },
@@ -646,15 +680,15 @@ fn reverse_range_ignores_writes_between_batches() {
         keys(host.range_next(cursor, 1).unwrap()),
         vec![b"g".to_vec()]
     );
-    host.storage_delete(b"e").unwrap();
-    host.storage_put(b"f", b"F").unwrap();
-    host.storage_put(b"d", b"D").unwrap();
-    host.storage_put(b"h", b"H").unwrap();
+    host.storage_delete(b"e").unwrap().unwrap();
+    host.storage_put(b"f", b"F").unwrap().unwrap();
+    host.storage_put(b"d", b"D").unwrap().unwrap();
+    host.storage_put(b"h", b"H").unwrap().unwrap();
     assert_eq!(
         keys(host.range_next(cursor, 2).unwrap()),
         vec![b"e".to_vec(), b"c".to_vec()]
     );
-    host.storage_put(b"a", b"A2").unwrap();
+    host.storage_put(b"a", b"A2").unwrap().unwrap();
     assert_eq!(
         host.range_next(cursor, 10).unwrap(),
         vec![(b"a".to_vec(), b"a".to_vec())]
@@ -671,7 +705,7 @@ fn forward_range_keeps_a_key_deleted_after_opening() {
         keys(host.range_next(cursor, 1).unwrap()),
         vec![b"a".to_vec()]
     );
-    host.storage_delete(b"b").unwrap();
+    host.storage_delete(b"b").unwrap().unwrap();
     assert_eq!(
         keys(host.range_next(cursor, 1).unwrap()),
         vec![b"b".to_vec()]
@@ -689,7 +723,7 @@ fn tombstones_empty_ranges_and_max_zero() {
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
     for key in [b"a", b"b", b"c"] {
-        host.storage_delete(key).unwrap();
+        host.storage_delete(key).unwrap().unwrap();
     }
     let cursor = host.range_open(b"", b"", false).unwrap();
     assert!(host.range_next(cursor, 0).unwrap().is_empty());
@@ -748,7 +782,8 @@ fn added(start: Option<Vec<u8>>, delta: i64) -> Result<Vec<u8>, HostDenied> {
     };
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_add(b"k", delta)?;
+    host.storage_add(b"k", delta)?
+        .expect("under the run's limits");
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     Ok(out.diff[0].value.clone().unwrap())
 }
@@ -826,8 +861,8 @@ fn scan_and_move(host: &mut HostCore, reverse: bool, shift: i64) -> BTreeMap<Vec
         for (key, id) in batch {
             *seen.entry(id.clone()).or_insert(0) += 1;
             let moved = u32::try_from(i64::from(position(&key)) + shift).unwrap();
-            host.storage_delete(&key).unwrap();
-            host.storage_put(&index_key(moved), &id).unwrap();
+            host.storage_delete(&key).unwrap().unwrap();
+            host.storage_put(&index_key(moved), &id).unwrap().unwrap();
         }
     }
     panic!("the scan did not end");
@@ -888,11 +923,11 @@ fn a_cursor_sees_writes_made_before_it_opened() {
     let state = base(&[(b"b", b"1")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"a", b"0").unwrap();
-    host.storage_delete(b"b").unwrap();
+    host.storage_put(b"a", b"0").unwrap().unwrap();
+    host.storage_delete(b"b").unwrap().unwrap();
     let cursor = host.range_open(b"", b"", false).unwrap();
-    host.storage_put(b"c", b"2").unwrap();
-    host.storage_put(b"a", b"9").unwrap();
+    host.storage_put(b"c", b"2").unwrap().unwrap();
+    host.storage_put(b"a", b"9").unwrap().unwrap();
     assert_eq!(
         host.range_next(cursor, 10).unwrap(),
         vec![(b"a".to_vec(), b"0".to_vec())]
@@ -1031,9 +1066,9 @@ fn cursor_sees_value_as_of_open_after_overwrite() {
     let state = base(&[]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"k", b"1").unwrap();
+    host.storage_put(b"k", b"1").unwrap().unwrap();
     let cursor = host.range_open(b"", b"", false).unwrap();
-    host.storage_put(b"k", b"2").unwrap();
+    host.storage_put(b"k", b"2").unwrap().unwrap();
     assert_eq!(
         host.range_next(cursor, 10).unwrap(),
         vec![(b"k".to_vec(), b"1".to_vec())]
@@ -1046,9 +1081,9 @@ fn cursor_sees_key_as_of_open_after_delete() {
     let state = base(&[]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"k", b"1").unwrap();
+    host.storage_put(b"k", b"1").unwrap().unwrap();
     let cursor = host.range_open(b"", b"", false).unwrap();
-    host.storage_delete(b"k").unwrap();
+    host.storage_delete(b"k").unwrap().unwrap();
     assert_eq!(
         host.range_next(cursor, 10).unwrap(),
         vec![(b"k".to_vec(), b"1".to_vec())]
@@ -1062,8 +1097,8 @@ fn cursor_sees_committed_value_overwritten_after_open() {
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
     let cursor = host.range_open(b"", b"", false).unwrap();
-    host.storage_put(b"k", b"new").unwrap();
-    host.storage_put(b"k", b"newer").unwrap();
+    host.storage_put(b"k", b"new").unwrap().unwrap();
+    host.storage_put(b"k", b"newer").unwrap().unwrap();
     assert_eq!(
         host.range_next(cursor, 10).unwrap(),
         vec![(b"k".to_vec(), b"committed".to_vec())]
@@ -1106,7 +1141,7 @@ fn keys_are_capped_at_one_kib() {
     let fits = vec![b'k'; MAX_KEY_BYTES];
     let over = vec![b'k'; MAX_KEY_BYTES + 1];
     assert_eq!(MAX_KEY_BYTES, 1_024);
-    assert_eq!(host.storage_put(&fits, b"v"), Ok(()));
+    assert_eq!(host.storage_put(&fits, b"v"), Ok(Ok(())));
     assert_eq!(host.storage_get(&fits), Ok(Some(b"v".to_vec())));
     assert!(matches!(host.storage_put(&over, b"v"), Err(HostDenied(_))));
     assert!(matches!(host.storage_get(&over), Err(HostDenied(_))));
@@ -1141,12 +1176,12 @@ fn single_entry_batches_merge_puts_and_tombstones() {
     let state = base(&[(b"b", b"B"), (b"d", b"D"), (b"f", b"F"), (b"h", b"H")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
-    host.storage_put(b"a", b"a").unwrap(); // before every committed key
-    host.storage_delete(b"d").unwrap(); // hides a committed key
-    host.storage_put(b"e", b"e").unwrap(); // between committed keys
-    host.storage_put(b"f", b"F2").unwrap(); // overwrites a committed key
-    host.storage_delete(b"g").unwrap(); // tombstone with no committed key
-    host.storage_put(b"z", b"z").unwrap(); // after every committed key
+    host.storage_put(b"a", b"a").unwrap().unwrap(); // before every committed key
+    host.storage_delete(b"d").unwrap().unwrap(); // hides a committed key
+    host.storage_put(b"e", b"e").unwrap().unwrap(); // between committed keys
+    host.storage_put(b"f", b"F2").unwrap().unwrap(); // overwrites a committed key
+    host.storage_delete(b"g").unwrap().unwrap(); // tombstone with no committed key
+    host.storage_put(b"z", b"z").unwrap().unwrap(); // after every committed key
     let expected: Vec<KeyValue> = [
         (b"a", &b"a"[..]),
         (b"b", b"B"),
@@ -1258,7 +1293,9 @@ fn a_published_blob_is_granted_only_in_logged_writes() {
 fn a_value_may_refer_only_to_the_apps_own_blobs() {
     let state = base(&[]);
     let mut host = core_for(&state, &inv(InvocationKind::Call)).with_blobs(Arc::new(OneBlob));
-    host.storage_put(b"held", &blob_ref([9; 32])).unwrap();
+    host.storage_put(b"held", &blob_ref([9; 32]))
+        .unwrap()
+        .unwrap();
     assert!(matches!(
         host.storage_put(b"other", &blob_ref([8; 32])),
         Err(HostDenied(_))
@@ -1406,6 +1443,32 @@ fn refused_and_denied_calls_owe_for_the_bytes_they_were_handed() {
     ));
     let owed = call.take_host_fuel();
     assert!(owed >= 4_096, "a denied 4 KiB query owes {owed}");
+}
+
+/// C7 with C10: a write refused with a run limit (`put-checked`, `delete-checked`,
+/// `add-checked`) is a soft error, and still owes for the bytes it was handed.
+#[test]
+fn writes_refused_with_a_run_limit_owe_for_the_bytes_they_were_handed() {
+    let state = base(&[]);
+    let per_byte = calimero_app_host::FUEL_PER_BYTE;
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    let big = vec![0u8; MAX_RUN_BYTES + 1];
+    assert!(matches!(call.storage_put(b"k", &big), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), (1 + big.len()) as u64 * per_byte);
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    for i in 0..MAX_WRITES {
+        call.storage_put(&i.to_be_bytes(), b"v").unwrap().unwrap();
+    }
+    call.take_host_fuel();
+    let key = vec![7u8; 1_000];
+    assert!(matches!(call.storage_put(&key, b"value"), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), (key.len() + 5) as u64 * per_byte);
+    assert!(matches!(call.storage_delete(&key), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), key.len() as u64 * per_byte);
+    assert!(matches!(call.storage_add(&key, 1), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), key.len() as u64 * per_byte);
 }
 
 #[test]

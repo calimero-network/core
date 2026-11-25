@@ -1041,9 +1041,6 @@ fn refuse_app_invite(
     })
 }
 
-/// `409`: the instance's release or organization does not allow guests.
-pub(crate) const GUESTS_NOT_ALLOWED: &str = "GUESTS_NOT_ALLOWED";
-
 /// Mint an instance invite: whoever manages the instance's guests, with their passkey over
 /// the invite's key and terms (`412` first). The first request makes the token and keeps it
 /// with the challenge; the log records only the token's public key.
@@ -1821,9 +1818,18 @@ async fn app_secrets(
         .into_iter()
         .map(|(name, d)| {
             let mut row = json!({
-                "hosts": d.hosts, "description": d.description, "required": d.required,
-                "source": "cluster",
+                "host": d.host, "paths": d.paths, "binding": d.describe(&name), "description": d.description,
+                "required": d.required, "source": "cluster",
             });
+            for (key, value) in [
+                ("header", &d.header),
+                ("format", &d.format),
+                ("bodyField", &d.body_field),
+            ] {
+                if let Some(v) = value {
+                    row[key] = json!(v);
+                }
+            }
             if let Some(o) = own.get(&name).filter(|o| o.is_object()) {
                 row["source"] = json!("app");
                 row["fingerprint"] = o["fingerprint"].clone();
@@ -1838,8 +1844,8 @@ async fn app_secrets(
     Ok(Json(json!({ "secrets": secrets })))
 }
 
-/// Set the instance's own value of a secret its release declares, sent only to that
-/// secret's declared hosts and never shown again: the owner's (or whoever manages the
+/// Set the instance's own value of a secret its release declares, attached only where
+/// that secret's binding says and never shown again: the owner's (or whoever manages the
 /// organization's apps), with a step-up over `{ name, fingerprint }` (never the value).
 async fn app_secret_set(
     State(node): State<Arc<Node>>,

@@ -62,6 +62,63 @@ pub const MAX_RUN_BYTES: usize = 1024 * 1024;
 pub const ENTRY_TOO_LARGE: &str = "entry too large";
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
 pub const MAX_WRITES: u32 = 10_000;
+/// The trap detail of a write past [`MAX_WRITES`] through the trapping `storage.put`,
+/// `delete` and `add` (components built before WIT 0.5.7).
+pub const TOO_MANY_WRITES: &str = "more than 10,000 writes in one run";
+
+/// Which of a run's write limits a refused write passed (WIT `run-limit`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunLimitKind {
+    /// [`MAX_WRITES`].
+    Writes,
+    /// [`MAX_RUN_BYTES`].
+    Bytes,
+}
+
+/// A write, event, xcall or started action past one of the run's limits, answered to the
+/// guest as a soft error (WIT `limit-exceeded`, 0.5.7) rather than a trap. It depends only
+/// on what the run wrote before it, so every node answers the same. Nothing of the refused
+/// call is kept or counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunLimit {
+    pub limit: RunLimitKind,
+    /// The limit: [`MAX_WRITES`] or [`MAX_RUN_BYTES`].
+    pub max: u64,
+    /// What the run would have reached with the refused call: the write's number, or the
+    /// run's bytes with it.
+    pub attempted: u64,
+}
+
+impl RunLimit {
+    /// The trap a component built before WIT 0.5.7 gets through `storage.put`, `delete` or
+    /// `add`: the details it always got.
+    #[must_use]
+    pub fn denied(self) -> HostDenied {
+        HostDenied::new(match self.limit {
+            RunLimitKind::Writes => TOO_MANY_WRITES,
+            RunLimitKind::Bytes => ENTRY_TOO_LARGE,
+        })
+    }
+}
+
+impl std::fmt::Display for RunLimit {
+    /// The soft error string of `emit`, `xcall.send` and `start-action`: [`ENTRY_TOO_LARGE`]
+    /// (or [`TOO_MANY_WRITES`]) with the run's total and the limit.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.limit {
+            RunLimitKind::Writes => write!(
+                f,
+                "{TOO_MANY_WRITES}: write {} of at most {}",
+                self.attempted, self.max
+            ),
+            RunLimitKind::Bytes => write!(
+                f,
+                "{ENTRY_TOO_LARGE}: the run would write {} bytes, over {}",
+                self.attempted, self.max
+            ),
+        }
+    }
+}
 /// Entries one `range_next` returns at most.
 pub const MAX_RANGE_BATCH: u32 = 1_000;
 /// Bytes of keys and values one `range_next` returns at most, past its first entry (which
@@ -413,36 +470,62 @@ impl HostCore {
         Ok(value)
     }
 
-    pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
+    /// Sets `key` to `value`. A write past [`MAX_WRITES`] or [`MAX_RUN_BYTES`] is the inner
+    /// [`RunLimit`] (WIT `put-checked`); every other refusal is the outer `HostDenied`. The
+    /// bytes it was handed are owed even when it is refused.
+    pub fn storage_put(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Result<(), RunLimit>, HostDenied> {
         self.burn_bytes(key.len().saturating_add(value.len()));
         self.check_write()?;
         check_key(key)?;
         self.check_blob_refs(value)?;
-        self.charge(key.len().saturating_add(value.len()))?;
+        if let Err(limit) = self.count_write() {
+            return Ok(Err(limit));
+        }
+        if let Err(limit) = self.charge(key.len().saturating_add(value.len())) {
+            return Ok(Err(limit));
+        }
         self.burn(FUEL_STATE_ACCESS);
         self.overlay
             .put(stored_key(GENERATION, key), value.to_vec());
         self.writes += 1;
-        Ok(())
+        Ok(Ok(()))
     }
 
-    pub fn storage_delete(&mut self, key: &[u8]) -> Result<(), HostDenied> {
+    /// Removes `key`; limits and fuel as [`HostCore::storage_put`].
+    pub fn storage_delete(&mut self, key: &[u8]) -> Result<Result<(), RunLimit>, HostDenied> {
         self.burn_bytes(key.len());
         self.check_write()?;
         check_key(key)?;
-        self.charge(key.len())?;
+        if let Err(limit) = self.count_write() {
+            return Ok(Err(limit));
+        }
+        if let Err(limit) = self.charge(key.len()) {
+            return Ok(Err(limit));
+        }
         self.burn(FUEL_STATE_ACCESS);
         self.overlay.delete(stored_key(GENERATION, key));
         self.writes += 1;
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Adds `delta` to the deterministic CBOR integer at `key` (absent is 0) without the
-    /// guest reading it (D47). One write; a non-integer value or an overflow is refused.
-    pub fn storage_add(&mut self, key: &[u8], delta: i64) -> Result<(), HostDenied> {
+    /// guest reading it (D47). One write; a non-integer value or an overflow is refused;
+    /// limits and fuel as [`HostCore::storage_put`].
+    pub fn storage_add(
+        &mut self,
+        key: &[u8],
+        delta: i64,
+    ) -> Result<Result<(), RunLimit>, HostDenied> {
         self.burn_bytes(key.len());
         self.check_write()?;
         check_key(key)?;
+        if let Err(limit) = self.count_write() {
+            return Ok(Err(limit));
+        }
         let key = stored_key(GENERATION, key);
         let current = match self.current(&key) {
             None => 0,
@@ -454,11 +537,14 @@ impl HostCore {
         let mut value = Vec::new();
         ciborium::into_writer(&Value::Integer(sum), &mut value)
             .map_err(|e| HostDenied::new(format!("storage.add encode: {e}")))?;
-        self.charge((key.len() - GENERATION_PREFIX).saturating_add(value.len()))?;
+        if let Err(limit) = self.charge((key.len() - GENERATION_PREFIX).saturating_add(value.len()))
+        {
+            return Ok(Err(limit));
+        }
         self.burn_call(FUEL_STATE_ACCESS, value.len());
         self.overlay.put(key, value);
         self.writes += 1;
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Opens a cursor over `[start, end)` (an empty `end` is the end of the keyspace). It
@@ -727,7 +813,9 @@ impl HostCore {
         if method.is_empty() || method.starts_with("__") {
             return Ok(Err("not an action".to_owned()));
         }
-        self.charge(method.len().saturating_add(args.len()))?;
+        if let Err(limit) = self.charge(method.len().saturating_add(args.len())) {
+            return Ok(Err(limit.to_string()));
+        }
         let id = format!("a.{}", self.unique_id()?);
         self.started.push(ActionStart {
             id: id.clone(),
@@ -896,13 +984,15 @@ impl HostCore {
                 .fold(0usize, |n, a| n.saturating_add(a.len())),
             Audience::Team(id) | Audience::OrgMembers(id) | Audience::OrgAdmins(id) => id.len(),
         };
-        self.charge(
+        if let Err(limit) = self.charge(
             event
                 .name
                 .len()
                 .saturating_add(event.data.len())
                 .saturating_add(audience),
-        )?;
+        ) {
+            return Ok(Err(limit.to_string()));
+        }
         self.events.push(event);
         Ok(Ok(()))
     }
@@ -971,11 +1061,13 @@ impl HostCore {
         if bad(app) || bad(method) || method.starts_with("__") {
             return Ok(Err(XCALL_BAD_TARGET.to_owned()));
         }
-        self.charge(
+        if let Err(limit) = self.charge(
             app.len()
                 .saturating_add(method.len())
                 .saturating_add(args.len()),
-        )?;
+        ) {
+            return Ok(Err(limit.to_string()));
+        }
         self.xcalls.push(Xcall {
             app: app.to_owned(),
             method: method.to_owned(),
@@ -1508,24 +1600,37 @@ impl HostCore {
         Ok(())
     }
 
-    /// The one gate for `put`, `delete` and `add`: the kind may write, and the run is
-    /// under `MAX_WRITES`. The caller counts the write once it is made.
+    /// The policy gate for `put`, `delete` and `add`: the kind may write.
     fn check_write(&self) -> Result<(), HostDenied> {
         if !self.is_logged_write() {
             return Err(self.denied("storage writes"));
         }
+        Ok(())
+    }
+
+    /// Whether the run is under [`MAX_WRITES`]: the soft refusal of `put`, `delete` and
+    /// `add`. The caller counts the write once it is made.
+    fn count_write(&self) -> Result<(), RunLimit> {
         if self.writes >= MAX_WRITES {
-            return Err(HostDenied::new("more than 10,000 writes in one run"));
+            return Err(RunLimit {
+                limit: RunLimitKind::Writes,
+                max: u64::from(MAX_WRITES),
+                attempted: u64::from(self.writes) + 1,
+            });
         }
         Ok(())
     }
 
     /// Counts `bytes` against [`MAX_RUN_BYTES`] before they are kept; past it the call is
-    /// refused and nothing is counted.
-    fn charge(&mut self, bytes: usize) -> Result<(), HostDenied> {
+    /// refused with the run's total and nothing is counted.
+    fn charge(&mut self, bytes: usize) -> Result<(), RunLimit> {
         let total = self.run_bytes.saturating_add(bytes);
         if total > MAX_RUN_BYTES {
-            return Err(HostDenied::new(ENTRY_TOO_LARGE));
+            return Err(RunLimit {
+                limit: RunLimitKind::Bytes,
+                max: MAX_RUN_BYTES as u64,
+                attempted: total as u64,
+            });
         }
         self.run_bytes = total;
         Ok(())

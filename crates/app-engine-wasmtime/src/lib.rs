@@ -87,6 +87,17 @@ const WASM_PAGE_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_BYTES: usize = DEFAULT_MEMORY_PAGES as usize * WASM_PAGE_BYTES;
 /// Largest memory a compute run may be given: 65,536 pages (4 GiB), wasm32's whole space.
 const COMPUTE_MAX_MEMORY_BYTES: usize = 65_536 * WASM_PAGE_BYTES;
+/// Address space each pool slot reserves: wasm32's whole 4 GiB, so with the guard region
+/// after it cranelift emits no bounds check on a load or store (under 4 GiB it emits one on
+/// every access). Only `MAX_MEMORY_BYTES` of it is ever made accessible; the rest stays
+/// `PROT_NONE` and uncommitted. 256 slots reserve about 1 TiB of virtual space.
+pub const SLOT_RESERVATION_BYTES: u64 = 1 << 32;
+/// Unmapped bytes after each slot: an access whose static offset is under this needs no
+/// check either (wasmtime's default, named so the pool's size is all here).
+const SLOT_GUARD_BYTES: u64 = 32 << 20;
+// No `linear_memory_keep_resident` / `table_keep_resident`: measured with
+// `benches/guest_memory.rs`, zeroing 64 KiB to 1 MiB in place on reuse made a call no
+// faster than handing the touched pages back (1 MiB: 16.6 to 38 us per empty call).
 /// Component instances alive at once across the node, and the core instances, memories
 /// and tables the pool reserves for them.
 const POOL_COMPONENT_INSTANCES: u32 = 256;
@@ -116,7 +127,7 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::CM_ERROR_CONTEXT)
     .union(WasmFeatures::CM_GC);
 
-/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.6; an import of an older
+/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.7; an import of an older
 /// patch of the same minor links through semver matching (Ruling 15), so an app built before
 /// a patch keeps running.
 const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
@@ -137,6 +148,8 @@ pub struct WasmtimeEngine {
     cache: Option<Cache>,
     /// Most linear memory one run may be given.
     max_memory_bytes: usize,
+    /// Address space each linear memory reserves (see `memory_reservation`).
+    memory_reservation: u64,
     ticker_stop: Arc<AtomicBool>,
     /// How many components this engine compiled (a cache hit is not one).
     compiles: AtomicU64,
@@ -170,10 +183,52 @@ impl WasmtimeEngine {
         let mut config = Self::config();
         let _ = config.cranelift_nan_canonicalization(true);
         let engine = wasmtime::Engine::new(&config).map_err(report)?;
-        Self::finish(World::Compute, engine, None, COMPUTE_MAX_MEMORY_BYTES)
+        Self::finish(
+            World::Compute,
+            engine,
+            None,
+            COMPUTE_MAX_MEMORY_BYTES,
+            SLOT_RESERVATION_BYTES,
+        )
     }
 
     fn build(cache_dir: PathBuf, cache_key: &[u8; 32], instances: u32) -> EyreResult<Self> {
+        let (engine, reservation) = match Self::pooled(instances, SLOT_RESERVATION_BYTES) {
+            Ok(engine) => (engine, SLOT_RESERVATION_BYTES),
+            // A host that cannot reserve the address space (an `RLIMIT_AS`, a kernel with a
+            // small virtual address space) still runs apps, with a bounds check on each
+            // access, as every release before this one did.
+            Err(error) => {
+                // The operator's log gets the fallback, never the error's words (F6);
+                // wasmtime's mmap error is only at debug.
+                tracing::warn!(
+                    instances,
+                    "cannot reserve 4 GiB per instance slot; linear memory accesses are bounds-checked"
+                );
+                tracing::debug!(%error, "the 4 GiB slot reservation failed");
+                let reservation = MAX_MEMORY_BYTES as u64;
+                (
+                    Self::pooled(instances, reservation).map_err(report)?,
+                    reservation,
+                )
+            }
+        };
+        let cache = Cache::new(cache_dir, &engine, cache_key)?;
+        // A wasmtime or config change leaves every earlier artifact unloadable: drop them.
+        // Which components are still needed only the node knows (`sweep_cache`).
+        let _swept = cache.sweep(&|_| true);
+        Self::finish(
+            World::App,
+            engine,
+            Some(cache),
+            MAX_MEMORY_BYTES,
+            reservation,
+        )
+    }
+
+    /// A replica engine whose pool reserves `reservation` bytes per memory slot. The pool's
+    /// address space is reserved here, so a host that cannot give it fails here.
+    fn pooled(instances: u32, reservation: u64) -> wasmtime::Result<wasmtime::Engine> {
         let mut pool = PoolingAllocationConfig::default();
         let _ = pool
             .total_component_instances(instances)
@@ -184,14 +239,18 @@ impl WasmtimeEngine {
             .table_elements(MAX_TABLE_ELEMENTS);
         let mut config = Self::config();
         let _ = config
-            .memory_reservation(MAX_MEMORY_BYTES as u64)
+            .memory_reservation(reservation)
+            .memory_guard_size(SLOT_GUARD_BYTES)
             .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
-        let engine = wasmtime::Engine::new(&config).map_err(report)?;
-        let cache = Cache::new(cache_dir, &engine, cache_key)?;
-        // A wasmtime or config change leaves every earlier artifact unloadable: drop them.
-        // Which components are still needed only the node knows (`sweep_cache`).
-        let _swept = cache.sweep(&|_| true);
-        Self::finish(World::App, engine, Some(cache), MAX_MEMORY_BYTES)
+        wasmtime::Engine::new(&config)
+    }
+
+    /// Address space each linear memory reserves: `SLOT_RESERVATION_BYTES` on a replica
+    /// engine unless the host refused it (then `MAX_MEMORY_BYTES`, bounds-checked), and
+    /// wasmtime's 64-bit default of 4 GiB on a compute engine.
+    #[must_use]
+    pub const fn memory_reservation(&self) -> u64 {
+        self.memory_reservation
     }
 
     /// What every engine shares: fuel, epochs, the stack and the pinned feature set.
@@ -214,6 +273,7 @@ impl WasmtimeEngine {
         engine: wasmtime::Engine,
         cache: Option<Cache>,
         max_memory_bytes: usize,
+        memory_reservation: u64,
     ) -> EyreResult<Self> {
         let mut linker = Linker::new(&engine);
         match world {
@@ -244,6 +304,7 @@ impl WasmtimeEngine {
             linker,
             cache,
             max_memory_bytes,
+            memory_reservation,
             ticker_stop,
             compiles: AtomicU64::new(0),
         })
@@ -668,36 +729,36 @@ mod tests {
     fn files_at_0_5_0_is_accepted_though_that_interface_first_shipped_at_0_5_1() {
         assert!(import_allowed(World::App, "calimero:app/files@0.5.0"));
         assert!(import_allowed(World::App, "calimero:app/files@0.5.1"));
-        assert!(import_allowed(World::App, "calimero:app/files@0.5.6"));
-        assert!(!import_allowed(World::App, "calimero:app/files@0.5.7"));
+        assert!(import_allowed(World::App, "calimero:app/files@0.5.7"));
+        assert!(!import_allowed(World::App, "calimero:app/files@0.5.8"));
     }
 
     #[test]
     fn the_compute_world_allows_job_files_and_wasi_but_no_state_or_http() {
-        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.6"));
-        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.6"));
+        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.7"));
+        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.7"));
         assert!(import_allowed(World::Compute, "wasi:random/random@0.2.12"));
         assert!(import_allowed(World::Compute, "wasi:cli/stdin@0.2.9"));
         for import in [
-            "calimero:app/storage@0.5.6",
-            "calimero:app/xcall@0.5.6",
-            "calimero:app/context@0.5.6",
-            "calimero:app/runs@0.5.6",
+            "calimero:app/storage@0.5.7",
+            "calimero:app/xcall@0.5.7",
+            "calimero:app/context@0.5.7",
+            "calimero:app/runs@0.5.7",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:http/types@0.2.12",
         ] {
             assert!(!import_allowed(World::Compute, import), "{import}");
         }
-        assert!(!import_allowed(World::App, "calimero:app/job@0.5.6"));
-        assert!(import_allowed(World::App, "calimero:app/runs@0.5.6"));
+        assert!(!import_allowed(World::App, "calimero:app/job@0.5.7"));
+        assert!(import_allowed(World::App, "calimero:app/runs@0.5.7"));
     }
 
     #[test]
     fn imports_match_the_lists_with_older_patches_only() {
-        assert!(import_allowed(World::App, "calimero:app/storage@0.5.6"));
+        assert!(import_allowed(World::App, "calimero:app/storage@0.5.7"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.1"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.0"));
-        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.7"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.8"));
         assert!(!import_allowed(World::App, "calimero:app/storage@0.6.0"));
         assert!(!import_allowed(World::App, "calimero:app/nothing@0.5.0"));
         assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.12"));

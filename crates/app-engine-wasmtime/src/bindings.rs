@@ -122,15 +122,38 @@ impl storage::Host for StoreData {
     }
 
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.host.storage_put(&key, &value).map_err(denied)
+        trapping(self.host.storage_put(&key, &value))
     }
 
     fn delete(&mut self, key: Vec<u8>) -> Result<()> {
-        self.host.storage_delete(&key).map_err(denied)
+        trapping(self.host.storage_delete(&key))
     }
 
     fn add(&mut self, key: Vec<u8>, delta: i64) -> Result<()> {
-        self.host.storage_add(&key, delta).map_err(denied)
+        trapping(self.host.storage_add(&key, delta))
+    }
+
+    fn put_checked(
+        &mut self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+        checked(self.host.storage_put(&key, &value))
+    }
+
+    fn delete_checked(
+        &mut self,
+        key: Vec<u8>,
+    ) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+        checked(self.host.storage_delete(&key))
+    }
+
+    fn add_checked(
+        &mut self,
+        key: Vec<u8>,
+        delta: i64,
+    ) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+        checked(self.host.storage_add(&key, delta))
     }
 
     fn range(
@@ -144,6 +167,32 @@ impl storage::Host for StoreData {
             .map(cursor)
             .map_err(denied)
     }
+}
+
+/// A write through the trapping `put`, `delete` and `add` (before WIT 0.5.7): a run limit
+/// traps with the details it always had.
+fn trapping(
+    out: std::result::Result<std::result::Result<(), host::RunLimit>, host::HostDenied>,
+) -> Result<()> {
+    match out.map_err(denied)? {
+        Ok(()) => Ok(()),
+        Err(limit) => Err(denied(limit.denied())),
+    }
+}
+
+/// A write through `put-checked`, `delete-checked` and `add-checked` (0.5.7): a run limit is
+/// the guest's error.
+fn checked(
+    out: std::result::Result<std::result::Result<(), host::RunLimit>, host::HostDenied>,
+) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+    Ok(out.map_err(denied)?.map_err(|l| storage::LimitExceeded {
+        limit: match l.limit {
+            host::RunLimitKind::Writes => storage::RunLimit::Writes,
+            host::RunLimitKind::Bytes => storage::RunLimit::Bytes,
+        },
+        max: l.max,
+        attempted: l.attempted,
+    }))
 }
 
 impl storage::HostCursor for StoreData {
@@ -513,6 +562,16 @@ pub(crate) fn charge_calls(linker: &mut Linker<StoreData>) -> Result<()> {
         charged!(i, "put", |d, key: Vec<u8>, value: Vec<u8>| -> () storage::Host::put(d, key, value));
         charged!(i, "delete", |d, key: Vec<u8>| -> () storage::Host::delete(d, key));
         charged!(i, "add", |d, key: Vec<u8>, delta: i64| -> () storage::Host::add(d, key, delta));
+        // A refused checked write (a run limit) still pays for what it was handed.
+        charged!(i, "put-checked", |d, key: Vec<u8>, value: Vec<u8>| {
+            storage::Host::put_checked(d, key, value)
+        });
+        charged!(i, "delete-checked", |d, key: Vec<u8>| {
+            storage::Host::delete_checked(d, key)
+        });
+        charged!(i, "add-checked", |d, key: Vec<u8>, delta: i64| {
+            storage::Host::add_checked(d, key, delta)
+        });
         charged!(i, "range", |d,
                               start: Vec<u8>,
                               end: Vec<u8>,
