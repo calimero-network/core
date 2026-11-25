@@ -1,9 +1,10 @@
-//! The wasmtime engine for `calimero:app` components (spec sections 4-5).
+//! The wasmtime engine for `calimero:app` components.
 //!
 //! One `wasmtime::Engine` serves every app. `prepare` checks a component's imports
-//! against the world and the D44 stubs, reads its ABI and compiles it through a checked
-//! disk cache; `invoke` runs `handle` in a fresh store per call (D8) under fuel, an epoch
-//! deadline, memory, table and stack limits, and maps every failure onto one `TrapKind`.
+//! against the world and the refusing WASI stubs, reads its ABI and compiles it through a
+//! checked disk cache; `invoke` runs `handle` in a fresh store per call (so no state leaks
+//! between callers) under fuel, an epoch deadline, memory, table and stack limits, and maps
+//! every failure onto one `TrapKind`.
 //!
 //! Spec: [One run](https://calimero-network.github.io/core/protocol/execution/#one-run),
 //! [Limits](https://calimero-network.github.io/core/protocol/limits/).
@@ -66,14 +67,14 @@ pub use errors::{CANCELLED, WALL_CLOCK_EXCEEDED};
 pub use run::{ending_of, measure, ComputeRun, Ending, Measured, Reason, THREAD_CPU};
 use wasi::{LogPipe, SharedLog};
 
-/// Wasm stack per call, as in the v1 runtime (spec section 5).
+/// Wasm stack per call, as in the v1 runtime.
 pub const MAX_WASM_STACK: usize = 200 * 1024;
 /// Table elements per store.
 pub const MAX_TABLE_ELEMENTS: usize = 100_000;
 /// Core instances per store: a `wasm32-wasip2` component instantiates several core
-/// modules (Ruling 18); memory stays bounded by the page limit.
+/// modules; memory stays bounded by the page limit.
 pub const MAX_INSTANCES: usize = 20;
-/// Linear memories per store, measured (Ruling 21): a Rust `wasm32-wasip2` guest and a
+/// Linear memories per store, measured: a Rust `wasm32-wasip2` guest and a
 /// componentize-js 0.23 guest each define exactly one. Checked statically at `prepare`
 /// and again by the store's limiter.
 pub const MAX_MEMORIES: usize = 1;
@@ -109,7 +110,7 @@ const POOL_CORE_INSTANCES_PER_INSTANCE: u32 = MAX_INSTANCES as u32;
 const POOL_MEMORIES_PER_INSTANCE: u32 = MAX_MEMORIES as u32;
 const POOL_TABLES_PER_INSTANCE: u32 = MAX_TABLES as u32;
 
-/// Proposals refused at compile time (Ruling 21). Several are compiled out with the crate
+/// Proposals refused at compile time. Several are compiled out with the crate
 /// features anyway; naming them keeps the set explicit if a feature is turned back on.
 const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::SHARED_EVERYTHING_THREADS)
@@ -131,8 +132,8 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::CM_ERROR_CONTEXT)
     .union(WasmFeatures::CM_GC);
 
-/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.7; an import of an older
-/// patch of the same minor links through semver matching (Ruling 15), so an app built before
+/// Interfaces are pinned to WASI 0.2.12 and `calimero:app` 0.5.7; an import of an older
+/// patch of the same minor links through semver matching, so an app built before
 /// a patch keeps running.
 const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
 
@@ -162,7 +163,7 @@ pub struct WasmtimeEngine {
 impl WasmtimeEngine {
     /// One engine for every app, caching compiled components under `cache_dir`, with a
     /// ticker thread advancing the epoch every `EPOCH_TICK`.
-    /// `cache_key` authenticates the cached artifacts (S8): derive it from the node's
+    /// `cache_key` authenticates the cached artifacts: derive it from the node's
     /// storage key, so only this node's own compilations are ever loaded.
     pub fn new(cache_dir: PathBuf, cache_key: &[u8; 32]) -> EyreResult<Self> {
         Self::build(cache_dir, cache_key, POOL_COMPONENT_INSTANCES)
@@ -203,7 +204,7 @@ impl WasmtimeEngine {
             // small virtual address space) still runs apps, with a bounds check on each
             // access, as every release before this one did.
             Err(error) => {
-                // The operator's log gets the fallback, never the error's words (F6);
+                // The operator's log gets the fallback, never the error's words;
                 // wasmtime's mmap error is only at debug.
                 tracing::warn!(
                     instances,
@@ -264,7 +265,7 @@ impl WasmtimeEngine {
             .consume_fuel(true)
             .epoch_interruption(true)
             .max_wasm_stack(MAX_WASM_STACK)
-            // The feature set is pinned (Ruling 21): what Rust wasip2 and componentize-js
+            // The feature set is pinned: what Rust wasip2 and componentize-js
             // output needs (MVP, bulk memory, reference types, multi-value, SIMD, sign
             // extension, saturating conversions, the component model), nothing else.
             .wasm_features(DISABLED_FEATURES, false)
@@ -285,7 +286,7 @@ impl WasmtimeEngine {
             World::Compute => compute::add_to_linker(&mut linker).map_err(report)?,
         }
         wasi::add_to_linker(&mut linker).map_err(report)?;
-        // Every host call that does work pays its fuel where it happens (C7, `fuel.rs`): the
+        // Every host call that does work pays its fuel where it happens (`fuel.rs`): the
         // charged versions shadow the plain ones linked above.
         linker.allow_shadowing(true);
         fuel::charge_calls(&mut linker, world).map_err(report)?;
@@ -481,7 +482,7 @@ impl WasmtimeEngine {
         let started = Instant::now();
         let mut phase = Phase::Instantiate;
         let ran = store.set_fuel(budget.fuel).and_then(|()| {
-            // A host panic unwinds out of the wasm frames to here (S6). Asserting unwind
+            // A host panic unwinds out of the wasm frames to here. Asserting unwind
             // safety is sound because a panic always ends the run as `Trap(Fault)`, and
             // `HostCore::finish` drops the diff and the events of any status but `Ok`, so
             // state a panic left half-updated never reaches the log; only the app log,
@@ -564,9 +565,9 @@ fn trap(kind: TrapKind, detail: &str) -> Status {
     }
 }
 
-/// An import is allowed if the engine's world or the D44 stubs list it, or if it is a WASI or
-/// `calimero:app` interface they list at a patch of the same minor no newer than the listed
-/// one (D43, Ruling 15).
+/// An import is allowed if the engine's world or the refusing WASI stubs list it, or if it is
+/// a WASI or `calimero:app` interface they list at a patch of the same minor no newer than the
+/// listed one.
 fn import_allowed(world: World, import: &str) -> bool {
     let world_imports = match world {
         World::App => allowed_imports(),
@@ -712,7 +713,7 @@ impl ResourceLimiter for Limits {
 }
 
 /// The `args` of a timer tick, as the guest reads them: the slot and the previous applied
-/// slot, in milliseconds, as decimal strings (D20). The host core holds the tick
+/// slot, in milliseconds, as decimal strings. The host core holds the tick
 /// (`Invocation::timer`), so a timer invocation's own `args` are ignored.
 fn timer_args(tick: &TimerCtx) -> Vec<u8> {
     let previous = tick

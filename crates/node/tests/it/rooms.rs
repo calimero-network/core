@@ -134,7 +134,7 @@ enum Failure {
     },
     Trap(String),
     ConfirmRequired,
-    /// The platform refused before the app ran (Ruling 32): the HTTP status and API code.
+    /// The platform refused before the app ran: the HTTP status and API code.
     Refused {
         status: u16,
         code: String,
@@ -602,7 +602,7 @@ const SCENARIO_ROLES: [(&str, &str); 4] = [
     ("gus", "guest"),
 ];
 
-/// A1: the shared scenario passes on the cluster, its 16 minutes of app time in seconds,
+/// The shared scenario passes on the cluster, its 16 minutes of app time in seconds,
 /// and sessions opened before the clock moved still work after it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn rooms_scenario_on_the_cluster() {
@@ -666,7 +666,7 @@ fn booking_id(v: &Value) -> String {
         .to_owned()
 }
 
-/// A3: 200 accounts on three nodes book the same slot at once; one wins, 199 get `Taken`,
+/// 200 accounts on three nodes book the same slot at once; one wins, 199 get `Taken`,
 /// and every node's replica holds one booking for the slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn no_double_booking_under_contention() {
@@ -802,7 +802,7 @@ async fn no_double_booking_under_contention() {
     }
 }
 
-/// A5: after bob books, each node's replica (read with `minIndex` = the booking's index)
+/// After bob books, each node's replica (read with `minIndex` = the booking's index)
 /// shows the slot to cy without its title, to ada (an admin) with it, and lists it in bob's
 /// bookings.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

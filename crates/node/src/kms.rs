@@ -147,7 +147,7 @@ pub enum KeySource<'a> {
 
 /// Pick the storage key's source. A TDX node (no `--dev`) takes it from
 /// mero-kms only: a key the host could hand it (a flag, a file) would let
-/// whoever runs the host read the disks (Xil's review, issue 3).
+/// whoever runs the host read the disks.
 pub fn key_source<'a>(
     dev: bool,
     raw: Option<&'a str>,
@@ -173,8 +173,8 @@ pub fn key_source<'a>(
 mod tests {
     use super::*;
 
-    /// Xil's review, issue 3: a TDX-mode node started with `--storage-key` or
-    /// a key file (32 zero bytes included), never asking mero-kms.
+    /// A TDX-mode node started with `--storage-key` or a key file (32 zero bytes
+    /// included) is refused: it takes its key from mero-kms only.
     #[test]
     fn a_tdx_node_takes_its_key_from_the_kms_only() {
         let id = Path::new("/id");

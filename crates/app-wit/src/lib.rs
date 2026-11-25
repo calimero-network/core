@@ -99,7 +99,7 @@ pub fn compute_allowed_imports() -> &'static [&'static str] {
     COMPUTE_ALLOWED_IMPORTS
 }
 
-/// Interfaces accepted at install but stubbed by the host (D44); not part of the world.
+/// Interfaces accepted at install but stubbed by the host; not part of the world.
 /// Any import in neither list is refused.
 #[must_use]
 pub fn stubbed_imports() -> &'static [&'static str] {

@@ -217,7 +217,7 @@ async fn replicates_to_every_node() {
 /// A node whose machine cannot apply an entry (`StateTx::fail`) stops its
 /// group on it: nothing of it or after it applies there, not even later
 /// entries of the same batch, while the other nodes go on. This is what the
-/// node's machines do with an entry a later release wrote (B4).
+/// node's machines do with an entry a later release wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_batch_stops_that_nodes_group_on_the_entry() {
     let net = Arc::new(Net::default());
@@ -357,7 +357,7 @@ async fn proposals_see_previous_writes() {
     assert_eq!(reply.output, b"cached");
 }
 
-/// C2, the staged build's contract (`Group::propose_led_staged`): its run step holds the
+/// The staged build's contract (`Group::propose_led_staged`): its run step holds the
 /// proposal lock but not the applied state's read lock. While a slow run step runs, an
 /// entry from elsewhere (`Group::write`, as the node's barriers) commits and applies, and
 /// the group's state is read, at once; the next proposal still waits for the slow one, and

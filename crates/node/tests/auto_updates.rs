@@ -1,4 +1,4 @@
-//! Updates that apply on their own (C9): a green update of an app that sends no data out
+//! Updates that apply on their own: a green update of an app that sends no data out
 //! applies after its hold under its organization's policy, with a restore point an owner
 //! or admin may undo for a week. Time is moved with `testing::shift_update_clock`: every
 //! rule judges the logged times, so a hold or the undo window passes at once.

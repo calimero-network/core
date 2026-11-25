@@ -12104,9 +12104,9 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
     );
 }
 
-/// C8's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
-/// member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and destinations
-/// (green), `p@1.1.0` adds a telemetry host (red).
+/// The update-classification fixture: `publishing`'s customer `cust` (cora its owner, eve
+/// an admin, dan a member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and
+/// destinations (green), `p@1.1.0` adds a telemetry host (red).
 fn classified() -> SystemMachine {
     let (_key, signer) = publisher_key(41);
     let mut m = publishing(&signer, "owner");
@@ -12515,10 +12515,10 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
 
 // ------------------------------------------------------- updates on their own, undo
 
-/// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
-/// member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1 and 2. No release sends
-/// data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and `1.0.2` (`b3` again) are
-/// green, `1.1.0` (`b2`) adds a telemetry host.
+/// The fixture of updates on their own and undo: `publishing`'s customer `cust` (cora its
+/// owner, eve an admin, dan a member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1
+/// and 2. No release sends data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and
+/// `1.0.2` (`b3` again) are green, `1.1.0` (`b2`) adds a telemetry host.
 fn auto_fixture() -> SystemMachine {
     let (_key, signer) = publisher_key(43);
     let mut m = publishing(&signer, "owner");

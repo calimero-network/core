@@ -656,7 +656,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             }
             // An app team (`metadata.app.package` at the top) installs an
             // app in the organization: only an admin makes, changes or
-            // drops one, and a package has one app team here (G9).
+            // drops one, and a package has one app team here.
             let current = o.teams.get(&team).ok_or("no such team")?;
             let parent_after = parent.clone().unwrap_or_else(|| current.parent.clone());
             let package_before = current.app_package().map(str::to_owned);

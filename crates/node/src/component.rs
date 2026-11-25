@@ -318,7 +318,7 @@ pub fn utc_date(day: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// The name a trap kind has on the wire (the spec's names).
+/// The name a trap kind has on the wire, which clients match on.
 #[must_use]
 pub fn trap_name(kind: host::TrapKind) -> &'static str {
     match kind {

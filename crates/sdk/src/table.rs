@@ -1,16 +1,17 @@
-//! Tables with declared indexes, unique constraints and counts (D9).
+//! Tables with declared indexes, unique constraints and counts, kept by the SDK on the host's
+//! ordered key-value storage.
 //!
 //! Key layout, every key starting with the table name as a string part:
 //!
 //! - `(table, "r", key..)` is the record, a deterministic CBOR value;
 //! - `(table, "i", index, fields.., key..)` is an index entry, holding the record's storage key;
 //! - `(table, "u", name, fields..)` is a unique entry, holding the record's storage key;
-//! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add` (D47);
+//! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add`;
 //! - `(table, "n")` is how many records the table holds, a CBOR integer: written once by the
 //!   first write that finds it missing (by counting the records), then changed only with
 //!   `Store::add`;
 //! - `(table, "l")` holds CBOR `null` once `(table, "n")` is kept: a write reads it, never
-//!   `(table, "n")`, so inserts into one table do not conflict over the length (D47).
+//!   `(table, "n")`, so inserts into one table do not conflict over the length.
 //!
 //! A table written before the length existed has neither row until its first insert or
 //! removal; until then [`Table::len`] counts its records.
@@ -47,7 +48,7 @@ pub trait Record: Serialize + DeserializeOwned {
     const INDEXES: &'static [FieldSet];
     /// Maintained counts: name and fields.
     const COUNTS: &'static [FieldSet];
-    /// Text fields the host indexes for full-text search (spec section 7); none by default.
+    /// Text fields the host indexes for full-text search; none by default.
     const SEARCH: &'static [&'static str] = &[];
     /// [`Self::SEARCH`] as a JSON list, for the state ABI.
     const SEARCH_JSON: &'static str = "[]";
@@ -469,7 +470,7 @@ impl<T: Record, S: Store> Table<T, S> {
     }
 
     /// Full-text search over the fields the record declares with
-    /// `#[table(search = [..])]` (spec section 7), best match first. Views only: the host
+    /// `#[table(search = [..])]`, best match first. Views only: the host
     /// keeps the index from the state the view reads. A hit whose record is gone is
     /// skipped.
     ///

@@ -42,6 +42,18 @@ expect("a version is not a tag", tags("/// since 1.0.0-rc.36 and v0.27"), [])
 prose = check.BACKTICKED.sub(" ", "/// the app clock starts at `T0`; `RC16` is a release (D20)")
 expect("backticks are stripped before tags", tags(prose), ["D20"])
 
+def phrases(text):
+    return [m.group(0) for m in check.PHRASE.finditer(text)]
+
+
+# Pointers to documents nobody can open.
+expect("a spec section", phrases("/// the index (spec section 7)."), ["spec section 7"])
+expect("a spec version", phrases("// a key's class (D74, spec v0.26)"), ["spec v0.26"])
+expect("a milestone", phrases("/// The same as org_role in this milestone"), ["this milestone"])
+expect("a review label", phrases("/// Review finding A6: an answer ..."), ["Review finding"])
+expect("someone's review", phrases("// (Xil's review, issue 13)"), ["Xil's review"])
+expect("a standard is not a spec pointer", phrases("/// checked with the spec tokenizer; the URL spec's rules"), [])
+
 # Issues: a bare number is a finding; a link, an anchor or an entity is not.
 expect("a bare issue", issues("// here at once (#4723)."), ["4723"])
 expect("an issue at the start", issues("#5210 broke it"), ["5210"])

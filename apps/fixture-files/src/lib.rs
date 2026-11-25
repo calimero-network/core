@@ -19,7 +19,7 @@ pub struct PutOut {
 
 #[derive(serde::Serialize, AbiType)]
 pub struct ReadOut {
-    /// Decimal string (D20).
+    /// The size in bytes, as a decimal string.
     pub size: String,
     pub sha256: String,
 }

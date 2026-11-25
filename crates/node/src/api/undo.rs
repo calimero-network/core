@@ -1,5 +1,5 @@
-//! The API's routes for undoing an upgrade from its restore point (C9;
-//! `SystemCmd::UndoUpgrade`, `crate::node::restore_points`).
+//! The API's routes for undoing an upgrade from its restore point
+//! (`SystemCmd::UndoUpgrade`, `crate::node::restore_points`).
 
 #[allow(
     clippy::wildcard_imports,

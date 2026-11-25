@@ -164,7 +164,7 @@ Every route of the node is a generated method, in a group per area
 flows and streams a single route cannot be:
 
 - **Credentials**: `signUp(passkey, name, { invite?, origin?, signal? })`, `signIn(passkey, { origin?, signal? })`, `refresh`, `signOut`, `signOutEverywhere`, `useSession`, `useApiKey`, `addPasskey(newPasskey, approver)`.
-- **Account recovery** (core #4844): signed out, `startAccountRecovery(code, passkey)` and, 72 hours later, `finishAccountRecovery(passkey, accountId?)`. The code itself is `client.auth.recoveryCreate({}, { confirm })`.
+- **Account recovery**: signed out, `startAccountRecovery(code, passkey)` and, 72 hours later, `finishAccountRecovery(passkey, accountId?)`. The code itself is `client.auth.recoveryCreate({}, { confirm })`.
 - **Organization recovery**: `startRecovery(org, seed)` (the seed signs here and never leaves the process); `newRecoverySeed`, `recoveryPublicKey`.
 - **Files**: `uploadFile(app, data)` (a large file goes up in parts), `exportFile(app, id)` and `exportFileTo(app, id, sink)` (the plaintext, checked against its id, size and hash).
 - **Blobs**: `downloadBlob(app, id)`, `downloadBlobGranted(app, id, grant)` (bytes; `client.apps.blobDownload` answers a `Blob` with its type).

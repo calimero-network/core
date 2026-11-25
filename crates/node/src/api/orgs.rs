@@ -925,7 +925,7 @@ pub(crate) struct CapabilitiesBody {
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
 /// without an account, the default: the organization's, or with `team` what
-/// everyone in that team holds there on top of their own (G6); approved with
+/// everyone in that team holds there on top of their own; approved with
 /// the actor's passkey (412 first).
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
@@ -1432,8 +1432,8 @@ async fn app_teams_scope(
     ))
 }
 
-/// What today's runs of the apps an organization is the developer of used (Q20, D76,
-/// D78): fuel and writes, summed over the component apps billed to it as their
+/// What today's runs of the apps an organization is the developer of used: fuel and
+/// writes, summed over the component apps billed to it as their
 /// developer (`usage::developer`: instances of its deployments, and its own apps made
 /// from a release), on the UTC day of the node's app time, with the quotas; for its
 /// admins and owner only, judged on fresh system state like `GET /orgs/{org}`. One

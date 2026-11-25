@@ -1893,7 +1893,7 @@ async fn finished(client: &Client, org: &str, run: &str) -> Value {
     status
 }
 
-/// D78 (Xabi, 11-09): the daily fuel cap follows the developer, the identity an
+/// The daily fuel cap follows the developer, the identity an
 /// instance's usage is billed to (`usage::developer`). Two customers' instances of
 /// one developer's deployment are two payers, but one developer: their fuel adds up
 /// against one cap. An instance whose own payer has burned almost nothing is refused

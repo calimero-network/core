@@ -1,4 +1,4 @@
-//! Full-text search for component apps (spec section 7, R2): the host keeps an index of
+//! Full-text search for component apps: the host keeps an index of
 //! each table's declared text fields, derived from the app's state, and views query it
 //! through the WIT `search` interface.
 //!
@@ -921,7 +921,7 @@ mod tests {
         assert_eq!(find(&*at5, "hello"), vec![key("1"), key("2")]);
     }
 
-    /// C4, the other order: a view prepared on the state at 5 that first searches after a
+    /// The other order: a view prepared on the state at 5 that first searches after a
     /// view on 6 brought the indexes to 6 searches the state at 5, not 6.
     #[test]
     fn a_view_that_searches_after_a_later_view_did_searches_its_own_state() {

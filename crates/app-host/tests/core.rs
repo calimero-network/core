@@ -1,4 +1,4 @@
-//! The host core's policy, overlay and determinism rules (spec sections 3-5, D19, D46, D47).
+//! The host core's policy, overlay and determinism rules.
 
 #![allow(
     clippy::unwrap_used,
@@ -111,7 +111,7 @@ fn view_writes_are_denied() {
     assert_eq!(host.storage_get(b"k"), Ok(None));
 }
 
-/// C10: the write past `MAX_WRITES` is a soft error naming the limit and the write's number,
+/// The write past `MAX_WRITES` is a soft error naming the limit and the write's number,
 /// not a trap, and nothing of it is kept; the trapping `put` of components built before
 /// WIT 0.5.7 keeps its old detail (`RunLimit::denied`).
 #[test]
@@ -140,9 +140,9 @@ fn the_write_after_ten_thousand_is_a_soft_error_with_its_number() {
     assert!(out.diff.iter().all(|w| !w.key.ends_with(b"one-more")));
 }
 
-/// C2 (Ruling 37): a run's writes are counted as they are made and refused at the host
-/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that. C10:
-/// the refusal is a soft error with the run's total, which the guest can handle.
+/// A run's writes are counted as they are made and refused at the host call once they
+/// pass `MAX_RUN_BYTES`, so host memory never holds more than that. The refusal is a soft
+/// error with the run's total, which the guest can handle.
 #[test]
 fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     assert_eq!(MAX_RUN_BYTES, 1024 * 1024);
@@ -213,9 +213,9 @@ fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     assert!(out.events.is_empty());
 }
 
-/// N1 (Ruling 43): an event's audience is kept with it, so its account strings count
-/// against the run's bytes, and one event names at most `MAX_AUDIENCE_ACCOUNTS` accounts.
-/// The re-review's probe: 100 events, each naming one 1 MiB account, were all kept.
+/// An event's audience is kept with it, so its account strings count against the run's
+/// bytes, and one event names at most `MAX_AUDIENCE_ACCOUNTS` accounts: 100 events, each
+/// naming one 1 MiB account, must not all be kept.
 #[test]
 fn audience_accounts_count_against_the_run_and_are_capped() {
     let state = base(&[]);
@@ -506,7 +506,7 @@ fn disabled_interfaces_refuse() {
     let state = base(&[]);
     let call = inv(InvocationKind::Call);
     let mut host = core_for(&state, &call);
-    // A call starts an action; its key comes from the run's unique ids (D17, D52).
+    // A call starts an action; its key comes from the run's unique ids (term.seq.n).
     assert_eq!(
         host.start_action("enrich", b"{}"),
         Ok(Ok("a.3.42.0".to_owned()))
@@ -1610,7 +1610,7 @@ fn actions_send_http_and_calls_record_what_they_send() {
         action.action_view("company", b"{}"),
         Ok(Ok(b"\"company\"".to_vec()))
     );
-    // The same call twice gets two keys; a retry would get the same two (D27).
+    // The same call twice gets two keys; a retry would get the same two.
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{\"x\":1}").unwrap().unwrap();
@@ -1628,8 +1628,8 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let out = action.finish(Status::Ok, Vec::new(), Usage::default());
     assert!(out.http.is_empty());
 
-    // A call has no action context; it sends HTTP (D76) and records the exchange for its
-    // entry, whatever its status. Views and `init` send none (S9).
+    // A call has no action context; it sends HTTP and records the exchange for its entry,
+    // whatever its status. Views and `init` send none.
     let mut call = core_for(&state, &inv(InvocationKind::Call))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));
@@ -1686,7 +1686,7 @@ impl HttpHost for Slow {
     }
 }
 
-/// C2: the run's deadline holds in host calls too. A call that comes back past it ends the
+/// The run's deadline holds in host calls too. A call that comes back past it ends the
 /// run `Timeout` (`WALL_CLOCK_EXCEEDED`, as the engine's own deadline does), whatever the
 /// guest would do next, and one made past it is not sent; within it, nothing changes.
 #[test]

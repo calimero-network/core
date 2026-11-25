@@ -16,29 +16,24 @@ kinds of reference:
                  relative to the repository root or to the citing file's
                  directory or one of its parents (an SDK's AGENTS.md names its
                  own `scripts/`).
-  * bare-tag   - a short id such as `(D20)`, `R8`, `review finding F6` or
-                 `Ruling 39` tells a reader nothing and links nowhere. Write the
-                 rule out, link the page that states it, or drop the id.
+  * bare-tag   - a short id such as `(D20)`, `R8` or `Ruling 39`, or a pointer to a
+                 document nobody can open ("spec section 7", "spec v0.26", "in this
+                 milestone", "review finding", "X's review"), tells a reader nothing.
+                 Write the rule out, link the docs section that states it, or drop it.
   * bare-issue - `#4839` is not a link. Use the full issue URL for open work;
                  drop it where it only records history (git blame has it).
 
-site-link and dead-path must have no findings: a statement whose path is right
-for a reason the check cannot see (it names a file of another repository, or a
-file that is described as removed) goes in ALLOWLIST, one line each:
-`<file> | <a quoted piece of the line> | <why>`. An entry that matches nothing is
-reported, so the list shrinks as sites are fixed.
-
-bare-tag and bare-issue predate this gate, so they are held to BASELINE: the
-count each file has today. A file may only go down. After cleaning a file, run
-with --update-baseline and commit the smaller baseline.
+Every check must have no findings. A line that is right for a reason the check
+cannot see (a path of another repository, a file described as removed) goes in
+ALLOWLIST, one line each: `<file> | <a quoted piece of the line> | <why>`. An
+entry that matches nothing is reported, so the list shrinks as sites are fixed.
 
 Inline code (`...`) is not prose: a constant such as `T0` or `RC16` is not a tag,
 and a path in backticks is checked as a path, not scanned for tags.
 
 Usage:
   python3 scripts/check-code-refs.py                    # the gate
-  python3 scripts/check-code-refs.py --list [<check>]   # every finding, baselined ones too
-  python3 scripts/check-code-refs.py --update-baseline  # write today's counts
+  python3 scripts/check-code-refs.py --list [<check>]   # every finding, allowed ones too
 """
 
 from __future__ import annotations
@@ -54,7 +49,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs" / "src" / "content" / "docs"
 ASTRO_CONFIG = ROOT / "docs" / "astro.config.mjs"
 ALLOWLIST = ROOT / "scripts" / "check-code-refs.allow"
-BASELINE = ROOT / "scripts" / "check-code-refs.baseline"
 
 SCAN_DIRS = ("crates", "apps", "sdks")
 SKIP_PARTS = {"target", "node_modules", "Generated", "generated", ".gradle", "build", "dist"}
@@ -78,6 +72,12 @@ NOT_TAGS = {
     "SEC1", "EC2", "NAT64", "AES128", "AES256", "UTF8", "UTF16", "X509", "K8S", "S3",
     "E2E", "L0", "L1", "L2", "P2P", "V1", "V2", "V3", "B2B",
 }
+# Pointers to documents nobody can open: a spec's sections and versions, a milestone, a review.
+PHRASE = re.compile(
+    r"\bspec section \d+|\bspec v\d+\.\d+|\bthis milestone\b|\breview (?:nit|finding|item)s?\b"
+    r"|\b[A-Z][a-z]+'s review\b|\bfinal-review\b",
+    re.IGNORECASE,
+)
 # `#4723`, `(#4723)`; not `&#1234;`, `[#1234]`-style anchors, `x#1234` or a URL's fragment.
 ISSUE = re.compile(r"(?<![\w/&\[#])#(\d{3,5})\b")
 
@@ -240,6 +240,8 @@ def findings():
             for m in TAG.finditer(prose):
                 if m.group(0) not in NOT_TAGS:
                     yield "bare-tag", rel, n, line, m.group(0)
+            for m in PHRASE.finditer(prose):
+                yield "bare-tag", rel, n, line, m.group(0)
             for m in ISSUE.finditer(prose):
                 yield "bare-issue", rel, n, line, f"#{m.group(1)}"
 
@@ -257,82 +259,41 @@ def load_allowlist():
     return entries
 
 
-def load_baseline() -> Counter:
-    base: Counter = Counter()
-    if BASELINE.is_file():
-        for raw in BASELINE.read_text(encoding="utf-8").splitlines():
-            if not raw.strip() or raw.startswith("#"):
-                continue
-            check, count, file = raw.split(maxsplit=2)
-            base[(check, file)] = int(count)
-    return base
-
-
-BASELINE_HEADER = """\
-# Counts of bare-tag and bare-issue findings per file (scripts/check-code-refs.py).
-# A file may only go down: after cleaning one, run
-#   python3 scripts/check-code-refs.py --update-baseline
-# and commit the smaller numbers. Never raise one by hand.
-"""
-
-BASELINED = ("bare-tag", "bare-issue")
+CHECKS = ("site-link", "dead-path", "bare-tag", "bare-issue")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--list", nargs="?", const="all", metavar="CHECK", help="print every finding (of one check)")
-    ap.add_argument("--update-baseline", action="store_true", help="write today's bare-tag/bare-issue counts")
     args = ap.parse_args()
 
     allow = load_allowlist()
     used = [False] * len(allow)
-    strict, counts, listed = [], Counter(), []
+    found, listed = [], []
     for check, rel, n, line, what in findings():
-        if check in ("site-link", "dead-path"):
-            hit = next((i for i, (f, piece, _) in enumerate(allow) if f == rel and piece in line), None)
-            if hit is not None:
-                used[hit] = True
-                continue
-            strict.append((check, rel, n, what))
-        else:
-            counts[(check, rel)] += 1
         listed.append((check, rel, n, what))
+        hit = next((i for i, (f, piece, _) in enumerate(allow) if f == rel and piece in line), None)
+        if hit is not None:
+            used[hit] = True
+            continue
+        found.append((check, rel, n, what))
 
     if args.list:
         for check, rel, n, what in listed:
             if args.list in ("all", check):
                 print(f"{rel}:{n}: [{check}] {what}")
         total = Counter(c for c, *_ in listed)
-        print(", ".join(f"{c}: {total[c]}" for c in ("site-link", "dead-path", *BASELINED)), file=sys.stderr)
-        return 0
-
-    if args.update_baseline:
-        rows = sorted((c, k, f) for (c, f), k in counts.items())
-        BASELINE.write_text(BASELINE_HEADER + "".join(f"{c} {k} {f}\n" for c, k, f in rows), encoding="utf-8")
-        print(f"wrote {BASELINE.relative_to(ROOT)}: " + ", ".join(
-            f"{c} {sum(k for (cc, _), k in counts.items() if cc == c)}" for c in BASELINED))
+        print(", ".join(f"{c}: {total[c]}" for c in CHECKS), file=sys.stderr)
         return 0
 
     failed = False
-    for check, rel, n, what in strict:
+    for check, rel, n, what in found:
         print(f"{rel}:{n}: [{check}] {what}")
         failed = True
     for (f, piece, _), u in zip(allow, used):
         if not u:
             print(f"{ALLOWLIST.relative_to(ROOT)}: matches nothing, remove it: {f} | {piece}")
             failed = True
-
-    base = load_baseline()
-    for key in sorted(set(counts) | set(base)):
-        now, was = counts.get(key, 0), base.get(key, 0)
-        if now > was:
-            check, rel = key
-            print(f"{rel}: [{check}] {now} findings, the baseline allows {was}; "
-                  f"see them with --list {check}. Write the rule out or link the page that states it.")
-            failed = True
-    lower = [k for k in base if counts.get(k, 0) < base[k]]
-    if lower and not failed:
-        print(f"{len(lower)} file(s) are below the baseline; run --update-baseline to lock that in.", file=sys.stderr)
 
     if failed:
         print("\nHow to fix: CODING_STANDARDS.md, \"Documentation in code\".")

@@ -1,6 +1,6 @@
-//! Updates that apply on their own (C9; docs: protocol upgrades "Updates that apply on
-//! their own"): the system leader's pass, from `reconcile`, at most every
-//! [`AUTO_UPDATE_EVERY`].
+//! Updates that apply on their own: the system leader's pass, from `reconcile`, at most
+//! every [`AUTO_UPDATE_EVERY`]
+//! ([Updates that apply on their own](https://calimero-network.github.io/core/protocol/upgrades/#updates-that-apply-on-their-own)).
 //!
 //! Each pass finds the apps an update would apply to on its own now
 //! (`SystemState::auto_update_candidates`: a `noDestinations` policy, the newer releases

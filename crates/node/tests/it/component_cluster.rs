@@ -5272,7 +5272,7 @@ async fn a_components_blobs_are_held_by_references_and_granted() {
     panic!("the bytes of a forgotten blob stayed in a store");
 }
 
-/// Spec section 7: the host keeps a full-text index of a table's declared fields from the
+/// The host keeps a full-text index of a table's declared fields from the
 /// component's state, and views on any replica query it as of the state they read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn views_search_a_components_tables_as_they_change() {
@@ -8451,7 +8451,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
 /// A confirm method a stale front node did not know is confirm
 /// (here: a node that hosts no replica reads the directory's bundle, team-space,
 /// while the group runs kv, whose `wipe` is a confirm method) still answers the
-/// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge,
+/// API's step-up, `412 CONFIRM_REQUIRED` with a challenge,
 /// not the leader's `422 ConfirmRequired`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {

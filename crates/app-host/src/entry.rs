@@ -1,7 +1,8 @@
 //! The size of the log entry a node writes for a run, for an embedder that runs apps without a
 //! log (the SDK's test harness): the node refuses an entry over `calimero_log::MAX_ENTRY_BYTES`
-//! and logs the run as a `HostDenied` trap with detail [`crate::ENTRY_TOO_LARGE`] instead (D50), whatever [`crate::MAX_RUN_BYTES`]
-//! let through, because the entry is JSON with keys and values in base64.
+//! and logs the run as a `HostDenied` trap with detail [`crate::ENTRY_TOO_LARGE`] instead,
+//! whatever [`crate::MAX_RUN_BYTES`] let through, because the entry is JSON with keys and
+//! values in base64.
 //!
 //! [`entry_bytes`] is the length of `calimero-node`'s `entry_json` for the same run, field by
 //! field (pinned there by `the_host_cores_entry_size_is_the_logs`). It leaves out what only a

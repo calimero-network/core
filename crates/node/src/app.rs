@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 
 use crate::types::{AppId, EventRecord};
 
-/// Idempotency retention's classes and floors (`crate::idempotency`, D74).
+/// Idempotency retention's classes and floors (`crate::idempotency`).
 pub use crate::idempotency::{IDEMPOTENCY_MIN_KEEP, IDEMPOTENCY_TTL_MS, NODE_KEY_PREFIX};
 
 /// What a node without wasmer answers for an SDK 0.12 app: every call, view and
@@ -98,15 +98,15 @@ pub(crate) mod rows {
     /// A component's idempotency records, by `caller|key`.
     pub const CIDEM: u8 = b'j';
     /// A component's idempotency keys per class in the order they were recorded:
-    /// `q ‖ class ‖ n` (D74).
+    /// `q ‖ class ‖ n`.
     pub const CORDER: u8 = b'q';
-    /// A component's blobs (R8, `crate::component::blobs`): its record of each, by SHA-256.
+    /// A component's blobs (`crate::component::blobs`): its record of each, by SHA-256.
     pub const CBLOB: u8 = b'b';
-    /// A component's xcall outbox (D25, `crate::component::xcall`): `o ‖ seq`.
+    /// A component's xcall outbox (`crate::component::xcall`): `o ‖ seq`.
     pub const COUT: u8 = b'o';
-    /// A component's dead letters (D29): `d ‖ n`.
+    /// A component's dead letters, xcalls that were never delivered: `d ‖ n`.
     pub const CDEAD: u8 = b'd';
-    /// A component's pending actions (D17, `crate::component::action`): `a ‖ id`.
+    /// A component's pending actions (`crate::component::action`): `a ‖ id`.
     pub const CACT: u8 = b'a';
     /// A component's own secret values (`crate::component::InstanceSecrets`), one row:
     /// `s ‖ all`. Never in the app's storage: no run reads it, only the node's outbound gate.
@@ -284,7 +284,7 @@ pub struct AppMachine {
     /// part of the state, and not in a production build.
     #[cfg(feature = "testing")]
     pub ticks: crate::component::Ticks,
-    /// Idempotency floors and cap (D74's; tests scale them down).
+    /// Idempotency floors and cap (tests scale them down).
     pub(crate) idem_limits: crate::idempotency::Limits,
 }
 
@@ -432,7 +432,7 @@ impl AppMachine {
     }
 
     /// The app's blobs and what its storage holds besides. A component's storage
-    /// is its own keyspace, in memory; its blobs are host records beside it (R8). An
+    /// is its own keyspace, in memory; its blobs are host records beside it. An
     /// SDK 0.12 app's is not read: it is reported empty.
     #[must_use]
     pub fn storage_stats(&self) -> StorageStats {

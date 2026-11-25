@@ -22,7 +22,7 @@ use crate::types::{
 const WORLD: &str = "calimero:app@0.5.7";
 /// The world the compute component's ABI names.
 const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.7";
-/// The ABI version this SDK writes (D51).
+/// The ABI version this SDK writes; a field nodes must enforce raises it.
 const ABI_VERSION: u64 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -218,7 +218,7 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                     ));
                 }
                 attrs.every = Some(lit.value());
-                // A timer's caller is always `System` (D13), so `every` implies it (Ruling 26).
+                // A timer's caller is always `System`, so `every` implies `allow(system)`.
                 attrs.allow_system = true;
             }
             "compute" => attrs.compute = Some(compute_attr(&attr)?),

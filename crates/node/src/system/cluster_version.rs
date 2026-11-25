@@ -1379,11 +1379,11 @@ mod tests {
         );
     }
 
-    /// Reproduction (B4): every node runs rc.16 and no version is logged yet,
-    /// so the gate admits a feature of rc.16 on what the nodes advertise. Were
-    /// the entry proposed then, a node on rc.15 registered before the leader
-    /// logs rc.16 would still be admitted at the logged version (`may_join`),
-    /// and reach an entry it cannot decode. The version is logged first.
+    /// A feature's entry is proposed only after the version is logged. While every node
+    /// runs rc.16 and no version is logged yet, the gate admits a feature of rc.16 on what
+    /// the nodes advertise; were the entry proposed then, a node on rc.15 registered before
+    /// the leader logs rc.16 would still be admitted at the logged version (`may_join`),
+    /// and reach an entry it cannot decode.
     #[test]
     fn a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged() {
         let mut nodes = cluster(&[RC16, RC16, RC16]);
@@ -1430,10 +1430,10 @@ mod tests {
         assert_eq!(admit(None, Some(RC15), &quotas), Admission::Admitted);
     }
 
-    /// Reproduction (B4): a system entry this node cannot decode (a later
-    /// release's command) was skipped, so the node kept serving a state the
-    /// others no longer had (a revoked API key still working there). The
-    /// group's batch now fails, which stops its Raft core on that entry.
+    /// A system entry this node cannot decode (a later release's command) fails
+    /// the group's batch, which stops its Raft core on that entry: skipped, the
+    /// node would serve a state the others no longer have (a revoked API key
+    /// still working there).
     #[test]
     fn an_entry_this_node_cannot_decode_stops_the_system_group() {
         struct NoPeers;

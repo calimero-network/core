@@ -1,13 +1,13 @@
 //! The inbound gate ([Between nodes](https://calimero-network.github.io/core/protocol/networking/#between-nodes)):
-//! what a node on a release an owner has not approved could do before, tried
-//! the way such a node would: with the cluster secret, over its own sealed
-//! channel, by proposing system commands, by minting sessions.
+//! what a node on a release an owner has not approved must not be able to do,
+//! tried the way such a node would: with the cluster secret, over its own
+//! sealed channel, by proposing system commands, by minting sessions.
 //!
-//! - F2: the internal routes judge which node calls and its release.
-//! - F3: a decision carries its maker's proof, checked where it applies.
-//! - F4: a Raft message's sender is the node that sent it, a group member.
-//! - F1: sessions are signed by the node that issued them, not by a key
-//!   every node holds.
+//! - The internal routes judge which node calls and its release.
+//! - A decision carries its maker's proof, checked where it applies.
+//! - A Raft message's sender is the node that sent it, a group member.
+//! - Sessions are signed by the node that issued them, not by a key every
+//!   node holds.
 //!
 //! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
@@ -151,13 +151,13 @@ async fn alices_app(c: &Cluster) -> (Client, SoftAuthenticator, String, String, 
     (alice, key, account, app, bundle)
 }
 
-// ---------------------------------------------------------------- F2, F4
+// -------------------------------------------- internal routes and Raft senders
 
 /// A node on an unapproved release holds the cluster secret and opens sealed
-/// channels like any node. Before, `/internal/view`, `call`, `events`,
-/// `storage`, `blob/held`, `app-ready`, `blob/get` and `raft` answered it
-/// for any app (they checked only the secret). Now each judges the caller:
-/// its key, the node whose address attests that key, and that node's release.
+/// channels like any node, so the cluster secret alone must not open
+/// `/internal/view`, `call`, `events`, `storage`, `blob/held`, `app-ready`,
+/// `blob/get` or `raft` to it: each judges the caller: its key, the node
+/// whose address attests that key, and that node's release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes() {
     let c = split_cluster().await;
@@ -220,7 +220,7 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
     let (status, v) = peer_send(&c, &node3, 0, false, "internal/view", &view, 2).await;
     assert_eq!(status, 403, "{v}");
 
-    // F4: a Raft append for the app's group, from node 3, is refused, whether
+    // A Raft append for the app's group, from node 3, is refused, whether
     // it names node 3 or node 1 (the app's leader) as its sender.
     for sender in [3, 1] {
         let rpc = json!({
@@ -233,7 +233,7 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
         let (status, v) = peer_send(&c, &node3, 0, false, "internal/raft", &rpc, 3).await;
         assert_eq!(status, 403, "sender {sender}: {v}");
     }
-    // Nor in a batch of heartbeats (B6): the batch is taken, the app group's
+    // Nor in a batch of heartbeats: the batch is taken, the app group's
     // item is answered with the same refusal and reaches no group.
     let batch = json!({
         "target": 1,
@@ -303,7 +303,7 @@ async fn the_usage_routes_answer_identified_peers_only() {
     }
 }
 
-// ---------------------------------------------------------------- F3
+// ---------------------------------------------------------- decision proofs
 
 /// The system leader, by index.
 async fn system_leader(c: &Cluster) -> usize {
@@ -1035,13 +1035,12 @@ async fn operator_decisions_need_the_operator_signature() {
     .await;
 }
 
-// ---------------------------------------------------------------- F1
+// ------------------------------------------------------------- session issuers
 
-/// Before, every node held the session key K_s and could mint a session for
-/// any account. Now
-/// a node signs the sessions it issues with its attested receipt key, and
-/// other nodes accept one only where the issuer's release may serve the
-/// account and, for an app, hold the app's data.
+/// No key every node holds can mint a session: a node signs the sessions it
+/// issues with its attested receipt key, and other nodes accept one only
+/// where the issuer's release may serve the account and, for an app, hold the
+/// app's data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
     let c = split_cluster().await;

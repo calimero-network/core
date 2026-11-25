@@ -117,7 +117,7 @@ A reader must be able to follow every reference to its source in one click.
 - **No issue numbers:** a bare `#4723` is not a link. Drop it where it records history; write the full issue URL for open work (`https://github.com/calimero-network/core/issues/4736`).
 - **Present tense:** a comment states what holds now. "It used to", "previously" and "was renamed" belong in the PR description. A regression test's doc says what must hold, not the bug it caught.
 - **Paths that exist:** write a repository path from the root (`crates/node/tests/it/consent_page.rs`). Moving or deleting a file, grep for its path and fix every comment that names it; renaming a heading in `docs/`, grep for its anchor.
-- **Enforced** by [`scripts/check-code-refs.py`](scripts/check-code-refs.py) (the `Code references` workflow): site links and paths must resolve (`scripts/check-code-refs.allow` lists the few that are right as written), and no file may gain a bare id or issue number (`scripts/check-code-refs.baseline` holds today's counts per file; they only go down). Editing a comment that carries one, rewrite it, then run `python3 scripts/check-code-refs.py --update-baseline`.
+- **Enforced** by [`scripts/check-code-refs.py`](scripts/check-code-refs.py) (the `Code references` workflow): site links and paths must resolve (`scripts/check-code-refs.allow` lists the few that are right as written), and no comment carries a bare id, a bare issue number, or a pointer to a document nobody can open ("spec section 7", "in this milestone", "X's review").
 
 ## Commands in docs and CI
 

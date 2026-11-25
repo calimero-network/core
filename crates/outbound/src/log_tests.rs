@@ -129,8 +129,8 @@ fn assert_no_input(log: &str) {
     }
 }
 
-/// Reproduction (F6): a refused request logged its refusal's words, which quote the
-/// whole URL, query included; a refused secret name quoted what the guest wrote.
+/// A refused request logs its kind and host, never its refusal's words (which quote the
+/// whole URL, query included), and a refused secret name never quotes what the guest wrote.
 #[test]
 fn a_refused_request_logs_its_kind_and_host_not_its_url() {
     let outside = format!("https://api.example.com/users/{USER}?token={TOKEN}");
@@ -166,7 +166,7 @@ fn a_refusal_an_app_acts_on_is_logged_by_its_word() {
     assert_no_input(&log);
 }
 
-/// Reproduction (F6): every request logged its URL's path, which can name a user.
+/// A sent request logs its declared prefix, never its URL's path, which can name a user.
 #[test]
 fn a_sent_request_logs_its_declared_prefix_not_its_path() {
     let url = format!("{PREFIX}users/{USER}?token={TOKEN}");
@@ -178,8 +178,8 @@ fn a_sent_request_logs_its_declared_prefix_not_its_path() {
     assert_no_input(&log);
 }
 
-/// Reproduction (F6): a request the transport failed logged its URL's path, which
-/// can name a user; it logs the declared prefix, as a sent one does.
+/// A request the transport failed logs its declared prefix, as a sent one does, never
+/// its URL's path, which can name a user.
 #[test]
 fn a_failed_request_logs_its_declared_prefix_not_its_path() {
     let url = format!("{PREFIX}users/{USER}?token={TOKEN}");
