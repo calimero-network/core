@@ -10,8 +10,10 @@ from typing import cast
 from typing import cast, Union
 
 if TYPE_CHECKING:
+    from ..models.backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
+    from ..models.backup_key_answer_holder_type_2 import BackupKeyAnswerHolderType2
     from ..models.backup_key_answer_key_type_0 import BackupKeyAnswerKeyType0
-    from ..models.backup_key_answer_holder import BackupKeyAnswerHolder
+    from ..models.backup_key_answer_holder_type_1 import BackupKeyAnswerHolderType1
 
 
 T = TypeVar("T", bound="BackupKeyAnswer")
@@ -24,21 +26,33 @@ class BackupKeyAnswer:
     that covers.
 
         Attributes:
-            holder (BackupKeyAnswerHolder):
+            holder (Union['BackupKeyAnswerHolderType0', 'BackupKeyAnswerHolderType1', 'BackupKeyAnswerHolderType2']):
             key (Union['BackupKeyAnswerKeyType0', None]):
             apps (int):
     """
 
-    holder: "BackupKeyAnswerHolder"
+    holder: Union[
+        "BackupKeyAnswerHolderType0",
+        "BackupKeyAnswerHolderType1",
+        "BackupKeyAnswerHolderType2",
+    ]
     key: Union["BackupKeyAnswerKeyType0", None]
     apps: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
+        from ..models.backup_key_answer_holder_type_2 import BackupKeyAnswerHolderType2
         from ..models.backup_key_answer_key_type_0 import BackupKeyAnswerKeyType0
-        from ..models.backup_key_answer_holder import BackupKeyAnswerHolder
+        from ..models.backup_key_answer_holder_type_1 import BackupKeyAnswerHolderType1
 
-        holder = self.holder.to_dict()
+        holder: dict[str, Any]
+        if isinstance(self.holder, BackupKeyAnswerHolderType0):
+            holder = self.holder.to_dict()
+        elif isinstance(self.holder, BackupKeyAnswerHolderType1):
+            holder = self.holder.to_dict()
+        else:
+            holder = self.holder.to_dict()
 
         key: Union[None, dict[str, Any]]
         if isinstance(self.key, BackupKeyAnswerKeyType0):
@@ -62,11 +76,43 @@ class BackupKeyAnswer:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
+        from ..models.backup_key_answer_holder_type_2 import BackupKeyAnswerHolderType2
         from ..models.backup_key_answer_key_type_0 import BackupKeyAnswerKeyType0
-        from ..models.backup_key_answer_holder import BackupKeyAnswerHolder
+        from ..models.backup_key_answer_holder_type_1 import BackupKeyAnswerHolderType1
 
         d = dict(src_dict)
-        holder = BackupKeyAnswerHolder.from_dict(d.pop("holder"))
+
+        def _parse_holder(
+            data: object,
+        ) -> Union[
+            "BackupKeyAnswerHolderType0",
+            "BackupKeyAnswerHolderType1",
+            "BackupKeyAnswerHolderType2",
+        ]:
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                holder_type_0 = BackupKeyAnswerHolderType0.from_dict(data)
+
+                return holder_type_0
+            except:  # noqa: E722
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                holder_type_1 = BackupKeyAnswerHolderType1.from_dict(data)
+
+                return holder_type_1
+            except:  # noqa: E722
+                pass
+            if not isinstance(data, dict):
+                raise TypeError()
+            holder_type_2 = BackupKeyAnswerHolderType2.from_dict(data)
+
+            return holder_type_2
+
+        holder = _parse_holder(d.pop("holder"))
 
         def _parse_key(data: object) -> Union["BackupKeyAnswerKeyType0", None]:
             if data is None:

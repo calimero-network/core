@@ -271,7 +271,7 @@ impl SystemState {
                     "that origin is registered with the other `served`; remove it first".into(),
                 );
             }
-            return Ok(origin_json(&origin, held));
+            return Ok(json!(origin_json(&origin, held)));
         }
         if self.origins_of(&package).count() >= MAX_ORIGINS_PER_PACKAGE {
             return Err(Rejection::quota("origins per package"));
@@ -297,7 +297,7 @@ impl SystemState {
             added_at: at,
             served,
         };
-        let out = origin_json(&origin, &record);
+        let out = json!(origin_json(&origin, &record));
         let _prev = self.package_origins.insert(origin, record);
         Ok(out)
     }
@@ -330,17 +330,30 @@ impl SystemState {
     }
 }
 
-/// A registration as the API answers it.
+/// A registration as the API answers it (`#PackageOrigin`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginView {
+    pub package: String,
+    pub origin: String,
+    pub rp_id: String,
+    pub added_by: AccountId,
+    /// RFC 3339.
+    pub added_at: String,
+    pub served: bool,
+}
+
+/// `o`, registered for `origin`, as the API answers it.
 #[must_use]
-pub fn origin_json(origin: &str, o: &PackageOrigin) -> Value {
-    json!({
-        "package": o.package,
-        "origin": origin,
-        "rpId": o.rp_id,
-        "addedBy": o.added_by,
-        "addedAt": crate::system::rfc3339(o.added_at),
-        "served": o.served,
-    })
+pub fn origin_json(origin: &str, o: &PackageOrigin) -> OriginView {
+    OriginView {
+        package: o.package.clone(),
+        origin: origin.to_owned(),
+        rp_id: o.rp_id.clone(),
+        added_by: o.added_by.clone(),
+        added_at: crate::system::rfc3339(o.added_at),
+        served: o.served,
+    }
 }
 
 #[cfg(test)]

@@ -35,7 +35,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only.
+ * A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers.
  *
  * @param run 
  * @param method 
@@ -48,6 +48,7 @@ import kotlinx.serialization.Contextual
  * @param `final` 
  * @param progress 
  * @param queue 
+ * @param logs 
  */
 @Serializable
 
@@ -84,7 +85,10 @@ data class Run (
     val progress: RunProgress?,
 
     @SerialName(value = "queue")
-    val queue: RunQueue? = null
+    val queue: RunQueue? = null,
+
+    @SerialName(value = "logs")
+    val logs: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null
 
 ) {
 

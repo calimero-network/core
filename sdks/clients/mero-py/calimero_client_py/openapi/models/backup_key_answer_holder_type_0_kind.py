@@ -1,9 +1,7 @@
 from enum import Enum
 
 
-class BackupKeyAnswerHolderKind(str, Enum):
-    ACCOUNT = "account"
-    OPERATOR = "operator"
+class BackupKeyAnswerHolderType0Kind(str, Enum):
     ORG = "org"
 
     def __str__(self) -> str:
