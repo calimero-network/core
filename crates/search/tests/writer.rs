@@ -107,3 +107,42 @@ fn a_released_writer_is_opened_again_by_the_next_write() {
     index.release_writer().unwrap();
     drop(index);
 }
+
+/// A searcher reads the commit it was taken at: later commits, deletes and the merges a
+/// released writer finishes leave what it answers as it was.
+#[test]
+fn a_searcher_reads_the_commit_it_was_taken_at() {
+    let dir = Box::new(tantivy::directory::RamDirectory::create());
+    let (index, _state) = ContextIndex::open(dir, &schema(), SchemaOptions::default()).unwrap();
+    let index = index.expect("a new index opens fresh");
+    let (one, two) = (doc(1, "hello one"), doc(2, "hello two"));
+    let _ = index
+        .apply([(&one.id, Some(&one)), (&two.id, Some(&two))])
+        .unwrap();
+    index.commit(1, [0; 32]).unwrap();
+    let at1 = index.searcher();
+
+    let three = doc(3, "hello three");
+    let _ = index
+        .apply([(&two.id, None), (&three.id, Some(&three))])
+        .unwrap();
+    index.commit(2, [0; 32]).unwrap();
+    index.close_writer().unwrap();
+
+    let request = SearchRequest {
+        index: "notes".to_owned(),
+        query: "hello".to_owned(),
+        mode: SearchMode::Words,
+        filters: vec![],
+        order: SearchOrder::Relevance,
+        cursor: 0,
+        limit: 10,
+    };
+    let ids = |r: calimero_primitives::search::SearchResponse| {
+        let mut ids: Vec<u8> = r.hits.iter().map(|h| h.id[0]).collect();
+        ids.sort_unstable();
+        ids
+    };
+    assert_eq!(ids(index.search_in(&at1, &request).unwrap()), vec![1, 2]);
+    assert_eq!(ids(index.search(&request).unwrap()), vec![1, 3]);
+}

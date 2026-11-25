@@ -109,9 +109,10 @@ async fn plan(
                     .as_ref()
                     .ok_or(crate::system::NO_RESTORE_POINT)?;
                 s.may_undo(a, p, now)?;
+                s.undo_release_installed(p)?;
                 Ok((a.clone(), p.clone()))
             })
-            .collect::<Result<Vec<_>, &'static str>>()
+            .collect::<Result<Vec<_>, crate::system::Rejection>>()
     })
     .map_err(crate::node::rejected)
 }
@@ -217,6 +218,11 @@ async fn app_undo(
         let _prev = apps.insert(a.app_id.clone(), replicas);
     }
     node.require_current_release("undoing an upgrade").await?;
+    // The API judges the rule either way; an older node would ignore the flag.
+    let release_installed = node
+        .require_features(&[Feature::UndoToInstalledRelease])
+        .await
+        .is_ok();
     let args = node.sys(|s| s.undo_args(apps.keys()));
     let consent = consent(
         &node,
@@ -234,6 +240,7 @@ async fn app_undo(
             actor,
             at: now,
             consent,
+            release_installed,
         })
         .await?;
     // Each restored group seeded by its restore point's holder, then waited for.

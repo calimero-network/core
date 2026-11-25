@@ -4,6 +4,8 @@ import com.calimero.mero.crypto.Hex
 import com.calimero.mero.tee.TeeFixtures
 import com.calimero.mero.tee.TeeFixtures.AT
 import com.calimero.mero.tee.TeeFixtures.COLLATERAL
+import com.calimero.mero.tee.TeeFixtures.CURRENT
+import com.calimero.mero.tee.TeeFixtures.GENUINE
 import com.calimero.mero.tee.TeeFixtures.QUOTE_B64
 import com.calimero.mero.tee.TeeFixtures.SAMPLE
 import com.calimero.mero.tee.TeeFixtures.SAMPLE_TD
@@ -32,7 +34,14 @@ class AgentPolicyTest {
     private val args =
         TransportQuote(QUOTE_B64, Hex.encode(SAMPLE_TD.reportData.copyOfRange(0, 32)), Hex.encode(SAMPLE_TD.reportData.copyOfRange(32, 64)))
 
-    private fun verifier(p: AgentPolicy) = agentQuoteVerifier(p, fetchCollateral = { COLLATERAL }, now = { AT })
+    private fun verifier(p: AgentPolicy) = agentQuoteVerifier(p, fetchCollateral = { CURRENT }, dcapVerify = GENUINE, now = { AT })
+
+    // The gate's quote is held to the same TCB evaluation data floor as a node's.
+    @Test
+    fun `refuses a quote whose collateral is below the TCB evaluation data floor`() {
+        val old = agentQuoteVerifier(policy(), fetchCollateral = { COLLATERAL }, now = { AT })
+        assertRefuses("Intel TCB evaluation data 17, older than the minimum 20") { runBlocking { old.verify(args) } }
+    }
 
     @Test
     fun `accepts a genuine quote of an image the policy lists, fetching its collateral`() {

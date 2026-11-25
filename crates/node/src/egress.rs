@@ -26,6 +26,11 @@ use crate::node::Node;
 use crate::system::PackageRef;
 use crate::types::AppRecord;
 
+/// What the capability card says of an instance whose egress is off
+/// (`SystemState::egress_off`): whatever its releases declare, it sends nothing out.
+pub(crate) const NO_EGRESS: &str =
+    "This app cannot send data outside the cluster: its egress is off.";
+
 /// A unit with the app each part is: `""` for the instance, a member by its path
 /// (`<name>`, a member's own `<name>/<name>`). Empty for [`release_unit`], which has no apps.
 pub(crate) struct Placed {

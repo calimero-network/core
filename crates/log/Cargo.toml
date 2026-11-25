@@ -40,5 +40,9 @@ bench = false
 name = "log"
 harness = false
 
+[[bench]]
+name = "heartbeats"
+harness = false
+
 [lints]
 workspace = true

@@ -70,12 +70,12 @@ PART_BYTES = 16 << 20  # the most one upload request carries
 OPERATOR_SEED = "09" * 32  # the node tests' operator key (harness OPERATOR_SEED, [9; 32])
 OPERATOR_PUBLIC = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"  # its verify key
 IN_PROCESS = [
-    ("forged final", "compute_runs", "a_final_not_signed_by_the_assigned_job_node_changes_nothing"),
-    ("key isolation", "job_runs", "a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_and_keys"),
-    ("seed determinism", "job_runs", "a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_the_same_bytes"),
-    ("kept output", "compute_runs", "an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run_reads_it_back"),
-    ("unkept output", "compute_runs", "an_output_the_result_method_does_not_store_is_collected_and_its_quota_released"),
-    ("retired job node", "job_nodes", "a_job_node_on_a_retired_release_is_not_attested"),
+    ("forged final", "it", "compute_runs::a_final_not_signed_by_the_assigned_job_node_changes_nothing"),
+    ("key isolation", "it", "job_runs::a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_and_keys"),
+    ("seed determinism", "it", "job_runs::a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_the_same_bytes"),
+    ("kept output", "it", "compute_runs::an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run_reads_it_back"),
+    ("unkept output", "it", "compute_runs::an_output_the_result_method_does_not_store_is_collected_and_its_quota_released"),
+    ("retired job node", "it", "job_nodes::a_job_node_on_a_retired_release_is_not_attested"),
 ]
 RESULTS: list[tuple[str, bool]] = []
 

@@ -19,10 +19,7 @@ use crate::types::{
 };
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
         SystemCmd::SetUpgradePolicy {
             org,
@@ -71,7 +68,7 @@ pub(super) fn authorize(
 
 /// Apply a command of this area by its own rules, its proof already judged
 /// ([`super::authorize`]).
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::SetUpgradePolicy {
@@ -82,14 +79,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.orgs.contains_key(&org) {
-                return Err("no such organization");
+                return Err("no such organization".into());
             }
             if !s.approves_upgrades(&org, &actor) {
-                return Err(NOT_AN_UPGRADE_APPROVER);
+                return Err(NOT_AN_UPGRADE_APPROVER.into());
             }
             if let Some(id) = &app {
                 if !s.apps.get(id).is_some_and(|a| a.org == org) {
-                    return Err("no such app in that organization");
+                    return Err("no such app in that organization".into());
                 }
             }
             if let Some(p) = &policy {
@@ -128,16 +125,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let a = s.apps.get(&app_id).ok_or("no such app")?;
             if !s.approves_upgrades(&a.org, &actor) {
-                return Err(NOT_AN_UPGRADE_APPROVER);
+                return Err(NOT_AN_UPGRADE_APPROVER.into());
             }
             if !s.upgrade_policy_of(a).0.second_approver || class.is_green() {
                 return Err(ONE_APPROVAL);
             }
             if s.logged_release(&package, &version).is_none() {
-                return Err("that release is not installed");
+                return Err("that release is not installed".into());
             }
             if s.running(a).is_some_and(|r| r.package != package) {
-                return Err("the app runs another package");
+                return Err("the app runs another package".into());
             }
             // A unit's members only, each to an installed release of the package it runs.
             for (member, t) in &targets {
@@ -152,7 +149,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     || s.logged_release(&t.package, &t.version).is_none()
                 {
                     return Err(
-                        "a target is not a member of the app's unit moving along its package",
+                        "a target is not a member of the app's unit moving along its package"
+                            .into(),
                     );
                 }
             }
@@ -191,11 +189,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             apps,
             actor,
             at,
+            release_installed,
             ..
         } => {
             let a = s.apps.get(&app_id).ok_or("no such app")?;
             if !s.approves_upgrades(&a.org, &actor) {
-                return Err(NOT_AN_UPGRADE_APPROVER);
+                return Err(NOT_AN_UPGRADE_APPROVER.into());
             }
             let named: BTreeSet<&AppId> = apps.keys().collect();
             let expected = s.undo_set(&app_id)?;
@@ -221,7 +220,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     None => {}
                 }
                 if !s.bundles.contains_key(&p.from_bundle) {
-                    return Err(RESTORE_BUNDLE_GONE);
+                    return Err(RESTORE_BUNDLE_GONE.into());
+                }
+                if release_installed
+                    || s.cluster_brings(cluster_version::Feature::UndoToInstalledRelease)
+                {
+                    s.undo_release_installed(p)?;
                 }
             }
             let mut groups = serde_json::Map::new();
@@ -292,7 +296,7 @@ impl SystemState {
     ///
     /// # Errors
     /// [`NO_RESTORE_POINT`] when the app has none.
-    pub fn undo_set(&self, app_id: &str) -> Result<BTreeSet<AppId>, &'static str> {
+    pub fn undo_set(&self, app_id: &str) -> Result<BTreeSet<AppId>, Rejection> {
         let a = self.apps.get(app_id).ok_or("no such app")?;
         let p = a.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
         // A member its unit's run moved goes back with its instance, never alone.
@@ -348,7 +352,7 @@ impl SystemState {
         app: &AppRecord,
         p: &crate::types::RestorePoint,
         at: u64,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Rejection> {
         if p.undone_at.is_some() {
             let restoring = app.restore.as_ref().and_then(|r| r.source.as_ref());
             return if restoring.is_some() && restoring == p.file.as_ref().map(|f| &f.source) {
@@ -366,6 +370,20 @@ impl SystemState {
         Ok(())
     }
 
+    /// Whether the release a restore point returns to is still installed and ships its bundle
+    /// (another release's WASM may keep the bundle). A raw bundle or an undo already applied passes.
+    ///
+    /// # Errors
+    /// [`UNDO_RELEASE_GONE`].
+    pub fn undo_release_installed(&self, p: &crate::types::RestorePoint) -> Result<(), Rejection> {
+        match &p.from_release {
+            Some(r) if p.undone_at.is_none() && !self.release_ships(r, &p.from_bundle) => {
+                Err(UNDO_RELEASE_GONE)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// What lets an update of `app` to `to` (its `bundle`), carrying `class`, apply on
     /// its own at `at` with restore point `taken` (`UpgradeApp::auto`): the app's policy
     /// says `noDestinations`; the class is green; it moves the app along its package to
@@ -378,6 +396,10 @@ impl SystemState {
     /// # Errors
     /// [`AUTO_UPDATE_REFUSED`], [`HOLD_NOT_OVER`], [`RESTORE_POINT_REQUIRED`], or the
     /// class's own ([`Self::check_class`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per part of the UpgradeApp entry it judges"
+    )]
     pub fn auto_update_gate(
         &self,
         app: &AppRecord,
@@ -386,8 +408,9 @@ impl SystemState {
         class: Option<&UpgradeClass>,
         at: u64,
         taken: Option<&crate::types::TakenRestorePoint>,
-    ) -> Result<(), &'static str> {
-        self.auto_update_allows(app, to, class, at)?;
+        members_stay: bool,
+    ) -> Result<(), Rejection> {
+        self.auto_update_allows(app, to, class, at, members_stay)?;
         let runs_on_group = app.components.is_app() && bundle != app.bundle;
         match taken {
             Some(t) if t.file.is_some() || !runs_on_group => Ok(()),
@@ -450,7 +473,13 @@ impl SystemState {
                         });
                         !refused
                             && self
-                                .auto_update_allows(a, Some(to), Some(&green), at)
+                                .auto_update_allows(
+                                    a,
+                                    Some(to),
+                                    Some(&green),
+                                    at,
+                                    self.members_stay(false),
+                                )
                                 .is_ok()
                     })
                     .collect();
@@ -470,7 +499,8 @@ impl SystemState {
         to: Option<&PackageRef>,
         class: Option<&UpgradeClass>,
         at: u64,
-    ) -> Result<(), &'static str> {
+        members_stay: bool,
+    ) -> Result<(), Rejection> {
         let (policy, _) = self.upgrade_policy_of(app);
         if policy.auto_apply != AutoApply::NoDestinations {
             return Err(AUTO_UPDATE_REFUSED);
@@ -486,7 +516,7 @@ impl SystemState {
             r.package == to.package
                 && compare_versions(&to.version, &r.version) == std::cmp::Ordering::Greater
         });
-        if !newer {
+        if !newer || (members_stay && self.moves_members(app, to)) {
             return Err(AUTO_UPDATE_REFUSED);
         }
         let empty = BTreeMap::new();
@@ -522,6 +552,44 @@ impl SystemState {
             return Err(HOLD_NOT_OVER);
         }
         Ok(())
+    }
+
+    /// Whether moving `app` to `to` would move a member of its unit: `to`'s `uses` resolve a
+    /// direct member to another release than it runs, or name it no longer, or the log
+    /// keeps no `uses` of `to` to tell ([`Self::release_of_use`]).
+    pub fn moves_members(&self, app: &AppRecord, to: &PackageRef) -> bool {
+        let uses = self
+            .packages
+            .get(&to.package)
+            .and_then(|p| p.versions.get(&to.version))
+            .map(|v| &v.uses);
+        app.links.iter().any(|(name, id)| {
+            let runs = self.apps.get(id).and_then(|m| self.running(m));
+            let resolved = uses
+                .and_then(|u| u.get(name))
+                .and_then(|u| self.release_of_use(u));
+            !matches!((runs, resolved), (Some(r), Some((p, v))) if r.package == p && r.version == v)
+        })
+    }
+
+    /// The release a `uses` reference creates an app at, as creating an instance picks it:
+    /// the one its lock pinned, else the newest installed inside its range; `None` when
+    /// that release is not installed.
+    pub fn release_of_use(&self, u: &ReleaseUse) -> Option<(String, String)> {
+        let installed = &self.packages.get(&u.package)?.versions;
+        let version = match &u.version {
+            Some(v) => installed.contains_key(v).then(|| v.clone())?,
+            None => {
+                let range = semver::VersionReq::parse(&u.range).ok()?;
+                installed
+                    .keys()
+                    .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                    .filter(|(p, _)| range.matches(p))
+                    .max_by(|a, b| a.0.cmp(&b.0))
+                    .map(|(_, v)| v.clone())?
+            }
+        };
+        Some((u.package.clone(), version))
     }
 
     /// The update policy `app` follows, and where it comes from: its own (`app`), its
@@ -594,11 +662,7 @@ impl SystemState {
             version: version.to_owned(),
             signer: p.signer_id.clone(),
             outbound: v.outbound.iter().cloned().collect(),
-            secrets: v
-                .secrets
-                .iter()
-                .map(|(name, s)| (name.clone(), s.hosts.iter().cloned().collect()))
-                .collect(),
+            secrets: v.secrets.clone(),
             ..Release::default()
         })
     }
@@ -740,7 +804,7 @@ impl SystemState {
         to: (&str, &str),
         targets: &BTreeMap<AppId, RunTarget>,
         claimed: &UpgradeClass,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Rejection> {
         if claimed.reasons.len() > MAX_CLASS_REASONS
             || claimed.is_green() != claimed.reasons.is_empty()
         {
@@ -800,7 +864,7 @@ impl SystemState {
         targets: &BTreeMap<AppId, RunTarget>,
         actor: &str,
         at: u64,
-    ) -> Result<Option<AccountId>, &'static str> {
+    ) -> Result<Option<AccountId>, Rejection> {
         self.class_agrees(app, release, class, targets)?;
         if !self.upgrade_policy_of(app).0.second_approver
             || class.is_some_and(UpgradeClass::is_green)
@@ -821,7 +885,7 @@ impl SystemState {
         release: Option<&PackageRef>,
         class: Option<&UpgradeClass>,
         targets: &BTreeMap<AppId, RunTarget>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Rejection> {
         match (release, class) {
             (Some(to), Some(c)) => self.check_class(app, (&to.package, &to.version), targets, c),
             (None, Some(_)) => Err(UPGRADE_CLASS_MISMATCH),
@@ -865,7 +929,7 @@ impl SystemState {
         run: Option<&str>,
         actor: &str,
         at: u64,
-    ) -> Result<Option<AccountId>, &'static str> {
+    ) -> Result<Option<AccountId>, Rejection> {
         let alone = BTreeMap::new();
         let Some(r) = self.unit_run(run) else {
             return self.update_gate(app, release, class, &alone, actor, at);

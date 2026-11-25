@@ -11,7 +11,7 @@
 
 [[profile.default.overrides]]
 # Cluster plus job node, and multi-MiB sealed inputs written through an app.
-filter = 'package(calimero-node) & binary(job_runs)'
+filter = 'package(calimero-node) & binary(it) & test(/^job_runs::/)'
 threads-required = 4
 
 [[profile.default.overrides]]
@@ -57,65 +57,65 @@ slow-timeout = { period = "15s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # slowest 24 s
-filter = """binary_id(calimero-node::cluster) & (
-    test(=a_cluster_started_on_one_node_grows_and_survives_losing_it)
-    | test(=presence_reaches_every_node_and_expires)
-    | test(=the_deployment_decides_who_upgrades_and_users_can_prove_it)
+filter = """binary_id(calimero-node::it) & (
+    test(=cluster::a_cluster_started_on_one_node_grows_and_survives_losing_it)
+    | test(=cluster::presence_reaches_every_node_and_expires)
+    | test(=cluster::the_deployment_decides_who_upgrades_and_users_can_prove_it)
 )"""
 slow-timeout = { period = "15s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # slowest 51 s
-filter = """binary_id(calimero-node::component_cluster) & (
-    test(=end_to_end)
+filter = """binary_id(calimero-node::it) & (
+    test(=component_cluster::end_to_end)
 )"""
 slow-timeout = { period = "15s", terminate-after = 6 }
 
 [[profile.ci.overrides]]
 # slowest 176 s
-filter = """binary_id(calimero-node::compute_runs) & (
-    test(=a_session_file_stored_again_after_a_delete_survives_up_leader_del_leader)
-    | test(=a_session_file_stored_again_after_a_delete_survives_up_leader_del_follower)
-    | test(=a_session_file_stored_again_after_a_delete_survives_up_follower_del_leader)
-    | test(=a_session_file_stored_again_after_a_delete_survives_up_follower_del_follower)
-    | test(=a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails)
-    | test(=a_held_report_survives_the_leaders_failing_writes)
-    | test(=a_hundred_mib_file_is_uploaded_read_by_a_run_and_written_back)
-    | test(=a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_the_run_open)
-    | test(=a_push_that_never_succeeds_ends_the_run_by_timeout_at_the_ceiling)
-    | test(=a_restarted_job_node_does_not_lose_an_attempt_whose_report_is_held)
-    | test(=a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers)
-    | test(=an_outage_of_the_system_group_does_not_lose_a_running_attempt)
-    | test(=waiting_for_our_own_control_places_is_not_a_job_nodes_silence)
+filter = """binary_id(calimero-node::it) & (
+    test(=compute_runs::a_session_file_stored_again_after_a_delete_survives_up_leader_del_leader)
+    | test(=compute_runs::a_session_file_stored_again_after_a_delete_survives_up_leader_del_follower)
+    | test(=compute_runs::a_session_file_stored_again_after_a_delete_survives_up_follower_del_leader)
+    | test(=compute_runs::a_session_file_stored_again_after_a_delete_survives_up_follower_del_follower)
+    | test(=compute_runs::a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails)
+    | test(=compute_runs::a_held_report_survives_the_leaders_failing_writes)
+    | test(=compute_runs::a_hundred_mib_file_is_uploaded_read_by_a_run_and_written_back)
+    | test(=compute_runs::a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_the_run_open)
+    | test(=compute_runs::a_push_that_never_succeeds_ends_the_run_by_timeout_at_the_ceiling)
+    | test(=compute_runs::a_restarted_job_node_does_not_lose_an_attempt_whose_report_is_held)
+    | test(=compute_runs::a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers)
+    | test(=compute_runs::an_outage_of_the_system_group_does_not_lose_a_running_attempt)
+    | test(=compute_runs::waiting_for_our_own_control_places_is_not_a_job_nodes_silence)
 )"""
 slow-timeout = { period = "15s", terminate-after = 18 }
 
 [[profile.ci.overrides]]
 # slowest 28 s
-filter = """binary_id(calimero-node::pipeline_runs) & (
-    test(=a_fan_out_over_many_items_with_a_few_failures_succeeds_with_failures)
-    | test(=killing_the_leader_mid_fan_out_creates_no_run_index_twice)
+filter = """binary_id(calimero-node::it) & (
+    test(=pipeline_runs::a_fan_out_over_many_items_with_a_few_failures_succeeds_with_failures)
+    | test(=pipeline_runs::killing_the_leader_mid_fan_out_creates_no_run_index_twice)
 )"""
 slow-timeout = { period = "15s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # slowest 16 s
-filter = """binary_id(calimero-node::recovery_disk) & (
-    test(=an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster)
+filter = """binary_id(calimero-node::it) & (
+    test(=recovery_disk::an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster)
 )"""
 slow-timeout = { period = "15s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # slowest 30 s
-filter = """binary_id(calimero-node::shared_storage) & (
-    test(=a_non_writers_map_write_is_refused_and_a_writers_lands)
+filter = """binary_id(calimero-node::it) & (
+    test(=shared_storage::a_non_writers_map_write_is_refused_and_a_writers_lands)
 )"""
 slow-timeout = { period = "15s", terminate-after = 4 }
 
 [[profile.ci.overrides]]
 # slowest 19 s
-filter = """binary_id(calimero-node::upgrade_keys) & (
-    test(=an_upgrade_key_upgrades_its_app_and_does_nothing_else)
+filter = """binary_id(calimero-node::it) & (
+    test(=upgrade_keys::an_upgrade_key_upgrades_its_app_and_does_nothing_else)
 )"""
 slow-timeout = { period = "15s", terminate-after = 3 }
 

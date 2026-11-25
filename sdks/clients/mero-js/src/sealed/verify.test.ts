@@ -7,10 +7,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { hex } from '../crypto/internal.js';
 import { transportKeyBinding } from './sealed.js';
 import {
+  DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
   createQuoteVerifier,
   trustedMeasurementsFromReleases,
   type DcapCollateral,
   type DcapVerifiedReport,
+  type DcapVerify,
   type PublishedMrtds,
 } from './verify.js';
 
@@ -47,21 +49,35 @@ const IMAGE = {
 const NONCE = hex(sampleTd.reportData.slice(0, 32));
 const SUFFIX = hex(sampleTd.reportData.slice(32));
 
+// The collateral as it reads naming Intel TCB evaluation data `number`. Only Intel
+// can re-sign it, so its signatures no longer verify for any other number.
+const withEvaluationData = (number: number): DcapCollateral => ({
+  ...COLLATERAL,
+  tcb_info: COLLATERAL.tcb_info.replace(/"tcbEvaluationDataNumber":\d+/, `"tcbEvaluationDataNumber":${number}`),
+});
+// The sample collateral is Intel's evaluation data 17 (June 2025), below the floor
+// every verifier enforces (DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER, 20). To test the
+// other checks on the real quote, `genuine` verifies its signatures against the
+// genuine collateral while the floor reads CURRENT, the same collateral naming 20.
+const CURRENT = withEvaluationData(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER);
+const genuine: DcapVerify = (quote, collateral, nowSecs) =>
+  dcapVerify(quote, collateral === CURRENT ? COLLATERAL : collateral, nowSecs);
+
 const real = (overrides: Partial<Parameters<typeof createQuoteVerifier>[0]> = {}) =>
-  createQuoteVerifier({ dcapVerify, allowedMeasurements: [IMAGE], now: () => AT, ...overrides });
+  createQuoteVerifier({ dcapVerify: genuine, allowedMeasurements: [IMAGE], now: () => AT, ...overrides });
 
 describe('createQuoteVerifier on a real quote', () => {
   it('accepts a genuine quote from a trusted image that commits to the binding', async () => {
     const verifier = real();
     await expect(
-      verifier({ quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL }),
+      verifier({ quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT }),
     ).resolves.toBe(true);
     expect(verifier.includeCollateral).toBe(true);
   });
 
   it('refuses a quote that commits to another binding', async () => {
     await expect(
-      real()({ quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: '00'.repeat(32), collateral: COLLATERAL }),
+      real()({ quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: '00'.repeat(32), collateral: CURRENT }),
     ).rejects.toThrow('does not commit to this nonce and binding');
   });
 
@@ -71,13 +87,13 @@ describe('createQuoteVerifier on a real quote', () => {
         quoteB64: QUOTE_B64,
         nonce: NONCE,
         reportDataSuffix: SUFFIX,
-        collateral: COLLATERAL,
+        collateral: CURRENT,
       }),
     ).rejects.toThrow('are not an image this verifier trusts');
   });
 
   it('never combines the registers of different images', async () => {
-    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL };
+    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT };
     const other = 'ab'.repeat(48);
     // Each of the sample's registers is trusted, but each by a different image.
     const split = real({
@@ -92,7 +108,7 @@ describe('createQuoteVerifier on a real quote', () => {
   });
 
   it('accepts MRTD allowlists only together with the image registers', async () => {
-    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL };
+    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT };
     const lists = {
       allowedMeasurements: undefined,
       allowedMrtd: [MRTD],
@@ -105,7 +121,7 @@ describe('createQuoteVerifier on a real quote', () => {
   });
 
   it('checks an RTMR only when asked to', async () => {
-    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL };
+    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT };
     await expect(real({ allowedRtmr0: [hex(sampleTd.rtMr0)] })(args)).resolves.toBe(true);
     await expect(real({ allowedRtmr0: ['cd'.repeat(48)] })(args)).rejects.toThrow('RTMR0');
   });
@@ -118,7 +134,7 @@ describe('createQuoteVerifier on a real quote', () => {
         quoteB64: Buffer.from(tampered).toString('base64'),
         nonce: NONCE,
         reportDataSuffix: SUFFIX,
-        collateral: COLLATERAL,
+        collateral: CURRENT,
       }),
     ).rejects.toThrow('did not verify');
   });
@@ -129,17 +145,65 @@ describe('createQuoteVerifier on a real quote', () => {
         quoteB64: QUOTE_B64,
         nonce: NONCE,
         reportDataSuffix: SUFFIX,
-        collateral: COLLATERAL,
+        collateral: CURRENT,
       }),
     ).rejects.toThrow('did not verify');
   });
 
   it('gets collateral itself when the node sends none, and refuses without a way to', async () => {
-    const fetchCollateral = vi.fn(async () => COLLATERAL);
+    const fetchCollateral = vi.fn(async () => CURRENT);
     const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX };
     await expect(real({ fetchCollateral })(args)).resolves.toBe(true);
     expect(fetchCollateral).toHaveBeenCalledWith(QUOTE);
     await expect(real()(args)).rejects.toThrow('no collateral');
+  });
+});
+
+describe('the TCB evaluation data floor (core DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER)', () => {
+  const args = (collateral: DcapCollateral) => ({ quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral });
+  // dcap-qvl's verdict on the sample quote, whatever the collateral says, so
+  // the floor is the one thing that differs between the cases below.
+  const upToDate: DcapVerify = () => ({ status: 'UpToDate', report: { type: 'td10', data: sampleTd } });
+  const verifier = (overrides: Partial<Parameters<typeof createQuoteVerifier>[0]> = {}) =>
+    createQuoteVerifier({ dcapVerify: upToDate, allowedMeasurements: [IMAGE], ...overrides });
+
+  it('is the same number as core', () => {
+    expect(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER).toBe(20);
+  });
+
+  // A collateral source serving an older, still Intel-signed baseline makes an
+  // out-of-date platform read UpToDate: core's nodes refuse such a verdict.
+  it('refuses a verdict from the 2025 sample collateral, Intel-signed evaluation data 17', async () => {
+    expect(JSON.parse(COLLATERAL.tcb_info).tcbEvaluationDataNumber).toBe(17);
+    await expect(
+      createQuoteVerifier({ dcapVerify, allowedMeasurements: [IMAGE], now: () => AT })(args(COLLATERAL)),
+    ).rejects.toThrow('Intel TCB evaluation data 17, older than the minimum 20');
+  });
+
+  it('accepts evaluation data at or above the floor', async () => {
+    await expect(verifier()(args(withEvaluationData(20)))).resolves.toBe(true);
+    await expect(verifier()(args(withEvaluationData(22)))).resolves.toBe(true);
+    await expect(verifier()(args(withEvaluationData(19)))).rejects.toThrow('evaluation data 19, older than the minimum 20');
+  });
+
+  it('refuses collateral whose evaluation data is unknown', async () => {
+    for (const tcb_info of ['{}', '{"tcbEvaluationDataNumber":"20"}', '{"tcbEvaluationDataNumber":-1}', 'not json']) {
+      await expect(verifier()(args({ ...COLLATERAL, tcb_info }))).rejects.toThrow(
+        'evaluation data the platform\'s TCB status was computed against is unknown (minimum 20)',
+      );
+    }
+  });
+
+  it('can be raised by a policy, never lowered', async () => {
+    await expect(verifier({ minTcbEvaluationDataNumber: 22 })(args(withEvaluationData(21)))).rejects.toThrow(
+      'evaluation data 21, older than the minimum 22',
+    );
+    await expect(verifier({ minTcbEvaluationDataNumber: 22 })(args(withEvaluationData(22)))).resolves.toBe(true);
+    await expect(verifier({ minTcbEvaluationDataNumber: 0 })(args(withEvaluationData(17)))).rejects.toThrow(
+      'evaluation data 17, older than the minimum 20',
+    );
+    expect(() => verifier({ minTcbEvaluationDataNumber: Number.NaN })).toThrow('minTcbEvaluationDataNumber');
+    expect(() => verifier({ minTcbEvaluationDataNumber: 20.5 })).toThrow('minTcbEvaluationDataNumber');
   });
 });
 
@@ -148,7 +212,7 @@ describe('createQuoteVerifier policy', () => {
     status,
     report: { type, data: sampleTd },
   });
-  const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL };
+  const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT };
 
   it('accepts only up-to-date platforms by default', async () => {
     const outOfDate = createQuoteVerifier({ dcapVerify: () => report('OutOfDate'), allowedMeasurements: [IMAGE] });
@@ -196,7 +260,7 @@ describe('createQuoteVerifier policy', () => {
   it('passes the time now, in seconds', async () => {
     const dcap = vi.fn(() => report('UpToDate'));
     await createQuoteVerifier({ dcapVerify: dcap, allowedMeasurements: [IMAGE], now: () => 1_234_567_890 })(args);
-    expect(dcap).toHaveBeenCalledWith(QUOTE, COLLATERAL, 1_234_567);
+    expect(dcap).toHaveBeenCalledWith(QUOTE, CURRENT, 1_234_567);
   });
 
   it('will not be built to accept nothing, or with a measurement that is not one', () => {
@@ -240,14 +304,14 @@ describe('trustedMeasurementsFromReleases', () => {
   });
 
   it('builds a verifier that accepts the release image and not another profile of it', async () => {
-    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL };
+    const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT };
     const locked = trustedMeasurementsFromReleases([release('2.3.78', IMAGE.rtmr3)], { profile: 'locked-read-only' });
-    await expect(createQuoteVerifier({ dcapVerify, now: () => AT, ...locked })(args)).resolves.toBe(true);
+    await expect(createQuoteVerifier({ dcapVerify: genuine, now: () => AT, ...locked })(args)).resolves.toBe(true);
     const debug = trustedMeasurementsFromReleases([release('2.3.78', IMAGE.rtmr3)], {
       profile: 'debug',
       allowDebugProfile: true,
     });
-    await expect(createQuoteVerifier({ dcapVerify, now: () => AT, ...debug })(args)).rejects.toThrow(
+    await expect(createQuoteVerifier({ dcapVerify: genuine, now: () => AT, ...debug })(args)).rejects.toThrow(
       'are not an image this verifier trusts',
     );
   });

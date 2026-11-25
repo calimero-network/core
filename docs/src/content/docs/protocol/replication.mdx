@@ -99,7 +99,7 @@ entry the machine applied. Blank entries (a new leader's first) and membership
 changes do not count: they change no app state, and counting them on one side
 only made the first call after every election conflict once. Regression:
 `the_first_call_after_a_leader_change_commits_without_a_rerun` in
-`crates/node/tests/cluster.rs`; `calimero_build_conflicts_total` in
+`crates/node/tests/it/cluster.rs`; `calimero_build_conflicts_total` in
 `/ops/metrics` counts the conflicts a node's entries met. If they differ, other entries came in between (a new leader's,
 or a write that was not yet applied when the call ran) and the diff was computed
 against replaced state: the entry applies as a no-op with `conflict: true`,
@@ -259,7 +259,7 @@ logged, and `calimero_group_stopped` and `calimero_group_restarts_total` show it
 `a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status` in
 `crates/log/tests/cluster.rs`;
 `a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own` in
-`crates/node/tests/cluster.rs`.
+`crates/node/tests/it/cluster.rs`.
 
 A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
 from a consistent RocksDB view of the group's rows, never the whole state in
@@ -307,6 +307,17 @@ rest, deleting their data from that node.
   (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`). Nothing of it
   is stored or replicated. `reconcile` reads the same index, so a pass costs
   this node's groups, not groups times apps.
+- **Heartbeats are batched per peer.** openraft's own heartbeat timer is off
+  in every group, and one engine ticker sends every group's heartbeats each
+  `heartbeat_ms`; those to one peer
+  within `HEARTBEAT_BATCH_WINDOW` (5 ms) go in one `internal/raft-batch`
+  message of at most `MAX_HEARTBEATS_PER_BATCH` (1024), each item checked as a
+  message alone is. A batch the peer does not answer as a whole is sent again
+  item by item, so a peer on a release before it (no such route) still gets
+  every heartbeat. openraft's timer sent them every 300 ms (it checks
+  `heartbeat_ms` only on its tick, every 1.5 × `heartbeat_ms`); the ticker
+  sends them every 200 ms, a sixth of `election_min_ms` (1200 ms), so a
+  follower hears from its leader more often, never less.
 
 ## Replica moves
 

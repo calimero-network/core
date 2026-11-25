@@ -456,6 +456,15 @@ export function createRoutes(api: RouteClient) {
       secretSet: (args: operations['app_secret_set']['parameters']['path'] & operations['app_secret_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_secret_set']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"PUT","path":"/apps/{app}/secrets/{name}","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_secret_set']['responses'][200]['content']['application/json']>,
       /**
+       * Turn one app's egress off or on.
+       *
+       * `POST /apps/{app}/egress` (`app_set_egress`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      setEgress: (args: operations['app_set_egress']['parameters']['path'] & operations['app_set_egress']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_set_egress']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/egress","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_set_egress']['responses'][200]['content']['application/json']>,
+      /**
        * What an app stores.
        *
        * `GET /apps/{app}/storage` (`app_storage`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
@@ -1454,6 +1463,15 @@ export function createRoutes(api: RouteClient) {
        */
       delete: (args: operations['org_delete']['parameters']['path'] & Partial<NonNullable<operations['org_delete']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['org_delete']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/orgs/{org}","pathParams":["org"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_delete']['responses'][200]['content']['application/json']>,
+      /**
+       * Turn the organization's egress off or on.
+       *
+       * `POST /orgs/{org}/egress` (`org_egress`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      egress: (args: operations['org_egress']['parameters']['path'] & operations['org_egress']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_egress']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/orgs/{org}/egress","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_egress']['responses'][200]['content']['application/json']>,
       /**
        * One organization.
        *

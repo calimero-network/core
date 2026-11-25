@@ -157,6 +157,9 @@ struct Registry {
     diverged: BTreeMap<(u64, u64), u64>,
     /// Times a comparison found a replica newly different.
     divergences: u64,
+    /// Group → comparisons that could tell (agreed or differed), so a quiet
+    /// `diverged` can be told from a comparison that never ran.
+    compared: BTreeMap<u64, u64>,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
@@ -268,6 +271,9 @@ pub fn system_state_bytes(bytes: usize) {
 /// comparison that could not tell leaves it as it was.
 pub fn digest_compared(group: u64, peer: u64, outcome: calimero_log::Comparison) -> bool {
     let mut r = registry();
+    if !matches!(outcome, calimero_log::Comparison::Unknown) {
+        *r.compared.entry(group).or_default() += 1;
+    }
     match outcome {
         calimero_log::Comparison::Differ { index, .. } => {
             let first = r.diverged.insert((group, peer), index).is_none();
@@ -312,7 +318,7 @@ pub fn group(route: &str) -> &'static str {
         "/health" => "health",
         // What the cluster attests about its node releases: governance and deadlines.
         "/attestation" | "/releases" => "attestation",
-        "/internal/raft" => "raft",
+        "/internal/raft" | "/internal/raft-batch" => "raft",
         "/apps/{app}/intents" => "calls",
         "/apps/{app}/views" => "views",
         _ if route.starts_with("/auth/passkey/")
@@ -526,6 +532,16 @@ pub fn render(out: &mut String) {
         "# HELP calimero_group_divergences_total Times a leader found a replica's state newly different from its own at the same index.\n# TYPE calimero_group_divergences_total counter\ncalimero_group_divergences_total {}",
         r.divergences
     );
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_digest_comparisons_total Comparisons of a replica's state digest with this node's, as the group's leader, that agreed or differed; one that could not tell is not counted.\n# TYPE calimero_group_digest_comparisons_total counter"
+    );
+    for (group, n) in &r.compared {
+        let _w = writeln!(
+            out,
+            "calimero_group_digest_comparisons_total{{group=\"{group}\"}} {n}"
+        );
+    }
     let _w = writeln!(
         out,
         "# HELP calimero_raft_misaddressed_total Raft messages from peers whose addressee did not check out: not_addressee (refused, 421 NOT_ADDRESSEE), no_target (accepted with a warning this release).\n# TYPE calimero_raft_misaddressed_total counter"
@@ -958,6 +974,24 @@ mod tests {
     }
 
     #[test]
+    fn a_comparison_that_could_tell_is_counted_and_one_that_could_not_is_not() {
+        use calimero_log::Comparison;
+        let (group, peer) = (u64::MAX - 7, 2);
+        let count = || {
+            let mut out = String::new();
+            render(&mut out);
+            let series = format!("calimero_group_digest_comparisons_total{{group=\"{group}\"}} ");
+            out.lines()
+                .find_map(|l| l.strip_prefix(&series)?.parse::<u64>().ok())
+        };
+        digest_compared(group, peer, Comparison::Unknown);
+        assert_eq!(count(), None);
+        digest_compared(group, peer, Comparison::Agree { index: 1 });
+        digest_compared(group, peer, Comparison::Agree { index: 2 });
+        assert_eq!(count(), Some(2));
+    }
+
+    #[test]
     fn a_body_counts_at_most_the_sealed_cap() {
         let cap = calimero_sealed::server::MAX_SEALED_BYTES as u64;
         assert_eq!(body_bytes(Some(u64::MAX)), cap);
@@ -978,6 +1012,7 @@ mod tests {
         assert_eq!(group("/orgs/{org}/teams/{team}"), "orgs");
         assert_eq!(group("/invites/{token}/redeem"), "orgs");
         assert_eq!(group("/internal/raft"), "raft");
+        assert_eq!(group("/internal/raft-batch"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
         // Who may install packages is a packages question.

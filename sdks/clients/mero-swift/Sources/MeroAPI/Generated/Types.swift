@@ -159,13 +159,22 @@ public protocol APIProtocol: Sendable {
     func appUndelegate(_ input: Operations.AppUndelegate.Input) async throws -> Operations.AppUndelegate.Output
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
     /// - Remark: HTTP `GET /apps/{app}/egress`.
     /// - Remark: Generated from `#/paths//apps/{app}/egress/get(app_egress)`.
     func appEgress(_ input: Operations.AppEgress.Input) async throws -> Operations.AppEgress.Output
+    /// Turn one app's egress off or on
+    ///
+    /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)`.
+    func appSetEgress(_ input: Operations.AppSetEgress.Input) async throws -> Operations.AppSetEgress.Output
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -511,7 +520,7 @@ public protocol APIProtocol: Sendable {
     func appRunLogs(_ input: Operations.AppRunLogs.Input) async throws -> Operations.AppRunLogs.Output
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -520,7 +529,7 @@ public protocol APIProtocol: Sendable {
     func appSecrets(_ input: Operations.AppSecrets.Input) async throws -> Operations.AppSecrets.Output
     /// Set an app's own value of a declared secret
     ///
-    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -565,7 +574,7 @@ public protocol APIProtocol: Sendable {
     func appUndoView(_ input: Operations.AppUndoView.Input) async throws -> Operations.AppUndoView.Output
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1059,7 +1068,7 @@ public protocol APIProtocol: Sendable {
     func deploymentSecrets(_ input: Operations.DeploymentSecrets.Input) async throws -> Operations.DeploymentSecrets.Output
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1215,6 +1224,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /orgs/{org}/capabilities`.
     /// - Remark: Generated from `#/paths//orgs/{org}/capabilities/post(org_capabilities)`.
     func orgCapabilities(_ input: Operations.OrgCapabilities.Input) async throws -> Operations.OrgCapabilities.Output
+    /// Turn the organization's egress off or on
+    ///
+    /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/egress`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)`.
+    func orgEgress(_ input: Operations.OrgEgress.Input) async throws -> Operations.OrgEgress.Output
     /// The organization's invites
     ///
     /// Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.
@@ -1314,7 +1332,7 @@ public protocol APIProtocol: Sendable {
     func orgRename(_ input: Operations.OrgRename.Input) async throws -> Operations.OrgRename.Output
     /// Approve outbound prefixes for the organization's apps
     ///
-    /// The owner; `412` first.
+    /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1964,7 +1982,7 @@ extension APIProtocol {
     }
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -1977,6 +1995,25 @@ extension APIProtocol {
         try await appEgress(Operations.AppEgress.Input(
             path: path,
             headers: headers
+        ))
+    }
+    /// Turn one app's egress off or on
+    ///
+    /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)`.
+    public func appSetEgress(
+        path: Operations.AppSetEgress.Input.Path,
+        headers: Operations.AppSetEgress.Input.Headers = .init(),
+        body: Operations.AppSetEgress.Input.Body
+    ) async throws -> Operations.AppSetEgress.Output {
+        try await appSetEgress(Operations.AppSetEgress.Input(
+            path: path,
+            headers: headers,
+            body: body
         ))
     }
     /// An app's events as server-sent events
@@ -2680,7 +2717,7 @@ extension APIProtocol {
     }
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2697,7 +2734,7 @@ extension APIProtocol {
     }
     /// Set an app's own value of a declared secret
     ///
-    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2786,7 +2823,7 @@ extension APIProtocol {
     }
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3706,7 +3743,7 @@ extension APIProtocol {
     }
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -4020,6 +4057,25 @@ extension APIProtocol {
             body: body
         ))
     }
+    /// Turn the organization's egress off or on
+    ///
+    /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/egress`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)`.
+    public func orgEgress(
+        path: Operations.OrgEgress.Input.Path,
+        headers: Operations.OrgEgress.Input.Headers = .init(),
+        body: Operations.OrgEgress.Input.Body
+    ) async throws -> Operations.OrgEgress.Output {
+        try await orgEgress(Operations.OrgEgress.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
     /// The organization's invites
     ///
     /// Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.
@@ -4227,7 +4283,7 @@ extension APIProtocol {
     }
     /// Approve outbound prefixes for the organization's apps
     ///
-    /// The owner; `412` first.
+    /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -5780,7 +5836,7 @@ public enum Components {
                 case maxFuelPerDeveloperPerDay
             }
         }
-        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
+        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method and moves none of the apps it created, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
         ///
         /// - Remark: Generated from `#/components/schemas/UpgradePolicy`.
         public struct UpgradePolicy: Codable, Hashable, Sendable {
@@ -6021,7 +6077,7 @@ public enum Components {
                 case destinations
             }
         }
-        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
+        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
         ///
         /// - Remark: Generated from `#/components/schemas/UpdateReason`.
         @frozen public enum UpdateReason: Codable, Hashable, Sendable {
@@ -6263,17 +6319,64 @@ public enum Components {
             public struct Case7Payload: Codable, Hashable, Sendable {
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
                 @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                    case unclassified = "unclassified"
+                    case secretBindingChanged = "secretBindingChanged"
                 }
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
                 public var code: Components.Schemas.UpdateReason.Case7Payload.CodePayload
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/member`.
                 public var member: Swift.String?
-                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/package`.
-                public var package: Swift.String
-                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/version`.
-                public var version: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/name`.
+                public var name: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/before`.
+                public var before: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/after`.
+                public var after: Swift.String
                 /// Creates a new `Case7Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - name:
+                ///   - before:
+                ///   - after:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case7Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    name: Swift.String,
+                    before: Swift.String? = nil,
+                    after: Swift.String
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.name = name
+                    self.before = before
+                    self.after = after
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case name
+                    case before
+                    case after
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
+            case case7(Components.Schemas.UpdateReason.Case7Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case8`.
+            public struct Case8Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case unclassified = "unclassified"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/code`.
+                public var code: Components.Schemas.UpdateReason.Case8Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/version`.
+                public var version: Swift.String
+                /// Creates a new `Case8Payload`.
                 ///
                 /// - Parameters:
                 ///   - code:
@@ -6281,7 +6384,7 @@ public enum Components {
                 ///   - package:
                 ///   - version:
                 public init(
-                    code: Components.Schemas.UpdateReason.Case7Payload.CodePayload,
+                    code: Components.Schemas.UpdateReason.Case8Payload.CodePayload,
                     member: Swift.String? = nil,
                     package: Swift.String,
                     version: Swift.String
@@ -6298,8 +6401,8 @@ public enum Components {
                     case version
                 }
             }
-            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
-            case case7(Components.Schemas.UpdateReason.Case7Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case8`.
+            case case8(Components.Schemas.UpdateReason.Case8Payload)
             public init(from decoder: any Decoder) throws {
                 var errors: [any Error] = []
                 do {
@@ -6344,6 +6447,12 @@ public enum Components {
                 } catch {
                     errors.append(error)
                 }
+                do {
+                    self = .case8(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
                 throw Swift.DecodingError.failedToDecodeOneOfSchema(
                     type: Self.self,
                     codingPath: decoder.codingPath,
@@ -6365,6 +6474,8 @@ public enum Components {
                 case let .case6(value):
                     try value.encode(to: encoder)
                 case let .case7(value):
+                    try value.encode(to: encoder)
+                case let .case8(value):
                     try value.encode(to: encoder)
                 }
             }
@@ -7548,7 +7659,7 @@ public enum Components {
                 case targets
             }
         }
-        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).
+        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
         ///
         /// - Remark: Generated from `#/components/schemas/App`.
         public struct App: Codable, Hashable, Sendable {
@@ -7697,6 +7808,8 @@ public enum Components {
             public var attached: Components.Schemas.App.AttachedPayload?
             /// - Remark: Generated from `#/components/schemas/App/restorePoint`.
             public var restorePoint: Components.Schemas.RestorePoint?
+            /// - Remark: Generated from `#/components/schemas/App/egressOff`.
+            public var egressOff: Swift.Bool?
             /// Creates a new `App`.
             ///
             /// - Parameters:
@@ -7722,6 +7835,7 @@ public enum Components {
             ///   - links:
             ///   - attached:
             ///   - restorePoint:
+            ///   - egressOff:
             public init(
                 appId: Swift.String,
                 name: Swift.String,
@@ -7744,7 +7858,8 @@ public enum Components {
                 restore: Components.Schemas.App.RestorePayload? = nil,
                 links: Components.Schemas.App.LinksPayload? = nil,
                 attached: Components.Schemas.App.AttachedPayload? = nil,
-                restorePoint: Components.Schemas.RestorePoint? = nil
+                restorePoint: Components.Schemas.RestorePoint? = nil,
+                egressOff: Swift.Bool? = nil
             ) {
                 self.appId = appId
                 self.name = name
@@ -7768,6 +7883,7 @@ public enum Components {
                 self.links = links
                 self.attached = attached
                 self.restorePoint = restorePoint
+                self.egressOff = egressOff
             }
             public enum CodingKeys: String, CodingKey {
                 case appId
@@ -7792,6 +7908,7 @@ public enum Components {
                 case links
                 case attached
                 case restorePoint
+                case egressOff
             }
         }
         /// An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
@@ -8239,7 +8356,7 @@ public enum Components {
                 case upgrades
             }
         }
-        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
+        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
         ///
         /// - Remark: Generated from `#/components/schemas/Org`.
         public struct Org: Codable, Hashable, Sendable {
@@ -8443,6 +8560,8 @@ public enum Components {
             public var allowGuests: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/allowPublicLinks`.
             public var allowPublicLinks: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/Org/egressOff`.
+            public var egressOff: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/upgradePolicy`.
             public var upgradePolicy: Components.Schemas.UpgradePolicy?
             /// - Remark: Generated from `#/components/schemas/Org/appUpgradePolicies`.
@@ -8657,6 +8776,7 @@ public enum Components {
             ///   - personal:
             ///   - allowGuests:
             ///   - allowPublicLinks:
+            ///   - egressOff:
             ///   - upgradePolicy:
             ///   - appUpgradePolicies:
             ///   - pendingUpgrades:
@@ -8681,6 +8801,7 @@ public enum Components {
                 personal: Swift.Bool? = nil,
                 allowGuests: Swift.Bool? = nil,
                 allowPublicLinks: Swift.Bool? = nil,
+                egressOff: Swift.Bool? = nil,
                 upgradePolicy: Components.Schemas.UpgradePolicy? = nil,
                 appUpgradePolicies: Components.Schemas.Org.AppUpgradePoliciesPayload? = nil,
                 pendingUpgrades: Components.Schemas.Org.PendingUpgradesPayload? = nil,
@@ -8705,6 +8826,7 @@ public enum Components {
                 self.personal = personal
                 self.allowGuests = allowGuests
                 self.allowPublicLinks = allowPublicLinks
+                self.egressOff = egressOff
                 self.upgradePolicy = upgradePolicy
                 self.appUpgradePolicies = appUpgradePolicies
                 self.pendingUpgrades = pendingUpgrades
@@ -8730,6 +8852,7 @@ public enum Components {
                 case personal
                 case allowGuests
                 case allowPublicLinks
+                case egressOff
                 case upgradePolicy
                 case appUpgradePolicies
                 case pendingUpgrades
@@ -11823,6 +11946,88 @@ public enum Components {
                 )
                 self.subject = try container.decode(
                     Components.Schemas.ConsentPageCreateBodySetAllApps.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress`.
+        public struct ConsentPageCreateBodySetEgress: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case setEgress = "setEgress"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodySetEgress.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject/org`.
+                public var org: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject/app`.
+                public var app: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject/egress`.
+                public var egress: Swift.Bool
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                ///   - app:
+                ///   - egress:
+                public init(
+                    org: Swift.String,
+                    app: Swift.String? = nil,
+                    egress: Swift.Bool
+                ) {
+                    self.org = org
+                    self.app = app
+                    self.egress = egress
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case org
+                    case app
+                    case egress
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodySetEgress.SubjectPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodySetEgress`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodySetEgress.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodySetEgress.SubjectPayload,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodySetEgress.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodySetEgress.SubjectPayload.self,
                     forKey: .subject
                 )
                 self.returnTo = try container.decode(
@@ -14955,7 +15160,7 @@ public enum Operations {
     }
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -15032,25 +15237,53 @@ public enum Operations {
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
                         public var members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
+                        @frozen public enum EgressPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case on = "on"
+                            case off = "off"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
+                        public var egress: Operations.AppEgress.Output.Ok.Body.JsonPayload.EgressPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/offBy`.
+                        @frozen public enum OffByPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case organization = "organization"
+                            case instance = "instance"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/offBy`.
+                        public var offBy: Operations.AppEgress.Output.Ok.Body.JsonPayload.OffByPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/summary`.
+                        public var summary: Swift.String?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - app:
                         ///   - destinations:
                         ///   - members:
+                        ///   - egress:
+                        ///   - offBy:
+                        ///   - summary:
                         public init(
                             app: Swift.String,
                             destinations: [Swift.String],
-                            members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
+                            members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload,
+                            egress: Operations.AppEgress.Output.Ok.Body.JsonPayload.EgressPayload,
+                            offBy: Operations.AppEgress.Output.Ok.Body.JsonPayload.OffByPayload? = nil,
+                            summary: Swift.String? = nil
                         ) {
                             self.app = app
                             self.destinations = destinations
                             self.members = members
+                            self.egress = egress
+                            self.offBy = offBy
+                            self.summary = summary
                         }
                         public enum CodingKeys: String, CodingKey {
                             case app
                             case destinations
                             case members
+                            case egress
+                            case offBy
+                            case summary
                         }
                     }
                     /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/application\/json`.
@@ -15089,6 +15322,220 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.AppEgress.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Turn one app's egress off or on
+    ///
+    /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)`.
+    public enum AppSetEgress {
+        public static let id: Swift.String = "app_set_egress"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppSetEgress.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSetEgress.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSetEgress.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppSetEgress.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/json/egress`.
+                    public var egress: Swift.Bool
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - egress:
+                    ///   - confirm:
+                    public init(
+                        egress: Swift.Bool,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.egress = egress
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case egress
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.egress = try container.decode(
+                            Swift.Bool.self,
+                            forKey: .egress
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "egress",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/content/application\/json`.
+                case json(Operations.AppSetEgress.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppSetEgress.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppSetEgress.Input.Path,
+                headers: Operations.AppSetEgress.Input.Headers = .init(),
+                body: Operations.AppSetEgress.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/org`.
+                        public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/app`.
+                        public var app: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/egress`.
+                        public var egress: Swift.Bool
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/orgEgressOff`.
+                        public var orgEgressOff: Swift.Bool
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - org:
+                        ///   - app:
+                        ///   - egress:
+                        ///   - orgEgressOff:
+                        public init(
+                            org: Swift.String,
+                            app: Swift.String? = nil,
+                            egress: Swift.Bool,
+                            orgEgressOff: Swift.Bool
+                        ) {
+                            self.org = org
+                            self.app = app
+                            self.egress = egress
+                            self.orgEgressOff = orgEgressOff
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case org
+                            case app
+                            case egress
+                            case orgEgressOff
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/application\/json`.
+                    case json(Operations.AppSetEgress.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppSetEgress.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppSetEgress.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppSetEgress.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppSetEgress.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppSetEgress.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -22542,7 +22989,7 @@ public enum Operations {
     }
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -22599,8 +23046,18 @@ public enum Operations {
                         public struct SecretsPayload: Codable, Hashable, Sendable {
                             /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties`.
                             public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/hosts`.
-                                public var hosts: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/host`.
+                                public var host: Swift.String
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/paths`.
+                                public var paths: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/header`.
+                                public var header: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/format`.
+                                public var format: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/bodyField`.
+                                public var bodyField: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/binding`.
+                                public var binding: Swift.String
                                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/description`.
                                 public var description: Swift.String
                                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/required`.
@@ -22622,7 +23079,12 @@ public enum Operations {
                                 /// Creates a new `AdditionalPropertiesPayload`.
                                 ///
                                 /// - Parameters:
-                                ///   - hosts:
+                                ///   - host:
+                                ///   - paths:
+                                ///   - header:
+                                ///   - format:
+                                ///   - bodyField:
+                                ///   - binding:
                                 ///   - description:
                                 ///   - required:
                                 ///   - source:
@@ -22630,7 +23092,12 @@ public enum Operations {
                                 ///   - setBy:
                                 ///   - setAt:
                                 public init(
-                                    hosts: [Swift.String],
+                                    host: Swift.String,
+                                    paths: [Swift.String],
+                                    header: Swift.String? = nil,
+                                    format: Swift.String? = nil,
+                                    bodyField: Swift.String? = nil,
+                                    binding: Swift.String,
                                     description: Swift.String,
                                     required: Swift.Bool,
                                     source: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.SourcePayload,
@@ -22638,7 +23105,12 @@ public enum Operations {
                                     setBy: Swift.String? = nil,
                                     setAt: Swift.Int64? = nil
                                 ) {
-                                    self.hosts = hosts
+                                    self.host = host
+                                    self.paths = paths
+                                    self.header = header
+                                    self.format = format
+                                    self.bodyField = bodyField
+                                    self.binding = binding
                                     self.description = description
                                     self.required = required
                                     self.source = source
@@ -22647,7 +23119,12 @@ public enum Operations {
                                     self.setAt = setAt
                                 }
                                 public enum CodingKeys: String, CodingKey {
-                                    case hosts
+                                    case host
+                                    case paths
+                                    case header
+                                    case format
+                                    case bodyField
+                                    case binding
                                     case description
                                     case required
                                     case source
@@ -22766,7 +23243,7 @@ public enum Operations {
     }
     /// Set an app's own value of a declared secret
     ///
-    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -23614,7 +24091,7 @@ public enum Operations {
     }
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -31352,6 +31829,8 @@ public enum Operations {
                     case setAllApps(Components.Schemas.ConsentPageCreateBodySetAllApps)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetCapabilities`.
                     case setCapabilities(Components.Schemas.ConsentPageCreateBodySetCapabilities)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetEgress`.
+                    case setEgress(Components.Schemas.ConsentPageCreateBodySetEgress)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetMemberRole`.
                     case setMemberRole(Components.Schemas.ConsentPageCreateBodySetMemberRole)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetMemberTeams`.
@@ -31404,6 +31883,8 @@ public enum Operations {
                             self = .setAllApps(try .init(from: decoder))
                         case "setCapabilities":
                             self = .setCapabilities(try .init(from: decoder))
+                        case "setEgress":
+                            self = .setEgress(try .init(from: decoder))
                         case "setMemberRole":
                             self = .setMemberRole(try .init(from: decoder))
                         case "setMemberTeams":
@@ -31455,6 +31936,8 @@ public enum Operations {
                         case let .setAllApps(value):
                             try value.encode(to: encoder)
                         case let .setCapabilities(value):
+                            try value.encode(to: encoder)
+                        case let .setEgress(value):
                             try value.encode(to: encoder)
                         case let .setMemberRole(value):
                             try value.encode(to: encoder)
@@ -31683,6 +32166,7 @@ public enum Operations {
                             case deleteOrg = "deleteOrg"
                             case setCapabilities = "setCapabilities"
                             case setAllApps = "setAllApps"
+                            case setEgress = "setEgress"
                             case install = "install"
                             case updatePolicy = "updatePolicy"
                             case updates = "updates"
@@ -34059,7 +34543,7 @@ public enum Operations {
     }
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -37367,6 +37851,220 @@ public enum Operations {
             }
         }
     }
+    /// Turn the organization's egress off or on
+    ///
+    /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/egress`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)`.
+    public enum OrgEgress {
+        public static let id: Swift.String = "org_egress"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/path/org`.
+                public var org: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String) {
+                    self.org = org
+                }
+            }
+            public var path: Operations.OrgEgress.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgEgress.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgEgress.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.OrgEgress.Input.Headers
+            /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/json/egress`.
+                    public var egress: Swift.Bool
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - egress:
+                    ///   - confirm:
+                    public init(
+                        egress: Swift.Bool,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.egress = egress
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case egress
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.egress = try container.decode(
+                            Swift.Bool.self,
+                            forKey: .egress
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "egress",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/content/application\/json`.
+                case json(Operations.OrgEgress.Input.Body.JsonPayload)
+            }
+            public var body: Operations.OrgEgress.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.OrgEgress.Input.Path,
+                headers: Operations.OrgEgress.Input.Headers = .init(),
+                body: Operations.OrgEgress.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/org`.
+                        public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/app`.
+                        public var app: Swift.String?
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/egress`.
+                        public var egress: Swift.Bool
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/orgEgressOff`.
+                        public var orgEgressOff: Swift.Bool
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - org:
+                        ///   - app:
+                        ///   - egress:
+                        ///   - orgEgressOff:
+                        public init(
+                            org: Swift.String,
+                            app: Swift.String? = nil,
+                            egress: Swift.Bool,
+                            orgEgressOff: Swift.Bool
+                        ) {
+                            self.org = org
+                            self.app = app
+                            self.egress = egress
+                            self.orgEgressOff = orgEgressOff
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case org
+                            case app
+                            case egress
+                            case orgEgressOff
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/application\/json`.
+                    case json(Operations.OrgEgress.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.OrgEgress.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.OrgEgress.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.OrgEgress.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.OrgEgress.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.OrgEgress.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// The organization's invites
     ///
     /// Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.
@@ -39471,7 +40169,7 @@ public enum Operations {
     }
     /// Approve outbound prefixes for the organization's apps
     ///
-    /// The owner; `412` first.
+    /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -44951,6 +45649,8 @@ public enum Operations {
                         ///
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secrets`.
                         public var secrets: OpenAPIRuntime.OpenAPIValueContainer
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secretBindings`.
+                        public var secretBindings: [Swift.String]
                         /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/uses`.
@@ -44995,6 +45695,7 @@ public enum Operations {
                         ///   - author:
                         ///   - outbound:
                         ///   - secrets: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///   - secretBindings:
                         ///   - uses: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - destinations:
@@ -45011,6 +45712,7 @@ public enum Operations {
                             author: Swift.String? = nil,
                             outbound: [Swift.String],
                             secrets: OpenAPIRuntime.OpenAPIValueContainer,
+                            secretBindings: [Swift.String],
                             uses: OpenAPIRuntime.OpenAPIValueContainer,
                             abi: OpenAPIRuntime.OpenAPIValueContainer,
                             destinations: [Swift.String]? = nil,
@@ -45027,6 +45729,7 @@ public enum Operations {
                             self.author = author
                             self.outbound = outbound
                             self.secrets = secrets
+                            self.secretBindings = secretBindings
                             self.uses = uses
                             self.abi = abi
                             self.destinations = destinations
@@ -45044,6 +45747,7 @@ public enum Operations {
                             case author
                             case outbound
                             case secrets
+                            case secretBindings
                             case uses
                             case abi
                             case destinations

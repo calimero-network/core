@@ -19,6 +19,8 @@ use eyre::{bail, eyre, WrapErr};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::env::Home;
+
 pub mod uses;
 
 /// The default component file names, as `mero-app-build` wrote them.
@@ -250,7 +252,7 @@ pub struct PublishArgs {
     #[arg(
         long,
         env = "CALIMERO_REGISTRY_URL",
-        default_value = "https://apps.calimero.network"
+        default_value = crate::registry::DEFAULT_REGISTRY
     )]
     pub registry: String,
     /// The registry API key (the registry's Organizations page, CLI Access),
@@ -289,7 +291,7 @@ pub struct ReleaseArgs {
     #[arg(
         long,
         env = "CALIMERO_REGISTRY_URL",
-        default_value = "https://apps.calimero.network"
+        default_value = crate::registry::DEFAULT_REGISTRY
     )]
     pub registry: String,
     /// The registry API key, or with `--org` the Cloud organization's
@@ -1127,15 +1129,16 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if !outbound.is_empty() {
         let _ = manifest.insert("outbound".into(), json!(outbound));
     }
-    // `[package.metadata.calimero.secrets.NAME] hosts, description, required`: what the
-    // app's outbound requests name, so whoever deploys it knows what to supply. Checked
+    // `[package.metadata.calimero.secrets.NAME] host, paths, header (+ format) or
+    // bodyField, description, required`: each credential the app needs and where the node attaches
+    // it, so whoever deploys it knows what to supply and the app never places it. Checked
     // as a node checks it at install (`BundleManifest::check_secrets`), against the
     // outbound prefixes above.
     if let Some(secrets) = meta.table.get("secrets") {
         let secrets: std::collections::BTreeMap<String, calimero_bundle::BundleSecret> =
             serde_json::to_value(secrets)
                 .and_then(serde_json::from_value)
-                .wrap_err("[package.metadata.calimero.secrets]: each NAME takes hosts, description and required")?;
+                .wrap_err("[package.metadata.calimero.secrets]: each NAME takes host, paths (path prefixes on it, [\"/\"] for all), then header (with an optional format, \"Bearer {}\") or bodyField, and description and required")?;
         let probe = calimero_bundle::BundleManifest {
             outbound: outbound.clone(),
             secrets: Some(secrets.clone()),
@@ -1267,26 +1270,25 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
 /// `app publish`: the registry's `POST /api/bundles/push`, the signed
 /// manifest's own fields (all of them: the signature covers every key) with
 /// the whole `.mpk` as hex in `_binary`.
-pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
+pub async fn publish(a: &PublishArgs, home: &Home) -> eyre::Result<Value> {
     let data = std::fs::read(&a.mpk).wrap_err_with(|| format!("reading {}", a.mpk.display()))?;
-    let (manifest, _) = extract_bundle_manifest(&data, &semver::Version::new(u64::MAX, 0, 0))?;
-    let Value::Object(mut body) = manifest else {
-        bail!("{}: the manifest is not an object", a.mpk.display());
-    };
-    let _ = body.entry("version").or_insert_with(|| json!("1.0"));
-    let _ = body.entry("migrations").or_insert_with(|| json!([]));
-    let _ = body.insert("_binary".into(), json!(hex::encode(&data)));
-    if a.public {
-        let _ = body.insert("_visibility".into(), json!("public"));
-    }
-    let key = a
-        .api_key
-        .clone()
-        .ok_or_else(|| eyre!("give --api-key or CALIMERO_REGISTRY_API_KEY"))?;
+    let body = publish_body(&data, a.public).wrap_err_with(|| a.mpk.display().to_string())?;
     let registry = a.registry.trim_end_matches('/');
     if !registry.starts_with("https://") && !is_loopback(registry) {
         bail!("--registry must be https:// (an API key is never sent in the clear)");
     }
+    // The key `registry login` saved is a registry key, never an org's Cloud key.
+    let saved = || {
+        a.org
+            .is_none()
+            .then(|| home.registry_key(registry))
+            .flatten()
+    };
+    let key = a.api_key.clone().or_else(saved).ok_or_else(|| {
+        eyre!(
+            "give --api-key or CALIMERO_REGISTRY_API_KEY, or sign in with `meroctl registry login`"
+        )
+    })?;
     let http = reqwest::Client::new();
     let token = match &a.org {
         Some(org) => registry_token(&http, &a.cloud, &key, org).await?,
@@ -1306,6 +1308,18 @@ pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
         bail!("the registry refused the bundle: {status} {code}: {message}");
     }
     Ok(answer)
+}
+
+fn publish_body(mpk: &[u8], public: bool) -> eyre::Result<Value> {
+    let (manifest, _) = extract_bundle_manifest(mpk, &semver::Version::new(u64::MAX, 0, 0))?;
+    let Value::Object(mut body) = manifest else {
+        bail!("the manifest is not an object");
+    };
+    let _ = body.insert("_binary".into(), json!(hex::encode(mpk)));
+    if public {
+        let _ = body.insert("_visibility".into(), json!("public"));
+    }
+    Ok(Value::Object(body))
 }
 
 pub fn is_loopback(url: &str) -> bool {
@@ -1373,5 +1387,58 @@ mod release_tests {
         assert!(older.contains("not newer than 1.10.0"), "{older}");
         let loose = check_newer("p", "1.4", []).unwrap_err().to_string();
         assert!(loose.contains("not a semver version"), "{loose}");
+    }
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use calimero_bundle::{sign_manifest_json, verify_manifest_signature};
+    use serde_json::{json, Value};
+
+    use super::publish_body;
+
+    fn mpk_without_migrations() -> (Vec<u8>, Value) {
+        let mut manifest = json!({
+            "version": "1.0", "package": "com.example.app", "appVersion": "1.0.0",
+            "minRuntimeVersion": "0.0.0",
+        });
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let _ = sign_manifest_json(&mut manifest, &key).expect("sign");
+        let bytes = serde_json::to_vec(&manifest).expect("serialize");
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "manifest.json", bytes.as_slice())
+            .expect("append");
+        let mpk = tar.into_inner().expect("tar").finish().expect("gzip");
+        (mpk, manifest)
+    }
+
+    /// The registry verifies the signature over every key but `_`-prefixed ones, so
+    /// the body may not carry a key the signed manifest lacks.
+    #[test]
+    fn the_body_carries_exactly_the_signed_manifest() {
+        let (mpk, manifest) = mpk_without_migrations();
+        let body = publish_body(&mpk, false).expect("body");
+        let unsigned: serde_json::Map<String, Value> = body
+            .as_object()
+            .expect("object")
+            .iter()
+            .filter(|(k, _)| !k.starts_with('_'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        assert_eq!(Value::Object(unsigned), manifest);
+        let _ = verify_manifest_signature(&body).expect("signature holds over the body");
+        assert!(body["_binary"].is_string());
+        assert!(body.get("_visibility").is_none());
+        assert_eq!(
+            publish_body(&mpk, true).expect("body")["_visibility"],
+            "public"
+        );
     }
 }

@@ -31,6 +31,7 @@ use config::ContextConfig;
 - **Module granularity:** one `use` per module path (`use core::pin::Pin;`, `use std::time::Duration;`), each crate's paths on separate lines rather than one nested tree.
 - **Imported names:** bring a type in with `use std::fs::File;` and call `File::open(..)`, rather than spelling the full path at the call site.
 - **Manifests:** list `Cargo.toml` dependencies alphabetically.
+- **One version per crate:** `cargo deny check bans` fails on a crate in two versions. Unify it (`cargo update -p <crate>`, or move our dependency to the version upstream uses); only when a dependency pins the other version, add a `skip` to `deny.toml` naming that dependency.
 
 ## Modules
 
@@ -43,6 +44,7 @@ Place a helper shared across a crate in a `commons.rs`-style module, and a type 
 
 Return errors with `?`, mapping them into the crate's error type with `.map_err()`.
 Crates use `eyre`, imported as `use eyre::Result as EyreResult;`.
+`deny.toml` bans `anyhow`; the one exception is `calimero-tee-attestation`, whose collateral transports implement dcap-qvl's `HttpClient`, a trait that returns `anyhow::Result`.
 
 A panic point (`.unwrap()`, `.expect()`, `assert!`, `panic!`) is reserved for an invariant that cannot fail, or a failure where aborting the node is the right response.
 State that invariant beside it: `// SAFETY: guaranteed by X`.
@@ -78,11 +80,11 @@ Delete commented-out code; add future code in the change that first uses it.
 A PR touching a path in `TRUST_BOUNDARY_PATHS` ([`scripts/check-trust-boundary.py`](scripts/check-trust-boundary.py)) must answer the PR template's Trust boundary block; CI fails without it.
 Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero-security-fix/SKILL.md`](.cursor/skills/calimero-security-fix/SKILL.md)).
 
-- **Untrusted:** every peer, HTTP caller, registry download and app guest, and every field a signature or an attestation does not cover - [`clients_refuse_unattested_nodes_and_plain_requests`](crates/node/tests/component_cluster.rs).
+- **Untrusted:** every peer, HTTP caller, registry download and app guest, and every field a signature or an attestation does not cover - [`clients_refuse_unattested_nodes_and_plain_requests`](crates/node/tests/it/component_cluster.rs).
 - **Identity** comes from a verified credential or signature; a field in the request is a claim, not an identity - `principal` in [`crates/node/src/api.rs`](crates/node/src/api.rs), which derives the caller from the session token or API key alone.
-- **Verify before acting:** the check that authorizes a store write, install or network call runs before it - [`an_uploaded_package_is_verified_and_reaches_the_other_nodes`](crates/node/tests/cluster.rs).
+- **Verify before acting:** the check that authorizes a store write, install or network call runs before it - [`an_uploaded_package_is_verified_and_reaches_the_other_nodes`](crates/node/tests/it/cluster.rs).
 - **Limits:** every input from outside has a named constant bounding its size, count, time or concurrency, checked before the costly work - [`MAX_PENDING_CHALLENGES`](crates/node/src/api.rs), [`MAX_STATE_BYTES`](crates/node/src/presence.rs) and [`oversized_state_is_refused`](crates/node/src/presence.rs).
-- **Ending membership:** every gated operation considers removed, departed, revoked, read-only and inherited actors, and actors from other organizations, and judges them on fresh system state - [`teams_work_like_v1_subgroups`](crates/node/tests/component_cluster.rs), `gate` in [`crates/node/src/api.rs`](crates/node/src/api.rs).
+- **Ending membership:** every gated operation considers removed, departed, revoked, read-only and inherited actors, and actors from other organizations, and judges them on fresh system state - [`teams_work_like_v1_subgroups`](crates/node/tests/it/component_cluster.rs), `gate` in [`crates/node/src/api.rs`](crates/node/src/api.rs).
 - **Closed input:** refuse unknown fields, variants and versions - the sealed envelope's `RequestHead` in [`crates/sealed/src/server.rs`](crates/sealed/src/server.rs), and `merod`'s `NodeArgs` ([`crates/merod/src/node_config.rs`](crates/merod/src/node_config.rs)).
 - **One gate:** enforce a rule in the shared function every caller goes through - `attest::verify` in [`crates/client/src/attest.rs`](crates/client/src/attest.rs), which clients and peers both call.
 - **Log entries:** a new command or field ships with a feature gate. A new system or app log command, or a new field that changes what an existing one does, is a [`Feature`](crates/node/src/system/cluster_version.rs) with the release it ships in (`FEATURES`, `Feature::since`), named in `SystemCmd::features` (exhaustive: a new command does not compile until it says), and is never proposed below the cluster version: `Node::sys_write` refuses it `409 FEATURE_NOT_ACTIVE`, and a route that asks for a passkey checks `Node::require_features` first. A node on an older release skips what it cannot decode, so an ungated entry splits the replicas' state - [`a_feature_is_never_proposed_while_an_older_node_holds_the_log`](crates/node/src/system/cluster_version.rs).

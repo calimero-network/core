@@ -132,7 +132,7 @@ hosts = ["api.example.com"]
 | `snapshots/` | Raft snapshot files, sealed frame by frame. |
 | `cluster-key` | The cluster key K_c, wrapped under this release's storage key K_r. A K_r that does not open it stops the node: a node never moves to another release in place. |
 | `signing-key` | The node's receipt key (it signs sessions, receipts and recovery files), wrapped under K_r; made on first start. |
-| `components/` | Compiled app components, each with a MAC under a key derived from K_c, so only this cluster's own compilations load. |
+| `components/` | Compiled app components, each with a MAC under a key derived from K_c, so only this cluster's own compilations load. The node deletes the ones no app uses any more, and those an earlier wasmtime or engine config compiled, once an hour old; a deleted one that comes back is compiled again. |
 
 A job node (`job-node = true`) keeps only `scratch/`, the files of the runs it
 holds, emptied at each start.
@@ -162,7 +162,7 @@ with `env::http_request`. Without it, every such request fails.
 | --- | --- |
 | `enabled` | `true` to allow outbound requests at all. Default `false`. |
 | `hosts` | DNS names requests may go to; `"*"` allows any host an installed app's signed manifest declares. |
-| `env_secrets.NAME` | A secret from an environment variable, used in a request as `{{secret:NAME}}`: `env` (the variable, read once at start), `packages`, `signers` (`did:key:…`; both must match) and `hosts` (where it may be sent). |
+| `env_secrets.NAME` | A secret from an environment variable, which the node attaches to a request where a release's signed manifest binds `NAME` (one host, one header or body field; [Secrets](/build/guides/outbound/#secrets)): `env` (the variable, read once at start), `packages`, `signers` (`did:key:…`; both must match) and `hosts` (where it may be sent; the release's binding must name one of them). The app never reads the value but can make any request it authorizes to that host: bind it only to signers whose code you trust with it, and give it the least privilege that works ([Secrets and what an app can do with them](/protocol/secrets/)). |
 | `sidecar` | Secrets from a loopback service instead: `url` (a loopback `http://` URL) and `token_env` (the variable holding the bearer token sent to it). Exclusive with `env_secrets`. |
 
 A request is made only when all of these hold: the operator allows the host

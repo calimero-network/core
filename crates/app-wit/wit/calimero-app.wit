@@ -1,4 +1,4 @@
-package calimero:app@0.5.6;
+package calimero:app@0.5.7;
 
 interface types {
   type account-id = string;
@@ -30,6 +30,23 @@ interface storage {
   add: func(key: list<u8>, delta: s64);   // commutative, no read; value is a CBOR integer (D47)
   resource cursor { next: func(max: u32) -> list<tuple<list<u8>, list<u8>>>; }
   range: func(start: list<u8>, end: list<u8>, reverse: bool) -> cursor;
+
+  // 0.5.7: `put`, `delete` and `add` that answer a write past one of the run's limits as
+  // an error the guest handles, where the three above trap. Nothing is written or counted
+  // for a refused write; the answer depends only on the run's writes, so every node gives
+  // the same one. Every other refusal (a view writing, a key over 1 KiB) still traps.
+  enum run-limit {
+    // more than `max` writes (`put`, `delete`, `add`) in one run (MAX_WRITES)
+    writes,
+    // more than `max` bytes written in one run: keys, values, events, xcalls (MAX_RUN_BYTES)
+    bytes,
+  }
+  // `attempted` is what the run would have reached with this write: the write's number, or
+  // the run's bytes with it.
+  record limit-exceeded { limit: run-limit, max: u64, attempted: u64 }
+  put-checked: func(key: list<u8>, value: list<u8>) -> result<_, limit-exceeded>;
+  delete-checked: func(key: list<u8>) -> result<_, limit-exceeded>;
+  add-checked: func(key: list<u8>, delta: s64) -> result<_, limit-exceeded>;
 }
 
 // Available only while handling kind = migrate (D38). `storage` reads the old state

@@ -81,6 +81,7 @@ is stale.
 ```bash
 cargo build -p merod -p meroctl
 cargo test -p <package>                  # e.g. calimero-node, meroctl, calimero-log
+cargo test -p calimero-node --test it <module>::   # the node's integration tests are one binary, `it`
 cargo clippy -p <package> --all-targets -- -D warnings
 ```
 
