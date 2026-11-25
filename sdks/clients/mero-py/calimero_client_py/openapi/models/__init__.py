@@ -154,8 +154,12 @@ from .assertion import Assertion
 from .attestation_doc import AttestationDoc
 from .attestation_purpose import AttestationPurpose
 from .backup_key_answer import BackupKeyAnswer
-from .backup_key_answer_holder import BackupKeyAnswerHolder
-from .backup_key_answer_holder_kind import BackupKeyAnswerHolderKind
+from .backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
+from .backup_key_answer_holder_type_0_kind import BackupKeyAnswerHolderType0Kind
+from .backup_key_answer_holder_type_1 import BackupKeyAnswerHolderType1
+from .backup_key_answer_holder_type_1_kind import BackupKeyAnswerHolderType1Kind
+from .backup_key_answer_holder_type_2 import BackupKeyAnswerHolderType2
+from .backup_key_answer_holder_type_2_kind import BackupKeyAnswerHolderType2Kind
 from .backup_key_answer_key_type_0 import BackupKeyAnswerKeyType0
 from .backup_key_body import BackupKeyBody
 from .blob_delete_response_200 import BlobDeleteResponse200
@@ -552,6 +556,7 @@ from .package_ref import PackageRef
 from .package_upload_response_200 import PackageUploadResponse200
 from .package_upload_response_200_services import PackageUploadResponse200Services
 from .package_versions_item import PackageVersionsItem
+from .package_versions_item_components import PackageVersionsItemComponents
 from .package_versions_item_services import PackageVersionsItemServices
 from .package_versions_item_source import PackageVersionsItemSource
 from .page import Page
@@ -917,8 +922,12 @@ __all__ = (
     "AttestationDoc",
     "AttestationPurpose",
     "BackupKeyAnswer",
-    "BackupKeyAnswerHolder",
-    "BackupKeyAnswerHolderKind",
+    "BackupKeyAnswerHolderType0",
+    "BackupKeyAnswerHolderType0Kind",
+    "BackupKeyAnswerHolderType1",
+    "BackupKeyAnswerHolderType1Kind",
+    "BackupKeyAnswerHolderType2",
+    "BackupKeyAnswerHolderType2Kind",
     "BackupKeyAnswerKeyType0",
     "BackupKeyBody",
     "BlobDeleteResponse200",
@@ -1251,6 +1260,7 @@ __all__ = (
     "PackageUploadResponse200",
     "PackageUploadResponse200Services",
     "PackageVersionsItem",
+    "PackageVersionsItemComponents",
     "PackageVersionsItemServices",
     "PackageVersionsItemSource",
     "Page",

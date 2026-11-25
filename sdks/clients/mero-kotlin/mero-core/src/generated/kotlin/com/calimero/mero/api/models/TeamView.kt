@@ -33,20 +33,20 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).
+ * A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's).
  *
  * @param teamId 
  * @param name 
  * @param parent 
  * @param join 
  * @param metadata Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param `package` 
+ * @param defaultCapabilities 
  * @param members 
  * @param children 
  * @param apps 
  * @param myRole 
  * @param member 
- * @param `package` 
- * @param defaultCapabilities 
  */
 @Serializable
 
@@ -68,6 +68,12 @@ data class TeamView (
     @Contextual @SerialName(value = "metadata")
     val metadata: kotlinx.serialization.json.JsonElement?,
 
+    @SerialName(value = "package")
+    val `package`: kotlin.String?,
+
+    @SerialName(value = "defaultCapabilities")
+    val defaultCapabilities: kotlin.Long?,
+
     @SerialName(value = "members")
     val members: kotlin.collections.List<TeamViewMembersInner>,
 
@@ -81,13 +87,7 @@ data class TeamView (
     val myRole: TeamRole?,
 
     @SerialName(value = "member")
-    val member: kotlin.Boolean,
-
-    @SerialName(value = "package")
-    val `package`: kotlin.String? = null,
-
-    @SerialName(value = "defaultCapabilities")
-    val defaultCapabilities: kotlin.Long? = null
+    val member: kotlin.Boolean
 
 ) {
 

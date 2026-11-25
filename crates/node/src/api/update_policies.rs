@@ -7,6 +7,7 @@
 )]
 use super::*;
 
+use crate::system::PolicyView;
 use crate::types::UpgradePolicy;
 
 /// The most apps `GET /orgs/{org}/updates` reads in one page: each is classified, which
@@ -73,14 +74,14 @@ async fn org_policy(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PolicyView>> {
     let p = person(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account)).is_some()) {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(node.sys(|s| s.policy_json(&org, None))))
+    Ok(Json(node.sys(|s| s.policy_view(&org, None))))
 }
 
 /// `POST /orgs/{org}/upgrade-policy`: set or drop the organization's update policy, for
@@ -133,10 +134,10 @@ async fn app_policy(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PolicyView>> {
     let (app, _p) = super::upgrades::readable_app(&node, &headers, &app_id).await?;
     Ok(Json(
-        node.sys(|s| s.policy_json(&app.org, Some(&app.app_id))),
+        node.sys(|s| s.policy_view(&app.org, Some(&app.app_id))),
     ))
 }
 

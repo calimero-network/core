@@ -22,6 +22,36 @@ pub struct EgressSet {
     pub app: Option<AppId>,
 }
 
+/// What a release approval answers (`#ApprovedReleases`): the releases the scope approves now.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovedReleases {
+    pub approved_releases: BTreeSet<String>,
+}
+
+/// What `SetReleaseDeadline` answers (`#Deadlines`): every deadline after the change.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Deadlines {
+    pub deadlines: Vec<ReleaseDeadline>,
+}
+
+/// One release deadline: `after` RFC 3339, `afterSecs` Unix seconds.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseDeadline {
+    pub version: String,
+    pub after: String,
+    pub after_secs: u64,
+}
+
+/// What an outbound approval answers (`#OutboundApproved`): the approval the scope holds now
+/// for the package's publisher.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutboundApproved {
+    pub signer: String,
+    pub approval: crate::types::OutboundApproval,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
@@ -133,7 +163,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 }
                 let _gone = set.remove(&version);
             }
-            Ok(json!({ "approvedReleases": set }))
+            Ok(json!(ApprovedReleases {
+                approved_releases: set.clone()
+            }))
         }
         SystemCmd::SetReleaseDeadline { version, after, .. } => {
             // Closed input: a semver release, so it orders against the
@@ -156,7 +188,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     let _gone = s.release_deadlines.remove(&version);
                 }
             }
-            Ok(json!({ "deadlines": s.deadlines_json() }))
+            Ok(json!(Deadlines {
+                deadlines: s.deadlines_json()
+            }))
         }
         SystemCmd::SetReleaseApproval {
             scope,
@@ -189,7 +223,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 }
                 let _gone = set.remove(&version);
             }
-            Ok(json!({ "approvedReleases": set }))
+            Ok(json!(ApprovedReleases {
+                approved_releases: set.clone()
+            }))
         }
         SystemCmd::SetOutboundApproval {
             scope,
@@ -247,7 +283,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 reviewed: merged.reviewed,
             };
             let _prev = approvals.insert(signer.clone(), approval.clone());
-            Ok(json!({ "signer": signer, "approval": approval }))
+            Ok(json!(OutboundApproved { signer, approval }))
         }
         SystemCmd::SetEgress {
             org,
