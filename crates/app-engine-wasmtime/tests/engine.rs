@@ -735,25 +735,37 @@ fn a_new_engine_deletes_artifacts_of_another_wasmtime_or_config() {
         age(p);
     }
     let sha = hex::encode(Sha256::digest(&component));
+    // The previous wasmtime's artifact of another component, under this engine's own
+    // config hash, so only the tag tells it apart.
+    let own_name = own[0].file_name().unwrap().to_str().unwrap();
+    let config_hash = own_name
+        .strip_suffix(".cwasm")
+        .and_then(|n| n.rsplit('-').next())
+        .unwrap();
+    assert_eq!(
+        own_name,
+        format!("{sha}-wasmtime51-{config_hash}.cwasm"),
+        "artifacts are tagged with the wasmtime release line"
+    );
     let old_wasmtime = plant(
         fx.cache.path(),
-        &format!("{sha}-wasmtime49-0123456789abcdef.cwasm"),
+        &format!("{}-wasmtime50-{config_hash}.cwasm", "ef".repeat(32)),
         false,
     );
     let old_config = plant(
         fx.cache.path(),
-        &format!("{}-wasmtime50-0123456789abcdef.cwasm", "ab".repeat(32)),
+        &format!("{}-wasmtime51-0123456789abcdef.cwasm", "ab".repeat(32)),
         false,
     );
     let just_written = plant(
         fx.cache.path(),
-        &format!("{}-wasmtime50-fedcba9876543210.cwasm", "cd".repeat(32)),
+        &format!("{}-wasmtime51-fedcba9876543210.cwasm", "cd".repeat(32)),
         true,
     );
     let stray_temp = fx
         .cache
         .path()
-        .join(format!("{sha}-wasmtime50-0123456789abcdef.tmp-1-0"));
+        .join(format!("{sha}-wasmtime51-0123456789abcdef.tmp-1-0"));
     std::fs::write(&stray_temp, b"half").unwrap();
     age(&stray_temp);
     let unrelated = fx.cache.path().join("notes.txt");
