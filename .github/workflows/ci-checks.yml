@@ -526,8 +526,8 @@ jobs:
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
           python3 scripts/check-api-compat.py ${base:+--base "$base"}
 
-  # Every app under apps/ is its own workspace, whose lockfile no other build updates:
-  # each must match its manifests, and change only when they need it to.
+  # Every app under apps/ and Rust client under sdks/clients/ is its own workspace, whose lockfile
+  # no other build updates: each must match its manifests, and change only when they need it to.
   app-lockfiles:
     name: App lockfiles
     needs: scope
@@ -547,7 +547,7 @@ jobs:
       - name: Test the check
         run: python3 scripts/tests/check-app-lockfiles-test.py
 
-      - name: Every app lockfile current, none rewritten without need
+      - name: Every app and client lockfile current, none rewritten without need
         run: |
           # In CI the checkout is the merge commit; locally, the merge base with origin/master.
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi

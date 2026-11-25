@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
     match cmd {
         SystemCmd::BindPublisher {
@@ -69,7 +66,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let here = m.cluster.as_str();
     let s = &mut m.state;
     match cmd {
@@ -80,7 +77,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             at,
         } => {
             if !s.accounts.contains_key(&actor) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             if !s.may_deploy(&actor, at) {
                 return Err(NOT_A_DEPLOYER);
@@ -93,7 +90,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     .map(|b| b.size)
                     .sum();
                 if used + size > s.quotas.max_bundle_bytes_per_account {
-                    return Err("quota exceeded: bundle storage");
+                    return Err(Rejection::quota("bundle storage"));
                 }
             }
             let _prev = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
@@ -112,7 +109,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let actor = release.installed_by.clone();
             let by_operator = actor == OPERATOR;
             if !by_operator && !s.accounts.contains_key(&actor) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             // Installing a release again is an install too: it makes the
             // release the installer's to use.
@@ -120,11 +117,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(NOT_A_DEPLOYER);
             }
             if !s.modules_installed(&release) {
-                return Err("a module the pipelines use is no longer installed");
+                return Err("a module the pipelines use is no longer installed".into());
             }
             if let Some(p) = s.packages.get(&package) {
                 if p.signer_id != signer_id {
-                    return Err("the package is published under another key");
+                    return Err("the package is published under another key".into());
                 }
                 if let Some(v) = p.versions.get(&release.version) {
                     // Other bytes under its version are a different,
@@ -132,7 +129,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     // nothing but who installed it (it is theirs too), and
                     // what the record had not kept yet.
                     if v.mpk != release.mpk {
-                        return Err("that version is installed with other contents");
+                        return Err("that version is installed with other contents".into());
                     }
                     let new_installer = !v.installed_by_any(&actor);
                     // A release recorded before its `uses` were kept gets them from the
@@ -164,14 +161,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
             }
             if s.attributes_by_release && s.ships_in_other_package(&package, &signer_id, &release) {
-                return Err(SHIPS_IN_OTHER_PACKAGE);
+                return Err(SHIPS_IN_OTHER_PACKAGE.into());
             }
             if s.packages
                 .get(&package)
                 .is_some_and(|p| !p.upgrades_in_order(&release.version, release.upgrades))
             {
                 return Err(
-                        "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
+                        "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners".into(),
                     );
             }
             let used: u64 = s
@@ -191,7 +188,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             };
             // The operator's installs count against no account's quota.
             if !by_operator && used + added > s.quotas.max_bundle_bytes_per_account {
-                return Err("quota exceeded: bundle storage");
+                return Err(Rejection::quota("bundle storage"));
             }
             for (hash, at) in release.parts(&package) {
                 let b = s.bundles.entry(hash.to_owned()).or_insert(BundleRecord {
@@ -226,17 +223,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let p = s.packages.get(&package).ok_or("no such package")?;
             if p.owner != actor {
-                return Err("only whoever installed the package (an account, or the operator) may uninstall it");
+                return Err("only whoever installed the package (an account, or the operator) may uninstall it".into());
             }
             let gone: Vec<String> = match &version {
-                Some(v) if !p.versions.contains_key(v) => return Err("no such version"),
+                Some(v) if !p.versions.contains_key(v) => return Err("no such version".into()),
                 Some(v) => vec![v.clone()],
                 None => p.versions.keys().cloned().collect(),
             };
             // An offered release is the deployments' to keep: whoever
             // installed it first does not take it from them.
             if gone.iter().any(|v| s.offered(&package, v)) {
-                return Err("a deployment offers that release; it is uninstalled once no deployment offers it");
+                return Err("a deployment offers that release; it is uninstalled once no deployment offers it".into());
             }
             if gone.iter().any(|v| s.module_pinned(&package, v)) {
                 return Err(MODULE_IN_USE);
@@ -270,7 +267,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .values()
                 .any(|a| in_use(&a.bundle) || a.compute_bundle.as_ref().is_some_and(in_use))
             {
-                return Err("an app still runs that release; delete or upgrade it first");
+                return Err("an app still runs that release; delete or upgrade it first".into());
             }
             for h in &hashes {
                 match keep.remove(h) {
@@ -304,20 +301,22 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             if signer_id.len() > MAX_BINDING_FIELD_BYTES || cluster.len() > MAX_BINDING_FIELD_BYTES
             {
-                return Err("a signer id or cluster name is at most 128 bytes");
+                return Err("a signer id or cluster name is at most 128 bytes".into());
             }
             // The signature is checked over this cluster's own name: one
             // the key made for another cluster binds nothing here.
             if cluster != here {
-                return Err("the binding names another cluster");
+                return Err("the binding names another cluster".into());
             }
             if !s.holds_approve_releases(&org, &actor) {
-                return Err("binding a publisher key needs APPROVE_RELEASES in the organization");
+                return Err(
+                    "binding a publisher key needs APPROVE_RELEASES in the organization".into(),
+                );
             }
             let generation = s.binding_generation(&signer_id);
             let message = publisher_binding_message(here, &org, &signer_id, generation);
             if !proof.proves(&signer_id, &message) {
-                return Err("the proof is not that key's signature over this binding");
+                return Err("the proof is not that key's signature over this binding".into());
             }
             let _was = s.unbound_publishers.remove(&signer_id);
             let _prev = s.publishers.insert(

@@ -43,7 +43,7 @@ use calimero_app_host::{
     Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, Runs,
     TimerCtx, TrapKind,
 };
-use calimero_log::{Group, GroupId, Proposal, WriteError};
+use calimero_log::{Group, GroupId, Proposal, Stage, Staged, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
@@ -1023,9 +1023,10 @@ impl Node {
     }
 
     /// [`Self::run_component`] for a run that becomes a log entry (call, tick,
-    /// `init`), which runs inside `Group::propose_led`, on the machine's read lock,
-    /// for up to its deadline: off the async workers ([`Node::metered`], which
-    /// adds what it took to `meter`'s app).
+    /// `init`, a compute run's result), which runs inside `Group::propose_led_staged`'s run
+    /// step: under the group's proposal lock, not the applied state's read lock (it runs on
+    /// a [`LoggedRun`] taken in the read step), for up to its deadline, off the async
+    /// workers ([`Node::metered`], which adds what it took to `meter`'s app).
     #[allow(clippy::too_many_arguments)]
     fn run_logged(
         &self,
@@ -1228,71 +1229,99 @@ impl Node {
         let mut persisted = Stored::default();
         let meter = self.meter(&app.app_id, &bundle);
         let p = g
-            .propose_led(|m, applied, leadership| {
+            .propose_led_staged(|stage, leadership| {
+                let (m, applied) = match stage {
+                    Stage::Read(m, applied) => (m, applied),
+                    Stage::Run(run) => {
+                        let LoggedRun {
+                            state,
+                            applied,
+                            base_index,
+                            ts_ms,
+                            id_term,
+                            id_seq,
+                            runs,
+                            ..
+                        } = run;
+                        let ran = match &prepared {
+                            Ok(prepared) => self.run_logged(
+                                &meter,
+                                prepared,
+                                &app.app_id,
+                                state,
+                                applied,
+                                Invocation {
+                                    kind: InvocationKind::Init,
+                                    method: "init".into(),
+                                    args: args.clone(),
+                                    caller: owner.to_host(),
+                                    entry_ts_ms: ts_ms,
+                                    id_term,
+                                    id_seq,
+                                    seed: calimero_identity::random::<32>(),
+                                    timer: None,
+                                    compute: None,
+                                },
+                                RunExtras {
+                                    runs: Some(runs),
+                                    compute_component: compute_bundle.is_some(),
+                                    ..RunExtras::default()
+                                },
+                            ),
+                            Err(why) => Ran {
+                                outcome: Outcome::trap(TrapKind::Fault, why),
+                                blobs: Vec::new(),
+                                _pending: None,
+                            },
+                        };
+                        let outcome = ran.outcome;
+                        if outcome.is_retryable() {
+                            // Not logged (D23): reconcile runs init again.
+                            timed_out = true;
+                            return Staged::Done(Proposal::Reply(Vec::new()));
+                        }
+                        timed_out = false;
+                        let cmd = ComponentCmd::Init {
+                            bundle: bundle.clone(),
+                            compute_bundle: compute_bundle.clone(),
+                            base_index,
+                            ts_ms,
+                            id_term,
+                            id_seq,
+                            outcome: Box::new(outcome),
+                        };
+                        return Staged::Done(
+                            match self.logged_entry(&app.app_id, cmd, &ran.blobs) {
+                                Ok((entry, stored)) => {
+                                    persisted = stored;
+                                    Proposal::Append(entry)
+                                }
+                                Err(e) => {
+                                    not_stored = Some(e);
+                                    Proposal::Reply(Vec::new())
+                                }
+                            },
+                        );
+                    }
+                };
                 not_stored = None;
                 if m.state.initialized || m.state.init_error.is_some() {
-                    return Proposal::Reply(Vec::new());
+                    return Staged::Done(Proposal::Reply(Vec::new()));
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, &m.state.component.head);
-                let ran = match &prepared {
-                    Ok(prepared) => self.run_logged(
-                        &meter,
-                        prepared,
-                        &app.app_id,
-                        (m.view(), m.blob_view()),
-                        applied,
-                        Invocation {
-                            kind: InvocationKind::Init,
-                            method: "init".into(),
-                            args: args.clone(),
-                            caller: owner.to_host(),
-                            entry_ts_ms: ts_ms,
-                            id_term,
-                            id_seq,
-                            seed: calimero_identity::random::<32>(),
-                            timer: None,
-                            compute: None,
-                        },
-                        RunExtras {
-                            runs: Some(m.runs_provider(None)),
-                            compute_component: compute_bundle.is_some(),
-                            ..RunExtras::default()
-                        },
-                    ),
-                    Err(why) => Ran {
-                        outcome: Outcome::trap(TrapKind::Fault, why),
-                        blobs: Vec::new(),
-                        _pending: None,
-                    },
-                };
-                let outcome = ran.outcome;
-                if outcome.is_retryable() {
-                    // Not logged (D23): reconcile runs init again.
-                    timed_out = true;
-                    return Proposal::Reply(Vec::new());
-                }
-                timed_out = false;
-                let cmd = ComponentCmd::Init {
-                    bundle: bundle.clone(),
-                    compute_bundle: compute_bundle.clone(),
+                Staged::Run(LoggedRun {
+                    state: (m.view(), m.blob_view()),
+                    applied,
                     base_index: m.state.last_index,
                     ts_ms,
                     id_term,
                     id_seq,
-                    outcome: Box::new(outcome),
-                };
-                match self.logged_entry(&app.app_id, cmd, &ran.blobs) {
-                    Ok((entry, stored)) => {
-                        persisted = stored;
-                        Proposal::Append(entry)
-                    }
-                    Err(e) => {
-                        not_stored = Some(e);
-                        Proposal::Reply(Vec::new())
-                    }
-                }
+                    runs: m.runs_provider(None),
+                    compute_component: m.state.component.head.compute_bundle.is_some(),
+                    secrets: m.instance_secrets(),
+                })
             })
             .await
             .map_err(|e| {
@@ -1454,74 +1483,102 @@ impl Node {
         let meter = self.meter(app_id, &prepared.hash);
         let mut persisted = Stored::default();
         let p = g
-            .propose_led(|m, applied, leadership| {
+            .propose_led_staged(|stage, leadership| {
+                let (m, applied) = match stage {
+                    Stage::Read(m, applied) => (m, applied),
+                    Stage::Run((run, previous_ms)) => {
+                        let LoggedRun {
+                            state,
+                            applied,
+                            base_index,
+                            ts_ms,
+                            id_term,
+                            id_seq,
+                            runs,
+                            compute_component,
+                            secrets,
+                            ..
+                        } = run;
+                        let ran = self.run_logged(
+                            &meter,
+                            prepared,
+                            app_id,
+                            state,
+                            applied,
+                            Invocation {
+                                kind: InvocationKind::Timer,
+                                method: timer.to_owned(),
+                                args: Vec::new(),
+                                caller: calimero_app_host::Caller::System,
+                                entry_ts_ms: ts_ms,
+                                id_term,
+                                id_seq,
+                                seed: calimero_identity::random::<32>(),
+                                timer: Some(TimerCtx {
+                                    scheduled_ms: slot,
+                                    previous_ms,
+                                }),
+                                compute: None,
+                            },
+                            RunExtras {
+                                key: Some(format!("tick:{timer}:{slot}")),
+                                outbound: true,
+                                runs: Some(runs),
+                                compute_component,
+                                read_only: false,
+                                via: None,
+                                secrets,
+                            },
+                        );
+                        let outcome = ran.outcome;
+                        if outcome.is_retryable() {
+                            debug!(app = %app_id, timer, slot, "tick hit its wall clock or the node was unavailable; proposed again");
+                            return Staged::Done(Proposal::Reply(Vec::new()));
+                        }
+                        let cmd = ComponentCmd::Tick(Box::new(TickEntry {
+                            timer: timer.to_owned(),
+                            scheduled_ms: slot,
+                            previous_ms,
+                            ts_ms,
+                            base_index,
+                            id_term,
+                            id_seq,
+                            outcome,
+                        }));
+                        return Staged::Done(match self.logged_entry(app_id, cmd, &ran.blobs) {
+                            Ok((entry, stored)) => {
+                                persisted = stored;
+                                Proposal::Append(entry)
+                            }
+                            Err(e) => {
+                                debug!(app = %app_id, timer, slot, error = %e, "tick files not stored; proposed again");
+                                Proposal::Reply(Vec::new())
+                            }
+                        });
+                    }
+                };
                 // An upgrade applied since the round read the ABI: the next poll
                 // reads the new one.
                 if m.tick_applied(timer, slot)
                     || m.state.bundle.as_deref() != Some(prepared.hash.as_str())
                 {
-                    return Proposal::Reply(Vec::new());
+                    return Staged::Done(Proposal::Reply(Vec::new()));
                 }
                 let previous_ms = m.state.component.head.timers.get(timer).copied();
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, &m.state.component.head);
-                let ran = self.run_logged(
-                    &meter,
-                    prepared,
-                    app_id,
-                    (m.view(), m.blob_view()),
+                Staged::Run((LoggedRun {
+                    state: (m.view(), m.blob_view()),
                     applied,
-                    Invocation {
-                        kind: InvocationKind::Timer,
-                        method: timer.to_owned(),
-                        args: Vec::new(),
-                        caller: calimero_app_host::Caller::System,
-                        entry_ts_ms: ts_ms,
-                        id_term,
-                        id_seq,
-                        seed: calimero_identity::random::<32>(),
-                        timer: Some(TimerCtx {
-                            scheduled_ms: slot,
-                            previous_ms,
-                        }),
-                        compute: None,
-                    },
-                    RunExtras {
-                        key: Some(format!("tick:{timer}:{slot}")),
-                        outbound: true,
-                        runs: Some(m.runs_provider(None)),
-                        compute_component: m.state.component.head.compute_bundle.is_some(),
-                        read_only: false,
-                        via: None,
-                        secrets: m.instance_secrets(),
-                    },
-                );
-                let outcome = ran.outcome;
-                if outcome.is_retryable() {
-                    debug!(app = %app_id, timer, slot, "tick hit its wall clock or the node was unavailable; proposed again");
-                    return Proposal::Reply(Vec::new());
-                }
-                let cmd = ComponentCmd::Tick(Box::new(TickEntry {
-                    timer: timer.to_owned(),
-                    scheduled_ms: slot,
-                    previous_ms,
-                    ts_ms,
                     base_index: m.state.last_index,
+                    ts_ms,
                     id_term,
                     id_seq,
-                    outcome,
-                }));
-                match self.logged_entry(app_id, cmd, &ran.blobs) {
-                    Ok((entry, stored)) => {
-                        persisted = stored;
-                        Proposal::Append(entry)
-                    }
-                    Err(e) => {
-                        debug!(app = %app_id, timer, slot, error = %e, "tick files not stored; proposed again");
-                        Proposal::Reply(Vec::new())
-                    }
-                }
+                    runs: m.runs_provider(None),
+                    compute_component: m.state.component.head.compute_bundle.is_some(),
+                    secrets: m.instance_secrets(),
+                }, previous_ms))
             })
             .await
             .inspect_err(|e| self.discard_failed(app_id, std::mem::take(&mut persisted), e))?;
@@ -1628,7 +1685,139 @@ impl Node {
         let mut proposed_at = None;
         let mut moved_runs = false;
         let p = g
-            .propose_led(|m, applied, leadership| {
+            .propose_led_staged(|stage, leadership| {
+                let (m, applied) = match stage {
+                    Stage::Read(m, applied) => (m, applied),
+                    Stage::Run(run) => {
+                        let LoggedRun {
+                            state,
+                            applied,
+                            base_index,
+                            ts_ms,
+                            id_term,
+                            id_seq,
+                            runs,
+                            compute_component,
+                            secrets,
+                        } = run;
+                        let starts_action = prepared
+                            .abi
+                            .methods
+                            .get(&req.method)
+                            .is_some_and(|m| m.kind == MethodKind::Action);
+                        let ran = if starts_action {
+                            // Started, not run here: logged as started, run by the runner (D17).
+                            let id = format!("a.{id_term}.{id_seq}.0");
+                            Ran {
+                                outcome: Outcome {
+                                    status: Status::Ok,
+                                    result: json!({ "actionId": id }),
+                                    actions: vec![crate::component::action::ActionOut {
+                                        id,
+                                        method: req.method.clone(),
+                                        args: req.args.clone(),
+                                    }],
+                                    ..Outcome::default()
+                                },
+                                blobs: Vec::new(),
+                                _pending: None,
+                            }
+                        } else {
+                            let started = Instant::now();
+                            let ran = self.run_logged(
+                                &meter,
+                                &prepared,
+                                &req.app_id,
+                                state,
+                                applied,
+                                Invocation {
+                                    kind,
+                                    method: req.method.clone(),
+                                    args: args.clone(),
+                                    caller: req.caller.to_host(),
+                                    entry_ts_ms: ts_ms,
+                                    id_term,
+                                    id_seq,
+                                    seed: calimero_identity::random::<32>(),
+                                    timer: None,
+                                    compute: None,
+                                },
+                                RunExtras {
+                                    // The caller is part of the key: two callers' calls under the
+                                    // same key are two calls of the target.
+                                    key: Some(format!(
+                                        "call:{}:{}",
+                                        // SAFETY: guaranteed by `Caller`'s shape (an enum of
+                                        // strings); an empty caller would merge two callers' keys.
+                                        serde_json::to_string(&req.caller)
+                                            .expect("a caller always serializes"),
+                                        req.idempotency_key.as_deref().unwrap_or_default()
+                                    )),
+                                    // A read-only member's run reaches no outbound host, and
+                                    // views other apps without calling them.
+                                    outbound: !read_only,
+                                    read_only,
+                                    runs: Some(runs),
+                                    compute_component,
+                                    via: req.via.clone(),
+                                    secrets,
+                                },
+                            );
+                            ran_for = Some(started.elapsed());
+                            ran
+                        };
+                        let outcome = ran.outcome;
+                        // A retryable run (wall clock or node unavailable) is not logged and does not spend the
+                        // key (D23).
+                        if outcome.is_retryable() {
+                            let a = Applied::unlogged(applied, outcome);
+                            return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
+                                a.index, &a,
+                            )));
+                        }
+                        answered = true;
+                        moved_runs = moves_runs(&outcome);
+                        // A view reached through a call (an API node that read an older ABI)
+                        // still may not write for a read-only member. Events and files are
+                        // logged side effects too (Ruling 41): an emit-only run is refused like
+                        // one that writes keys.
+                        if read_only && writes(&outcome) {
+                            return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
+                                applied,
+                                &read_only_refusal(applied),
+                            )));
+                        }
+                        let cmd = ComponentCmd::Call(Box::new(CallEntry {
+                            method: req.method.clone(),
+                            args: req.args.clone(),
+                            caller: req.caller.clone(),
+                            idempotency_key: req.idempotency_key.clone(),
+                            consent: req.consent.clone(),
+                            ts_ms,
+                            base_index,
+                            id_term,
+                            id_seq,
+                            outcome,
+                            xcall: req.xcall.clone(),
+                        }));
+                        // The files are on a majority of the replicas before the entry that marks
+                        // them is proposed; if not, nothing is logged and the key is not spent.
+                        return Staged::Done(
+                            match self.logged_entry(&req.app_id, cmd, &ran.blobs) {
+                                Ok((entry, stored)) => {
+                                    persisted = stored;
+                                    proposed_at = Some(Instant::now());
+                                    Proposal::Append(entry)
+                                }
+                                Err(e) => {
+                                    answered = false;
+                                    refused = Some(e);
+                                    Proposal::Reply(Vec::new())
+                                }
+                            },
+                        );
+                    }
+                };
                 refused = None;
                 answered = false;
                 moved_runs = false;
@@ -1638,7 +1827,9 @@ impl Node {
                 // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
-                        return Proposal::Reply(crate::app::applied_bytes(prev.index, &prev));
+                        return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
+                            prev.index, &prev,
+                        )));
                     }
                 }
                 // A message applied here already answers as delivered (D25).
@@ -1651,12 +1842,14 @@ impl Node {
                                 ..Outcome::default()
                             },
                         );
-                        return Proposal::Reply(crate::app::applied_bytes(seen.index, &seen));
+                        return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
+                            seen.index, &seen,
+                        )));
                     }
                 }
                 if let Some(e) = &over_quota {
                     refused = Some(e.clone());
-                    return Proposal::Reply(Vec::new());
+                    return Staged::Done(Proposal::Reply(Vec::new()));
                 }
                 // An upgrade applied since the checks: run it again on the new bundle.
                 if m.state.bundle.as_deref() != Some(bundle.as_str()) {
@@ -1664,7 +1857,10 @@ impl Node {
                         conflict: true,
                         ..Applied::unlogged(applied, Outcome::default())
                     };
-                    return Proposal::Reply(crate::app::applied_bytes(again.index, &again));
+                    return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
+                        again.index,
+                        &again,
+                    )));
                 }
                 // The ABI checks again, against the bundle this replica runs (Ruling 40).
                 if let Err(e) = abi_check(
@@ -1676,7 +1872,7 @@ impl Node {
                     req.action.is_some(),
                 ) {
                     refused = Some(e);
-                    return Proposal::Reply(Vec::new());
+                    return Staged::Done(Proposal::Reply(Vec::new()));
                 }
                 // A read-only member reaches views only: any other method is refused
                 // before it runs, so no run burns the developer's fuel uncounted.
@@ -1686,126 +1882,25 @@ impl Node {
                     .get(&req.method)
                     .is_some_and(|m| m.kind == MethodKind::View);
                 if read_only && !view {
-                    return Proposal::Reply(crate::app::applied_bytes(
+                    return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
                         applied,
                         &read_only_refusal(applied),
-                    ));
+                    )));
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, &m.state.component.head);
-                let starts_action = prepared
-                    .abi
-                    .methods
-                    .get(&req.method)
-                    .is_some_and(|m| m.kind == MethodKind::Action);
-                let ran = if starts_action {
-                    // Started, not run here: logged as started, run by the runner (D17).
-                    let id = format!("a.{id_term}.{id_seq}.0");
-                    Ran {
-                        outcome: Outcome {
-                            status: Status::Ok,
-                            result: json!({ "actionId": id }),
-                            actions: vec![crate::component::action::ActionOut {
-                                id,
-                                method: req.method.clone(),
-                                args: req.args.clone(),
-                            }],
-                            ..Outcome::default()
-                        },
-                        blobs: Vec::new(),
-                        _pending: None,
-                    }
-                } else {
-                    let started = Instant::now();
-                    let ran = self.run_logged(
-                        &meter,
-                        &prepared,
-                        &req.app_id,
-                        (m.view(), m.blob_view()),
-                        applied,
-                        Invocation {
-                            kind,
-                            method: req.method.clone(),
-                            args: args.clone(),
-                            caller: req.caller.to_host(),
-                            entry_ts_ms: ts_ms,
-                            id_term,
-                            id_seq,
-                            seed: calimero_identity::random::<32>(),
-                            timer: None,
-                            compute: None,
-                        },
-                        RunExtras {
-                            // The caller is part of the key: two callers' calls under the
-                            // same key are two calls of the target.
-                            key: Some(format!(
-                                "call:{}:{}",
-                                // SAFETY: guaranteed by `Caller`'s shape (an enum of
-                                // strings); an empty caller would merge two callers' keys.
-                                serde_json::to_string(&req.caller)
-                                    .expect("a caller always serializes"),
-                                req.idempotency_key.as_deref().unwrap_or_default()
-                            )),
-                            // A read-only member's run reaches no outbound host, and
-                            // views other apps without calling them.
-                            outbound: !read_only,
-                            read_only,
-                            runs: Some(m.runs_provider(None)),
-                            compute_component: m.state.component.head.compute_bundle.is_some(),
-                            via: req.via.clone(),
-                            secrets: m.instance_secrets(),
-                        },
-                    );
-                    ran_for = Some(started.elapsed());
-                    ran
-                };
-                let outcome = ran.outcome;
-                // A retryable run (wall clock or node unavailable) is not logged and does not spend the
-                // key (D23).
-                if outcome.is_retryable() {
-                    let a = Applied::unlogged(applied, outcome);
-                    return Proposal::Reply(crate::app::applied_bytes(a.index, &a));
-                }
-                answered = true;
-                moved_runs = moves_runs(&outcome);
-                // A view reached through a call (an API node that read an older ABI)
-                // still may not write for a read-only member. Events and files are
-                // logged side effects too (Ruling 41): an emit-only run is refused like
-                // one that writes keys.
-                if read_only && writes(&outcome) {
-                    return Proposal::Reply(crate::app::applied_bytes(
-                        applied,
-                        &read_only_refusal(applied),
-                    ));
-                }
-                let cmd = ComponentCmd::Call(Box::new(CallEntry {
-                    method: req.method.clone(),
-                    args: req.args.clone(),
-                    caller: req.caller.clone(),
-                    idempotency_key: req.idempotency_key.clone(),
-                    consent: req.consent.clone(),
-                    ts_ms,
+                Staged::Run(LoggedRun {
+                    state: (m.view(), m.blob_view()),
+                    applied,
                     base_index: m.state.last_index,
+                    ts_ms,
                     id_term,
                     id_seq,
-                    outcome,
-                    xcall: req.xcall.clone(),
-                }));
-                // The files are on a majority of the replicas before the entry that marks
-                // them is proposed; if not, nothing is logged and the key is not spent.
-                match self.logged_entry(&req.app_id, cmd, &ran.blobs) {
-                    Ok((entry, stored)) => {
-                        persisted = stored;
-                        proposed_at = Some(Instant::now());
-                        Proposal::Append(entry)
-                    }
-                    Err(e) => {
-                        answered = false;
-                        refused = Some(e);
-                        Proposal::Reply(Vec::new())
-                    }
-                }
+                    runs: m.runs_provider(None),
+                    compute_component: m.state.component.head.compute_bundle.is_some(),
+                    secrets: m.instance_secrets(),
+                })
             })
             .await
             .inspect_err(|e| self.discard_failed(&req.app_id, std::mem::take(&mut persisted), e))?;
@@ -2004,10 +2099,9 @@ impl Node {
         let developer = self.sys(|s| crate::usage::Billed::of(s, app).developer);
         let used = self.developer_fuel_cached(&developer);
         (used >= limit).then(|| {
-            super::rejected(&format!(
-                "{}: fuel per developer per day ({used} of {limit})",
-                crate::system::QUOTA_PREFIX
-            ))
+            super::rejected(crate::system::Rejection::quota(&format!(
+                "fuel per developer per day ({used} of {limit})"
+            )))
         })
     }
 
@@ -3007,6 +3101,25 @@ impl Node {
             as_app()
         }
     }
+}
+
+/// What a logged run takes from the applied state in a staged proposal's read step
+/// (`calimero_log::Group::propose_led_staged`), owned, so the run itself (its guest, its
+/// host calls, its files' push) happens after the state's read lock is released: an entry
+/// that commits meanwhile applies, and the app's state is read, while it runs (C2).
+/// `base_index` is the app's last entry as read: an entry that applies between the read
+/// step and this run's append makes this run's entry a `conflict`, run again.
+struct LoggedRun {
+    /// The app's state and blobs at `applied` (`AppMachine::view`, an O(1) clone).
+    state: (Arc<dyn calimero_app_host::StateView>, Blobs),
+    applied: u64,
+    base_index: u64,
+    ts_ms: u64,
+    id_term: u64,
+    id_seq: u64,
+    runs: Arc<dyn Runs>,
+    compute_component: bool,
+    secrets: crate::component::InstanceSecrets,
 }
 
 /// What a component run reaches besides its own state, by the kind of run.

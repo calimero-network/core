@@ -117,6 +117,35 @@ pub enum Proposal {
     Reply(Vec<u8>),
 }
 
+/// One step of a staged build ([`Group::propose_led_staged`]).
+pub enum Stage<'m, M, P> {
+    /// On the applied state, under its read lock: the machine and the log's applied index.
+    /// Answer [`Staged::Run`] with everything the slow part needs, owned.
+    Read(&'m M, u64),
+    /// After the read lock is released (the proposal lock is still held): what the read
+    /// step handed on. Answer [`Staged::Done`].
+    Run(P),
+}
+
+/// A one-step builder as a staged one: everything in [`Stage::Read`].
+fn at_once<M>(
+    stage: Stage<'_, M, std::convert::Infallible>,
+    build: &mut impl FnMut(&M, u64) -> Proposal,
+) -> Staged<std::convert::Infallible> {
+    match stage {
+        Stage::Read(m, applied) => Staged::Done(build(m, applied)),
+        Stage::Run(never) => match never {},
+    }
+}
+
+/// What a step of a staged build answers.
+pub enum Staged<P> {
+    /// The proposal.
+    Done(Proposal),
+    /// Go on in [`Stage::Run`] with this, once the read lock is released.
+    Run(P),
+}
+
 /// The result of a proposal.
 #[derive(Debug)]
 pub struct Proposed {
@@ -419,14 +448,27 @@ impl<M: Machine> Group<M> {
         Ok(())
     }
 
-    fn build<F>(&self, build: &mut F) -> Result<(Proposal, u64), WriteError>
+    /// One build: its read step on the applied state, under the read lock; then, with the
+    /// lock released, its run step if the read step asked for one.
+    fn build<P, F>(&self, build: &mut F) -> Result<(Proposal, u64), WriteError>
     where
-        F: FnMut(&M, u64) -> Proposal,
+        F: FnMut(Stage<'_, M, P>) -> Staged<P>,
     {
-        let st = machine::read_applied(&self.shared)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        let applied = st.applied_index();
-        Ok((build(&st.machine, applied), applied))
+        let (staged, applied) = {
+            let st = machine::read_applied(&self.shared)
+                .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+            let applied = st.applied_index();
+            (build(Stage::Read(&st.machine, applied)), applied)
+        };
+        match staged {
+            Staged::Done(proposal) => Ok((proposal, applied)),
+            Staged::Run(handed) => match build(Stage::Run(handed)) {
+                Staged::Done(proposal) => Ok((proposal, applied)),
+                Staged::Run(_) => Err(WriteError::Unavailable(
+                    "a staged build asked to run twice".into(),
+                )),
+            },
+        }
     }
 
     async fn append(&self, cmd: Vec<u8>) -> Result<Proposed, WriteError> {
@@ -457,13 +499,13 @@ impl<M: Machine> Group<M> {
     /// it is confirmed with a majority before it is answered, and built again
     /// on the confirmed state when entries committed in between. `build` may
     /// therefore run twice.
-    pub async fn propose<F>(&self, build: F) -> Result<Proposed, WriteError>
+    pub async fn propose<F>(&self, mut build: F) -> Result<Proposed, WriteError>
     where
         F: FnMut(&M, u64) -> Proposal,
     {
         let _guard = self.propose_lock.lock().await;
         self.leads_here().await?;
-        self.propose_held(build).await
+        self.propose_held(|stage| at_once(stage, &mut build)).await
     }
 
     /// [`Self::propose`], handing the builder the [`Leadership`] the check that
@@ -476,17 +518,42 @@ impl<M: Machine> Group<M> {
     where
         F: FnMut(&M, u64, Leadership) -> Proposal,
     {
+        self.propose_led_staged(|stage, leadership| {
+            at_once(stage, &mut |m: &M, applied| build(m, applied, leadership))
+        })
+        .await
+    }
+
+    /// [`Self::propose_led`] in two steps, so a slow build (a guest run that may wait in its
+    /// host calls) holds the proposal lock but not the applied state's read lock: an entry
+    /// that commits meanwhile applies, and the group's readers read, while it runs.
+    ///
+    /// `build` gets [`Stage::Read`] on the applied state under the read lock and answers a
+    /// proposal ([`Staged::Done`]) or what the rest needs ([`Staged::Run`], owned: `P`
+    /// cannot borrow the machine); the lock is released and `build` gets [`Stage::Run`]
+    /// with it and answers the proposal. A `Reply` may build again ([`Self::propose`]),
+    /// both steps each time.
+    ///
+    /// Ordering (the contract): proposals on one group run one at a time, from the read step
+    /// through the commit (the proposal lock), so a read step sees every earlier proposal of
+    /// this node applied. An entry from elsewhere (a barrier, a membership change, an
+    /// earlier leader's) may apply between the read step and the append; it is before this
+    /// entry in the log either way, and the machine's base check refuses this entry at apply
+    /// (`conflict`), so the caller builds again.
+    pub async fn propose_led_staged<P, F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    where
+        F: FnMut(Stage<'_, M, P>, Leadership) -> Staged<P>,
+    {
         let _guard = self.propose_lock.lock().await;
         let leadership = self.led_term().await?;
         self.catch_up(leadership).await?;
-        self.propose_held(|m, applied| build(m, applied, leadership))
-            .await
+        self.propose_held(|stage| build(stage, leadership)).await
     }
 
     /// The body of a proposal, with the proposal lock held and leadership checked.
-    async fn propose_held<F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    async fn propose_held<P, F>(&self, mut build: F) -> Result<Proposed, WriteError>
     where
-        F: FnMut(&M, u64) -> Proposal,
+        F: FnMut(Stage<'_, M, P>) -> Staged<P>,
     {
         let (proposal, built_at) = self.build(&mut build)?;
         let output = match proposal {

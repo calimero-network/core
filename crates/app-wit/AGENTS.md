@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.6` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5) and `context.visitor` and `context.grant-scope` (0.5.6), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.7` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
 
 ## The compute world
 
@@ -28,6 +28,7 @@ The compute world imports no state, xcall, context, events, blobs, search, actio
 - `xcall.batch` (0.5.4): a list of `request { kind: call | view, app, method, args }`, answered in order; the node runs them at once, each with the checks, count and key of the same `call`/`view` alone. The SDK sends every synchronous xcall through it; `call` and `view` stay for components built before.
 - `context.visitor` (0.5.6): the visitor a public link let in (`record visitor-caller { link, key }`), when `caller` is `public` because of one; `caller` stays `public` for it, so a component built before 0.5.6 sees an anonymous caller.
 - `context.grant-scope` (0.5.6): the scope (JSON text) of the caller's grant on the instance, which its managers set for the app; none for a caller who is no person or is named without one, and in a compute run. The host asks `Directory::grant_scope`, which answers none by default.
+- `storage.put-checked`, `delete-checked`, `add-checked` (0.5.7): the same writes as `put`, `delete` and `add`, but a write past the run's `MAX_WRITES` or `MAX_RUN_BYTES` answers `limit-exceeded { limit: run-limit, max, attempted }` instead of trapping, so the guest sees a typed error (the SDK's `StorageError::RunLimit`, `AppError` `RunLimit`); nothing is written or counted for it. `put`, `delete` and `add` keep trapping with their old details, for components built before.
 - `context.unit-of` (0.5.5): the app whose unit this one is a member of (the instance whose release created it); none otherwise and in a compute run. The host asks `Directory::unit_of`, which answers none by default.
 - `context.linked` (0.5.3): the app linked under a name of the release's `uses` (a unit member or an attached app); none in a compute run. The host asks `Directory::linked`, which answers none by default.
 

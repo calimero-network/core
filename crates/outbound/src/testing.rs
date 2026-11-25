@@ -199,14 +199,23 @@ mod tests {
     }
 
     #[test]
-    fn a_test_host_is_echoed_with_its_secret_filled_in_then_redacted() {
+    fn a_test_host_is_echoed_with_its_bound_secret_attached_then_redacted() {
         let service = OutboundService::from_settings(&settings(true))
             .unwrap()
             .unwrap();
         let app = AppIdentity {
             package: "com.calimero.outbound-probe".to_owned(),
             signer: "did:key:zProbe".to_owned(),
-            secrets: None,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_bundle::BundleSecret::header(
+                    "echo.outbound.test",
+                    &["/v1/"],
+                    "x-key",
+                    None,
+                ),
+            )]
+            .into(),
             own: crate::OwnSecrets::default(),
         };
         let run = service
@@ -223,8 +232,8 @@ mod tests {
         let request = OutboundRequest {
             method: OutboundMethod::Post,
             url: format!("{URL}check?n=1"),
-            headers: vec![("X-Key".to_owned(), "{{secret:ECHO_KEY}}".to_owned())],
-            body: b"key={{secret:ECHO_KEY}}".to_vec(),
+            headers: Vec::new(),
+            body: b"key=none".to_vec(),
         };
         let answer = run.send(&borsh::to_vec(&request).unwrap()).unwrap();
         let response: OutboundResponse = borsh::from_slice(&answer).unwrap();
@@ -233,11 +242,11 @@ mod tests {
         assert_eq!(echo["method"], "POST");
         assert_eq!(echo["path"], "/v1/check");
         assert_eq!(echo["query"], "n=1");
-        assert_eq!(echo["secrets"], 2);
-        assert_eq!(echo["secretBytes"].as_array().map(Vec::len), Some(2));
-        // Substituted on the way out, removed on the way back.
-        assert_eq!(echo["body"], "key=[redacted]");
-        assert_eq!(echo["headers"]["X-Key"], "[redacted]");
+        assert_eq!(echo["secrets"], 1);
+        assert_eq!(echo["secretBytes"], json!(["s3cr3t-e2e".len()]));
+        // Attached by the node on the way out, removed on the way back.
+        assert_eq!(echo["body"], "key=none");
+        assert_eq!(echo["headers"]["x-key"], "[redacted]");
         assert!(!String::from_utf8_lossy(&response.body).contains("s3cr3t-e2e"));
     }
 
@@ -288,7 +297,15 @@ mod tests {
                 AppIdentity {
                     package: "p".to_owned(),
                     signer: "s".to_owned(),
-                    secrets: None,
+                    secrets: [(
+                        "TURNSTILE_SECRET".to_owned(),
+                        calimero_bundle::BundleSecret::body_field(
+                            "challenges.cloudflare.com",
+                            &["/turnstile/v0/siteverify"],
+                            "secret",
+                        ),
+                    )]
+                    .into(),
                     own: crate::OwnSecrets::default(),
                 },
                 vec![url.clone()],
@@ -303,11 +320,11 @@ mod tests {
             let request = OutboundRequest {
                 method: OutboundMethod::Post,
                 url: url.clone(),
-                headers: Vec::new(),
-                body: format!(
-                    "secret={{{{secret:TURNSTILE_SECRET}}}}&response={token}&idempotency_key={key}"
-                )
-                .into_bytes(),
+                headers: vec![(
+                    "Content-Type".to_owned(),
+                    "application/x-www-form-urlencoded".to_owned(),
+                )],
+                body: format!("response={token}&idempotency_key={key}").into_bytes(),
             };
             let answer = run.send(&borsh::to_vec(&request).unwrap()).unwrap();
             let response: OutboundResponse = borsh::from_slice(&answer).unwrap();
