@@ -151,18 +151,39 @@ jobs:
         with:
           targets: wasm32-wasip2
 
+      # pnpm/action-setup takes the pnpm version from the consumer's root
+      # `packageManager` and fails the job without one ("No pnpm version is
+      # specified"). mero-tag and mero-ar have no root package.json (their
+      # frontends are standalone packages under web/, landing/, promo/), so their
+      # cargo bumps failed so on rc.36 and rc.37 before reaching the bump. Their
+      # pins need no pnpm: the bump runs pnpm only for a workspace that declares
+      # it. So pnpm is set up only when the root names a pnpm version, rather
+      # than guessing one for a repository that never chose it.
+      - name: Read the consumer's package manager
+        id: pm
+        run: |
+          set -euo pipefail
+          pm=""
+          if [ -f consumer/package.json ]; then
+            pm=$(jq -r '.packageManager // empty' consumer/package.json)
+          fi
+          case "$pm" in
+            pnpm@*) echo "pnpm=true" >> "$GITHUB_OUTPUT"; echo "consumer pins $pm" ;;
+            *) echo "pnpm=false" >> "$GITHUB_OUTPUT"; echo "consumer pins no pnpm (packageManager: '${pm:-none}'); pnpm is not set up" ;;
+          esac
+
       # A repository that pins the client generator (meroctl, or mero-app-build
       # before it) commits the clients it generates; the bump reruns every
       # package's `codegen` with the release's binary (bump-fleet.sh, "the client
       # generator"), through the repository's pnpm.
       - name: Set up pnpm for the npm surface
-        if: matrix.surface == 'npm'
+        if: matrix.surface == 'npm' && steps.pm.outputs.pnpm == 'true'
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
 
       - name: Set up pnpm
-        if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-meroctl.sh', 'consumer/scripts/install-mero-app-build.sh') != ''
+        if: matrix.surface == 'cargo' && steps.pm.outputs.pnpm == 'true' && hashFiles('consumer/scripts/install-meroctl.sh', 'consumer/scripts/install-mero-app-build.sh') != ''
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
