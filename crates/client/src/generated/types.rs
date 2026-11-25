@@ -1170,6 +1170,8 @@ pub enum OutboundAuditEntryFailure {
     NotApproved,
     /// `awaitingApproval`.
     AwaitingApproval,
+    /// `egressOff`.
+    EgressOff,
     /// `secret`.
     Secret,
     /// `failed`.
@@ -1187,6 +1189,7 @@ impl OutboundAuditEntryFailure {
             Self::Refused => "refused",
             Self::NotApproved => "notApproved",
             Self::AwaitingApproval => "awaitingApproval",
+            Self::EgressOff => "egressOff",
             Self::Secret => "secret",
             Self::Failed => "failed",
             Self::Other(s) => s,
@@ -1207,6 +1210,7 @@ impl<'de> Deserialize<'de> for OutboundAuditEntryFailure {
             "refused" => Self::Refused,
             "notApproved" => Self::NotApproved,
             "awaitingApproval" => Self::AwaitingApproval,
+            "egressOff" => Self::EgressOff,
             "secret" => Self::Secret,
             "failed" => Self::Failed,
             other => Self::Other(other.to_owned()),
@@ -1214,7 +1218,7 @@ impl<'de> Deserialize<'de> for OutboundAuditEntryFailure {
     }
 }
 
-/// One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `secret` not filled in, `failed` in transit), the names of the `secrets` it asked for, and the request's and response's body sizes. Never a secret value, a body, a query string or a header.
+/// One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `egressOff` (egress turned off), `secret` (a credential binding refused, or a `{{secret:` placeholder), `failed` in transit), the names of the credential bindings the node attached in `secrets` (for a `secret` refusal, the binding refused), and the request's and response's body sizes. Never a secret value, a body, a query string or a header.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutboundAuditEntry {
     #[serde(rename = "atMs")]
