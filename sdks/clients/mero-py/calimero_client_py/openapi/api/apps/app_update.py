@@ -98,7 +98,8 @@ def sync_detailed(
     /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified)
     update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it
     first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second
-    that cover this app (its own, or its unit's).
+    that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from,
+    which chooses its updates, else `null`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -156,7 +157,8 @@ def sync(
     /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified)
     update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it
     first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second
-    that cover this app (its own, or its unit's).
+    that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from,
+    which chooses its updates, else `null`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -209,7 +211,8 @@ async def asyncio_detailed(
     /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified)
     update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it
     first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second
-    that cover this app (its own, or its unit's).
+    that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from,
+    which chooses its updates, else `null`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -265,7 +268,8 @@ async def asyncio(
     /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified)
     update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it
     first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second
-    that cover this app (its own, or its unit's).
+    that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from,
+    which chooses its updates, else `null`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

@@ -709,10 +709,7 @@ async fn deployment_get(
     let _caught_up = node.sys_fresh().await;
     node.sys(|s| {
         let d = s.deployments.get(&id)?;
-        let (kind, name) = match &d.owner {
-            Deployer::Account(a) => ("account", s.accounts.get(a).map(|a| a.name.clone())),
-            Deployer::Org(o) => ("org", s.orgs.get(o).map(|o| o.name.clone())),
-        };
+        let (kind, name) = s.deployer_named(&d.owner);
         Some(PublicDeployment {
             id: d.id.clone(),
             host: node.deployment_host(&d.id),

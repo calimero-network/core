@@ -1999,6 +1999,10 @@ pub(crate) async fn update_view(
             source: source.to_owned(),
         },
         pending_approvals: pending,
+        deployment: app
+            .deployment
+            .as_ref()
+            .and_then(|d| node.sys(|s| s.deployment_shown(d))),
     })
 }
 
@@ -2026,6 +2030,7 @@ pub(super) struct UpdateView {
     approvers: String,
     policy: PolicyInForce,
     pending_approvals: Vec<PendingApprovalView>,
+    deployment: Option<Value>,
 }
 
 /// A release: its package and version.
