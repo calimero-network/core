@@ -14795,3 +14795,34 @@ fn another_orgs_private_member_release_does_not_refuse_an_update_on_its_own() {
         )
         .unwrap();
 }
+
+/// The account that uploaded a raw bundle still names it after an organization installs a
+/// private release shipping the same WASM; no one else gains it.
+#[test]
+fn an_uploader_keeps_a_raw_bundle_a_private_release_later_ships() {
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let _prev = m.state.bundles.insert(
+        "b9".into(),
+        serde_json::from_value(json!({ "hash": "b9", "size": 1, "uploadedBy": "alice" })).unwrap(),
+    );
+    assert!(m.state.sees_bundle("b9", "alice") && m.state.sees_bundle("b9", "bob"));
+    let _ok = m
+        .run_authorized(SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+                "services": { "": "b9" }, "installedBy": "bob", "installedAt": 1,
+                "visibility": "private", "orgs": [p("bob")],
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    assert!(m.state.sees_bundle("b9", "bob"));
+    assert!(m.state.sees_bundle("b9", "alice"), "she uploaded it");
+    assert!(!m.state.sees_bundle("b9", OPERATOR));
+}
