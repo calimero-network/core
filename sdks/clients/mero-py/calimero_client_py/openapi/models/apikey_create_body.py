@@ -13,6 +13,7 @@ from typing import Union
 if TYPE_CHECKING:
     from ..models.apikey_create_body_upgrades import ApikeyCreateBodyUpgrades
     from ..models.confirm import Confirm
+    from ..models.apikey_create_body_then_item import ApikeyCreateBodyThenItem
 
 
 T = TypeVar("T", bound="ApikeyCreateBody")
@@ -29,6 +30,7 @@ class ApikeyCreateBody:
         allow_confirm (Union[Unset, bool]):
         ttl_secs (Union[Unset, int]):
         upgrades (Union[Unset, ApikeyCreateBodyUpgrades]):
+        then (Union[Unset, list['ApikeyCreateBodyThenItem']]):
         confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
             request sent again with it approves exactly that request.
     """
@@ -40,12 +42,14 @@ class ApikeyCreateBody:
     allow_confirm: Union[Unset, bool] = UNSET
     ttl_secs: Union[Unset, int] = UNSET
     upgrades: Union[Unset, "ApikeyCreateBodyUpgrades"] = UNSET
+    then: Union[Unset, list["ApikeyCreateBodyThenItem"]] = UNSET
     confirm: Union[Unset, "Confirm"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.apikey_create_body_upgrades import ApikeyCreateBodyUpgrades
         from ..models.confirm import Confirm
+        from ..models.apikey_create_body_then_item import ApikeyCreateBodyThenItem
 
         label = self.label
 
@@ -66,6 +70,13 @@ class ApikeyCreateBody:
         upgrades: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.upgrades, Unset):
             upgrades = self.upgrades.to_dict()
+
+        then: Union[Unset, list[dict[str, Any]]] = UNSET
+        if not isinstance(self.then, Unset):
+            then = []
+            for then_item_data in self.then:
+                then_item = then_item_data.to_dict()
+                then.append(then_item)
 
         confirm: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.confirm, Unset):
@@ -88,6 +99,8 @@ class ApikeyCreateBody:
             field_dict["ttlSecs"] = ttl_secs
         if upgrades is not UNSET:
             field_dict["upgrades"] = upgrades
+        if then is not UNSET:
+            field_dict["then"] = then
         if confirm is not UNSET:
             field_dict["confirm"] = confirm
 
@@ -97,6 +110,7 @@ class ApikeyCreateBody:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.apikey_create_body_upgrades import ApikeyCreateBodyUpgrades
         from ..models.confirm import Confirm
+        from ..models.apikey_create_body_then_item import ApikeyCreateBodyThenItem
 
         d = dict(src_dict)
         label = d.pop("label", UNSET)
@@ -118,6 +132,13 @@ class ApikeyCreateBody:
         else:
             upgrades = ApikeyCreateBodyUpgrades.from_dict(_upgrades)
 
+        then = []
+        _then = d.pop("then", UNSET)
+        for then_item_data in _then or []:
+            then_item = ApikeyCreateBodyThenItem.from_dict(then_item_data)
+
+            then.append(then_item)
+
         _confirm = d.pop("confirm", UNSET)
         confirm: Union[Unset, Confirm]
         if isinstance(_confirm, Unset):
@@ -133,6 +154,7 @@ class ApikeyCreateBody:
             allow_confirm=allow_confirm,
             ttl_secs=ttl_secs,
             upgrades=upgrades,
+            then=then,
             confirm=confirm,
         )
 

@@ -437,6 +437,28 @@ pub struct MoveGuard {
     app: String,
 }
 
+/// An account's turn to make an API key here ([`Node::api_key_turn`]).
+pub struct KeyTurn {
+    node: Arc<Node>,
+    account: String,
+    turn: Arc<tokio::sync::Mutex<()>>,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for KeyTurn {
+    fn drop(&mut self) {
+        let mut turns = self
+            .node
+            .api_key_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The map's, this turn's and the held guard's: nobody else waits.
+        if Arc::strong_count(&self.turn) == 3 {
+            let _gone = turns.remove(&self.account);
+        }
+    }
+}
+
 impl Drop for MoveGuard {
     fn drop(&mut self) {
         let _was = self
@@ -643,6 +665,8 @@ pub struct Node {
     unattested: Mutex<HashSet<NodeId>>,
     /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
     moving: Mutex<HashSet<String>>,
+    /// Per account, the turn to make an API key on this node ([`Node::api_key_turn`]).
+    api_key_turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// A promotion of learners to system voters is under way.
     promoting: std::sync::atomic::AtomicBool,
     /// The system leader's bookkeeping for the cluster version
@@ -1141,6 +1165,7 @@ impl Node {
             joining: Mutex::default(),
             unattested: Mutex::default(),
             moving: Mutex::default(),
+            api_key_turns: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             cluster_version: Mutex::default(),
             auto_update_due: Mutex::default(),
@@ -2187,6 +2212,25 @@ impl Node {
         }
         info!(app = %app.app_id, group = app.group, "hosting app group");
         Ok(g)
+    }
+
+    /// Wait for `account`'s turn to make an API key on this node, so its quota
+    /// check, follow-ups and `CreateApiKey` never interleave with another's.
+    pub async fn api_key_turn(self: &Arc<Self>, account: &str) -> KeyTurn {
+        let turn = Arc::clone(
+            self.api_key_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(account.to_owned())
+                .or_default(),
+        );
+        let held = Arc::clone(&turn).lock_owned().await;
+        KeyTurn {
+            node: Arc::clone(self),
+            account: account.to_owned(),
+            turn,
+            _held: held,
+        }
     }
 
     /// Claim `app` for a replica move: `None` while another move of it runs

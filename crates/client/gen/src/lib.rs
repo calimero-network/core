@@ -16,6 +16,8 @@
 //! differs: a change to a route regenerates the document
 //! (`UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi`) and then this
 //! (`cargo run -p calimero-client-gen`), in the same change.
+//!
+//! Spec: [Node API reference (OpenAPI)](https://calimero-network.github.io/core/operate/api-reference/).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
