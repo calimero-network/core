@@ -6417,6 +6417,11 @@ export interface components {
             /** Format: int64 */
             responseBytes: number;
         };
+        /** @description An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not answer, so its runs' requests may be missing. */
+        OutboundLog: {
+            entries: components["schemas"]["OutboundAuditEntry"][];
+            partial: boolean;
+        };
         /** @description What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only. */
         UsageDay: {
             date: string;
@@ -9727,10 +9732,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        entries: components["schemas"]["OutboundAuditEntry"][];
-                        partial: boolean;
-                    };
+                    "application/json": components["schemas"]["OutboundLog"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
