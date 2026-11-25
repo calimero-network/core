@@ -106,8 +106,10 @@ jobs:
     if: needs.plan.outputs.targets != '[]'
     runs-on: ubuntu-latest
     # 20 minutes for the bump itself, plus up to 20 waiting for npm (npm surface)
-    # or 40 for Maven Central (mobile surface).
-    timeout-minutes: 60
+    # or 40 for Maven Central (mobile surface). The cargo surface rebuilds every
+    # committed component ABI of the apps repository (one release build per app,
+    # core compiled once): 90.
+    timeout-minutes: ${{ matrix.surface == 'cargo' && 90 || 60 }}
     strategy:
       # One repository failing must not stop the others from getting their
       # pull request.
@@ -139,11 +141,15 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           path: consumer
 
-      # Needed only for `cargo generate-lockfile`; the consumer's own CI compiles
-      # the contract on the pull request. The tee surface needs no toolchain.
+      # For `cargo update`, and for rebuilding the apps repository's committed
+      # ABIs (scripts/component-build.sh, wasm32-wasip2) when the release moves
+      # what the SDK writes into them (bump-fleet.sh, "the client generator").
+      # The tee surface needs no toolchain.
       - name: Setup Rust
         if: matrix.surface == 'cargo'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-wasip2
 
       # A repository that pins the client generator (meroctl, or mero-app-build
       # before it) commits the clients it generates; the bump reruns every
@@ -419,9 +425,15 @@ jobs:
             drifted up to four releases behind by the time this was automated
           - the client generator's pin (\`scripts/install-meroctl.sh\`, or
             \`scripts/install-mero-app-build.sh\` before meroctl)
-            (unless it runs ahead), and every committed client its \`codegen\`
-            writes, regenerated with \`$VERSION\`'s generator. When they could not
-            be regenerated, the list of pins left unmoved below says so
+            (unless it runs ahead), and everything generated with it, in order:
+            every committed ABI (\`apps/*/logic/res/abi.json\`, rebuilt by
+            \`scripts/component-build.sh\` against \`$VERSION\`'s SDK, so a release
+            that moves the WIT world \`calimero:app@X\` moves them too), every
+            web client its \`codegen\` writes from them
+            (\`apps/*/app/src/generated/\`), and the mobile clients
+            \`scripts/mobile-codegen.sh\` writes (\`*Client.swift\`, \`*Client.kt\`
+            under \`apps/*/mobile/\`), all with \`$VERSION\`'s meroctl. When a step
+            could not run, the list of pins left unmoved below says what to run
           - \`CORE_REF\` in Mero Chat's \`mobile/e2e/run-relay.sh\`, to the commit
             \`$VERSION\` is tagged at. The mobile live tests build their relay's merod
             from it, and that runtime refuses a bundle built against a newer release

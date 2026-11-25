@@ -244,10 +244,13 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
   Where the repository pins the client generator in `scripts/install-meroctl.sh`
   (`TAG="${MEROCTL_TAG:-X}"`, the apps repository; `scripts/install-mero-app-build.sh`
   with `MERO_APP_BUILD_TAG` before it moved to meroctl), the pin moves to `X` too,
-  unless it runs ahead, and every package's `codegen` reruns with `X`'s released
-  `meroctl` (or `mero-app-build`) binary, so the committed clients arrive regenerated. When they
-  cannot be (no binary for `X`, a codegen failure), the pull request's list of pins
-  left unmoved names the command to run.
+  unless it runs ahead, and what is generated with it is regenerated with `X`'s released
+  `meroctl` (or `mero-app-build`) binary, after the lockfiles, in order: every committed
+  ABI (`apps/*/logic/res/abi.json`, rebuilt by `scripts/component-build.sh`, since the
+  SDK writes it, WIT world `calimero:app@X` included, when the app is compiled), every
+  package's `codegen` (the web clients), and `scripts/mobile-codegen.sh` (the Swift and
+  Kotlin clients). When a step cannot run (no binary for `X`, a build or codegen
+  failure), the pull request's list of pins left unmoved names the commands to run.
 - `tee` surface (mero-tee): sets `merodVersion` in `mero-tee/versions.json`,
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).
