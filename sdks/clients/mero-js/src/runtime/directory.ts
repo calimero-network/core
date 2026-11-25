@@ -9,8 +9,13 @@
  * to it, so a bad list can only make connecting fail.
  */
 
+import { cloudCollateralUrl } from '../sealed/release.js';
+import type { NodeReleasePolicy } from './attestation.js';
+
 /** The Calimero Cloud control plane's public node directory. */
 export const DEFAULT_DIRECTORY = 'https://manager.cloud.calimero.network/api/directory';
+
+const STAGING_CLOUD = 'https://staging.cloud.calimero.network'; // the staging console, which mirrors releases and collateral
 
 /** A Calimero Cloud: production, or staging, which runs its own control plane and debug node images. */
 export type CloudEnvironment = 'production' | 'staging';
@@ -22,9 +27,9 @@ export interface CloudEnvironmentInfo {
   /**
    * What to add to `policy.release` to trust the images this Cloud's clusters
    * run: nothing for production (`locked-read-only` only); for staging, which
-   * allocates all three profiles, the list and the debug opt-in.
+   * allocates all three profiles, the list, the debug opt-in and its own mirrors.
    */
-  trust: { profiles?: string[]; allowDebugProfile?: boolean };
+  trust: Pick<NodeReleasePolicy, 'profiles' | 'allowDebugProfile' | 'releaseSource' | 'collateralSource'>;
 }
 
 /**
@@ -37,7 +42,12 @@ export const CLOUD_ENVIRONMENTS: Readonly<Record<CloudEnvironment, Readonly<Clou
   staging: {
     directory: 'https://manager.staging.cloud.calimero.network/api/directory',
     appsDomain: 'apps.relay.staging.cloud.calimero.network',
-    trust: { profiles: ['locked-read-only', 'debug', 'debug-read-only'], allowDebugProfile: true },
+    trust: {
+      profiles: ['locked-read-only', 'debug', 'debug-read-only'],
+      allowDebugProfile: true,
+      releaseSource: STAGING_CLOUD,
+      collateralSource: cloudCollateralUrl(STAGING_CLOUD),
+    },
   },
 };
 

@@ -59,7 +59,12 @@ export const DEFAULT_RELEASE_MIRROR = 'https://cloud.calimero.network';
  * PCCS paths `@phala/dcap-qvl` reads, open to any origin. Intel's PCS sends no
  * CORS header. The mirror only carries Intel-signed items.
  */
-export const DEFAULT_COLLATERAL_MIRROR = `${DEFAULT_RELEASE_MIRROR}/api/tee/pcs`;
+export const DEFAULT_COLLATERAL_MIRROR = cloudCollateralUrl(DEFAULT_RELEASE_MIRROR);
+
+/** Where the cloud at `cloudUrl` mirrors Intel's collateral (a PCCS base URL). */
+export function cloudCollateralUrl(cloudUrl: string): string {
+  return `${cloudUrl.replace(/\/+$/, '')}/api/tee/pcs`;
+}
 
 /**
  * A node release as the servers hand it out, wrapped as `{"data": ...}`: the

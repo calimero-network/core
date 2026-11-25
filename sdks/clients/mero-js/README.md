@@ -122,7 +122,7 @@ where the nodes are: each is attested under `policy`, which is the app's own.
 hostname alone, so a page can choose its policy from it:
 `release: { minReleaseVersion, ...CLOUD_ENVIRONMENTS[cloudEnvironment() ?? 'production'].trust }`
 adds nothing on production and, on staging, `profiles` (its three image
-profiles) with `allowDebugProfile`. `release.profiles` trusts any listed
+profiles) with `allowDebugProfile`, and the staging cloud's release and collateral mirrors. `release.profiles` trusts any listed
 profile, as core's `allowed_profiles` does: the node's own is used when listed,
 and its quote must still be that profile's signed image.
 

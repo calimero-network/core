@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { StandInNode, type Reply } from '../../tests/support/stand-in-node.js';
 import {
+  CLOUD_ENVIRONMENTS,
   CalimeroClient,
   DEFAULT_DIRECTORY,
   DirectoryError,
@@ -89,6 +90,13 @@ describe('CalimeroClient.connect: the node directory', () => {
 
   it('defaults to the Calimero Cloud directory', () => {
     expect(DEFAULT_DIRECTORY).toBe('https://manager.cloud.calimero.network/api/directory');
+  });
+
+  it("has a staging page fetch release measurements and Intel's collateral from the staging cloud", () => {
+    const { releaseSource, collateralSource } = CLOUD_ENVIRONMENTS.staging.trust;
+    expect(releaseSource).toBe('https://staging.cloud.calimero.network');
+    expect(collateralSource).toBe('https://staging.cloud.calimero.network/api/tee/pcs');
+    expect(CLOUD_ENVIRONMENTS.production.trust).toEqual({});
   });
 
   it('orders the nodes in the zone first, each group by weight', async () => {

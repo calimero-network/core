@@ -71,7 +71,8 @@ client.deployment; // the deployment the page was opened for, or null
   browser checked over TLS: `'production'`, `'staging'`, or `null` elsewhere.
 - `CLOUD_ENVIRONMENTS[env].trust` is what that Cloud's nodes need in
   `policy.release`: nothing for production (`locked-read-only` only); for
-  staging, `profiles` (all three image profiles) with `allowDebugProfile`. With
+  staging, `profiles` (all three image profiles) with `allowDebugProfile`, and
+  `releaseSource` and `collateralSource` on the staging cloud's own mirrors. With
   `profiles`, the node's own profile is used when it is listed, and its quote
   must still be that profile's signed image.
 - A page on Vercel must be a registered origin of your package
