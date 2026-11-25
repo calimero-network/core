@@ -227,9 +227,11 @@ pub enum Feature {
     /// entry changes shape: apply reads the logged version, so a log replays unchanged, and an
     /// earlier release, which would apply what this one refuses, holds it below the version.
     HeldTeamGrants,
-    /// An organization invite hands out only what its creator could still hand out when it is
-    /// redeemed: a creator no longer a member, below the invite's role, or no longer seeing a
-    /// team it names, gives nothing (`SystemState::redeem_org_invite`). No entry changes shape.
+    /// An invite hands out only what its creator could still hand out when it is redeemed: an
+    /// organization invite's creator no longer a member, below the invite's role, or no longer
+    /// seeing a team it names, gives nothing (`SystemState::redeem_org_invite`), and an
+    /// instance invite's creator who no longer manages the instance's grants names nobody
+    /// (`system::apps::redeem_app_invite`). No entry changes shape.
     InviteCreatorStanding,
     /// An organization's backup key is set only by those who approve its upgrades, its owner
     /// and admins (`SystemState::may_set_backup_key`), as `OwnerApprovedUpgrades` made

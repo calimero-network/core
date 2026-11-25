@@ -14123,3 +14123,78 @@ fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
     let _ok = set(&mut m, &mut bob, "bob").unwrap();
     assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
 }
+
+/// Security review, the instance-invite side of `inviteCreatorStanding`: an instance invite
+/// was judged only by its token, so a manager who lost the instance (demoted, removed) still
+/// named people on it through an invite made before. From the logged version that brings the
+/// rule, an instance invite names nobody once its creator no longer manages the instance's
+/// grants; an entry logged before replays as it applied.
+#[test]
+fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_instance() {
+    use super::cluster_version::Feature;
+
+    // Bob, an admin of `org`, mints an invite to Alice's instance `oa` of it; Carol is a
+    // member, so redeeming names her on it.
+    let made_by_bob = |version: Option<&str>| {
+        let (mut m, ..) = cluster_at(version);
+        let mut oa = m.state.apps["app"].clone();
+        oa.app_id = "oa".into();
+        oa.org = "org".into();
+        let _prev = m.state.apps.insert("oa".into(), oa);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("bob".into(), OrgRole::Admin);
+        let _prev = o.members.insert("carol".into(), OrgRole::Member);
+        for token in ["inv_bob", "inv_alice"] {
+            let _ok = m
+                .run_unproven(SystemCmd::CreateAppInvite {
+                    invite_key: crate::proof::invite_key(token),
+                    invite: crate::types::AppInvite {
+                        app: "oa".into(),
+                        expires_at: 1_000,
+                        uses_left: 3,
+                        created_by: String::new(),
+                        created_at: 10,
+                        scope: None,
+                    },
+                    actor: if token == "inv_bob" { "bob" } else { "alice" }.into(),
+                    consent: Value::Null,
+                })
+                .unwrap();
+        }
+        // Then Bob is demoted: he no longer manages the instance.
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Member);
+        assert!(!m.state.manages_grants(&m.state.apps["oa"], "bob"));
+        m
+    };
+    let redeem = |token: &str, who: &str| SystemCmd::RedeemAppInvite {
+        invite_key: crate::proof::invite_key(token),
+        account: who.into(),
+        now: 20,
+        signature: crate::proof::sign_invite_redeem(token, who, 20),
+    };
+
+    // Before the version, his invite still names Carol, as an earlier release applied it.
+    let mut m = made_by_bob(None);
+    let _ok = m.run(redeem("inv_bob", "carol")).unwrap();
+    assert!(m.state.apps["oa"].access.names("carol"));
+
+    // From it, his invite names nobody and spends no use; the owner's still works.
+    let mut m = made_by_bob(Some(Feature::InviteCreatorStanding.since()));
+    assert_eq!(
+        m.run(redeem("inv_bob", "carol")).unwrap_err(),
+        INVITE_CREATOR_LACKS
+    );
+    assert!(!m.state.apps["oa"].access.names("carol"));
+    assert_eq!(
+        m.state.app_invites[&crate::proof::invite_key("inv_bob")].uses_left,
+        3
+    );
+    let _ok = m.run(redeem("inv_alice", "carol")).unwrap();
+    assert!(m.state.apps["oa"].access.names("carol"));
+}

@@ -611,7 +611,7 @@ member of the organization (`member` or above) is always named; anyone else is
 admitted as a guest only while the instance's release says `guests: allowed`
 and the organization's `allowGuests` is on, judged on the state the redemption
 applies to, so a switch turned off after the invite was made holds (`409
-GUESTS_NOT_ALLOWED`; the invite and its uses stay). `GET
+GUESTS_NOT_ALLOWED`; the invite and its uses stay). From cluster version 1.0.0-rc.38 (`inviteCreatorStanding`) an instance invite names nobody once its creator no longer manages the instance's grants, removed, demoted or out of its team (`403 INVITE_CREATOR_LACKS`; no use spent), as an organization invite gives nothing once its creator could no longer make it. `GET
 /apps/{app}/invites` lists the pending ones (key, uses left, expiry, creator,
 scope; never a token) and `DELETE /apps/{app}/invites/{inviteKey}` revokes one
 with a passkey (`__revoke_app_invite { inviteKey }`). Deleting the instance
