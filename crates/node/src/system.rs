@@ -1269,6 +1269,18 @@ pub const PERSONAL_ORG_NAME: &str = "Personal";
 /// by invite or set on a member, is the owner's or an admin's.
 pub const ONLY_ADMINS_ALL_APPS: &str =
     "only the organization's owner and admins give someone every app added later";
+/// A refusal: below admin, a team's rows, capabilities and default are set
+/// only on a team the actor sees ([`cluster_version::Feature::HeldTeamGrants`]).
+pub const TEAM_NOT_SEEN: Rejection = Rejection::new(
+    RejectionKind::TeamNotSeen,
+    "below admin, only a team you are in or lead has its rows, capabilities or default set",
+);
+/// A refusal: an organization invite whose creator could no longer make it
+/// ([`cluster_version::Feature::InviteCreatorStanding`]).
+pub const INVITE_CREATOR_LACKS: Rejection = Rejection::new(
+    RejectionKind::InviteCreatorLacks,
+    "this invite's creator can no longer give what it grants; ask for a new invite",
+);
 /// A refusal: capability bits that no capability has.
 pub const UNKNOWN_CAPABILITIES: Rejection = Rejection::new(
     RejectionKind::UnknownCapabilities,
@@ -1277,7 +1289,7 @@ pub const UNKNOWN_CAPABILITIES: Rejection = Rejection::new(
 /// A refusal: an invite grants no capability its creator does not hold.
 pub const CANNOT_GRANT_UNHELD: Rejection = Rejection::new(
     RejectionKind::CannotGrantUnheld,
-    "an invite grants only capabilities its creator holds; only the owner and admins grant any",
+    "an invite or a team row grants only capabilities its maker holds; only the owner and admins grant any",
 );
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
@@ -2878,10 +2890,10 @@ impl SystemState {
         now: u64,
         free_when_unchanged: bool,
         clamp_grants: bool,
-    ) -> Result<OrgId, &'static str> {
+    ) -> Result<OrgId, Rejection> {
         let inv = self.invites.get(invite_key).ok_or(INVITE_GONE)?;
         if inv.expires_at <= now || inv.uses_left == 0 {
-            return Err(INVITE_EXPIRED);
+            return Err(INVITE_EXPIRED.into());
         }
         // The flag, or a cluster version that brings the rule to every node:
         // read from state at this log position, so replicas agree.
@@ -2889,6 +2901,15 @@ impl SystemState {
             clamp_grants || self.cluster_brings(cluster_version::Feature::InviteCapabilities);
         let all_apps = inv.all_apps && (!clamp || self.is_org_admin(&inv.org, &inv.created_by));
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
+        // From the logged version that brings it, an invite gives only what its
+        // creator could still give: a creator removed (or unknown), demoted below
+        // the invite's role, or no longer seeing a team it names gives nothing,
+        // so a removed admin's invite does not bring them back as one.
+        if self.cluster_brings(cluster_version::Feature::InviteCreatorStanding)
+            && !Self::invite_creator_stands(o, inv)
+        {
+            return Err(INVITE_CREATOR_LACKS);
+        }
         let unchanged = o.members.get(account).is_some_and(|r| *r >= inv.role)
             && (!all_apps || o.all_apps.contains(account))
             && inv.teams.iter().all(|t| {
@@ -2931,6 +2952,25 @@ impl SystemState {
             }
         }
         Ok(inv.org)
+    }
+
+    /// Whether `inv`'s creator could still make it in `o`
+    /// ([`cluster_version::Feature::InviteCreatorStanding`]): a member at or
+    /// above its role and, below admin, seeing every team it names that still
+    /// exists, as [`SystemCmd::CreateInvite`] judged them when it was made.
+    fn invite_creator_stands(o: &Org, inv: &Invite) -> bool {
+        let Some(role) = o.role(&inv.created_by) else {
+            return false;
+        };
+        if inv.role > role {
+            return false;
+        }
+        role >= OrgRole::Admin
+            || inv
+                .teams
+                .iter()
+                .filter(|t| o.teams.contains_key(*t))
+                .all(|t| o.sees_team(&inv.created_by, t))
     }
 
     /// Spend one use of a cluster sign-up invite; the last use removes it.
@@ -3492,14 +3532,22 @@ impl SystemState {
     }
 
     /// Whether `actor` may set `holder`'s backup key: the operator its own
-    /// where it upgrades apps; where owners do, an organization's org-wide
-    /// `MANAGE_APPLICATION` holders (those who upgrade all its apps), and an
-    /// account its own.
+    /// where it upgrades apps; where owners do, an organization's owner and
+    /// admins (those who approve its upgrades, [`Self::approves_upgrades`]:
+    /// a backup opens every app's state, as new code reads it), and an account
+    /// its own. Below the logged version that brings
+    /// [`cluster_version::Feature::BackupKeyApprovers`], an entry applies as it
+    /// did, by org-wide `MANAGE_APPLICATION`.
     #[must_use]
     pub fn may_set_backup_key(&self, holder: &BackupHolder, actor: &str) -> bool {
         let by_operator = self.governance().app_upgrades == Authority::Operator;
         match holder {
             BackupHolder::Operator => by_operator && actor == OPERATOR,
+            BackupHolder::Org(org)
+                if self.cluster_brings(cluster_version::Feature::BackupKeyApprovers) =>
+            {
+                !by_operator && self.approves_upgrades(org, actor)
+            }
             BackupHolder::Org(org) => !by_operator && self.manages_apps(org, actor, None),
             BackupHolder::Account(account) => {
                 !by_operator && actor == account && self.accounts.contains_key(account)
@@ -3835,9 +3883,47 @@ impl SystemState {
     }
 }
 
+/// Whether `actor` may write a row, a row's capabilities or the default of
+/// `team` granting `bits`, from [`cluster_version::Feature::HeldTeamGrants`]
+/// on (`held`): below admin, only on a team they see, and only bits they hold
+/// organization-wide, as an invite's ([`SystemCmd::CreateInvite`]). An
+/// org-wide `MANAGE_MEMBERS`, which [`Org::may`] falls back to on a team
+/// without a row, opens no restricted team, and nobody below admin grants
+/// themselves or anyone else a capability they lack (such as
+/// `MANAGE_APPLICATION`, which manages the team's apps and their access).
+///
+/// # Errors
+///
+/// [`TEAM_NOT_SEEN`], [`UNKNOWN_CAPABILITIES`] or [`CANNOT_GRANT_UNHELD`].
+pub(crate) fn team_grant_refusal(
+    o: &Org,
+    team: &str,
+    actor: &str,
+    bits: Option<u32>,
+    held: bool,
+) -> Result<(), Rejection> {
+    if !held {
+        return Ok(());
+    }
+    if bits.is_some_and(|c| !Org::defined_caps(c)) {
+        return Err(UNKNOWN_CAPABILITIES);
+    }
+    if o.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
+        return Ok(());
+    }
+    if !o.sees_team(actor, team) {
+        return Err(TEAM_NOT_SEEN);
+    }
+    if bits.is_some_and(|c| !o.may_grant(actor, c)) {
+        return Err(CANNOT_GRANT_UNHELD);
+    }
+    Ok(())
+}
+
 /// `account`'s row in `team` at `role` (with `capabilities`, else what a new
 /// row takes), as `actor` sets it: [`SystemCmd::SetTeamMember`]'s rule, which
-/// [`SystemCmd::SetTeamMembers`] applies to each of its teams.
+/// [`SystemCmd::SetTeamMembers`] applies to each of its teams. `held`: the
+/// logged cluster version brings [`cluster_version::Feature::HeldTeamGrants`].
 fn set_team_row(
     o: &mut Org,
     team: &str,
@@ -3845,11 +3931,12 @@ fn set_team_row(
     role: TeamRole,
     capabilities: Option<u32>,
     actor: &str,
-) -> Result<(), &'static str> {
+    held: bool,
+) -> Result<(), Rejection> {
     use crate::types::caps;
 
     let Some(t) = o.teams.get(team) else {
-        return Err("no such team");
+        return Err("no such team".into());
     };
     // Joining an open team one reaches anyway writes one's own row.
     let joins_self = actor == account
@@ -3859,10 +3946,11 @@ fn set_team_row(
     let manages = o.manages_team(actor, team)
         || (role != TeamRole::Lead && o.may(actor, Some(team), caps::MANAGE_MEMBERS));
     if !joins_self && !manages {
-        return Err("not allowed to manage this team");
+        return Err("not allowed to manage this team".into());
     }
+    team_grant_refusal(o, team, actor, capabilities, held)?;
     if o.role(account).is_none() {
-        return Err("only organization members join teams");
+        return Err("only organization members join teams".into());
     }
     // A new row takes what the member holds organization-wide, and the
     // team's default on top.
@@ -3943,12 +4031,21 @@ pub(crate) fn judge_team_rows(
     account: &str,
     rows: &[TeamRow],
     actor: &str,
-) -> Result<(), &'static str> {
+    held: bool,
+) -> Result<(), Rejection> {
     check_team_batch(rows.iter().map(|r| r.team.as_str()))?;
     let mut next = o.clone();
     for row in rows {
         let role = row.role.unwrap_or(TeamRole::Member);
-        set_team_row(&mut next, &row.team, account, role, row.capabilities, actor)?;
+        set_team_row(
+            &mut next,
+            &row.team,
+            account,
+            role,
+            row.capabilities,
+            actor,
+            held,
+        )?;
     }
     Ok(())
 }

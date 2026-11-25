@@ -1674,6 +1674,7 @@ async fn alias_set(
     Json(body): Json<AliasBody>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.settings_write()?;
     let account = p.account()?;
     let app = node.canonical_app_id(&body.app);
     let rec = node.app(&app).await?;
@@ -1696,7 +1697,9 @@ async fn alias_delete(
     headers: HeaderMap,
     Path(alias): Path<String>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.settings_write()?;
+    let account = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAlias {
             account,
