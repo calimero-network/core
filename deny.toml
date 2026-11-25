@@ -99,22 +99,22 @@ skip = [
     { crate = "tower-http@0.6", reason = "reqwest 0.12 and 0.13; calimero-node's server uses 0.7" },
     { crate = "untrusted@0.7", reason = "aws-lc-rs 1 and tough 0.24 (sigstore 0.15)" },
     { crate = "base64@0.13", reason = "serde-human-bytes 0.1 via dcap-qvl 0.5" },
-    { crate = "base64@0.21", reason = "openidconnect 4 and oauth2 5 via sigstore 0.15" },
+    { crate = "base64@0.21", reason = "openidconnect 4 via sigstore 0.15" },
     { crate = "base64@0.22", reason = "reqwest 0.12/0.13, dcap-qvl 0.5, oci-client 0.18, pem 3, prost-reflect 0.16" },
     { crate = "pem@3", reason = "dcap-qvl 0.5, tdx-quote, rcgen 0.13, tough 0.24; sigstore 0.15 uses 4" },
 
     # --- Wasm tooling: one wasm-tools release per consumer. Our crates use the
-    # one wasmtime 50 uses (0.261), so a module we parse is parsed as the engine
-    # parses it; calimero-sdk's wit-bindgen 0.63 uses 0.262, and wasip2 (std's
-    # wasm32-wasip2 bindings, via getrandom) uses wit-bindgen 0.51.
-    { crate = "wasmparser@0.261", reason = "wasmtime 50 and our crates; wit-bindgen 0.63 (calimero-sdk) uses 0.262" },
-    { crate = "wasm-encoder@0.261", reason = "wasmtime 50; wit-bindgen 0.63 uses 0.262" },
-    { crate = "wasm-metadata@0.261", reason = "wasmtime 50's wit-component; wit-bindgen 0.63 uses 0.262" },
-    { crate = "wit-component@0.261", reason = "wasmtime 50's component bindgen; wit-bindgen 0.63 uses 0.262" },
-    { crate = "wit-parser@0.261", reason = "wasmtime 50 and calimero-app-wit; wit-bindgen 0.63 uses 0.262" },
+    # one wasmtime 51 uses (0.263, also wat's), so a module we parse is parsed as
+    # the engine parses it; calimero-sdk's wit-bindgen 0.63 uses 0.262, and wasip2
+    # (std's wasm32-wasip2 bindings, via getrandom) uses wit-bindgen 0.51.
+    { crate = "wasmparser@0.262", reason = "wit-bindgen 0.63 (calimero-sdk); wasmtime 51 and our crates use 0.263" },
+    { crate = "wasm-encoder@0.262", reason = "wit-bindgen 0.63; wasmtime 51 and wat use 0.263" },
+    { crate = "wasm-metadata@0.262", reason = "wit-bindgen 0.63; wasmtime 51's wit-component uses 0.263" },
+    { crate = "wit-component@0.262", reason = "wit-bindgen 0.63; wasmtime 51's component bindgen uses 0.263" },
+    { crate = "wit-parser@0.262", reason = "wit-bindgen 0.63; wasmtime 51 and calimero-app-wit use 0.263" },
     { crate = "wit-bindgen@0.51", reason = "wasip2 1.0 (getrandom on wasm32-wasip2); calimero-sdk uses 0.63" },
     { crate = "hashbrown@0.15", reason = "petgraph 0.8 via prost-build (sigstore_protobuf_specs' build)" },
-    { crate = "hashbrown@0.16", reason = "gimli 0.33 via wasmtime 50" },
+    { crate = "hashbrown@0.16", reason = "gimli 0.33 via wasmtime 51" },
     { crate = "foldhash@0.1", reason = "hashbrown 0.15" },
 
     # --- Proc macros and build tools: compile-time only, nothing of them ships.
@@ -127,7 +127,7 @@ skip = [
     { crate = "derive_more-impl@1", reason = "derive_more 1" },
     { crate = "thiserror@1", reason = "openraft 0.9, oauth2 5 / openidconnect 4 (sigstore 0.15)" },
     { crate = "thiserror-impl@1", reason = "thiserror 1" },
-    { crate = "itertools@0.10", reason = "openidconnect 4, prost-build / prost-derive 0.14, bindgen 0.72 (librocksdb-sys build)" },
+    { crate = "itertools@0.10", reason = "openidconnect 4, bindgen 0.72 (librocksdb-sys build); prost-build / prost-derive 0.14 use 0.14" },
     { crate = "ordered-float@2", reason = "serde-value 0.7 via openidconnect 4 / prost-reflect (sigstore 0.15)" },
 ]
 
