@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
         // The fleet: the operator's signature.
         SystemCmd::RegisterNode { node, proof } => {
@@ -70,20 +67,20 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let index = m.index;
     let s = &mut m.state;
     match cmd {
         SystemCmd::RegisterNode { node, .. } => {
             if s.nodes.get(&node.id).is_some_and(|n| n.role != node.role) {
-                return Err("a node's role is fixed: remove it first");
+                return Err("a node's role is fixed: remove it first".into());
             }
             let addr = normalize_addr(&node.addr);
             if s.nodes
                 .values()
                 .any(|n| n.id != node.id && normalize_addr(&n.addr) == addr)
             {
-                return Err("another node has that address");
+                return Err("another node has that address".into());
             }
             *s.node_epoch.entry(node.id).or_default() += 1;
             let _was = s.removed_nodes.remove(&node.id);
@@ -93,17 +90,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         }
         SystemCmd::SetPriceTable { table, .. } => {
             if table.validate().is_err() {
-                return Err(BAD_PRICES);
+                return Err(BAD_PRICES.into());
             }
             if table.version != s.price_table.map_or(0, |t| t.version) + 1 {
-                return Err(PRICE_VERSION);
+                return Err(PRICE_VERSION.into());
             }
             s.price_table = Some(table);
             Ok(Value::Null)
         }
         SystemCmd::RemoveNode { id, .. } => {
             if s.apps.values().any(|a| a.replicas.contains(&id)) {
-                return Err("an app still keeps a replica on that node; move it first");
+                return Err("an app still keeps a replica on that node; move it first".into());
             }
             let _gone = s.nodes.remove(&id).ok_or("no such node")?;
             *s.node_epoch.entry(id).or_default() += 1;
@@ -118,10 +115,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         }
         SystemCmd::SetOrgQuotas { payer, quotas, .. } => {
             if payer.is_empty() || payer.len() > MAX_PAYER_BYTES {
-                return Err("a payer is named, in at most 128 bytes");
+                return Err("a payer is named, in at most 128 bytes".into());
             }
             if !s.org_quotas.contains_key(&payer) && s.org_quotas.len() >= MAX_ORG_QUOTAS {
-                return Err("quota exceeded: org quota overrides");
+                return Err(Rejection::quota("org quota overrides"));
             }
             if quotas == OrgQuotas::default() {
                 let _gone = s.org_quotas.remove(&payer);
@@ -137,7 +134,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     .keys()
                     .any(|n| n.is_empty() || n.len() > MAX_POOL_NAME_BYTES)
             {
-                return Err(BAD_POOLS);
+                return Err(BAD_POOLS.into());
             }
             let in_use = s
                 .pools
@@ -152,7 +149,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                             .any(|r| s.slot_pool(r) == name.as_str())
                 });
             if in_use.is_some() {
-                return Err(POOL_IN_USE);
+                return Err(POOL_IN_USE.into());
             }
             s.pools = pools;
             s.grant_runs();
@@ -166,7 +163,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             session_proofs,
         } => {
             if s.governance.is_some() || !s.accounts.is_empty() {
-                return Err("the cluster's governance is fixed at genesis");
+                return Err("the cluster's governance is fixed at genesis".into());
             }
             if let Some(k) = &operator_key {
                 hex32(&k.key).ok_or("an operator key is 32 bytes, hex")?;
@@ -186,28 +183,28 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         }
         SystemCmd::RequireSessionProofs => {
             if s.session_proofs_from.is_some() {
-                return Err("session proofs are required already");
+                return Err("session proofs are required already".into());
             }
             s.session_proofs_from = Some(index);
             Ok(Value::Null)
         }
         SystemCmd::AttributeByRelease => {
             if s.attributes_by_release {
-                return Err("apps are judged by their release already");
+                return Err("apps are judged by their release already".into());
             }
             s.attributes_by_release = true;
             Ok(Value::Null)
         }
         SystemCmd::RequireCurrentRules => {
             if s.current_rules_from.is_some() {
-                return Err("the current rules are required already");
+                return Err("the current rules are required already".into());
             }
             s.current_rules_from = Some(index);
             Ok(Value::Null)
         }
         SystemCmd::ExpireProofs => {
             if s.expires_proofs {
-                return Err("sign-in proofs expire already");
+                return Err("sign-in proofs expire already".into());
             }
             s.expires_proofs = true;
             Ok(Value::Null)

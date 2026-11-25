@@ -194,7 +194,7 @@ async fn org_outbound_approval(
 /// again (`SetOutboundApproval`).
 pub(crate) fn refuse_egress_off(node: &Node, org: &str) -> Result<(), ApiError> {
     if node.sys(|s| s.orgs.get(org).is_some_and(|o| o.egress_off)) {
-        return Err(ApiError::new(409, "EGRESS_OFF", crate::system::EGRESS_OFF));
+        return Err(crate::node::rejected(crate::system::EGRESS_OFF));
     }
     Ok(())
 }

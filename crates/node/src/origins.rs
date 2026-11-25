@@ -27,7 +27,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::system::{SystemState, OPERATOR};
+use crate::system::{Rejection, SystemState, OPERATOR};
 use crate::types::AccountId;
 
 /// How many origins one package registers.
@@ -258,9 +258,9 @@ impl SystemState {
         served: bool,
         actor: AccountId,
         at: u64,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, Rejection> {
         if !self.manages_package(&package, &actor) {
-            return Err("only the package's manager registers its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first");
+            return Err("only the package's manager registers its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first".into());
         }
         let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;
         if served {
@@ -268,32 +268,34 @@ impl SystemState {
         }
         if let Some(held) = self.package_origins.get(&origin) {
             if held.package != package {
-                return Err("another package registered that origin");
+                return Err("another package registered that origin".into());
             }
             if held.rp_id != resolved {
-                return Err("that origin is registered with another rpId; remove it first");
+                return Err("that origin is registered with another rpId; remove it first".into());
             }
             if held.served != served {
-                return Err("that origin is registered with the other `served`; remove it first");
+                return Err(
+                    "that origin is registered with the other `served`; remove it first".into(),
+                );
             }
             return Ok(origin_json(&origin, held));
         }
         if self.origins_of(&package).count() >= MAX_ORIGINS_PER_PACKAGE {
-            return Err("quota exceeded: origins per package");
+            return Err(Rejection::quota("origins per package"));
         }
         if served
             && self.origins_of(&package).filter(|(_, o)| o.served).count()
                 >= MAX_SERVED_ORIGINS_PER_PACKAGE
         {
-            return Err("quota exceeded: served origins per package");
+            return Err(Rejection::quota("served origins per package"));
         }
         if served
             && self.package_origins.values().filter(|o| o.served).count() >= MAX_SERVED_ORIGINS
         {
-            return Err("quota exceeded: served origins");
+            return Err(Rejection::quota("served origins"));
         }
         if self.package_origins.len() >= MAX_PACKAGE_ORIGINS {
-            return Err("quota exceeded: origins");
+            return Err(Rejection::quota("origins"));
         }
         let record = PackageOrigin {
             package,
@@ -313,16 +315,16 @@ impl SystemState {
         package: &str,
         origin: &str,
         actor: &str,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, Rejection> {
         if !self.manages_package(package, actor) {
-            return Err("only the package's manager removes its origins");
+            return Err("only the package's manager removes its origins".into());
         }
         if self
             .package_origins
             .get(origin)
             .is_none_or(|o| o.package != package)
         {
-            return Err("that origin is not registered for this package");
+            return Err("that origin is not registered for this package".into());
         }
         let _gone = self.package_origins.remove(origin);
         Ok(json!({ "package": package, "origin": origin, "removed": true }))
