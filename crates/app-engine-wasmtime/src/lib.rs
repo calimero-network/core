@@ -201,10 +201,13 @@ impl WasmtimeEngine {
             // small virtual address space) still runs apps, with a bounds check on each
             // access, as every release before this one did.
             Err(error) => {
+                // The operator's log gets the fallback, never the error's words (F6);
+                // wasmtime's mmap error is only at debug.
                 tracing::warn!(
-                    %error,
+                    instances,
                     "cannot reserve 4 GiB per instance slot; linear memory accesses are bounds-checked"
                 );
+                tracing::debug!(%error, "the 4 GiB slot reservation failed");
                 let reservation = MAX_MEMORY_BYTES as u64;
                 (
                     Self::pooled(instances, reservation).map_err(report)?,
