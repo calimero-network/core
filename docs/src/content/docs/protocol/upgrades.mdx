@@ -402,8 +402,9 @@ authority, and apply judges it again from the log alone
 - the app is no unit's member (a member moves with its unit) and its unit, as
   the log holds it, has no destination before or after the move;
 - its release keeps the unit's members where they are: its `uses` resolve each
-  member to the release it runs, as creating the instance would pick it (from
-  1.0.0-rc.36, `autoUpdateMembersStay`; `SystemState::moves_members`);
+  member to the release it runs, as creating the instance would pick it, among
+  the releases its owner may use, its package's signer signs or its deployment
+  offers (from 1.0.0-rc.36, `autoUpdateMembersStay`; `SystemState::moves_members`);
 - its hold has passed: the upgrade's own `at` is at least `holdHours` after the
   release was logged, its install (`installedAt`) or, for an instance of a
   deployment, its deployment's offer of exactly that release (`addedAt`).

@@ -14735,3 +14735,63 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
         "1.0.2"
     );
 }
+
+/// A member's release is chosen as `unit_members` chooses it for the instance's owner: a
+/// private release installed for another organization never makes an update on its own
+/// move the unit's members.
+#[test]
+fn another_orgs_private_member_release_does_not_refuse_an_update_on_its_own() {
+    use super::cluster_version::Feature;
+    let mut m = auto_unit_fixture();
+    let hold_over = 1000 + 24 * 3600;
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().into());
+    let q = m.state.packages.get_mut("q").unwrap();
+    q.signer_id = "did:key:other".into();
+    for v in q.versions.values_mut() {
+        v.visibility = Some(super::Visibility::Public);
+    }
+    let private: super::PackageVersion = serde_json::from_value(json!({
+        "version": "0.1.2", "mpk": "0.1.2", "mpkSize": 1, "source": "registry",
+        "services": { "": "bq" }, "installedBy": "zed", "installedAt": 0,
+        "visibility": "private", "orgs": [p("other")],
+    }))
+    .unwrap();
+    let _prev = q.versions.insert("0.1.2".into(), private);
+    // The member runs 0.1.1; 1.0.2's lock names no release, only the range.
+    m.state.apps.get_mut("kv").unwrap().release = Some(super::PackageRef {
+        package: "q".into(),
+        version: "0.1.1".into(),
+        service: None,
+        compute: false,
+    });
+    let p = m.state.packages.get_mut("p").unwrap();
+    for v in p.versions.values_mut() {
+        v.visibility = Some(super::Visibility::Public);
+    }
+    p.versions
+        .get_mut("1.0.2")
+        .unwrap()
+        .uses
+        .get_mut("kv")
+        .unwrap()
+        .version = None;
+    let to = super::PackageRef {
+        package: "p".into(),
+        version: "1.0.2".into(),
+        service: None,
+        compute: false,
+    };
+    assert!(
+        !m.state.moves_members(&m.state.apps["inst"], &to),
+        "0.1.2 is another organization's"
+    );
+    m.state
+        .auto_update_allows(
+            &m.state.apps["inst"],
+            Some(&to),
+            Some(&green()),
+            hold_over,
+            true,
+        )
+        .unwrap();
+}
