@@ -1,5 +1,14 @@
 //! The node: hosts the system group and its app groups, routes calls to each
 //! group's leader, and talks to peers over attested sealed channels.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
+//! actions, outside the log), D17 (actions are durable, logged when started and when done), D19
+//! (the time and randomness each kind of run sees), D22 (a failed action retries with backoff,
+//! then ends `ActionFailed`), D25 (xcalls are deduplicated by a per-source watermark), D29 (a
+//! stuck xcall is retried for up to an hour, then dead-lettered), D36 (a deadline answers
+//! `503 TIMEOUT`, never `422 TRAP`), D52 (unique ids are `<leader term>.<call seq>.<n>`), S8
+//! (compiled artifacts are checked before they load), R8 (the blob API and its lifecycle).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -542,7 +551,7 @@ pub struct Node {
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
-    /// prepare instead of each compiling it (Ruling 44).
+    /// prepare instead of each compiling it.
     preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// How many times this node ran the engine's `prepare` (feature `testing`).
     #[cfg(feature = "testing")]
@@ -1090,7 +1099,7 @@ impl Node {
         ));
         // Compiled components live in the node's data directory, which the host can
         // write: each artifact carries a MAC under a key derived from K_c, so only this
-        // cluster's own compilations are ever loaded (S8, Ruling 38).
+        // cluster's own compilations are ever loaded (S8).
         let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
@@ -1686,8 +1695,8 @@ impl Node {
 
     /// The registered nodes whose attested release is older than this node's own,
     /// or that could not be attested, with what each named (`None`): until there are
-    /// none, a setting only this release knows is not written, as D71 gates
-    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// none, a setting only this release knows is not written, as `base_seq` is
+    /// gated on the replicas' releases. An older node would drop the setting
     /// from what it applies, and its snapshots would bring it back to its default.
     pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
         let own = self.own_release();

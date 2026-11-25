@@ -1,4 +1,7 @@
 //! The API's routes for the peer routes (`/internal/*`) between the cluster's nodes.
+//!
+//! F-numbers cite the findings of `docs/specs/gate-system-group.md`, section 1.2: F4 (Raft
+//! messages were not tied to group membership).
 
 #[allow(
     clippy::wildcard_imports,

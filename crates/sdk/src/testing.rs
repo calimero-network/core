@@ -5,6 +5,16 @@
 //! it ends `Ok`, gives every logged invocation a fresh `id_seq` (and a seed derived from
 //! [`TestApp::seed`], so runs repeat), shows views the last logged entry's timestamp (D19),
 //! and resolves event audiences against the org when events are read (R9).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
+//! actions, outside the log), D13 (every invocation has an explicit caller), D17 (actions are
+//! durable, logged when started and when done), D19 (the time and randomness each kind of run
+//! sees), D23 (a timeout is not logged and does not spend the idempotency key), D25 (xcalls are
+//! deduplicated by a per-source watermark), D34 (timer ticks are proposed by the leader and
+//! keyed by slot), D50 (per-run limits on events, keys, cursors and logs), S8 (compiled
+//! artifacts are checked before they load), R8 (the blob API and its lifecycle), R9 (team and
+//! org audiences, resolved at delivery), R17 (the test harness).
 
 mod directory;
 #[cfg(feature = "releases")]
@@ -220,7 +230,7 @@ pub enum Failure {
 }
 
 const APP_ID: &str = "test-app";
-/// The largest call arguments a node runs (`node::MAX_ARGS_BYTES`, Ruling 30).
+/// The largest call arguments a node runs (`node::MAX_ARGS_BYTES`).
 const MAX_ARGS_BYTES: usize = 512 * 1024;
 /// Method names the node keeps for the platform (`node::RESERVED_PREFIX`).
 const RESERVED_PREFIX: &str = "__";

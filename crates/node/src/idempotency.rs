@@ -1,4 +1,4 @@
-//! Idempotency retention (D74), one rule for both executors.
+//! Idempotency retention, one rule for both executors.
 //!
 //! Records are kept by time class: a key containing `node:` (one the node gives a
 //! call that came without a key, or one a client created for its own retries,
@@ -10,37 +10,40 @@
 //! per app, oldest (by the entry that wrote them) dropped first.
 //!
 //! The newest [`IDEMPOTENCY_MIN_KEEP`] caller keys and [`NODE_KEY_MIN_KEEP`] node keys
-//! of an app are kept whatever their age (Xil's review,
-//! issue 10: an entry stamped by a leader whose clock jumped ahead would otherwise
-//! expire acknowledged calls, and their retries would run again).
+//! of an app are kept whatever their age: an entry stamped by a leader whose clock
+//! jumped ahead would otherwise expire acknowledged calls, and their retries would
+//! run again.
 //!
 //! Each executor keeps its records in its own rows (`app::rows::IDEM` and
 //! `rows::expiry` for wasmer, `rows::CIDEM` and `rows::corder` for components);
 //! this module is the one rule over both.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D16
+//! (entry timestamps never decrease).
 
 use calimero_log::StateTx;
 use serde::{Deserialize, Serialize};
 
-/// How long a caller's own idempotency key is remembered (D74).
+/// How long a caller's own idempotency key is remembered.
 pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Keys the node itself gives a call that came without one, so a retried
 /// forward replays instead of running twice, and the prefix of the keys a client
-/// creates for its own retries (`node:c-…`, D70). They only need to outlive the
-/// retries, so they are kept briefly.
+/// creates for its own retries while the node answers `503` (`node:c-…`). They
+/// only need to outlive the retries, so they are kept briefly.
 pub const NODE_KEY_PREFIX: &str = "node:";
 
 /// The keys an API key's follow-ups run under (`node:apikey:<keyId>:<index>:<hash>`);
 /// a client's own key never starts with it.
 pub const FOLLOW_UP_KEY_PREFIX: &str = "node:apikey:";
 
-/// How long a `node:` key is remembered (D74).
+/// How long a `node:` key is remembered.
 pub const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;
 
 /// The newest caller-key records an app always keeps, whatever the timestamps
 /// say: expiry reads entry timestamps, and an entry stamped by a leader whose
 /// clock jumped ahead would otherwise forget acknowledged calls and run their
-/// retries again (Xil's review, issue 10). Past this many, a record goes once it
+/// retries again. Past this many, a record goes once it
 /// is also older than its TTL.
 pub const IDEMPOTENCY_MIN_KEEP: u64 = 10_000;
 
@@ -48,11 +51,11 @@ pub const IDEMPOTENCY_MIN_KEEP: u64 = 10_000;
 pub const NODE_KEY_MIN_KEEP: u64 = 1_000;
 
 /// The most records one app keeps at all, both classes together, oldest dropped
-/// first (D74; D61's figure, now an upper bound).
+/// first (an earlier release's fixed retention, now an upper bound).
 pub const IDEMPOTENCY_MAX_RECORDS: u64 = 100_000;
 
-/// The most records one entry's apply drops (by time and by the cap together, D74
-/// in spec v0.26: expiry and eviction do a bounded amount of work per entry; what's
+/// The most records one entry's apply drops (by time and by the cap together:
+/// expiry and eviction do a bounded amount of work per entry; what's
 /// left carries over to later entries). Each dropped record costs about two reads
 /// and two deletes, so an entry does at most ~16k row operations: an apply batch of
 /// a few hundred KB and a few milliseconds on every replica, where an app the
@@ -75,8 +78,8 @@ impl Ring {
 }
 
 /// The class of an idempotency key as the call carried it (not the stored
-/// `caller|key`): `1` for a key starting `node:`, `0` for a caller's own key, D74
-/// in spec v0.26 ("a key's class is decided by its prefix"). A caller's key that
+/// `caller|key`): `1` for a key starting `node:`, `0` for a caller's own key: a
+/// key's class is decided by its prefix. A caller's key that
 /// merely contains `node:` (`sync-node:42`) is a caller's key.
 #[must_use]
 pub fn class_of(key: &str) -> usize {
@@ -93,7 +96,7 @@ pub const fn ttl_ms(class: usize) -> u64 {
     }
 }
 
-/// The floors and the cap retention applies; the defaults are D74's. Tests scale
+/// The floors and the cap retention applies; the defaults are the constants above. Tests scale
 /// them down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -122,8 +125,8 @@ pub struct Rows {
     pub ring: fn(u8, u64) -> Vec<u8>,
 }
 
-/// The time records expire against when an entry stamped `entry_ts_ms` applies
-/// (D74, spec v0.26): the earlier of the newest applied entry's timestamp and the
+/// The time records expire against when an entry stamped `entry_ts_ms` applies:
+/// the earlier of the newest applied entry's timestamp and the
 /// entry's own, never a node's clock. So every replica expires the same records, and
 /// one entry stamped by a skewed leader can't expire everything written after it.
 /// `None` for an entry with no timestamp of its own.
@@ -148,14 +151,14 @@ pub fn record(
     ring.next += 1;
 }
 
-/// Forget what D74 lets go: in each class, oldest first, every record whose expiry
+/// Forget what retention lets go: in each class, oldest first, every record whose expiry
 /// is at or before `now_ms` (see [`expiry_now`]; `None` for an entry with no
 /// timestamp of its own, which expires nothing by time),
 /// but never one of the class's newest `limits.keep`; then, while the app holds
 /// more than `limits.cap`, the oldest `node:` record while that class is above its
 /// floor, and only then the oldest caller record above its floor: a burst of keyless
 /// calls never evicts a caller's own record, and the cap never takes a class below
-/// its floor (D74 in spec v0.27). Together they drop
+/// its floor. Together they drop
 /// at most `limits.step` records ([`EXPIRY_STEP`]); what's left waits for the next
 /// entries. `stamps` reads a
 /// stored record's `(expires_ms, index of the entry that wrote it)`.
@@ -211,7 +214,7 @@ pub fn expire(
     }
     while rings[0].len() + rings[1].len() > limits.cap && budget > 0 {
         // The front of each ring above its floor; a ring at or below its floor is
-        // never evicted from (D74).
+        // never evicted from.
         let front = |c: usize, ring: Ring| -> Option<(Vec<u8>, Option<Vec<u8>>)> {
             (ring.len() > limits.keep[c]).then(|| {
                 let slot = (rows.ring)(c as u8, ring.first);
@@ -220,7 +223,7 @@ pub fn expire(
             })
         };
         // `node:` records go first: a burst of keyless calls never evicts a caller's
-        // own record while the `node:` class is above its floor (D74 in spec v0.27).
+        // own record while the `node:` class is above its floor.
         let fronts = [front(0, rings[0]), front(1, rings[1])];
         if tx.failed() {
             return;

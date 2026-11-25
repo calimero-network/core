@@ -10,6 +10,11 @@
 //! an app's state still opens, it is listed and it can be deleted, but it runs
 //! nothing (`410 UNSUPPORTED_ENGINE`), and an entry of its format applies as a
 //! no-op on every replica alike.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D17 (actions are durable, logged when started and when done),
+//! D25 (xcalls are deduplicated by a per-source watermark), D29 (a stuck xcall is retried for
+//! up to an hour, then dead-lettered), R8 (the blob API and its lifecycle).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -20,7 +25,7 @@ use tokio::sync::broadcast;
 
 use crate::types::{AppId, EventRecord};
 
-/// Idempotency retention's classes and floors (`crate::idempotency`, D74).
+/// Idempotency retention's classes and floors (`crate::idempotency`).
 pub use crate::idempotency::{IDEMPOTENCY_MIN_KEEP, IDEMPOTENCY_TTL_MS, NODE_KEY_PREFIX};
 
 /// What a node without wasmer answers for an SDK 0.12 app: every call, view and
@@ -98,7 +103,7 @@ pub(crate) mod rows {
     /// A component's idempotency records, by `caller|key`.
     pub const CIDEM: u8 = b'j';
     /// A component's idempotency keys per class in the order they were recorded:
-    /// `q ‖ class ‖ n` (D74).
+    /// `q ‖ class ‖ n`, for retention (`crate::idempotency`).
     pub const CORDER: u8 = b'q';
     /// A component's blobs (R8, `crate::component::blobs`): its record of each, by SHA-256.
     pub const CBLOB: u8 = b'b';
@@ -284,7 +289,7 @@ pub struct AppMachine {
     /// part of the state, and not in a production build.
     #[cfg(feature = "testing")]
     pub ticks: crate::component::Ticks,
-    /// Idempotency floors and cap (D74's; tests scale them down).
+    /// Idempotency floors and cap (`crate::idempotency`'s; tests scale them down).
     pub(crate) idem_limits: crate::idempotency::Limits,
 }
 
@@ -712,7 +717,7 @@ mod tests {
         assert_eq!(m.state.last_index, 1);
     }
 
-    /// Review finding A6: an answer that did not serialize was sent as empty bytes, with
+    /// Regression: an answer that did not serialize was sent as empty bytes, with
     /// nothing logged. It is now a fault that says why, readable as either `Applied`.
     #[test]
     fn an_answer_that_does_not_serialize_is_a_fault_never_empty_bytes() {

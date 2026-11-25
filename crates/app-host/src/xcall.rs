@@ -9,6 +9,9 @@
 //! replays the target's answer instead of applying it twice. A run that is itself
 //! delivered from another app (`kind = xcall-deliver`) makes none, so a chain is one hop
 //! deep.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D27
+//! (an action's sub-call key adds the method, argument hash and occurrence).
 
 use sha2::{Digest, Sha256};
 

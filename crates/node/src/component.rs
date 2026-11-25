@@ -20,11 +20,24 @@
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees (D39).
 //!
-//! Usage (Q20): every logged `init`, call and tick carries what its run cost
+//! Usage: every logged `init`, call and tick carries what its run cost
 //! ([`RunUsage`]), measured by the leader. A replica adds the entry's figures to the
 //! app's usage book ([`ComponentHead::usage`], a [`UsageBook`], per UTC day of the entry's timestamp)
 //! as it applies the entry and never measures anything itself, so every replica holds
 //! the same totals, wall-clock time included.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D16 (entry timestamps never decrease), D17 (actions are durable,
+//! logged when started and when done), D19 (the time and randomness each kind of run sees), D22
+//! (a failed action retries with backoff, then ends `ActionFailed`), D23 (a timeout is not
+//! logged and does not spend the idempotency key), D25 (xcalls are deduplicated by a per-source
+//! watermark), D29 (a stuck xcall is retried for up to an hour, then dead-lettered), D34 (timer
+//! ticks are proposed by the leader and keyed by slot), D38 (a migration is a rebuild into a
+//! separate keyspace), D39 (app data is keyed by generation; host records sit outside it), D46
+//! (the host core reads state through `StateView`), D50 (per-run limits on events, keys,
+//! cursors and logs), D52 (unique ids are `<leader term>.<call seq>.<n>`), D76 (calls, timers
+//! and deliveries may send outbound HTTP, recorded in the entry), R8 (the blob API and its
+//! lifecycle), R9 (team and org audiences, resolved at delivery).
 
 pub mod action;
 pub mod blobs;
@@ -106,7 +119,7 @@ pub struct Outcome {
     /// The files the run finished: their marks only, the ciphertext never enters the log.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileMark>,
-    /// What the run cost, as the leader measured it (Q20). Absent in an entry
+    /// What the run cost, as the leader measured it. Absent in an entry
     /// written before: nothing.
     #[serde(default)]
     pub usage: RunUsage,
@@ -232,7 +245,7 @@ pub struct PublishedMark {
     pub size: u64,
 }
 
-/// What one logged run cost (Q20), measured by the leader and stored in its entry;
+/// What one logged run cost, measured by the leader and stored in its entry;
 /// a follower adds these figures up and never measures them again. `fuel`,
 /// `wall_ms` and `writes` are the run's whatever its status (`writes` is the host
 /// core's count of `put`s and `delete`s); `bytes_written` (keys and values of the
@@ -242,7 +255,7 @@ pub struct PublishedMark {
 #[serde(rename_all = "camelCase")]
 pub struct RunUsage {
     pub fuel: u64,
-    /// Wall-clock milliseconds on the leader, for information only (D76: the quota
+    /// Wall-clock milliseconds on the leader, for information only (the quota
     /// counts fuel): not deterministic, so never compared between replicas, only
     /// carried.
     pub wall_ms: u64,
@@ -798,7 +811,8 @@ impl Applied {
     }
 }
 
-/// A component call's idempotency record: its answer, and when it expires (D74).
+/// A component call's idempotency record: its answer, and when it expires
+/// (`crate::idempotency`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IdemRecord {
@@ -806,7 +820,7 @@ struct IdemRecord {
     expires_ms: u64,
 }
 
-/// Where a component's idempotency records live (D74's rule, `crate::idempotency`).
+/// Where a component's idempotency records live (the retention rule, `crate::idempotency`).
 const IDEM_ROWS: idempotency::Rows = idempotency::Rows {
     tag: rows::CIDEM,
     ring: rows::corder,
@@ -903,7 +917,7 @@ pub struct ComponentHead {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub last_write_ms: u64,
     /// The highest `(id_term, id_seq)` any logged run carried, conflicted ones
-    /// included (D52, Ruling 29): a node leading the same term again after a
+    /// included (D52): a node leading the same term again after a
     /// restart continues after it instead of reusing an id.
     #[serde(default)]
     pub last_id: (u64, u64),
@@ -925,7 +939,7 @@ pub struct ComponentHead {
     #[serde(default)]
     pub timers: BTreeMap<String, u64>,
     /// The idempotency keys of each class (caller, `node:`) in the order they were
-    /// recorded (D74).
+    /// recorded, for retention (`crate::idempotency`).
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
     /// Blobs the app forgot (idle past their time, R8) whose bytes the leader has yet to
@@ -957,7 +971,7 @@ pub struct ComponentHead {
     /// Keys of the pipeline step cache, oldest first.
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     pub step_cache: VecDeque<String>,
-    /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
+    /// The app's usage book: the summed [`RunUsage`] of its applied `init`,
     /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
     /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
     /// head.
@@ -1342,7 +1356,7 @@ impl AppMachine {
     }
 
     /// Remember a call's answer under its idempotency key until its class's time
-    /// (D74) is past its entry's timestamp.
+    /// (`crate::idempotency`) is past its entry's timestamp.
     fn remember_component(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -1352,7 +1366,7 @@ impl AppMachine {
         applied: &Applied,
     ) {
         let id = idem_key(caller, key);
-        // The class (and so the TTL) is the call's key's prefix (D74, spec v0.26).
+        // The class (and so the TTL) is the call's key's prefix.
         let class = idempotency::class_of(key);
         let record = IdemRecord {
             applied: applied.clone(),
@@ -1371,7 +1385,7 @@ impl AppMachine {
         }
     }
 
-    /// Forget what D74 lets go, against the earlier of the newest applied entry's
+    /// Forget what idempotency retention lets go, against the earlier of the newest applied entry's
     /// timestamp and this entry's own (`idempotency::expiry_now`).
     fn expire_component(&mut self, tx: &mut StateTx<'_>, entry_ts_ms: Option<u64>) {
         let now = idempotency::expiry_now(self.state.component.head.last_ts_ms, entry_ts_ms);
@@ -2051,7 +2065,7 @@ impl host::Directory for SysDirectory {
         self.with_org(|o| o.teams.contains_key(team))
     }
 
-    /// The app's own organization only (D75, spec v0.26): for `account`, at most the
+    /// The app's own organization only: for `account`, at most the
     /// app's org with the account's role in it. A component runs code the platform
     /// doesn't vet, so it never maps its callers' memberships in other tenants.
     fn orgs_of(&self, account: &str) -> Vec<(String, host::OrgRole)> {
@@ -2118,7 +2132,7 @@ mod tests {
     mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
 
-    /// C10: the test harness, which has no log, refuses a run whose entry would be over the
+    /// The test harness, which has no log, refuses a run whose entry would be over the
     /// log's cap by measuring it with `calimero_app_host::entry_bytes`. That must be the
     /// length of the entry this node writes for the same run, for every status and every
     /// part a harness run can produce (keys and values in base64, events with each audience,
@@ -2584,7 +2598,7 @@ mod tests {
         assert!(!Outcome::default().is_retryable());
     }
 
-    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// Regression: a row an apply read but could not decode read as absent, and
     /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
     /// call ran again, an idempotency record was dropped). It now fails the batch.
     #[test]
@@ -2907,7 +2921,7 @@ mod tests {
         assert!(!r.apply(2, &ok).conflict);
     }
 
-    /// Reproduction (F6): the error that stops the group quoted the entry it could not
+    /// Reproduction: the error that stops the group quoted the entry it could not
     /// decode (serde_json's `invalid type: string "…"`), and the node logged it at ERROR
     /// and again as the group's stop reason, which ship to the operator's log.
     #[test]
@@ -3531,7 +3545,8 @@ mod tests {
             .is_some()
     }
 
-    /// D74 on a component: a `node:` key is honoured for 10 minutes of entry time, a
+    /// Idempotency retention on a component: a `node:` key is honoured for 10 minutes of entry
+    /// time, a
     /// caller's own key for 24 hours, judged by the newest applied entry's timestamp
     /// (with the per-class floors at zero).
     #[test]
@@ -3563,8 +3578,8 @@ mod tests {
         assert!(honoured(&r, "x3"));
     }
 
-    /// D74's cap (scaled down here to 3 records through `Limits::cap`; the real one is
-    /// 100,000), spec v0.27: past it `node:` records go first, then the oldest
+    /// Idempotency retention's cap (scaled down here to 3 records through `Limits::cap`;
+    /// the real one is 100,000): past it `node:` records go first, then the oldest
     /// caller record.
     #[test]
     fn the_idempotency_cap_drops_node_keys_first_then_the_oldest() {
@@ -3641,7 +3656,7 @@ mod tests {
         assert!(!honoured(&r, "k0"));
     }
 
-    /// D74 (v0.27): a burst of keyless calls (`node:` keys) past the cap never
+    /// Idempotency retention: a burst of keyless calls (`node:` keys) past the cap never
     /// evicts a caller's own record, even when the caller class is above its floor:
     /// `node:` records go first (scaled: cap 6, floors 2 caller / 1 node, 4 caller
     /// records, then 20 `node:` keys).
@@ -3674,7 +3689,7 @@ mod tests {
         }
     }
 
-    /// D74 (v0.26): the cap never takes a class below its floor. A burst of keyless
+    /// Idempotency retention: the cap never takes a class below its floor. A burst of keyless
     /// calls (`node:` keys) past the cap (scaled to 5, floors to 2 caller / 1 node)
     /// leaves a caller's own record, inside its 24 h, to answer its retry.
     #[test]
@@ -3702,7 +3717,7 @@ mod tests {
         assert!(rings[0].next - rings[0].first >= 1 && rings[1].next - rings[1].first >= 1);
     }
 
-    /// D74 (v0.26): a record expires against the earlier of the newest applied entry's
+    /// Idempotency retention: a record expires against the earlier of the newest applied entry's
     /// timestamp and the applying entry's own, so one entry stamped 25 h ahead by a
     /// skewed leader can't expire what is written after it.
     #[test]
@@ -3725,7 +3740,7 @@ mod tests {
         assert!(honoured(&r, "later"));
     }
 
-    /// D74 (v0.26): a key's class is decided by its prefix. A caller's own key that
+    /// Idempotency retention: a key's class is decided by its prefix. A caller's own key that
     /// merely contains `node:` (`sync-node:42`) keeps its 24 hours.
     #[test]
     fn a_callers_key_containing_node_is_kept_24_hours() {

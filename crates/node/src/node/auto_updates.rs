@@ -1,4 +1,4 @@
-//! Updates that apply on their own (C9; docs: protocol upgrades "Updates that apply on
+//! Updates that apply on their own (docs: protocol upgrades "Updates that apply on
 //! their own"): the system leader's pass, from `reconcile`, at most every
 //! [`AUTO_UPDATE_EVERY`].
 //!

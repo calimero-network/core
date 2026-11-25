@@ -3,6 +3,9 @@
 //! A record declares the fields with `#[table(key = "id", search = ["title", "body"])]`;
 //! the state ABI lists them, and the host keeps the index from the app's state, outside it.
 //! A view queries it with [`crate::Table::search`]; calls and timers cannot (`HostDenied`).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
+//! R2 (tables with indexes, counts and full-text search).
 
 /// How the query text is matched.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

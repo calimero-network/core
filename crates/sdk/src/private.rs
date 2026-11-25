@@ -1,5 +1,9 @@
 //! Support for the code the `app` macros generate. Not a public API: names here change
 //! with the macros.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D12
+//! (outbound HTTP only in actions, outside the log), D13 (every invocation has an explicit
+//! caller), D20 (64-bit integers travel as decimal strings in JSON).
 
 use core::fmt::Display;
 

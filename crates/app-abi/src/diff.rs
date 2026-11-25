@@ -8,6 +8,9 @@
 //!
 //! The app types those name are compared by their shapes in `types`, with the same rule in
 //! the direction each one travels (`shapes`).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::BTreeMap;
 use std::fmt;

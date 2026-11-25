@@ -881,7 +881,7 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
     );
 
     // Event audiences count too; 100 events naming a 1 MiB account each are all refused.
-    // Past the run's bytes an event is the soft error `emit` returns (C10), which this guest
+    // Past the run's bytes an event is the soft error `emit` returns, which this guest
     // ignores: the run ends `Ok` and keeps none of them.
     let out = fx.engine.invoke(
         &app,
@@ -1560,7 +1560,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
 }
 
-// --- host work and fuel (C7) ---------------------------------------------------------------
+// --- host work and fuel --------------------------------------------------------------------
 
 /// A 64 KiB value under `big`, as the node's state holds it.
 const BIG_VALUE_BYTES: usize = 64 << 10;
@@ -1622,7 +1622,7 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
 }
 
-/// C7: a view that reads 64 MiB of state through `storage.get` pays for the host's work, so a
+/// A view that reads 64 MiB of state through `storage.get` pays for the host's work, so a
 /// small budget runs out of fuel instead of finishing.
 #[test]
 fn reading_megabytes_of_state_costs_fuel() {
@@ -1661,7 +1661,7 @@ fn reading_megabytes_of_state_costs_fuel() {
     assert_eq!(out.usage.fuel, budget.fuel);
 }
 
-/// C7: a view's searches are capped per run, however much fuel it has.
+/// A view's searches are capped per run, however much fuel it has.
 #[test]
 fn a_view_makes_at_most_max_searches_per_run() {
     let fx = fixture();

@@ -6,6 +6,9 @@
 //! lost precision is refused instead of misread, and only canonical decimals: no sign `+`,
 //! no leading zeros, no `-0`. The `*_auto` forms are for record fields: the JSON form in
 //! human-readable formats, the native CBOR form (integer, byte string) otherwise.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use core::fmt::{self, Display};
 use core::marker::PhantomData;

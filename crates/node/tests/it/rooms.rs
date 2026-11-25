@@ -135,7 +135,7 @@ enum Failure {
     },
     Trap(String),
     ConfirmRequired,
-    /// The platform refused before the app ran (Ruling 32): the HTTP status and API code.
+    /// The platform refused before the app ran: the HTTP status and API code.
     Refused {
         status: u16,
         code: String,

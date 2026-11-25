@@ -9,6 +9,9 @@
 //! does not describe stays its JSON (`JSONValue`).
 //!
 //! An optional argument left `nil` is not sent: the SDK reads a missing argument as `None`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -308,7 +311,7 @@ struct Sw<'a> {
 impl Sw<'_> {
     /// The Swift type of an ABI type. At the top of a parameter, result or field (`top`), a
     /// `u64`, `i64` or `bytes` (or an option of one) is `UInt64`, `Int64` or `Data`; deeper,
-    /// where the SDK refuses them (Ruling 27), it keeps its wire type.
+    /// where the SDK refuses them, it keeps its wire type.
     fn ty(&mut self, ty: &Type, top: bool) -> String {
         match ty {
             // `null` on the wire.

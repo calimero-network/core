@@ -14,12 +14,15 @@
 //! own thread and never under the app's lock. Derived data: never in the log or a snapshot,
 //! rebuilt after a restart.
 //!
-//! A view's searches answer from the state it reads, never another (review finding C4). Its
+//! A view's searches answer from the state it reads, never another. Its
 //! apps' views share one set of indexes, so a view takes a point-in-time view of them (a
 //! tantivy `Searcher` and the document keys, per table) as soon as they are brought up to its
 //! state, and every search it makes reads that, however far a later view moves the indexes
 //! meanwhile. Views queued on earlier states are brought up first, in order (`AppEntry::due`),
 //! so the indexes pass through each live view's state instead of jumping over it.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
+//! R2 (tables with indexes, counts and full-text search).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -316,7 +319,7 @@ impl AppEntry {
 }
 
 /// The apps whose indexes may hold writers, least recently refreshed first, with how
-/// many tables each has. Review finding C1: every index kept its writer from its first
+/// many tables each has. Regression: every index kept its writer from its first
 /// write until its app left the node, so 200 apps of 3 searchable tables held some 1,800
 /// OS threads. Past `MAX_OPEN_WRITERS` tables, the apps refreshed longest ago give theirs
 /// up; the app refreshed last keeps its own whatever its count.
@@ -800,7 +803,7 @@ mod tests {
         (!ix.tables.is_empty()).then_some(ix.built_at)
     }
 
-    /// Review finding A5: the index was refreshed, or rebuilt in full, inside
+    /// Regression: the index was refreshed, or rebuilt in full, inside
     /// `for_view`, which runs under the app's read lock on an async worker, for
     /// every view, searching or not. Preparing a view's search now indexes
     /// nothing; the view's first query does, on the view's own thread.
@@ -885,7 +888,7 @@ mod tests {
             .collect()
     }
 
-    /// Review finding C4: an app's views share its indexes, and every query read their
+    /// Regression: an app's views share its indexes, and every query read their
     /// latest commit, so a view on the state at 5 searched whatever a later view had
     /// brought them to: a hit for a record its state does not hold yet, and none for
     /// one the later state deleted. A view's searches answer from the indexes as of the
@@ -921,7 +924,7 @@ mod tests {
         assert_eq!(find(&*at5, "hello"), vec![key("1"), key("2")]);
     }
 
-    /// C4, the other order: a view prepared on the state at 5 that first searches after a
+    /// The same, the other order: a view prepared on the state at 5 that first searches after a
     /// view on 6 brought the indexes to 6 searches the state at 5, not 6.
     #[test]
     fn a_view_that_searches_after_a_later_view_did_searches_its_own_state() {
@@ -1030,7 +1033,7 @@ mod tests {
         kv.into_iter().collect()
     }
 
-    /// Review finding A5 follow-up: an upgrade rebuilt every table from a scan of the
+    /// Regression: an upgrade rebuilt every table from a scan of the
     /// whole state, because the indexes were keyed by bundle. A table whose declared
     /// fields an upgrade keeps now catches up from the keys touched since, like any
     /// other view; only a table that is new or whose fields changed is scanned, and one
@@ -1230,7 +1233,7 @@ mod tests {
             .sum()
     }
 
-    /// Review finding C1: every index kept its tantivy writer (an indexing thread, a
+    /// Regression: every index kept its tantivy writer (an indexing thread, a
     /// segment updater, a merge thread and an arena of up to 15 MB) from its first write
     /// until the app left the node, so 200 apps of 3 searchable tables held some 1,800 OS
     /// threads. Only the apps refreshed last keep theirs, `MAX_OPEN_WRITERS` across every

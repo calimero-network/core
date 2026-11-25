@@ -1,5 +1,18 @@
 //! The host core: the only code that reads or writes app state, applies access policy or
 //! decides what an invocation may do (spec section 3). Engines map WIT calls onto it.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
+//! actions, outside the log), D17 (actions are durable, logged when started and when done), D19
+//! (the time and randomness each kind of run sees), D25 (xcalls are deduplicated by a
+//! per-source watermark), D27 (an action's sub-call key adds the method, argument hash and
+//! occurrence), D38 (a migration is a rebuild into a separate keyspace), D46 (the host core
+//! reads state through `StateView`), D47 (`storage.add` and `unique-id` avoid serializing
+//! calls), D50 (per-run limits on events, keys, cursors and logs), D52 (unique ids are
+//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
+//! recorded
+//! in the entry), S9 (outbound HTTP only from leader runs, to declared and approved URLs), R8
+//! (the blob API and its lifecycle).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -51,7 +64,7 @@ use file_ops::FileTable;
 /// Bytes of an app key (before the generation prefix). Values have no separate cap:
 /// [`MAX_RUN_BYTES`] bounds them as they are written.
 pub const MAX_KEY_BYTES: usize = 1_024;
-/// Bytes one run may write (Ruling 37): the keys and values of every `put`, `add` and
+/// Bytes one run may write: the keys and values of every `put`, `add` and
 /// `delete` (each overwrite counts again: the overlay keeps every version) plus the name
 /// and data of every event. The host call that would pass it is refused with
 /// `HostDenied("entry too large")` before the bytes are kept, so the overlay and the events
@@ -145,7 +158,8 @@ pub const MAX_EVENTS: usize = 1_000;
 pub const MAX_EVENT_NAME_BYTES: usize = 100;
 /// Bytes of an event's data.
 pub const MAX_EVENT_DATA_BYTES: usize = 16 * 1024;
-/// Accounts one event's `accounts` audience may name (Ruling 43).
+/// Accounts one event's `accounts` audience may name: its strings count against the
+/// run's bytes too.
 pub const MAX_AUDIENCE_ACCOUNTS: usize = 1_000;
 
 /// `emit`'s soft errors (the WIT `result<_, string>`), fixed so every engine and SDK
@@ -232,7 +246,7 @@ pub struct HostCore {
     active: Option<Vec<ActiveRun>>,
     starts: Vec<StartedRun>,
     cancels: Vec<String>,
-    /// Fuel the run's host calls owe and the engine has not taken yet (C7, `crate::fuel`).
+    /// Fuel the run's host calls owe and the engine has not taken yet (`crate::fuel`).
     host_fuel: Cell<u64>,
     /// Whether host calls are charged (`with_host_fuel`).
     charges_fuel: bool,
@@ -780,7 +794,7 @@ impl HostCore {
         self.applied_index
     }
 
-    /// `"<id_term>.<id_seq>.<n>"`, `n` counting this run's calls from 0 (D47, Ruling 12).
+    /// `"<id_term>.<id_seq>.<n>"`, `n` counting this run's calls from 0 (D47, D52).
     /// Unique across runs because the leader never repeats `(term, seq)`; deterministic
     /// for a given invocation. Only in invocations that become log entries.
     pub fn unique_id(&mut self) -> Result<String, HostDenied> {
@@ -972,7 +986,7 @@ impl HostCore {
         if let Err(reason) = self.check_event(&event) {
             return Ok(Err(reason.to_owned()));
         }
-        // The audience is kept with the event, so its strings count too (Ruling 43).
+        // The audience is kept with the event, so its strings count too.
         let audience = match &event.audience {
             Audience::All | Audience::Caller => 0,
             Audience::Accounts(accounts) => accounts

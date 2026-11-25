@@ -1,3 +1,6 @@
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D43
+//! (WASI is pinned to 0.2.12).
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

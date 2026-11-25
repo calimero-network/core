@@ -1493,7 +1493,7 @@ mod snapshot_errors {
         }
     }
 
-    /// Review finding A6: the system group's snapshot fell back to empty bytes when its
+    /// Regression: the system group's snapshot fell back to empty bytes when its
     /// state did not serialize, so the group checkpointed and served an empty state, which
     /// failed to restore on the node that received it, far from the cause. The build now
     /// fails where it happens, and the checkpoint keeps the last good state.
@@ -1588,7 +1588,7 @@ mod large_rows {
         Ok((format, held))
     }
 
-    /// Review finding B1: an in-memory machine's state is one row, and its snapshot wrote
+    /// Regression: an in-memory machine's state is one row, and its snapshot wrote
     /// that row into one frame, which every reader refuses past `MAX_FRAME_BYTES`: once the
     /// system state grew past it, no new or lagging node could install the system snapshot,
     /// and no system backup could be restored. Such a row now spans frames.

@@ -3,6 +3,9 @@
 //! Spec: [Application execution](https://calimero-network.github.io/core/protocol/execution/),
 //! [The env API](https://calimero-network.github.io/core/build/host-functions/).
 //! Crate guide: [`crates/app-wit/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-wit/AGENTS.md).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D44
+//! (nine WASI interfaces are served by stubs that refuse).
 
 /// Absolute path of the `wit/` directory holding the world and its WASI deps.
 pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");

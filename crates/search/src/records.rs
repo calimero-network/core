@@ -8,6 +8,9 @@
 //! encoding (`crates/sdk`, encoding contract); each becomes one document, its id the SHA-256
 //! of the stored key, its fields the declared ones that hold text (a list of strings is
 //! joined), each cut at [`MAX_FIELD_TEXT_BYTES`].
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D39
+//! (app data is keyed by generation; host records sit outside it).
 
 use std::collections::HashMap;
 

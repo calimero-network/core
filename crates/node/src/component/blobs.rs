@@ -13,6 +13,10 @@
 //!
 //! The records are host-owned (D39): hidden rows of the group (`rows::CBLOB`) and, in
 //! memory, an ordered map shared with runs as their view of the app's blobs.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D39 (app data is keyed by generation; host records sit outside
+//! it), R8 (the blob API and its lifecycle).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;

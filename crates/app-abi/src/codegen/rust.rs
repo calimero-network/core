@@ -13,6 +13,9 @@
 //! `i64_number` field is `#[abi(plain)]`, as the target declared it. A type that reaches one
 //! the ABI does not describe (its JSON, a `serde_json::Value`) or an integer with no JSON form
 //! (`u128`, `usize`, ..., from an ABI built before they were refused) derives only serde.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;

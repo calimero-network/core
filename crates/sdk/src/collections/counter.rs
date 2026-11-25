@@ -1,4 +1,7 @@
 //! `Counter`: a non-negative integer at `(name, "n")`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D47
+//! (`storage.add` and `unique-id` avoid serializing calls).
 
 use crate::app::StateField;
 use crate::commons::{collection_key, KeyPath};

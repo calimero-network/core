@@ -14,6 +14,12 @@
 //!
 //! `wasi:sockets` and `wasi:random/insecure` are never linked, and `prepare` refuses any
 //! component importing them.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9): D12 (outbound HTTP only in actions, outside the log), D19 (the
+//! time and randomness each kind of run sees), D43 (WASI is pinned to 0.2.12), D44 (nine WASI
+//! interfaces are served by stubs that refuse), S9 (outbound HTTP only from leader runs, to
+//! declared and approved URLs).
 
 use std::io;
 use std::pin::Pin;

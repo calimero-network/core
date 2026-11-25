@@ -1,4 +1,7 @@
 //! Helpers tables and collections share: checked keys, paged reads, counts and clears.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D50
+//! (per-run limits on events, keys, cursors and logs).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;

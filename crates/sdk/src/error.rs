@@ -1,4 +1,8 @@
 //! Error types: the app-facing [`AppError`] and the SDK's own [`StorageError`] and [`TableError`].
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON), D50 (per-run limits on events, keys,
+//! cursors and logs).
 
 use std::io;
 

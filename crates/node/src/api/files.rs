@@ -1,4 +1,7 @@
 //! The API's routes for blobs, files and resumable uploads.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
+//! R8 (the blob API and its lifecycle).
 
 #[allow(
     clippy::wildcard_imports,

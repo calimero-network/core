@@ -1,4 +1,9 @@
 //! Types shared by the node's state machines and its API.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D13 (every invocation has an explicit caller), D34 (timer ticks
+//! are proposed by the leader and keyed by slot), R9 (team and org audiences, resolved at
+//! delivery).
 
 use std::collections::BTreeMap;
 

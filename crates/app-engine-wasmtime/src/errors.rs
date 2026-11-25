@@ -1,4 +1,9 @@
 //! How a failed run becomes one `TrapKind` (spec section 5, error mapping).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9): D23 (a timeout is not logged and does not spend the
+//! idempotency key), D36 (a deadline answers `503 TIMEOUT`, never `422 TRAP`), S6 (a host panic
+//! is `Trap(Fault)`, never a node crash), S10 (logs and traps carry no user data).
 
 use calimero_app_host::{HostDenied, TrapKind};
 use thiserror::Error;
@@ -8,7 +13,7 @@ use wasmtime::PoolConcurrencyLimitError;
 use wasmtime::Trap;
 use wasmtime_wasi::I32Exit;
 
-/// The detail of a run refused because the node has no instance slot free (Ruling 22).
+/// The detail of a run refused because the node has no instance slot free.
 pub(crate) const POOL_EXHAUSTED: &str = "instance pool exhausted";
 /// The detail of a run refused because the node could not allocate its instance.
 pub(crate) const ALLOCATION_FAILED: &str = "instance allocation failed";

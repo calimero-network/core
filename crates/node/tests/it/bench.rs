@@ -6,6 +6,9 @@
 //! Each measurement prints one `MEASURE` line. Engine-level numbers (fuel, engine time,
 //! fresh instance, spin) invoke the node's own engine on the leader's applied state with
 //! the node's own directory, because the API does not return an outcome's usage.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D32
+//! (the first milestone's definition of done).
 
 use crate::common;
 

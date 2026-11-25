@@ -1,4 +1,7 @@
 //! The API's routes for passkey sign-up and sign-in, sessions, the account, aliases and API keys.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 #[allow(
     clippy::wildcard_imports,
@@ -1737,7 +1740,7 @@ async fn passkey_label(
 }
 
 /// What the caller's account uses, against the cluster's quotas, and what today's
-/// runs of the apps it is the developer of used (Q20, D76, D78): fuel and writes,
+/// runs of the apps it is the developer of used: fuel and writes,
 /// summed over the component apps billed to `account:{id}` as their developer
 /// (`usage::developer`), on the UTC day of the node's app time. An organization's
 /// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are

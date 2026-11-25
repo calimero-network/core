@@ -77,6 +77,11 @@ Delete commented-out code; add future code in the change that first uses it.
 - **Removing dead code:** run the **dead-code-cleanup** skill (`.cursor/skills/dead-code-cleanup/SKILL.md`); it proves there are no references before deleting.
 - **Unreachable islands:** items that cite each other while the outermost edge points at a route, command or registration that does not exist are invisible to the compiler and clippy; find them with the **unreachable-subsystems** skill (`.cursor/skills/unreachable-subsystems/SKILL.md`).
 
+## Citing decisions
+
+A comment that cites a decision id also states the reason in a few words, and the id is defined in the repository: D, S and R in `docs/specs/app-runtime-v0.14.md`, F in `docs/specs/gate-system-group.md`; a file that cites several says where once, in its `//!`.
+Name no reviewer and no review finding: state what the finding was.
+
 ## Security: trust boundaries
 
 A PR touching a path in `TRUST_BOUNDARY_PATHS` ([`scripts/check-trust-boundary.py`](scripts/check-trust-boundary.py)) must answer the PR template's Trust boundary block; CI fails without it.

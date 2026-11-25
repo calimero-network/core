@@ -7,6 +7,10 @@
 //! `BlobRef`, which both SDKs encode as CBOR tag [`BLOB_REF_TAG`] around the blob's 32-byte
 //! SHA-256, so the host finds every reference without knowing the app's types and keeps a
 //! blob for as long as state refers to it (host-tracked retention).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D10 (one storage encoding for both SDKs), R8 (the blob API and
+//! its lifecycle).
 
 use ciborium::Value;
 

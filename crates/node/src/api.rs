@@ -7,6 +7,12 @@
 //!   router, on the node's own origin.
 //! - Internal (peers, cluster secret): `/internal/*`.
 //! - Ops (mdma, operator token): `/ops/*`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
+//! R9 (team and org audiences, resolved at delivery).
+//!
+//! F-numbers cite the findings of `docs/specs/gate-system-group.md`, section 1.2: F1 (any node
+//! could mint a session).
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -277,8 +283,8 @@ impl Pending {
 /// (sign-in, sign-up, a recovery's finish). Each lives at most
 /// `CHALLENGE_TTL`; past this a new one displaces the oldest of the caller
 /// holding the most (`admit_pending`), so the pool never grows without bound
-/// (Xil's review, issue 12) and a flood never locks the others out (review
-/// finding D1). Ceremonies of known accounts do not count here, so a full
+/// and a flood never locks the others out. Ceremonies of known accounts do not count here, so a
+/// full
 /// anonymous pool never blocks an account's step-up.
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
 /// The most anonymous ceremonies one sealed session holds open; its next
@@ -640,8 +646,7 @@ fn rp(node: &Node) -> RelyingParty {
 }
 
 /// A confirmation (step-up) needs the user verified (PIN or biometric), not
-/// just present: a touch alone is not consent to a confirm method (Xil's
-/// review, issue 6).
+/// just present: a touch alone is not consent to a confirm method.
 pub(crate) fn rp_step_up(node: &Node) -> RelyingParty {
     RelyingParty {
         require_uv: true,
@@ -899,7 +904,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// [`Node::sys_fresh_index`]): a session or key revoked through another node is
 /// refused here at once, not once this replica catches up. What needs no state
 /// is checked before that round, so a credential that cannot be valid costs the
-/// system leader nothing (D4): an API key's shape ([`api_key_shaped`]) and the
+/// system leader nothing: an API key's shape ([`api_key_shaped`]) and the
 /// keys a fresh read found missing ([`UnknownApiKeys`]), a visitor's signature,
 /// a session token's signature under its issuer's attested key and its expiry.
 async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
@@ -1157,8 +1162,7 @@ pub(crate) async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Princi
 
 /// Who may install code or create apps: a passkey session, or an API key
 /// scoped to no app and no method and not read-only. A key handed to one app
-/// (or read-only) must not install bundles or start new apps (Xil's review,
-/// issue 7).
+/// (or read-only) must not install bundles or start new apps.
 async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = signed_in(node, headers).await?;
     p.unbound()?;
@@ -1638,8 +1642,8 @@ async fn gate(
     let account = p.as_ref().and_then(|p| p.caller.account());
     // Access is judged on the cluster's latest system state (a read index): a
     // removal or revocation committed through another node holds before the
-    // next request, read or write, and a grant is seen at once (Xil's review:
-    // access judged on lagging local state). `principal` already read fresh
+    // next request, read or write, and a grant is seen at once, never judged on
+    // lagging local state. `principal` already read fresh
     // for a request that carries a credential.
     let sys_index = match &p {
         Some(p) => p.sys_index,

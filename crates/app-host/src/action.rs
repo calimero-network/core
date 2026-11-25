@@ -7,6 +7,13 @@
 //! calls replay instead of applying twice. Only an action may send HTTP (`wasi:http`), and
 //! only through the node's [`HttpHost`], which allows the hosts the signed manifest
 //! declares (S9).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
+//! actions, outside the log), D17 (actions are durable, logged when started and when done), D22
+//! (a failed action retries with backoff, then ends `ActionFailed`), D27 (an action's sub-call
+//! key adds the method, argument hash and occurrence), S9 (outbound HTTP only from leader runs,
+//! to declared and approved URLs), R14 (secrets for outbound calls).
 
 use sha2::{Digest, Sha256};
 

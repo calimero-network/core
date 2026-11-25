@@ -7,6 +7,9 @@
 //! Spec: [Protocol overview](https://calimero-network.github.io/core/protocol/overview/),
 //! [Architecture](https://calimero-network.github.io/core/contribute/architecture/).
 //! Crate guide: [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D34
+//! (timer ticks are proposed by the leader and keyed by slot).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -279,7 +282,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // What the peers' replicas used today, for the fuel cap (D76, D78), every
+    // What the peers' replicas used today, for the developer's fuel cap, every
     // `USAGE_REFRESH` while a cap is set: the cap never asks a peer during a call.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

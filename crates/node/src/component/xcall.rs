@@ -18,6 +18,11 @@
 //!   goes to the source's dead letters (`rows::CDEAD`, the newest [`MAX_DEAD_LETTERS`]) and
 //!   the source's `onXcallFailed`, if its ABI has one that allows the system, runs.
 //!   Anything the target answered, an app error or a trap included, is a final answer.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D13
+//! (every invocation has an explicit caller), D25 (xcalls are deduplicated by a per-source
+//! watermark), D29 (a stuck xcall is retried for up to an hour, then dead-lettered), D39 (app
+//! data is keyed by generation; host records sit outside it).
 
 use std::collections::BTreeMap;
 

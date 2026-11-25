@@ -1,4 +1,8 @@
 //! Test guest: a small rooms app using every `app` attribute, run by `tests/abi.rs`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D13
+//! (every invocation has an explicit caller), D20 (64-bit integers travel as decimal strings in
+//! JSON).
 
 use std::io::{Read, Write};
 
@@ -385,7 +389,8 @@ impl Rooms {
         })
     }
 
-    /// A timer without `allow(system)`: `every` implies it (Ruling 26).
+    /// A timer without `allow(system)`: `every` implies it, since a timer's caller is
+    /// always `System` (D13).
     #[app::every("30s")]
     pub fn heartbeat(&mut self) -> app::Result<()> {
         Ok(())

@@ -607,8 +607,8 @@ async fn open_and_dispatch(
     }
     // The outer hop's Host, X-Forwarded-Host and Origin are set by whoever
     // relays the envelope, which is not who sealed it: copying them in would let
-    // a relay choose what the node reads as the request's origin (Xil's review,
-    // issue 13). The inner request keeps only what the client sealed.
+    // a relay choose what the node reads as the request's origin. The inner request keeps only
+    // what the client sealed.
     let _previous = transport.metrics.requests.fetch_add(1, Ordering::Relaxed);
 
     let response = next.run(inner).await;

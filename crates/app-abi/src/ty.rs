@@ -12,6 +12,9 @@
 //! `u64_number` / `i64_number`, a 64-bit integer as a JSON number (JavaScript reads it exactly
 //! only up to 2^53), and `byte_list`, a `Vec<u8>` as a JSON array of numbers. `#[derive(AbiType)]`
 //! writes them for a field marked `#[abi(plain)]`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use std::fmt;
 

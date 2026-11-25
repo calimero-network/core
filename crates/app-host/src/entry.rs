@@ -7,6 +7,9 @@
 //! field (pinned there by `the_host_cores_entry_size_is_the_logs`). It leaves out what only a
 //! node knows: an xcall delivery's source fields, and the marks of files, published outputs
 //! and started compute runs (their keys and segment hashes are the node's).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D50
+//! (per-run limits on events, keys, cursors and logs).
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;

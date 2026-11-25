@@ -1,4 +1,10 @@
 //! The API's routes for calls, views, events, compute runs and presence.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D23 (a timeout is not logged and
+//! does not spend the idempotency key), D36 (a deadline answers `503 TIMEOUT`, never
+//! `422 TRAP`), S5 (views are read-only and never run confirm methods), R9 (team and org audiences,
+//! resolved at delivery).
 
 #[allow(
     clippy::wildcard_imports,
@@ -92,7 +98,8 @@ fn component_answer(
 }
 
 /// `/intents` for a component app: the ABI of the bundle the app group runs
-/// (Ruling 40) decides whether it is a view and whether it needs a passkey.
+/// (not the directory's record, which an upgrade writes second) decides whether it is a view
+/// and whether it needs a passkey.
 async fn component_intents(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -287,7 +294,7 @@ pub(super) struct EventsQuery {
     from: u64,
 }
 
-/// The most event streams one node serves at once (Xil's review, issue 12).
+/// The most event streams one node serves at once, so streams cannot exhaust the node.
 pub const MAX_EVENT_STREAMS: usize = 4096;
 
 /// One open event stream, counted until the stream is dropped.

@@ -14,6 +14,10 @@
 //!
 //! A table written before the length existed has neither row until its first insert or
 //! removal; until then [`Table::len`] counts its records.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D9
+//! (tables, indexes and counts live in the SDK), D47 (`storage.add` and `unique-id` avoid
+//! serializing calls).
 
 use core::marker::PhantomData;
 

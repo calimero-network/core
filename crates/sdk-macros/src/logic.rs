@@ -4,6 +4,10 @@
 //!
 //! Exposed methods are the `pub` ones plus the `#[app::init]` one; other functions stay
 //! private helpers. ABI names are the Rust names in camelCase.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D13
+//! (every invocation has an explicit caller), D51 (the ABI carries `abiVersion` and nodes
+//! ignore unknown keys).
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
@@ -218,7 +222,7 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                     ));
                 }
                 attrs.every = Some(lit.value());
-                // A timer's caller is always `System` (D13), so `every` implies it (Ruling 26).
+                // A timer's caller is always `System` (D13), so `every` implies it.
                 attrs.allow_system = true;
             }
             "compute" => attrs.compute = Some(compute_attr(&attr)?),

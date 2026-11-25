@@ -12,6 +12,9 @@
 //! (`endInclusive: false`, `end: null` at the end of the text), so text typed right after
 //! its last character is inside; a non-expanding mark (a link) ends at its last character
 //! (`endInclusive: true`). Text typed before a mark's first character is never inside.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::BTreeMap;
 

@@ -13,6 +13,14 @@
 //!   with backoff, [`MAX_ATTEMPTS`] in all) and the final end: done, or failed with a
 //!   reason, which also sends an `ActionFailed` event to the starter and runs the app's
 //!   `onActionFailed`, if it has one. An app error, a fault or out-of-fuel fails at once.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9): D12 (outbound HTTP only in actions, outside the log), D13
+//! (every invocation has an explicit caller), D17 (actions are durable, logged when started and
+//! when done), D19 (the time and randomness each kind of run sees), D22 (a failed action
+//! retries with backoff, then ends `ActionFailed`), D27 (an action's sub-call key adds the
+//! method, argument hash and occurrence), D40 (actions pause during a rebuild), S9 (outbound
+//! HTTP only from leader runs, to declared and approved URLs).
 
 use std::collections::BTreeSet;
 

@@ -1,4 +1,4 @@
-//! Where an app's unit may send data, and whether an update changes it (C5): the unit's
+//! Where an app's unit may send data, and whether an update changes it: the unit's
 //! releases read for the shared classifier (`calimero_bundle::update`). Only destinations
 //! are reported: every `outbound` prefix and secret host of the unit, an empty list meaning
 //! no data leaves Calimero. The platform never vouches for an external endpoint, a TEE

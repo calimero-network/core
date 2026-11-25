@@ -1432,8 +1432,8 @@ async fn app_teams_scope(
     ))
 }
 
-/// What today's runs of the apps an organization is the developer of used (Q20, D76,
-/// D78): fuel and writes, summed over the component apps billed to it as their
+/// What today's runs of the apps an organization is the developer of used:
+/// fuel and writes, summed over the component apps billed to it as their
 /// developer (`usage::developer`: instances of its deployments, and its own apps made
 /// from a release), on the UTC day of the node's app time, with the quotas; for its
 /// admins and owner only, judged on fresh system state like `GET /orgs/{org}`. One

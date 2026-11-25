@@ -1,4 +1,7 @@
 //! Time and randomness as the app sees them (spec section 5, D16, D19).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D16
+//! (entry timestamps never decrease), D19 (the time and randomness each kind of run sees).
 
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;

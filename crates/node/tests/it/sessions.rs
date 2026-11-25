@@ -235,8 +235,8 @@ async fn another_accounts_session_is_neither_listed_nor_ended() {
 /// A flood of sign-in begins from one sealed session never stops another
 /// client's sign-in on the same node: the flooding session holds at most
 /// `MAX_CEREMONIES_PER_SESSION` open ceremonies, its next begin displacing
-/// its own oldest, so the pool other callers share stays open (review
-/// finding D1: 10,000 begins, about 33 a second, used to lock everyone out).
+/// its own oldest, so the pool other callers share stays open (10,000
+/// begins, about 33 a second, used to lock everyone out).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
     use calimero_client::Passkey;

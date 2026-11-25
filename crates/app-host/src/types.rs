@@ -1,4 +1,16 @@
 //! What goes into an invocation and what comes out of it (spec section 3).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D12 (outbound HTTP only in actions, outside the log), D13 (every
+//! invocation has an explicit caller), D17 (actions are durable, logged when started and when
+//! done), D19 (the time and randomness each kind of run sees), D25 (xcalls are deduplicated by
+//! a per-source watermark), D28 (the default fuel budget), D29 (a stuck xcall is retried for up
+//! to an hour, then dead-lettered), D34 (timer ticks are proposed by the leader and keyed by
+//! slot), D39 (app data is keyed by generation; host records sit outside it), D47
+//! (`storage.add` and `unique-id` avoid serializing calls), D52 (unique ids are
+//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
+//! recorded
+//! in the entry), R1 (cross-org apps).
 
 use std::fmt;
 use std::time::Duration;
@@ -77,7 +89,7 @@ pub struct ComputeCtx {
 /// leader's per-term execution counter, assigned by the executor, incremented for every
 /// execution (re-runs included) and never repeated within a term; together they make
 /// `unique_id` unique without knowing the log index, which is assigned only at proposal
-/// (D47, Ruling 12). `entry_ts_ms` is the entry timestamp
+/// (D47, D52). `entry_ts_ms` is the entry timestamp
 /// for calls, timers, init, migrate and xcall delivery, and the timestamp of the applied
 /// entry being read for views (D19). `seed` is the leader's fresh seed for the run; views
 /// and actions ignore it and draw from the node's CSPRNG. A compute run is an action that
@@ -283,7 +295,9 @@ pub trait Directory: Send + Sync {
     /// Whether the team exists, for checking event audiences.
     fn team_exists(&self, team: &str) -> bool;
     /// The account's membership in the app's own org, with its role: at most that one
-    /// org, and nothing for a personal app (D75). R1's admitted partners extend it.
+    /// org, and nothing for a personal app: a component runs code the platform does not
+    /// vet, so it never learns its callers' memberships elsewhere. R1's admitted partners
+    /// extend it.
     fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)>;
     /// The app linked under `name` (a reference of the app's release: a unit member or an
     /// attached app). None by default.

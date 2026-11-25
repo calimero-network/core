@@ -1,4 +1,8 @@
 //! The engine contract (D3): engines run components, the host core decides everything else.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D3
+//! (the executor depends on an `Engine` trait, never a runtime), D44 (nine WASI interfaces are
+//! served by stubs that refuse).
 
 use std::any::Any;
 use std::sync::Arc;

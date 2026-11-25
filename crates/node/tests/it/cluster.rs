@@ -1,6 +1,12 @@
 //! A three-node cluster in one process, driven only through the client, over
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D38
+//! (a migration is a rebuild into a separate keyspace).
+//!
+//! F-numbers cite the findings of `docs/specs/gate-system-group.md`, section 1.2: F4 (Raft
+//! messages were not tied to group membership).
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1302,7 +1308,7 @@ async fn a_registry_release_is_pinned_to_its_publisher_and_its_signed_bytes() {
     for i in 0..3 {
         let cl = c.client(i);
         cl.use_session(session.clone()).await;
-        // Sent once: the client sends a view again while the node answers `503` (D70), and
+        // Sent once: the client sends a view again while the node answers `503`, and
         // a refused release answers the same every time.
         match cl
             .transport()
@@ -1748,7 +1754,9 @@ async fn a_reused_refresh_token_revokes_the_session_on_a_lagging_node() {
     }
 }
 
-/// Xil's review, issues 5, 6 and 7, each reproduced as the review ran it.
+/// (5) A removed passkey keeps no session, (6) a confirm method needs a confirmation,
+/// and (7) a read-only or app-scoped key installs nothing, each reproduced as first
+/// reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn sessions_confirmations_and_key_scopes_hold() {
     let c = Cluster::start(3).await;
@@ -5255,7 +5263,7 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     assert_eq!(status(laptop.auth().me().await.unwrap_err()), 401);
 }
 
-/// D70: the client gives every call a key of its own (resent unchanged on a
+/// The client gives every call a key of its own (resent unchanged on a
 /// 503), so two calls made without one are two calls, never one replayed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn calls_without_a_key_each_run_once() {
@@ -7341,7 +7349,7 @@ async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
     assert!(!node.digests_for(peer, &[id]).groups.is_empty());
 }
 
-/// Review finding B2: a node whose system-group core stopped on a write the disk
+/// Regression: a node whose system-group core stopped on a write the disk
 /// refused (EIO, ENOSPC) stayed out of the cluster until the process restarted:
 /// openraft treats it as fatal, and nothing started the core again. Now the group
 /// reads its state again from the disk and restarts the core, waiting

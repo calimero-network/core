@@ -1,4 +1,9 @@
 //! Method attributes from the bundle's signed ABI; the host checks them before `handle`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D12
+//! (outbound HTTP only in actions, outside the log), D13 (every invocation has an explicit
+//! caller), D34 (timer ticks are proposed by the leader and keyed by slot), D51 (the ABI
+//! carries `abiVersion` and nodes ignore unknown keys).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -83,7 +88,7 @@ pub struct Abi {
 impl Abi {
     /// Reads the `calimero:abi` JSON. `abiVersion` is required and must be supported.
     /// Unknown keys, top level or per method, are ignored so newer builds stay readable
-    /// (Ruling 14); a known key with a value of the wrong shape is refused.
+    /// (D51); a known key with a value of the wrong shape is refused.
     pub fn from_json(json: &Value) -> Result<Self, PrepareError> {
         let top = object(json, "abi")?;
         let version = match top.get("abiVersion") {

@@ -1,4 +1,13 @@
 //! The host core's policy, overlay and determinism rules (spec sections 3-5, D19, D46, D47).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9): D17 (actions are durable, logged when started and when done),
+//! D19 (the time and randomness each kind of run sees), D27 (an action's sub-call key adds the
+//! method, argument hash and occurrence), D46 (the host core reads state through `StateView`),
+//! D47 (`storage.add` and `unique-id` avoid serializing calls), D52 (unique ids are
+//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
+//! recorded
+//! in the entry), S9 (outbound HTTP only from leader runs, to declared and approved URLs).
 
 #![allow(
     clippy::unwrap_used,
@@ -111,7 +120,7 @@ fn view_writes_are_denied() {
     assert_eq!(host.storage_get(b"k"), Ok(None));
 }
 
-/// C10: the write past `MAX_WRITES` is a soft error naming the limit and the write's number,
+/// The write past `MAX_WRITES` is a soft error naming the limit and the write's number,
 /// not a trap, and nothing of it is kept; the trapping `put` of components built before
 /// WIT 0.5.7 keeps its old detail (`RunLimit::denied`).
 #[test]
@@ -140,8 +149,8 @@ fn the_write_after_ten_thousand_is_a_soft_error_with_its_number() {
     assert!(out.diff.iter().all(|w| !w.key.ends_with(b"one-more")));
 }
 
-/// C2 (Ruling 37): a run's writes are counted as they are made and refused at the host
-/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that. C10:
+/// A run's writes are counted as they are made and refused at the host
+/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that, and
 /// the refusal is a soft error with the run's total, which the guest can handle.
 #[test]
 fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
@@ -213,9 +222,9 @@ fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     assert!(out.events.is_empty());
 }
 
-/// N1 (Ruling 43): an event's audience is kept with it, so its account strings count
+/// An event's audience is kept with it, so its account strings count
 /// against the run's bytes, and one event names at most `MAX_AUDIENCE_ACCOUNTS` accounts.
-/// The re-review's probe: 100 events, each naming one 1 MiB account, were all kept.
+/// The probe: 100 events, each naming one 1 MiB account, used to be all kept.
 #[test]
 fn audience_accounts_count_against_the_run_and_are_capped() {
     let state = base(&[]);
@@ -351,7 +360,7 @@ fn range_is_lazy() {
     assert_eq!(big.len(), 1_000, "max is capped at 1,000");
 }
 
-/// Review finding A4: 1,000 values of about 1 MiB each made one `range_next` gather
+/// Regression: 1,000 values of about 1 MiB each made one `range_next` gather
 /// about 1 GiB on the host before the guest (64 MiB) saw any of it. A batch now stops at
 /// `MAX_RANGE_BATCH_BYTES`, and the next one carries on where it stopped.
 #[test]
@@ -1364,7 +1373,7 @@ fn only_views_search_and_queries_are_bounded() {
     assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
 }
 
-/// C7: a run makes at most `MAX_SEARCHES_PER_RUN` searches, and each one owes fuel for the
+/// A run makes at most `MAX_SEARCHES_PER_RUN` searches, and each one owes fuel for the
 /// documents it matched and the hits it returned; a host without host fuel owes none.
 #[test]
 fn searches_are_capped_per_run_and_owe_fuel() {
@@ -1608,7 +1617,7 @@ impl HttpHost for Slow {
     }
 }
 
-/// C2: the run's deadline holds in host calls too. A call that comes back past it ends the
+/// The run's deadline holds in host calls too. A call that comes back past it ends the
 /// run `Timeout` (`WALL_CLOCK_EXCEEDED`, as the engine's own deadline does), whatever the
 /// guest would do next, and one made past it is not sent; within it, nothing changes.
 #[test]

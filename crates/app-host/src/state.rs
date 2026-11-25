@@ -1,4 +1,8 @@
 //! Read access to committed app state (D46) and the generation-prefixed key layout (D39).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D38
+//! (a migration is a rebuild into a separate keyspace), D39 (app data is keyed by generation;
+//! host records sit outside it), D46 (the host core reads state through `StateView`).
 
 use std::collections::BTreeMap;
 use std::ops::Bound;

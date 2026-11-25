@@ -357,7 +357,7 @@ async fn proposals_see_previous_writes() {
     assert_eq!(reply.output, b"cached");
 }
 
-/// C2, the staged build's contract (`Group::propose_led_staged`): its run step holds the
+/// The staged build's contract (`Group::propose_led_staged`): its run step holds the
 /// proposal lock but not the applied state's read lock. While a slow run step runs, an
 /// entry from elsewhere (`Group::write`, as the node's barriers) commits and applies, and
 /// the group's state is read, at once; the next proposal still waits for the slow one, and
@@ -925,7 +925,7 @@ impl DiskCluster {
     }
 }
 
-/// Review finding B3: a state row a replica could not read during an apply read
+/// Regression: a state row a replica could not read during an apply read
 /// as absent, and the replica applied the entry anyway, answering (and writing)
 /// differently from the others. The read fault now fails the batch, so that
 /// replica stops on the entry instead.

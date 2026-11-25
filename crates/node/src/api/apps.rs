@@ -1,4 +1,9 @@
 //! The API's routes for the app directory: instances, their metadata, access, transfers and moves.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9): D20 (64-bit integers travel as decimal strings in JSON), D25
+//! (xcalls are deduplicated by a per-source watermark), D29 (a stuck xcall is retried for up to
+//! an hour, then dead-lettered), S5 (views are read-only and never run confirm methods).
 
 #[allow(
     clippy::wildcard_imports,
@@ -1518,7 +1523,7 @@ async fn app_openapi(
 }
 
 /// One day of an app's usage book on the wire: every figure a decimal string (D20).
-/// `wallMs` is for information only; the quota counts fuel (D76).
+/// `wallMs` is for information only; the quota counts fuel.
 fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
     json!({
         "date": crate::component::utc_date(day),
@@ -1531,7 +1536,7 @@ fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
     })
 }
 
-/// What an app's runs used (Q20), for its owner and the admins of its organization
+/// What an app's runs used, for its owner and the admins of its organization
 /// only: `today` and `days`, the last 30 days before it (oldest first), each UTC on
 /// the node's app time; a day nothing ran is zeros, and so is every day of an app
 /// recorded before components (SDK 0.12, no longer run).

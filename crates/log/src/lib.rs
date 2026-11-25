@@ -11,6 +11,9 @@
 //! Spec: [Replication](https://calimero-network.github.io/core/protocol/replication/),
 //! [Storage](https://calimero-network.github.io/core/protocol/storage/).
 //! Crate guide: [`crates/log/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/log/AGENTS.md).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D52
+//! (unique ids are `<leader term>.<call seq>.<n>`).
 
 #![allow(
     clippy::result_large_err,

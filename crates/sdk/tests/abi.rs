@@ -1,5 +1,8 @@
 //! The `app` macros end to end: the sample guest built into a component, its embedded ABI
 //! read by the host, and its generated `handle` run on the wasmtime engine.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(

@@ -214,7 +214,7 @@ pub enum Feature {
     /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
     /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
-    /// Host work charged to fuel (C7, `calimero_app_host`'s fuel table): a run's host calls
+    /// Host work charged to fuel (`calimero_app_host`'s fuel table): a run's host calls
     /// pay a base and a per-byte or per-result cost out of its fuel. No entry changes shape:
     /// only the leader runs and followers apply the diff, so the log replays alike either way.
     /// It is gated so a call answers the same on every node through a rolling upgrade: below
@@ -2111,7 +2111,7 @@ mod tests {
         }
     }
 
-    /// C7: host work is charged to fuel only from the logged cluster version that brings
+    /// Host work is charged to fuel only from the logged cluster version that brings
     /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.35, or with none logged, runs
     /// apps as rc.35 does. No entry names it.
     #[test]

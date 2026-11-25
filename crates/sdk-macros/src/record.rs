@@ -2,9 +2,12 @@
 //!
 //! The derive implements `calimero_sdk::Record` and serde for the struct: field names
 //! are camelCase in both CBOR (stored values) and JSON (results); `u64`/`i64` fields are
-//! integers in CBOR and decimal strings in JSON (D20, Ruling 25). `partition` is reserved
+//! integers in CBOR and decimal strings in JSON (D20). `partition` is reserved
 //! and refused (D48). It also implements `AbiType`: the record's JSON shape, for the ABI's
 //! `types`.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON), D48 (`partition` is reserved).
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};

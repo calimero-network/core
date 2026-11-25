@@ -9,6 +9,11 @@
 //! node's outbound gate. The response
 //! is read whole before `handle` returns. The server side (incoming requests, outgoing
 //! responses) is not part of the world's use and traps.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9): D12 (outbound HTTP only in actions, outside the log), D76
+//! (calls, timers and deliveries may send outbound HTTP, recorded in the entry), S9 (outbound
+//! HTTP only from leader runs, to declared and approved URLs).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;

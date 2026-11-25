@@ -80,7 +80,7 @@ fn why(code: &str, details: &Value) -> String {
     }
 }
 
-/// How often a retry-safe route (`client.apps().call(..)`, D70) is sent again
+/// How often a retry-safe route (`client.apps().call(..)`) is sent again
 /// while the node is unavailable, and how long it waits first: 200 ms,
 /// doubling, at most 2 s (about 9 s in all, past a leader election).
 const CALL_RETRIES: u32 = 6;
@@ -128,7 +128,7 @@ impl Error {
         }
     }
 
-    /// Whether the same request may succeed if sent again (D70): the node
+    /// Whether the same request may succeed if sent again: the node
     /// answered `503`, or it could not be reached or timed out. A refusal, an
     /// attestation failure or a bad answer will not change on a retry.
     #[must_use]

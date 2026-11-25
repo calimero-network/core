@@ -24,6 +24,9 @@
 //! - a generic type adds `"params":["T",..]`, and its fields name them (`list<T>`).
 //!
 //! Types are ABI type strings, with `u64`/`i64` decimal strings and `bytes` base64url (D20).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 /// A type's entry in the ABI's `types`, and the types its shape refers to.
 #[derive(Debug)]

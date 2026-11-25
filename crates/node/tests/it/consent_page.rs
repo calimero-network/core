@@ -409,7 +409,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "/code",
         ],
     );
-    // The update's class, policy and approval (C10), apart from the sheet's snapshot.
+    // The update's class, policy and approval, apart from the sheet's snapshot.
     let mut snapshot = snapshot;
     let update = snapshot
         .as_object_mut()
@@ -3267,7 +3267,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(moved["deployment"], json!(d), "{moved}");
 }
 
-/// C5: where a unit may send data is computed over the app and every app it created, and
+/// Where a unit may send data is computed over the app and every app it created, and
 /// only destinations are reported: an empty list means no data leaves Calimero, and an
 /// external endpoint, a TEE (here NEAR AI) included, is a destination like any other. The
 /// capability card, `GET /apps/{app}/egress`, `GET /apps/{app}/update` (with the
@@ -3445,7 +3445,7 @@ async fn a_units_destinations_are_judged_over_its_members() {
     );
 }
 
-/// C8: an organization's owner sets a policy that asks for a second approver, with a
+/// An organization's owner sets a policy that asks for a second approver, with a
 /// passkey; a red update (a release adding a destination) then waits: the owner's upgrade
 /// is refused before any passkey (`409 SECOND_APPROVAL_REQUIRED`), the owner logs the first
 /// approval with their own passkey, `GET /apps/{app}/update` and `GET /orgs/{org}/updates`
@@ -3649,7 +3649,7 @@ async fn a_red_update_waits_for_a_second_approver() {
     assert_eq!(update["pendingApprovals"], json!([]), "spent: {update}");
 }
 
-/// C10, screen 1: an app's frontend asks to create an instance of its release, and the node's
+/// The install sheet: an app's frontend asks to create an instance of its release, and the node's
 /// install sheet shows what gets created (the app and the apps its release creates, with their
 /// versions), where data can go over the whole unit, and that updates wait for an approval.
 /// The person's passkey on the page creates it as `POST /apps` does, and the app reads the new
@@ -3775,7 +3775,7 @@ async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
     assert_eq!(egress["destinations"], json!([AI]), "{egress}");
 }
 
-/// C10, screens 2, 3 and 5: an update's sheet says its class in plain words. A green one
+/// The update sheet: an update's sheet says its class in plain words. A green one
 /// (nothing changes where data goes) is "Update with passkey" / "Not now"; a red one adding a
 /// destination names it and leads with keeping the current version. Once the organization's
 /// policy (set on the page) asks for a second approver, the owner's red sheet is "Approve (1 of
@@ -4042,7 +4042,8 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
     assert_eq!(after["updates"]["pending"], json!([]), "{after}");
 }
 
-/// C8's unit fixture: alice's organization holds `notes` on `PACKAGE@1.0.0`, which
+/// A unit fixture for second approvals: alice's organization holds `notes` on `PACKAGE@1.0.0`,
+/// which
 /// created `store` on `com.test.c8-kv@0.1.0`. `PACKAGE@2.0.0` ships the same WASM and
 /// destinations (its own move is green) but takes the store to `0.1.1`, which adds a
 /// telemetry host: the unit's update is red only through its member. Answers the
@@ -4090,7 +4091,7 @@ async fn unit_red_through_its_member(
     (org, notes, store)
 }
 
-/// C8 and C10: a unit's page is judged on the unit, not its instance alone. A unit red
+/// A unit's page is judged on the unit, not its instance alone. A unit red
 /// only because a member adds a destination, in an organization whose policy asks for a
 /// second approver, gets a page whose step is the first of two approvals, as `upgrade-unit`
 /// needs one; the instance's own (green) move needs one approval.
@@ -4412,7 +4413,7 @@ async fn an_unclassified_update_waits_for_every_node_on_the_release_that_decodes
     );
 }
 
-/// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A
+/// A unit's run is judged once, under its instance's policy, so it moves whole. A
 /// member whose own policy asks for a second approver, in a unit whose instance's does
 /// not, moves with the unit on its one approval (it used to be refused at apply after the
 /// instance had moved, leaving the unit half upgraded); upgraded alone, the member's own

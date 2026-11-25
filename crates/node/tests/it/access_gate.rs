@@ -540,7 +540,7 @@ async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfe
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
 }
 
-/// Review finding A3: `GET /attestation?app=` is in the clear and takes no
+/// Regression: `GET /attestation?app=` is in the clear and takes no
 /// credential, yet it bound any app's bundle hash, so anyone could learn that a
 /// private app exists and which release it runs (`404` against `200`). It now
 /// answers as an anonymous `GET /apps/{app}` does: an app reads exactly as an id
@@ -1252,7 +1252,7 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
 }
 
 /// A credential that cannot be valid is refused before the request costs a
-/// read-index round on the system group, and is not held open (D4): junk, a
+/// read-index round on the system group, and is not held open: junk, a
 /// malformed API key, a visitor credential whose signature does not hold and a
 /// session token its issuer did not sign cost no round. A well-formed API key
 /// no account has costs at most one round and answers at once rather than

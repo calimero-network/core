@@ -12,6 +12,9 @@
 //! inside the sealed channel; a client generated from this document needs that transport
 //! (mero-js, calimero-client-py), which is why the typed clients in [`crate::codegen`] are
 //! written on top of those clients rather than on plain HTTP.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,4 +1,8 @@
 //! The ordered key-value store the SDK runs on: `HostStore` in the guest, [`MemStore`] in tests.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D47
+//! (`storage.add` and `unique-id` avoid serializing calls), D50 (per-run limits on events,
+//! keys, cursors and logs).
 
 use crate::error::StorageError;
 

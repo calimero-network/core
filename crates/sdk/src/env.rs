@@ -2,6 +2,15 @@
 //!
 //! In the guest every function reaches the host through the `calimero:app` imports. On the
 //! host target (tests) they read a thread-local [`mock`] state instead.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
+//! requirements in section 8): D13 (every invocation has an explicit caller), D17 (actions are
+//! durable, logged when started and when done), D20 (64-bit integers travel as decimal strings
+//! in JSON), D25 (xcalls are deduplicated by a per-source watermark), D47 (`storage.add` and
+//! `unique-id` avoid serializing calls), D50 (per-run limits on events, keys, cursors and
+//! logs), D52 (unique ids are `<leader term>.<call seq>.<n>`), D76 (calls, timers and
+//! deliveries may send outbound HTTP, recorded in the entry), R8 (the blob API and its
+//! lifecycle), R14 (secrets for outbound calls).
 
 use std::cell::Cell;
 use std::io::Write;

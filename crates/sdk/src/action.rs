@@ -23,6 +23,14 @@
 //! the host (`secrets`: a header or a body field) is attached by the node, and the app never
 //! names or reads it (R14). Only the leader runs actions: they are
 //! at-least-once, so send `ctx.key()` as the remote side's idempotency key.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
+//! actions, outside the log), D13 (every invocation has an explicit caller), D17 (actions are
+//! durable, logged when started and when done), D22 (a failed action retries with backoff, then
+//! ends `ActionFailed`), D27 (an action's sub-call key adds the method, argument hash and
+//! occurrence), S9 (outbound HTTP only from leader runs, to declared and approved URLs), R14
+//! (secrets for outbound calls).
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

@@ -8,12 +8,29 @@
 //! D19), timers (D34), and the calls, views, `init` and code-only upgrades of a
 //! component app.
 //!
-//! Where Sandi's next phases (pipelining, batching, per-key concurrency) will
+//! Where the planned next phases (pipelining, batching, per-key concurrency) will
 //! touch this path: every builder below takes `base_index` from
 //! `AppState::last_index` (the app's last entry) and every `apply` compares it
 //! with the same field (`AppMachine::apply_component_outcome`); a `base_seq` per
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
+//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
+//! actions, outside the log), D13 (every invocation has an explicit caller), D16 (entry
+//! timestamps never decrease), D17 (actions are durable, logged when started and when done),
+//! D19 (the time and randomness each kind of run sees), D22 (a failed action retries with
+//! backoff, then ends `ActionFailed`), D23 (a timeout is not logged and does not spend the
+//! idempotency key), D25 (xcalls are deduplicated by a per-source watermark), D29 (a stuck
+//! xcall is retried for up to an hour, then dead-lettered), D34 (timer ticks are proposed by
+//! the leader and keyed by slot), D36 (a deadline answers `503 TIMEOUT`, never `422 TRAP`), D38
+//! (a migration is a rebuild into a separate keyspace), D46 (the host core reads state through
+//! `StateView`), D50 (per-run limits on events, keys, cursors and logs), D52 (unique ids are
+//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
+//! recorded in the entry), S5 (views are read-only and never run confirm methods), S8 (compiled
+//! artifacts are checked before they load), S9 (outbound HTTP only from leader runs, to
+//! declared and approved URLs), R8 (the blob API and its lifecycle), R14 (secrets for outbound
+//! calls).
 
 mod compute;
 mod files;
@@ -99,7 +116,7 @@ pub const BAD_BUNDLE: &str = "BAD_BUNDLE";
 /// The code of an upgrade refused because an active compute run still needs a result method the target lacks.
 pub const RUN_NEEDS_RESULT_METHOD: &str = "RunNeedsResultMethod";
 
-/// The largest call or `init` arguments a component runs (Ruling 30): well under
+/// The largest call or `init` arguments a component runs: well under
 /// `MAX_ENTRY_BYTES`, so the entry that logs a refused run always fits.
 pub const MAX_ARGS_BYTES: usize = 512 * 1024;
 
@@ -107,7 +124,7 @@ pub const MAX_ARGS_BYTES: usize = 512 * 1024;
 pub const TIMER_POLL: Duration = Duration::from_millis(100);
 
 /// How often a node asks every peer, at once, what the apps it replicates used today,
-/// for the fuel cap (D76, D78). The cap reads that answer and never asks a peer
+/// for the developer's daily fuel cap. The cap reads that answer and never asks a peer
 /// during a call, so it is approximate by at most this long: a developer can run past
 /// its cap for one interval. 5 s keeps that overshoot a small part of a daily cap
 /// and costs each node one small request per peer per interval, however many apps
@@ -761,7 +778,7 @@ impl Node {
     /// The prepared component of `bundle`, preparing it on first use. A component
     /// the engine refuses is `422 BAD_BUNDLE`; a bundle not reachable yet is `503`.
     ///
-    /// Single-flight per bundle (Ruling 44): concurrent first uses wait for one
+    /// Single-flight per bundle: concurrent first uses wait for one
     /// prepare and then read its result, instead of each compiling the component.
     pub async fn prepared_for(&self, bundle: &str) -> Result<Prepared, ApiError> {
         if let Some(p) = self.cached_prepared(bundle) {
@@ -1148,8 +1165,8 @@ impl Node {
         }
     }
 
-    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
-    /// Ruling 29). `term` comes from the leadership check that admitted the
+    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52).
+    /// `term` comes from the leadership check that admitted the
     /// proposal (`calimero_log::Group::propose_led`, no round of its own);
     /// `logged` is the highest pair the app's applied state carries, which, after
     /// `propose_led`'s once-per-term catch-up, includes every entry this node
@@ -1649,7 +1666,7 @@ impl Node {
             Some(app) => crate::api::read_only_in(self, app, req.caller.account(), sys_index).await,
             None => false,
         };
-        // A developer over its daily fuel (D76, D78) is refused before a client's call,
+        // A developer over its daily fuel is refused before a client's call,
         // a delivered xcall or a synchronous xcall runs; a retry of a call that
         // committed still replays, below. An action's own calls are not refused: the
         // action was started by a call that was checked, as an event handler's run is.
@@ -1779,7 +1796,7 @@ impl Node {
                         moved_runs = moves_runs(&outcome);
                         // A view reached through a call (an API node that read an older ABI)
                         // still may not write for a read-only member. Events and files are
-                        // logged side effects too (Ruling 41): an emit-only run is refused like
+                        // logged side effects too: an emit-only run is refused like
                         // one that writes keys.
                         if read_only && writes(&outcome) {
                             return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
@@ -1824,7 +1841,7 @@ impl Node {
                 ran_for = None;
                 proposed_at = None;
                 // A retry of a call that committed is its recorded answer, whatever
-                // the bundle runs now (D70): the replay comes before the ABI check.
+                // the bundle runs now: the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
                         return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
@@ -1862,7 +1879,7 @@ impl Node {
                         &again,
                     )));
                 }
-                // The ABI checks again, against the bundle this replica runs (Ruling 40).
+                // The ABI checks again, against the bundle this replica runs.
                 if let Err(e) = abi_check(
                     &prepared,
                     &req.method,
@@ -1934,7 +1951,7 @@ impl Node {
         Ok(a)
     }
 
-    /// `app`'s usage book (Q20), from a replica: this node's if it is one of the app's
+    /// `app`'s usage book, from a replica: this node's if it is one of the app's
     /// replicas, else one that is. An app recorded before components (SDK 0.12, no
     /// longer run) has none.
     pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
@@ -2031,7 +2048,7 @@ impl Node {
     }
 
     /// What `developer`'s component apps used today (UTC, on app time), for the API:
-    /// each app's book read from a replica, all apps at once (Q20, D78). The developer
+    /// each app's book read from a replica, all apps at once. The developer
     /// is `usage::developer`'s (#4839), the identity usage is billed to: the owner of
     /// the deployment an app was created from (an organization's id, or
     /// `account:{id}`), else the app's organization or `account:{owner}`
@@ -2085,9 +2102,9 @@ impl Node {
             .fold(0, u64::saturating_add)
     }
 
-    /// The refusal of a new call to `app` when its developer (D78: the identity usage
+    /// The refusal of a new call to `app` when its developer (the identity usage
     /// is billed to, `usage::developer`) is at or over `max_fuel_per_developer_per_day`
-    /// (D76; 0: no limit, nothing is read). Reads no peer
+    /// (0: no limit, nothing is read). Reads no peer
     /// ([`Self::developer_fuel_cached`]). Only a client's call or an xcall is refused:
     /// `init`, timer ticks, event handlers and an action's own calls still run, and
     /// they still count toward the developer's day.
@@ -2106,15 +2123,15 @@ impl Node {
     }
 
     /// The ABI checks the host makes before invoking a component (S5, D13), from
-    /// the bundle's own ABI, default-deny (Ruling 31): a method the ABI does not
+    /// the bundle's own ABI, default-deny: a method the ABI does not
     /// name is `UnknownMethod`; `init` and timers are never reached this way
     /// (`WrongKind`); a `confirm` method never runs as a view (`ConfirmNotAView`)
     /// and a call to one needs a consent; only views run as views (`NotAView`);
     /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`) and
     /// the System caller only `allowSystem` ones (`Forbidden`).
     ///
-    /// The ABI is the one of the bundle the app group runs (Ruling 40,
-    /// [`Self::running_bundle`]), not the directory's record of it, which an
+    /// The ABI is the one of the bundle the app group runs
+    /// ([`Self::running_bundle`]), not the directory's record of it, which an
     /// upgrade writes second. The replica that runs the call or view makes the same
     /// checks again against exactly the bundle it runs.
     pub async fn abi_gate(
@@ -2144,7 +2161,7 @@ impl Node {
         // The loop below retries forwards that timed out and calls that raced a
         // leader change; a call that did commit must replay, not run again.
         // A call that came with a key may be a retry of one that committed, which
-        // replays whatever the bundle runs now (D70); only the replica that runs it
+        // replays whatever the bundle runs now; only the replica that runs it
         // can tell, after the replay, so the ABI is checked here only for a call
         // that came without one.
         let came_keyed = req.idempotency_key.is_some();
@@ -2224,7 +2241,7 @@ impl Node {
         if args_bytes(&req.args).len() > MAX_ARGS_BYTES {
             return Err(args_too_large());
         }
-        // The ABI is checked by `call_local_component`, after the replay (D70).
+        // The ABI is checked by `call_local_component`, after the replay.
         let g = self
             .app_group(app.group)
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -2253,7 +2270,7 @@ impl Node {
     /// A component's view on this replica: it holds its version of the state (D46)
     /// and runs outside the machine's lock; it sees the last applied entry's time
     /// (D19), and runs the bundle that state belongs to, whose ABI it is checked
-    /// against (Ruling 40).
+    /// against.
     pub(super) async fn view_local_component(
         &self,
         g: &Group<AppMachine>,
@@ -3044,7 +3061,7 @@ impl Node {
     /// Whether a message's outbox row names the person its run served: from the logged
     /// cluster version that brings `Feature::Delegation` on, so every replica applies the
     /// row alike. Judged on the logged version alone (no round to the nodes).
-    /// Whether runs pay fuel for their host calls (C7): once the logged cluster version brings
+    /// Whether runs pay fuel for their host calls: once the logged cluster version brings
     /// [`crate::system::cluster_version::Feature::HostFuel`], so a call answers alike on every
     /// node of a cluster mid-upgrade.
     fn charges_host_fuel(&self) -> bool {
@@ -3106,7 +3123,7 @@ impl Node {
 /// What a logged run takes from the applied state in a staged proposal's read step
 /// (`calimero_log::Group::propose_led_staged`), owned, so the run itself (its guest, its
 /// host calls, its files' push) happens after the state's read lock is released: an entry
-/// that commits meanwhile applies, and the app's state is read, while it runs (C2).
+/// that commits meanwhile applies, and the app's state is read, while it runs.
 /// `base_index` is the app's last entry as read: an entry that applies between the read
 /// step and this run's append makes this run's entry a `conflict`, run again.
 struct LoggedRun {

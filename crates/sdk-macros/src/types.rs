@@ -1,5 +1,8 @@
 //! Names and types as the ABI writes them: camelCase names, ABI type strings, and the
 //! 64-bit integer fields that travel as decimal strings in JSON (D20).
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use quote::ToTokens;
 use serde_json::Value;
@@ -180,7 +183,7 @@ fn wide_error(outer: &Type, name: &str) -> syn::Error {
 }
 
 /// Refuse what JSON would carry wrongly: a `u64`, `i64` or `Vec<u8>` the macros cannot convert
-/// because it sits inside another type (Ruling 27), where JSON would get a number that loses
+/// because it sits inside another type, where JSON would get a number that loses
 /// precision, or an array of bytes, instead of the D20 form; and a `u128`, `i128`, `usize` or
 /// `isize` anywhere ([`WIDE`]). A type defined elsewhere (a record, a serde struct, an alias)
 /// is checked through its `AbiType`, which every type the ABI describes must implement.

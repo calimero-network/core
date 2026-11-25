@@ -1,6 +1,6 @@
 //! What a request writes to the node's log: merod logs at INFO, and every line
 //! ships to the operator, so no line may carry the request's URL path, query,
-//! body or a name the guest wrote (review finding F6).
+//! body or a name the guest wrote: those can name a user.
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -129,7 +129,7 @@ fn assert_no_input(log: &str) {
     }
 }
 
-/// Reproduction (F6): a refused request logged its refusal's words, which quote the
+/// Reproduction: a refused request logged its refusal's words, which quote the
 /// whole URL, query included; a refused secret name quoted what the guest wrote.
 #[test]
 fn a_refused_request_logs_its_kind_and_host_not_its_url() {
@@ -166,7 +166,7 @@ fn a_refusal_an_app_acts_on_is_logged_by_its_word() {
     assert_no_input(&log);
 }
 
-/// Reproduction (F6): every request logged its URL's path, which can name a user.
+/// Reproduction: every request logged its URL's path, which can name a user.
 #[test]
 fn a_sent_request_logs_its_declared_prefix_not_its_path() {
     let url = format!("{PREFIX}users/{USER}?token={TOKEN}");
@@ -178,7 +178,7 @@ fn a_sent_request_logs_its_declared_prefix_not_its_path() {
     assert_no_input(&log);
 }
 
-/// Reproduction (F6): a request the transport failed logged its URL's path, which
+/// Reproduction: a request the transport failed logged its URL's path, which
 /// can name a user; it logs the declared prefix, as a sent one does.
 #[test]
 fn a_failed_request_logs_its_declared_prefix_not_its_path() {

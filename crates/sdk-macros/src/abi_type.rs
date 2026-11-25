@@ -12,7 +12,10 @@
 //! `#[abi(plain)]` (on the field, or on the type for every field), what plain serde writes: a
 //! JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to 2^53) and
 //! an array of numbers (`byte_list`), at any depth (`Vec<u64>` is `list<u64_number>`). Unmarked,
-//! it is refused (Ruling 27): the ABI's `u64` and `bytes` mean the strings.
+//! it is refused: the ABI's `u64` and `bytes` mean the strings.
+//!
+//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
+//! (64-bit integers travel as decimal strings in JSON).
 
 use proc_macro2::TokenStream;
 use quote::quote;

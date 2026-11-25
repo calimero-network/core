@@ -1605,7 +1605,7 @@ mod tests {
         assert!(err.to_string().contains("no measurement policy"), "{err}");
     }
 
-    /// Xil's review, issue 14: with no floor named, any old release was trusted.
+    /// Regression: with no floor named, any old release was trusted.
     #[tokio::test]
     async fn the_default_floor_applies_when_none_is_named() {
         let policy = Policy {
