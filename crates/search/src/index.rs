@@ -44,7 +44,7 @@ const MAX_SNIPPET_COMPLETIONS: usize = 64;
 /// Writer arena per open index: tantivy's floor.
 pub const WRITER_MEMORY: usize = 15_000_000;
 
-/// Layout of [`CommitMeta`]. An index committed under another format (or
+/// Layout of `CommitMeta`. An index committed under another format (or
 /// whose payload does not decode) opens as [`OpenState::Stale`] and is rebuilt
 /// from state, which is the whole migration story for the index: it is
 /// derived data.
