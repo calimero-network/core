@@ -197,6 +197,30 @@ the key is shown once. A key may be scoped:
 - `upgrades: { app, package? }`: an [upgrade key](#upgrade-keys), which takes
   none of the fields above but `ttlSecs`.
 
+### Follow-ups
+
+A key is often useless until an app grants it access, and that grant is usually a confirm method: a second passkey prompt.
+`then: [{ app, method, args }]` folds it into the key's one prompt.
+Each entry names a confirm call method of one of the key's own `apps` (not an action, which answers before it runs; at most four, 64 KiB as JSON with the key's id written in; none on an upgrade key), judged as `POST /apps/{app}/intents` judges the caller, a read-only member of the app's team refused.
+Each must name the new key: a follow-up whose arguments hold no `key:$key` is refused.
+That only requires the placeholder to appear somewhere in the arguments: it does not limit which other principals or values the call names, which the person sees in the `412` and approves.
+The first request makes the key's id and writes it into the arguments: every string value that is exactly `key:$key` becomes `key:<keyId>` (no substring is replaced).
+The `412` details list the calls so written (`then`), and the person's passkey signs the key and them in one consent.
+`__create_api_key`'s arguments gain `then`, only when it is set, so a plain key's consent reads as before; it states each call as `{ app, method, argsHash }`, because the system log reaches every node, those the app's organization never approved included.
+`argsHash` is the hex SHA-256 of a random salt the node makes for that call on the first request (16 bytes, kept with the challenge) followed by the call's arguments as the node parsed them, with `key:$key` written in, every object's keys sorted by their UTF-8 bytes, in the node's compact JSON (not JCS, and not the bytes the client sent: `1e2` is written `100.0`).
+Equal arguments of another key, or a guess at them, give another hash.
+Those arguments are exactly `then[i].args` as the `412` echoes them; the call's entry in its app's log carries the salt (`{ followUpOf, index, salt }`), so the app's auditors check the hash against that echo.
+Both requests check the account's key quota first, so the retry runs no call for a key the log would refuse; on the retry the node takes the account's turn first, so two keys made at once through one node do not both run their calls for one last place.
+The retry checks its own `then` against the signed one (hashing its own arguments with the signed key id), runs each call in order as the person, and only then makes the key, in a task a dropped connection does not stop; the answer adds `then: [{ index, result, receipt }]`.
+Each call's entry in its app's log names only the approval it ran under, never the assertion, the key's hash or the other calls, and runs under an idempotency key of the node's own (`node:apikey:<keyId>:<index>:<argsHash>`, a prefix `/intents` refuses from a client).
+If a call fails, no key is made and the answer is `422 FOLLOW_UP_FAILED` naming it (`details: { index, app, method, error, applied, unknown }`); the calls in `applied` stay applied, naming a key id that never exists. A call whose answer was a 5xx is sent again under its own key (at most three times, so a call that did apply replays); if it still cannot say, its index is in `unknown`. A failure of the key itself after the calls carries `applied` too, and `keyWrite`: `refused` when the log refused the key, `unknown` when the write may still land (a 5xx, such as a system group that did not commit in time); a request that ended without any answer says every call and the key are `unknown`.
+On an `unknown` key, list the account's keys (`GET /auth/apikeys`) and revoke the key if it is there and not wanted.
+Two retries of different approvals through two different nodes at the account's last free place can still both run their calls; the one the log refuses answers its `applied` calls.
+The account's activity (`GET /auth/activity`) lists the key's approval and one entry per call (`method`, `subject`: the app).
+The hosted consent page does not show `__create_api_key`: a client shows the `412`'s `then` itself.
+A node logs a key with follow-ups only from cluster version 1.0.0-rc.36 (`Feature::KeyFollowUps`).
+A node before that release ignores `then` and makes a plain key, so a client checks that the `412` lists `then` and that the answer's `then` is as long as the one it sent.
+
 ## Upgrade keys
 
 A deploy from CI cannot answer a passkey step-up. An **upgrade key** is an API
@@ -540,6 +564,29 @@ replica.
 `DELETE /auth/sessions/{session}` ends one (`RevokeSession`; `404` for any session the account does
 not hold live).
 Both are `holder` (unbound passkey session), as `/auth/logout-all`.
+
+### Key follow-ups
+
+Code: `api::auth::follow_ups`, `types::KeyFollowUp`; docs: "Follow-ups" above.
+
+`POST /auth/apikeys { then }` takes up to `MAX_KEY_FOLLOW_UPS` confirm calls of the key's own `apps`;
+`gate` and the running ABI judge each before the passkey (`takes_follow_up`: a `Call`, never an
+action), and `key:$key` is written as `key:<keyId>` (exact string values only, `for_key`).
+They are signed in the key's one consent: `api_key_args` states `then` only when set
+(`CreateApiKey { then }`, `Feature::KeyFollowUps`), and consent and entry carry
+`types::SignedFollowUp`, holding the arguments only by a hash salted per follow-up
+(`KeyFollowUp::signed`: the parsed arguments with keys sorted by UTF-8 bytes in compact JSON; the
+salts are in the challenge's `KeyCarry`), since the system log reaches unapproved nodes.
+Read-only team members and follow-ups without `key:$key` are refused before the prompt.
+Both requests check `SystemState::api_key_room` (the rule `CreateApiKey` applies); the retry takes
+`Node::api_key_turn` (per account, this node), catches up on the system log, and runs `make_key` in a
+spawned task (`interrupted`, `key_write_failed`: `keyWrite`).
+It runs the follow-ups first through `calls::call_consented`, each under `follow_up_consent`
+(`{ followUpOf, index, salt }`, never the assertion) and a `FOLLOW_UP_KEY_PREFIX` idempotency key that
+`/intents` refuses from clients (a 5xx is sent again up to `MAX_FOLLOW_UP_TRIES`), then writes the
+key; one that fails answers `422 FOLLOW_UP_FAILED` with the indexes `applied` and `unknown` and makes
+no key.
+`approval_of` adds an activity entry per follow-up.
 
 ### Activity
 
