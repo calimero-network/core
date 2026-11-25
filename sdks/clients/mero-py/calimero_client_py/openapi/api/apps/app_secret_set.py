@@ -106,11 +106,12 @@ def sync_detailed(
 ) -> Response[Union[AppSecretSetResponse200, Error]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -151,11 +152,12 @@ def sync(
 ) -> Optional[Union[AppSecretSetResponse200, Error]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -191,11 +193,12 @@ async def asyncio_detailed(
 ) -> Response[Union[AppSecretSetResponse200, Error]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -234,11 +237,12 @@ async def asyncio(
 ) -> Optional[Union[AppSecretSetResponse200, Error]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

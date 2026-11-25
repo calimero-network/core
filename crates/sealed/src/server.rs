@@ -113,6 +113,13 @@ pub const SEALED_PATH: &str = "/sealed";
 /// Content type of every sealed body.
 pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 
+/// The sealed session a request was opened in, set by [`intercept`] on every
+/// request it opens (last, so nothing upstream chooses it) and on no plain
+/// request. It names the client's session, not the client: anyone may open
+/// another, at the rate the handshake limit allows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SealedSession(pub [u8; 16]);
+
 const VERSION: u8 = 2;
 /// `version || transport_pk || Noise message 1`.
 const HANDSHAKE_LEN: usize = 1 + 32 + MESSAGE_1_LEN;
@@ -585,6 +592,11 @@ async fn open_and_dispatch(
     *inner.extensions_mut() = outer.extensions;
     // Which node opened the session, when it identified itself; set last, so
     // nothing upstream can have chosen it.
+    // Which session it came in, set last for the same reason: the node keys
+    // per-client limits on it (anonymous passkey ceremonies).
+    let _previous = inner
+        .extensions_mut()
+        .insert(SealedSession(envelope.session_id));
     match peer {
         Some(key) => {
             let _previous = inner.extensions_mut().insert(PeerKey(key));

@@ -3,6 +3,8 @@ package com.calimero.mero.tee
 import com.calimero.mero.crypto.Hex
 import com.calimero.mero.tee.TeeFixtures.AT
 import com.calimero.mero.tee.TeeFixtures.COLLATERAL
+import com.calimero.mero.tee.TeeFixtures.CURRENT
+import com.calimero.mero.tee.TeeFixtures.GENUINE
 import com.calimero.mero.tee.TeeFixtures.IMAGE
 import com.calimero.mero.tee.TeeFixtures.NONCE
 import com.calimero.mero.tee.TeeFixtures.QUOTE
@@ -18,7 +20,7 @@ import org.junit.Test
 
 /** Port of mero-js `src/sealed/verify.test.ts`, on the same real quote and collateral. */
 class QuoteVerifierTest {
-    private val args = TransportQuote(QUOTE_B64, NONCE, SUFFIX, COLLATERAL)
+    private val args = TransportQuote(QUOTE_B64, NONCE, SUFFIX, CURRENT)
 
     @Suppress("LongParameterList")
     private fun real(
@@ -32,6 +34,7 @@ class QuoteVerifierTest {
         now: () -> Long = { AT },
     ) = createQuoteVerifier(
         QuoteVerifierOptions(
+            dcapVerify = GENUINE,
             allowedMeasurements = allowedMeasurements,
             allowedMrtd = allowedMrtd,
             allowedRtmr0 = allowedRtmr0,
@@ -110,7 +113,7 @@ class QuoteVerifierTest {
         assertTrue(
             real(fetchCollateral = { q ->
                 asked += q
-                COLLATERAL
+                CURRENT
             }).check(noCollateral),
         )
         assertArrayEquals(QUOTE, asked.single())
@@ -177,7 +180,7 @@ class QuoteVerifierTest {
             )
         assertTrue(verifier.check())
         assertArrayEquals(QUOTE, seen!!.first)
-        assertTrue(seen!!.second === COLLATERAL)
+        assertTrue(seen!!.second === CURRENT)
         assertEquals(1_234_567L, seen!!.third)
     }
 
@@ -201,6 +204,60 @@ class QuoteVerifierTest {
                 QuoteVerifierOptions(allowedMrtd = listOf(IMAGE.mrtd), allowedRtmr1 = listOf(IMAGE.rtmr1), allowedRtmr2 = listOf(IMAGE.rtmr2)),
             )
         }
+    }
+
+    // ---- the TCB evaluation data floor (core DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER) ---------
+
+    /** dcap-qvl's verdict on the sample quote, whatever the collateral says: only the floor differs. */
+    private fun floor(minimum: Int? = null) =
+        createQuoteVerifier(
+            QuoteVerifierOptions(
+                dcapVerify = { _, _, _ -> report("UpToDate") },
+                allowedMeasurements = listOf(IMAGE),
+                minTcbEvaluationDataNumber = minimum,
+            ),
+        )
+
+    private fun at(number: Int) = args.copy(collateral = COLLATERAL.withEvaluationData(number))
+
+    @Test
+    fun `the floor is core's number`() {
+        assertEquals(20, DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER)
+    }
+
+    // A collateral source serving an older, still Intel-signed baseline makes an out-of-date
+    // platform read UpToDate: core's nodes refuse such a verdict.
+    @Test
+    fun `refuses a verdict from the 2025 sample collateral, Intel-signed evaluation data 17`() {
+        assertEquals(17, tcbEvaluationDataNumber(COLLATERAL.tcbInfo))
+        val verifier = createQuoteVerifier(QuoteVerifierOptions(allowedMeasurements = listOf(IMAGE), now = { AT }))
+        assertRefuses("Intel TCB evaluation data 17, older than the minimum 20") { verifier.check(args.copy(collateral = COLLATERAL)) }
+    }
+
+    @Test
+    fun `accepts evaluation data at or above the floor`() {
+        assertTrue(floor().check(at(20)))
+        assertTrue(floor().check(at(22)))
+        assertRefuses("evaluation data 19, older than the minimum 20") { floor().check(at(19)) }
+    }
+
+    @Test
+    fun `refuses collateral whose evaluation data is unknown`() {
+        for (tcbInfo in listOf("{}", "{\"tcbEvaluationDataNumber\":\"20\"}", "{\"tcbEvaluationDataNumber\":-1}", "not json")) {
+            val unknown =
+                DcapCollateral(
+                    COLLATERAL.pckCrlIssuerChain, COLLATERAL.rootCaCrl, COLLATERAL.pckCrl, COLLATERAL.tcbInfoIssuerChain, tcbInfo,
+                    COLLATERAL.tcbInfoSignature, COLLATERAL.qeIdentityIssuerChain, COLLATERAL.qeIdentity, COLLATERAL.qeIdentitySignature,
+                )
+            assertRefuses("computed against is unknown (minimum 20)") { floor().check(args.copy(collateral = unknown)) }
+        }
+    }
+
+    @Test
+    fun `a policy raises the floor but never lowers it`() {
+        assertRefuses("evaluation data 21, older than the minimum 22") { floor(22).check(at(21)) }
+        assertTrue(floor(22).check(at(22)))
+        assertRefuses("evaluation data 17, older than the minimum 20") { floor(0).check(at(17)) }
     }
 
     // ---- trustedMeasurementsFromReleases ----------------------------------------------------
@@ -229,9 +286,10 @@ class QuoteVerifierTest {
 
     @Test
     fun `builds a verifier that accepts the release image and not another profile of it`() {
-        assertTrue(trustedMeasurementsFromReleases(listOf(release("2.3.78", IMAGE.rtmr3)), "locked-read-only").verifier(now = { AT }).check())
+        val locked = trustedMeasurementsFromReleases(listOf(release("2.3.78", IMAGE.rtmr3)), "locked-read-only")
+        assertTrue(locked.verifier(dcapVerify = GENUINE, now = { AT }).check())
         val debug = trustedMeasurementsFromReleases(listOf(release("2.3.78", IMAGE.rtmr3)), "debug", allowDebugProfile = true)
-        assertRefuses("are not an image this verifier trusts") { debug.verifier(now = { AT }).check() }
+        assertRefuses("are not an image this verifier trusts") { debug.verifier(dcapVerify = GENUINE, now = { AT }).check() }
     }
 
     @Test

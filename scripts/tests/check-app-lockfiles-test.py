@@ -15,6 +15,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / "check-app-lockfiles.py"
 APP = "apps/a"
 NESTED = "apps/fixtures/b"
+CLIENT = "sdks/clients/py"
 
 
 def crate(name, deps=(), extra=""):
@@ -61,6 +62,7 @@ BASE = {
     "crates/e/Cargo.toml": crate("e"),
     f"{APP}/Cargo.toml": app("a", 2),
     f"{NESTED}/Cargo.toml": app("b", 3),
+    f"{CLIENT}/Cargo.toml": app("py", 3),
 }
 C_NEEDS_D = {"crates/c/Cargo.toml": crate("c", [("d", "../d")])}
 
@@ -77,11 +79,18 @@ CASES = [
         [f"{APP}/Cargo.lock", f"cargo update --workspace --manifest-path {APP}/Cargo.toml",
          f"{NESTED}/Cargo.lock", f"cargo update --workspace --manifest-path {NESTED}/Cargo.toml"],
     ),
-    ("the same change with every app lockfile updated passes", ({}, []), (C_NEEDS_D, [APP, NESTED], []), 0, []),
+    ("the same change with every app lockfile updated passes", ({}, []), (C_NEEDS_D, [APP, NESTED, CLIENT], []), 0, []),
+    (
+        "a crate manifest change that leaves a client's lockfile stale fails",
+        ({}, []),
+        (C_NEEDS_D, [APP, NESTED], []),
+        1,
+        [f"{CLIENT}/Cargo.lock", f"cargo update --workspace --manifest-path {CLIENT}/Cargo.toml"],
+    ),
     (
         "updating one app lockfile still names the other",
         ({}, []),
-        (C_NEEDS_D, [APP], []),
+        (C_NEEDS_D, [APP, CLIENT], []),
         1,
         [f"cargo update --workspace --manifest-path {NESTED}/Cargo.toml"],
     ),
@@ -92,7 +101,7 @@ CASES = [
         0,
         [],
     ),
-    ("catching up lockfiles that master left stale passes", (C_NEEDS_D, []), ({}, [APP, NESTED], []), 0, []),
+    ("catching up lockfiles that master left stale passes", (C_NEEDS_D, []), ({}, [APP, NESTED, CLIENT], []), 0, []),
     (
         "a rewrite of a lockfile that was already current fails",
         ({}, []),
@@ -119,7 +128,7 @@ def run(label, base_edit, head_edit, want, expect):
         repo = Path(tmp)
         git(repo, "init", "-q")
         write(repo, BASE)
-        for d in (APP, NESTED):
+        for d in (APP, NESTED, CLIENT):
             lock(repo, d)
         write(repo, base_files)
         for d in base_relock:
@@ -132,12 +141,12 @@ def run(label, base_edit, head_edit, want, expect):
             lock(repo, d)
         for d in rewrite:
             as_v3(repo, d)
-        before = {p: p.read_bytes() for p in repo.glob("apps/**/Cargo.lock")}
+        before = {p: p.read_bytes() for p in [*repo.glob("apps/**/Cargo.lock"), *repo.glob("sdks/clients/*/Cargo.lock")]}
         done = subprocess.run(
             [sys.executable, str(SCRIPT), "--base", base], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
         )
         out = done.stdout + done.stderr
-        untouched = before == {p: p.read_bytes() for p in repo.glob("apps/**/Cargo.lock")}
+        untouched = before == {p: p.read_bytes() for p in [*repo.glob("apps/**/Cargo.lock"), *repo.glob("sdks/clients/*/Cargo.lock")]}
     ok = done.returncode == want and all(s in out for s in expect) and untouched
     print(f"  {'ok  ' if ok else 'FAIL'}  {label}")
     if not ok:

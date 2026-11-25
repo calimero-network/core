@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Keep every example app's Cargo.lock current, and refuse a rewrite that nothing required.
+"""Keep every app's and Rust client's Cargo.lock current, and refuse a rewrite that nothing required.
 
-Each app under apps/ is its own workspace with its own lockfile, which no other build
-updates. Two rules, for every app lockfile in this tree:
+Each app under apps/ and each client under sdks/clients/ with a Cargo.lock is its own
+workspace with its own lockfile, which no other build updates. Two rules, for each:
 
 - Current: `cargo update --workspace --locked` passes, so the lockfile matches its
   manifests; a crate manifest change must bring every app lockfile it reaches along.
@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+LOCKFILES = [":(glob)apps/**/Cargo.lock", ":(glob)sdks/clients/*/Cargo.lock"]  # workspaces no other build updates
 ROOT = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip())
 
 
@@ -62,9 +63,9 @@ def main():
     parser.add_argument("--base", help="the revision this tree merges into (default: merge base with origin/master)")
     base = parser.parse_args().base or default_base()
 
-    listed = git("ls-files", "--cached", "--others", "--exclude-standard", "--", ":(glob)apps/**/Cargo.lock").decode()
+    listed = git("ls-files", "--cached", "--others", "--exclude-standard", "--", *LOCKFILES).decode()
     lockfiles = sorted(Path(p) for p in set(listed.split()) if (ROOT / p).is_file())
-    changed = set(git("diff", "--name-only", "--no-renames", base, "--", ":(glob)apps/**/Cargo.lock").decode().split())
+    changed = set(git("diff", "--name-only", "--no-renames", base, "--", *LOCKFILES).decode().split())
     failed = False
     for lockfile in lockfiles:
         ok, report = current(lockfile)
@@ -79,12 +80,12 @@ def main():
             print(f"  Restore it:  git checkout origin/master -- {lockfile}", file=sys.stderr)
     if failed:
         print(
-            "An app lockfile changes only when its manifests need it to: a dependency change in a Cargo.toml it"
+            "A lockfile changes only when its manifests need it to: a dependency change in a Cargo.toml it"
             " resolves, or a catch-up of one that fell behind. To pin a newer dependency, raise it in a Cargo.toml.",
             file=sys.stderr,
         )
     else:
-        print(f"{len(lockfiles)} app lockfiles current; none rewritten without need against {base}")
+        print(f"{len(lockfiles)} app and client lockfiles current; none rewritten without need against {base}")
     return 1 if failed else 0
 
 
