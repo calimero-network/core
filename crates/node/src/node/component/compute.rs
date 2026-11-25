@@ -1833,7 +1833,7 @@ mod tests {
         assert!(watch.cancel_overdue(limit, late));
     }
 
-    /// `run_json` as it was before its answer was typed (review finding E7): the oracle
+    /// `run_json` as it was before its answer was typed: the oracle
     /// `a_run_answers_the_bytes_it_did_before` holds the typed one to.
     fn run_json_before(
         rec: &RunRecord,
