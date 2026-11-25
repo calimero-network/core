@@ -19,7 +19,7 @@ async fn sign_up_public(State(node): State<Arc<Node>>) -> ApiResult {
     Ok(Json(out))
 }
 
-fn sign_up_json(policy: SignUp) -> Value {
+pub(super) fn sign_up_json(policy: SignUp) -> Value {
     json!({
         "policy": policy,
         "orgInvites": policy != SignUp::Closed,
@@ -300,7 +300,7 @@ async fn sign_up_invite_create(
     Ok(Json(out))
 }
 
-fn sign_up_invite_json(invite_key: &str, i: &SignUpInvite) -> Value {
+pub(super) fn sign_up_invite_json(invite_key: &str, i: &SignUpInvite) -> Value {
     json!({
         "inviteKey": invite_key,
         "uses": i.uses_left,

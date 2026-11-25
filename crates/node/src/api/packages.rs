@@ -97,7 +97,7 @@ async fn package_install(
 /// none, so a package they may not use is not listed and answers `404`.
 /// `frontend`: `who` came through `p`'s own frontend, public by name, and
 /// sees every release of it.
-fn package_json(
+pub(super) fn package_json(
     s: &SystemState,
     p: &crate::system::PackageRecord,
     who: &str,

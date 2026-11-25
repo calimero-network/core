@@ -44,16 +44,19 @@ fn checked(public_key: &str) -> Result<(), ApiError> {
 /// `{ holder, key: { publicKey, setAt, setBy } | null, apps }`: `apps` is how
 /// many apps' backups open with it.
 fn answer(node: &Node, holder: &BackupHolder) -> Value {
-    node.sys(|s| {
-        let key = s
-            .backup_keys
-            .get(&holder.key())
-            .map(|k| json!({ "publicKey": k.public_key, "setAt": k.set_at, "setBy": k.set_by }));
-        json!({
-            "holder": holder,
-            "key": key,
-            "apps": s.apps_of_holder(holder).count(),
-        })
+    node.sys(|s| backup_key_answer(s, holder))
+}
+
+/// [`answer`] on the state `s`.
+pub(super) fn backup_key_answer(s: &SystemState, holder: &BackupHolder) -> Value {
+    let key = s
+        .backup_keys
+        .get(&holder.key())
+        .map(|k| json!({ "publicKey": k.public_key, "setAt": k.set_at, "setBy": k.set_by }));
+    json!({
+        "holder": holder,
+        "key": key,
+        "apps": s.apps_of_holder(holder).count(),
     })
 }
 

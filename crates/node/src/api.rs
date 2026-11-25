@@ -76,6 +76,8 @@ mod deployments;
 mod deprecation;
 mod exports;
 mod files;
+#[cfg(test)]
+mod golden;
 mod internal;
 #[cfg(test)]
 mod openapi;

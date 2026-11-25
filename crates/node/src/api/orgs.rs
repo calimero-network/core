@@ -707,7 +707,7 @@ pub(crate) async fn remove_member_teams(
 /// A team as `account` may see it: its record, its members with their roles,
 /// the teams below it they see, and its apps. `None` when they may not see it
 /// (a restricted team they are not in looks like no team at all).
-fn team_view(
+pub(super) fn team_view(
     s: &crate::system::SystemState,
     o: &crate::types::Org,
     team: &str,
