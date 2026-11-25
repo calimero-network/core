@@ -6295,14 +6295,17 @@ async fn an_instances_owner_reads_its_outbound_requests_without_values() {
     join_org(&alice, &mut pk, &dave, &org, "admin").await;
     let _ = alice
         .packages()
-        .upload(mpk_with_secrets(
-            PACKAGE,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-            Some(&[("ECHO_KEY", HOST)]),
-        ))
+        .upload(
+            mpk_with_secrets(
+                PACKAGE,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ),
+            None,
+        )
         .await
         .unwrap();
     let _ = alice
