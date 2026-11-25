@@ -6983,6 +6983,49 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
 }
 
+/// B6: heartbeats travel batched per peer (`internal/raft-batch`): the system
+/// group keeps its leader and term over several election timeouts on them
+/// alone, every node receives batches, and writes commit. (A peer that
+/// refuses batches, answered item by item: `calimero-log`'s
+/// `batched_heartbeats_keep_every_leader_and_fall_back_when_a_peer_refuses_them`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn heartbeats_travel_batched_and_the_cluster_keeps_its_leader() {
+    let c = Cluster::start(3).await;
+    let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
+    let before = node(0).system.status();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for i in 0..3 {
+        let s = node(i).system.status();
+        assert_eq!(
+            (s.term, s.leader),
+            (before.term, before.leader),
+            "node {} moved",
+            i + 1
+        );
+    }
+    let leader = (0..3)
+        .find(|i| node(*i).system.status().is_leader)
+        .expect("a system leader");
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let ops = c.client(follower);
+    ops.use_api_key("ops-secret").await;
+    let metrics = ops.ops().metrics().await.unwrap();
+    let batches: u64 = metrics
+        .lines()
+        .find(|l| {
+            l.starts_with("http_request_duration_seconds_count")
+                && l.contains("path=\"/internal/raft-batch\"")
+        })
+        .and_then(|l| l.rsplit(' ').next()?.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        batches > 0,
+        "no heartbeat batch reached node {}",
+        follower + 1
+    );
+    let (_client, _a) = signed_up(&c, 1, "alice-on-batched-heartbeats").await;
+}
+
 /// eu-shared-2 (and `bababa`) never kept a system leader: a TDX node attests a
 /// peer in about a second (Intel's collateral is fetched each time), and
 /// openraft gives an append one heartbeat (200 ms there). Each RPC began the

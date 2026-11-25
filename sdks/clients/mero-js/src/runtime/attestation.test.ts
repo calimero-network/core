@@ -79,7 +79,7 @@ interface Td {
  * for its quote: it answers as `@phala/dcap-qvl` would for a genuine quote from
  * the TD described by `td`, binding what `td` says.
  */
-function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8Array } = {}) {
+function node(td: Td = {}, opts: { claimed?: string; claimedProfile?: string; quote?: string; app?: Uint8Array } = {}) {
   let asked = '';
   const queries: URLSearchParams[] = [];
   const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -92,7 +92,7 @@ function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8
         transportKey: hex(TRANSPORT_KEY),
         appHash: hex(opts.app ?? new Uint8Array(32)),
         nonce: asked,
-        release: { version: opts.claimed ?? '2.3.87', profile: 'locked-read-only' },
+        release: { version: opts.claimed ?? '2.3.87', profile: opts.claimedProfile ?? 'locked-read-only' },
         cluster: 'test',
         node: 1,
         mock: false,
@@ -130,7 +130,7 @@ function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8
 async function attest(
   td: Td,
   release: Partial<NonNullable<NodePolicy['release']>> = {},
-  opts: { claimed?: string; quote?: string; app?: Uint8Array; policy?: Partial<NodePolicy>; verify?: boolean } = {},
+  opts: { claimed?: string; claimedProfile?: string; quote?: string; app?: Uint8Array; policy?: Partial<NodePolicy>; verify?: boolean } = {},
 ) {
   const n = node(td, opts);
   // dcap-qvl's verify is synchronous: the report is computed once the doc is served.
@@ -376,6 +376,27 @@ describe('verifyNode: the record of what was verified', () => {
       checkedAt: expect.any(Number),
     });
     expect(verification.checkedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('trusts any listed profile, judging the quote against the one the node names', async () => {
+    const STAGING = { profiles: ['debug', 'debug-read-only'], allowDebugProfile: true };
+    const { verification } = await verified({ image: DEBUG_IMAGE }, STAGING, { claimedProfile: 'debug' });
+    expect(verification.profile).toBe('debug');
+    // A production node is refused by a list without its profile...
+    const { result: prod } = await attest({}, STAGING);
+    await expect(prod).rejects.toThrow(/profile "locked-read-only", which is not one of debug, debug-read-only/);
+    // ...and a node naming a listed profile its quote is not is refused by the measurements.
+    const { result: lying } = await attest({ image: IMAGE }, STAGING, { claimedProfile: 'debug' });
+    await expect(lying).rejects.toThrow(/not an image this verifier trusts/);
+  });
+
+  it('never trusts a listed debug profile without allowDebugProfile, nor an empty or doubled choice', async () => {
+    const { result } = await attest({ image: DEBUG_IMAGE }, { profiles: ['locked-read-only', 'debug'] }, { claimedProfile: 'debug' });
+    await expect(result).rejects.toThrow(/"debug", which an operator can read/);
+    const { result: empty } = await attest({}, { profiles: [] });
+    await expect(empty).rejects.toThrow(/profiles is empty/);
+    const { result: both } = await attest({}, { profile: 'locked-read-only', profiles: ['locked-read-only'] });
+    await expect(both).rejects.toThrow(/not both/);
   });
 
   it('names the debug profile only when it was allowed and matched', async () => {

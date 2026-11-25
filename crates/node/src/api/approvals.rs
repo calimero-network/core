@@ -1,4 +1,4 @@
-//! The API's routes for release, deadline and outbound approvals.
+//! The API's routes for release, deadline and outbound approvals, and the egress switch.
 
 #[allow(
     clippy::wildcard_imports,
@@ -150,6 +150,9 @@ pub(crate) async fn set_outbound_approval(
         crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
     owner_holds(node, |g| g.outbound, "outbound approvals")?;
+    if let crate::system::ReleaseScope::Org { org } = &scope {
+        refuse_egress_off(node, org)?;
+    }
     let consent = consent(
         node,
         p,
@@ -184,6 +187,128 @@ async fn org_outbound_approval(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     set_outbound_approval(&node, &p, crate::system::ReleaseScope::Org { org }, body).await
+}
+
+/// `409 EGRESS_OFF` while `org` turned egress off: it approves no outbound host until an
+/// owner or admin turns egress on again. Asked before the passkey ceremony; the log asks
+/// again (`SetOutboundApproval`).
+pub(crate) fn refuse_egress_off(node: &Node, org: &str) -> Result<(), ApiError> {
+    if node.sys(|s| s.orgs.get(org).is_some_and(|o| o.egress_off)) {
+        return Err(ApiError::new(409, "EGRESS_OFF", crate::system::EGRESS_OFF));
+    }
+    Ok(())
+}
+
+/// `403`: egress is turned back on only on the node's consent page.
+pub(crate) const CONSENT_PAGE_REQUIRED: &str = "CONSENT_PAGE_REQUIRED";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EgressBody {
+    /// `false` turns egress off: at once, from any signed-in client of an owner or admin.
+    /// `true` turns it back on: only through the consent page (`setEgress`), else `403
+    /// CONSENT_PAGE_REQUIRED`.
+    pub(crate) egress: bool,
+    #[serde(default)]
+    pub(crate) confirm: Option<ConfirmBody>,
+}
+
+/// Turn egress off or on for every app of `org`, or with `app` for that instance alone
+/// (`SystemCmd::SetEgress`): its owner or an admin, with a passkey over `org:<org> /
+/// __set_egress / { app, egress }`, as approving outbound hosts takes one. Off, no outbound
+/// request leaves the cluster for the apps it covers, whatever their releases declare and
+/// whatever was approved, from their next request on; the organization approves no new
+/// outbound host while its own switch is off. On again is a red change: the consent page
+/// alone runs it (`Principal::consent_page`), so the person sees what it lets out. `404` to
+/// anyone outside the organization (or for an app not in it), `403` to a member below admin.
+pub(crate) async fn set_egress(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    app: Option<String>,
+    body: EgressBody,
+) -> ApiResult {
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let (member, admin, app_in_org) = node.sys(|s| {
+        (
+            s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
+            s.is_org_admin(&org, &account),
+            app.as_ref()
+                .is_none_or(|id| s.apps.get(id).is_some_and(|a| a.org == org)),
+        )
+    });
+    if !member {
+        return Err(ApiError::not_found("no such organization"));
+    }
+    if !app_in_org {
+        return Err(ApiError::not_found("no such app"));
+    }
+    if !admin {
+        return Err(ApiError::forbidden(
+            "only the organization's owner or an admin turns its egress off or on",
+        ));
+    }
+    if body.egress && !p.consent_page {
+        return Err(ApiError::new(
+            403,
+            CONSENT_PAGE_REQUIRED,
+            "egress is turned back on only on the node's consent page: ask \
+             `POST /consent/requests { kind: \"setEgress\" }` and approve it there",
+        ));
+    }
+    let args = crate::system::egress_args(app.as_deref(), body.egress);
+    let consent = consent(
+        node,
+        p,
+        &format!("org:{org}"),
+        "__set_egress",
+        &args,
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetEgress {
+            org,
+            app,
+            egress: body.egress,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+async fn org_egress(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<EgressBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    set_egress(&node, &p, org, None, body).await
+}
+
+/// `POST /apps/{app}/egress`: [`set_egress`] for one instance, in its organization.
+pub(super) async fn app_set_egress(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<EgressBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let app_id = node.canonical_app_id(&app_id);
+    let org = node
+        .sys(|s| {
+            s.apps
+                .get(&app_id)
+                .filter(|a| s.may_reach(a, Some(&account)))
+                .map(|a| a.org.clone())
+        })
+        .ok_or_else(|| ApiError::not_found("no such app"))?;
+    set_egress(&node, &p, org, Some(app_id), body).await
 }
 
 #[derive(Deserialize)]
@@ -352,6 +477,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/outbound", post(org_outbound_approval))
+        .route("/orgs/{org}/egress", post(org_egress))
         .route("/ops/releases", post(ops_release))
         .route(
             "/ops/releases/{version}/deadline",

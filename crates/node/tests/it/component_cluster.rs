@@ -880,7 +880,7 @@ async fn a_follower_answers_a_strong_view_after_a_read_index() {
     }
 }
 
-async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
+pub(crate) async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.apps()
         .view(
             app,
@@ -2374,7 +2374,9 @@ async fn oversized_entry_is_host_denied() {
         .await
         .unwrap();
     // 1,000 keys of 1,000 bytes, each with its event: within every per-run limit
-    // (writes, events, event size), but about 2 MB of diff and events.
+    // (writes, events, event size), but about 2 MB of diff and events. The write or event
+    // that would pass the run's 1 MiB is the typed `RunLimit` the app passes on (C10), not
+    // a trap.
     let e = alice
         .apps()
         .call(
@@ -2386,8 +2388,42 @@ async fn oversized_entry_is_host_denied() {
         )
         .await
         .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "RunLimit", "{e}");
+    assert_eq!(e.details().unwrap()["fields"]["limit"], "bytes", "{e}");
+    // One value of 900 KiB: within the run's 1 MiB, but its entry (base64) is over the
+    // log's cap, so the node logs the run as a `HostDenied` trap.
+    let e = alice
+        .apps()
+        .call(
+            &app,
+            "fillQuiet",
+            Some(json!({ "n": 1, "size": 900 * 1024 })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
     assert_eq!(e.details().unwrap()["kind"], "HostDenied", "{e}");
+    // The write after the run's 10,000th: the typed `RunLimit` with its number (C10).
+    let e = alice
+        .apps()
+        .call(
+            &app,
+            "fillQuiet",
+            Some(json!({ "n": 10_001, "size": 1 })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(
+        e.details().unwrap()["fields"],
+        json!({ "limit": "writes", "max": "10000", "attempted": "10001" }),
+        "{e}"
+    );
     let v = alice
         .apps()
         .view(
@@ -2684,6 +2720,191 @@ async fn an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_
     assert!(
         !matches!(got, Ok(Some(_))),
         "a removed member still received {got:?}"
+    );
+}
+
+/// Alice's organization "Acme" with Bob and Carol as members, and a team-space app in it:
+/// `(org, app, bob's account id)`.
+async fn acme_with_bob_and_carol(
+    alice: &Client,
+    a: &mut SoftAuthenticator,
+    bob: &Client,
+    carol: &Client,
+) -> (String, String, String) {
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    for member in [bob, carol] {
+        let token = s(
+            alice
+                .orgs()
+                .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut *a))
+                .await
+                .map(wire)
+                .unwrap(),
+            "token",
+        );
+        let _r = member.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let bob_id = s(bob.auth().me().await.map(wire).unwrap(), "accountId");
+    let bundle = alice
+        .packages()
+        .bundle_put(wasm("team-space"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "bundle": &bundle, "org": org }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    (org, app, bob_id)
+}
+
+/// G4: the presence stream was judged once, when it was opened. A member removed from the
+/// organization kept receiving who else was present in the app, and the state each of them
+/// published, for as long as the stream stayed open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_member_stops_receiving_presence() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (org, app, bob_id) = acme_with_bob_and_carol(&alice, &mut a, &bob, &carol).await;
+
+    let mut bob_presence = Box::pin(bob.presence_stream(&app).await.unwrap());
+    let mut carol_presence = Box::pin(carol.presence_stream(&app).await.unwrap());
+    for stream in [&mut bob_presence, &mut carol_presence] {
+        let (_, kind, _) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kind, "snapshot");
+    }
+    let _r = alice
+        .apps()
+        .presence_publish(&app, 1, Some(Some(hex::encode(b"one")).as_deref()))
+        .await
+        .unwrap();
+    for stream in [&mut bob_presence, &mut carol_presence] {
+        let (_, kind, d) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kind, "presence");
+        assert_eq!(d["state"], json!(hex::encode(b"one")));
+    }
+
+    let _r = alice
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap();
+    let _r = alice
+        .apps()
+        .presence_publish(&app, 2, Some(Some(hex::encode(b"two")).as_deref()))
+        .await
+        .unwrap();
+    let (_, _, d) = tokio::time::timeout(Duration::from_secs(5), carol_presence.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d["state"], json!(hex::encode(b"two")));
+    let got = tokio::time::timeout(Duration::from_secs(3), bob_presence.next()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a removed member still received presence: {got:?}"
+    );
+}
+
+/// G4: an event stream judged its subscriber's account, never the credential that opened it.
+/// A stream opened with an API key, or a session, went on after the key was revoked or the
+/// session ended, so revoking a leaked key did not stop it reading the app's events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_key_or_session_stops_its_event_and_presence_streams() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (_org, app, _bob_id) = acme_with_bob_and_carol(&alice, &mut a, &bob, &carol).await;
+
+    // Bob's machine on a key; Bob's second session on another node.
+    let (key_id, key) = bob
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut b))
+        .await
+        .map(|k| (k.key_id, k.key))
+        .unwrap();
+    let machine = c.client(2);
+    machine.use_api_key(&key).await;
+    let laptop = c.client(0);
+    let _s = laptop.sign_in(&mut b).await.unwrap();
+
+    let mut machine_events = Box::pin(machine.events(&app, 0).await.unwrap());
+    let mut laptop_events = Box::pin(laptop.events(&app, 0).await.unwrap());
+    let mut machine_presence = Box::pin(machine.presence_stream(&app).await.unwrap());
+    let mut carol_events = Box::pin(carol.events(&app, 0).await.unwrap());
+    let (_, kind, _) = tokio::time::timeout(Duration::from_secs(5), machine_presence.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kind, "snapshot");
+    let _r = alice
+        .apps()
+        .call(&app, "announce", Some(json!({ "text": "one" })), None, None)
+        .await
+        .unwrap();
+    for stream in [&mut machine_events, &mut laptop_events, &mut carol_events] {
+        let (_id, _kind, data) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(data["text"], "one");
+    }
+
+    let _r = bob
+        .auth()
+        .apikey_revoke(&key_id, Some(&mut b))
+        .await
+        .unwrap();
+    let _r = laptop.auth().logout().await.unwrap();
+    let _r = alice
+        .apps()
+        .call(&app, "announce", Some(json!({ "text": "two" })), None, None)
+        .await
+        .unwrap();
+    let _r = alice
+        .apps()
+        .presence_publish(&app, 1, Some(Some(hex::encode(b"here")).as_deref()))
+        .await
+        .unwrap();
+    let (_id, _kind, data) = tokio::time::timeout(Duration::from_secs(5), carol_events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(data["text"], "two");
+    for (what, stream) in [
+        ("a revoked API key's events", &mut machine_events),
+        ("an ended session's events", &mut laptop_events),
+    ] {
+        let got = tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
+        assert!(!matches!(got, Ok(Some(_))), "{what} went on: {got:?}");
+    }
+    let got = tokio::time::timeout(Duration::from_secs(3), machine_presence.next()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a revoked API key's presence went on: {got:?}"
     );
 }
 
@@ -4300,6 +4521,185 @@ async fn hosted_on(
     panic!("node {i} never hosted {app}");
 }
 
+/// C2: a logged run does not hold its app's applied state while it runs. The leader runs a
+/// call's guest inside the proposal, and it ran on the state machine's read lock, so an
+/// entry that commits meanwhile (here a barrier, as `delete_unmarked_outputs` writes) waited
+/// for the whole run to apply, and every read of the app's state (`read_local`: a view's
+/// snapshot, a call's bundle lookup) queued behind that waiting apply (std's `RwLock`
+/// prefers a waiting writer). The run here waits in a host call, a synchronous xcall batch
+/// to one busy target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app() {
+    const WALL: Duration = Duration::from_millis(600);
+    const QUICK: Duration = Duration::from_millis(200);
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: WALL,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "target"] {
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "warm", "value": "1" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+    let (source, target) = (&apps[0], &apps[1]);
+    let g = hosted_on(&c, 0, source).await;
+    // The run: waits in its host call for the target's two calls in turn.
+    let started = std::time::Instant::now();
+    let run = async {
+        let answer = alice
+            .transport()
+            .json(
+                Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                    "method": "bumpBoth",
+                    "args": { "a": &target, "b": &target, "key": "k", "spins": 1_000_000 },
+                })),
+            )
+            .await;
+        (answer.is_err(), started.elapsed())
+    };
+    // Meanwhile an entry commits on the source's group, and its state is read.
+    let meanwhile = async {
+        tokio::time::sleep(WALL / 3).await;
+        let barrier = {
+            let g = Arc::clone(&g);
+            tokio::spawn(async move {
+                let at = std::time::Instant::now();
+                let entry = calimero_node::component::entry_json(
+                    &calimero_node::component::ComponentCmd::Barrier,
+                );
+                g.write(entry).await.unwrap();
+                at.elapsed()
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let at = std::time::Instant::now();
+        let _applied = g.read_local(|_, applied| applied);
+        let read = at.elapsed();
+        (barrier.await.unwrap(), read)
+    };
+    let ((timed_out, ran), (barrier, read)) = tokio::join!(run, meanwhile);
+    eprintln!(
+        "during a {ran:?} run: an entry applied after {barrier:?}, a read answered after {read:?}"
+    );
+    assert!(timed_out, "the run ends past its budget");
+    assert!(barrier < QUICK, "the entry waited {barrier:?} for the run");
+    assert!(read < QUICK, "the read waited {read:?} for the run");
+    tokio::time::sleep(WALL * 2).await;
+}
+
+/// C2: a logged run takes the app's state in its proposal's read step and runs with the
+/// read lock released, so an entry can commit between that snapshot and the run's own
+/// append. The run's entry then fails its `base_index` check (`conflict`), and the call runs
+/// again on the state that includes it and answers once: its synchronous xcalls replay
+/// their answers under their keys, so each target counts the call once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_whose_app_moved_on_while_it_ran_runs_again_and_answers_once() {
+    const WALL: Duration = Duration::from_millis(1_500);
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: WALL,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "left", "right"] {
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "warm", "value": "1" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+    let (source, left, right) = (&apps[0], &apps[1], &apps[2]);
+    let g = hosted_on(&c, 0, source).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let conflicts = || node.conflicts.load(std::sync::atomic::Ordering::Relaxed);
+    let before = conflicts();
+    // `left` is busy: a run that spins to its deadline (not logged) holds its proposal lock.
+    let busy = alice.transport().json(
+        Request::new(Method::POST, format!("apps/{left}/intents")).json(json!({
+            "method": "slowBump",
+            "args": { "key": "busy", "spins": 1_000_000 },
+        })),
+    );
+    // The call waits in `bumpBoth` for `left`'s lock; a barrier commits on its app meanwhile.
+    let call = async {
+        tokio::time::sleep(WALL / 3).await;
+        alice
+            .apps()
+            .call(
+                source,
+                "bumpBoth",
+                Some(json!({ "a": left, "b": right, "key": "k", "spins": 1 })),
+                None,
+                None,
+            )
+            .await
+    };
+    let barrier = async {
+        tokio::time::sleep(WALL / 2).await;
+        let entry =
+            calimero_node::component::entry_json(&calimero_node::component::ComponentCmd::Barrier);
+        g.write(entry).await.unwrap();
+    };
+    let (busy, answer, ()) = tokio::join!(busy, call, barrier);
+    assert_eq!(busy.unwrap_err().code(), Some("TIMEOUT"));
+    assert_eq!(answer.unwrap().result, json!([1, 1]));
+    assert!(conflicts() > before, "the call's first entry conflicted");
+    for app in [left, right] {
+        let count = strong_view(&alice, app, "get", json!({ "key": "k" })).await;
+        assert_eq!(count, json!("1"), "{app} counted the call once");
+    }
+}
+
 /// Calls `newId` until one answers (the app may be electing), up to ~10 s.
 async fn new_id(cl: &Client, app: &str) -> (u64, u64, u64) {
     for _ in 0..40 {
@@ -5382,7 +5782,7 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
 
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
 /// URL prefixes `outbound` (S9), signed by `key`.
-fn mpk_declaring(
+pub(crate) fn mpk_declaring(
     package: &str,
     version: &str,
     wasm: &[u8],
@@ -5405,7 +5805,7 @@ fn mpk_using(
     mpk_full(package, version, wasm, key, outbound, None, uses)
 }
 
-/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) in the signed manifest.
+/// [`mpk_declaring`], also declaring `secrets` (name -> host, each bound to its `Authorization` header) in the signed manifest.
 fn mpk_with_secrets(
     package: &str,
     version: &str,
@@ -5417,8 +5817,9 @@ fn mpk_with_secrets(
     mpk_full(package, version, wasm, key, outbound, secrets, Value::Null)
 }
 
-/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) and `uses` (the manifest's
-/// JSON for it) in the signed manifest.
+/// [`mpk_declaring`], also declaring `secrets` (name -> host, each required and bound to
+/// that host's `Authorization: Bearer {}` under its `outbound` prefix's path) and `uses` (the manifest's JSON for it) in the
+/// signed manifest.
 fn mpk_full(
     package: &str,
     version: &str,
@@ -5426,6 +5827,49 @@ fn mpk_full(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
     secrets: Option<&[(&str, &str)]>,
+    uses: Value,
+) -> Vec<u8> {
+    // Each bound under the path of the release's prefix on its host (`/` without one).
+    let path_on = |host: &str| {
+        outbound
+            .iter()
+            .filter_map(|o| o.strip_prefix("https://"))
+            .find_map(|rest| {
+                let (h, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+                (h == host && !path.is_empty()).then_some(path)
+            })
+            .unwrap_or("/")
+    };
+    let secrets = secrets.map(|s| {
+        s.iter()
+            .map(|(name, host)| {
+                (
+                    (*name).to_owned(),
+                    calimero_bundle::BundleSecret {
+                        required: true,
+                        ..calimero_bundle::BundleSecret::header(
+                            host,
+                            &[path_on(host)],
+                            "authorization",
+                            Some("Bearer {}"),
+                        )
+                    },
+                )
+            })
+            .collect()
+    });
+    mpk_bound(package, version, wasm, key, outbound, secrets, uses)
+}
+
+/// [`mpk_declaring`], also binding `secrets` and declaring `uses` (the manifest's JSON for
+/// it) in the signed manifest.
+fn mpk_bound(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<std::collections::BTreeMap<String, calimero_bundle::BundleSecret>>,
     uses: Value,
 ) -> Vec<u8> {
     use sha2::Digest;
@@ -5455,20 +5899,7 @@ fn mpk_full(
         instance_org: None,
         guests: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
-        secrets: secrets.map(|s| {
-            s.iter()
-                .map(|(name, host)| {
-                    (
-                        (*name).to_owned(),
-                        calimero_bundle::BundleSecret {
-                            hosts: vec![(*host).to_owned()],
-                            description: String::new(),
-                            required: true,
-                        },
-                    )
-                })
-                .collect()
-        }),
+        secrets,
         uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
@@ -5494,7 +5925,7 @@ fn mpk_full(
 }
 
 /// Polls view `method` until `done` holds of its result.
-async fn eventually(
+pub(crate) async fn eventually(
     cl: &Client,
     app: &str,
     method: &str,
@@ -5519,7 +5950,8 @@ async fn eventually(
 
 /// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
 /// through a view, calls out over `wasi:http` only to a prefix the signed manifest
-/// declares and the owner approved (with a secret the node fills in and redacts), and
+/// declares and the owner approved (with a secret its manifest binds to a header, which
+/// the node attaches and redacts), and
 /// writes through a keyed call to an `allow(action)` method no client can call. One that
 /// fails (a refused request, an app error) fails for good and `onActionFailed` hears.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -5554,7 +5986,14 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     let _ = alice
         .packages()
         .upload(
-            mpk_declaring(PACKAGE, "0.1.0", &kv_wasm(), &publisher, &[PREFIX]),
+            mpk_with_secrets(
+                PACKAGE,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", "echo.outbound.test")]),
+            ),
             None,
         )
         .await
@@ -5628,9 +6067,12 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     let got = got.as_str().unwrap();
     assert!(got.starts_with("200 "), "{got}");
     assert!(got.contains("/v1/enrich?v=acme.com"), "{got}");
-    // The secret went out and came back redacted.
+    // The node attached the bound header; it came back redacted.
     assert!(!got.contains("s3cret-value"), "{got}");
-    assert!(got.contains("[redacted]"), "{got}");
+    assert!(
+        got.contains(r#""authorization":"Bearer [redacted]""#),
+        "{got}"
+    );
 
     // No client calls an `allow(action)` method, and a call or view never calls out.
     let e = alice
@@ -5662,12 +6104,14 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     );
 }
 
-/// A release that declares its secrets gets only those, and only to their hosts: the same
-/// action that reached the echo host with `ECHO_KEY` fails once the running release
-/// declares another name, though the operator bound `ECHO_KEY` to the package; a release
-/// whose secret names a host no outbound prefix covers is refused at install.
+/// A release's credentials are attached by the node where its manifest binds them, and
+/// only those: the same action reaches the echo host with `ECHO_KEY` in the bound
+/// `Authorization` header (the app's request names no secret), and fails once the running
+/// release binds another name, required, that nobody set, though the operator bound
+/// `ECHO_KEY` to the package; a release whose secret names a host no outbound prefix
+/// covers is refused at install.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_release_fills_only_the_secrets_it_declares() {
+async fn a_release_gets_only_the_credentials_it_binds_attached_by_the_node() {
     const PREFIX: &str = "https://echo.outbound.test/v1/";
     const HOST: &str = "echo.outbound.test";
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -5714,7 +6158,6 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_SECRETS"), "{e}");
-
     let mut apps = Vec::new();
     for (package, name) in packages.iter().zip(["ECHO_KEY", "OTHER_KEY"]) {
         let _ = alice
@@ -5778,7 +6221,8 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         apps.push(app);
     }
 
-    // Declares ECHO_KEY for the echo host: filled and redacted.
+    // Binds ECHO_KEY to the echo host's Authorization header: attached by the node, one
+    // value of its length, and redacted on the way back.
     let got = eventually(
         &alice,
         &apps[0],
@@ -5787,15 +6231,21 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         |v| v.is_string(),
     )
     .await;
-    assert!(got.as_str().unwrap().starts_with("200 "), "{got}");
-    assert!(got.as_str().unwrap().contains("[redacted]"), "{got}");
-    // Declares only OTHER_KEY: the request naming ECHO_KEY never leaves.
+    let got = got.as_str().unwrap();
+    assert!(got.starts_with("200 "), "{got}");
+    assert!(
+        got.contains(r#""authorization":"Bearer [redacted]""#),
+        "{got}"
+    );
+    assert!(got.contains(r#""secretBytes":[12]"#), "{got}");
+    assert!(!got.contains("s3cret-value"), "{got}");
+    // Binds only OTHER_KEY, required, which nobody set: the request never leaves.
     let failures = eventually(&alice, &apps[1], "actionFailures", json!({}), |f| {
         f["enrich"].is_string()
     })
     .await;
     let failure = failures["enrich"].as_str().unwrap();
-    assert!(failure.contains("declares no secret ECHO_KEY"), "{failure}");
+    assert!(failure.contains("OTHER_KEY has no value"), "{failure}");
     assert_eq!(
         strong_view(&alice, &apps[1], "enrichment", json!({ "key": "acme" })).await,
         Value::Null
@@ -7666,7 +8116,17 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
 /// a timeout, which is not logged, D23) replays both answers instead of counting again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
-    let c = Cluster::start(3).await;
+    // The stalled run must end on the wall clock (`TIMEOUT`, not logged), and `slowBump`'s
+    // body is sized in wall time. Both draw host randomness, which costs fuel per byte
+    // (C7), so their fuel is lifted, as `timeouts_are_not_logged` lifts it: the wall clock
+    // ends them, never the fuel.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
@@ -7812,11 +8272,85 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
     assert_eq!(count(right, &key).await, json!("1"));
 }
 
+/// C2: a run's wall clock is a deadline its host calls keep too, not only its guest code
+/// (the engine's epoch deadline is checked only while the guest runs). `bumpBoth` on one
+/// target twice waits for that target's two calls in turn, each of which runs to its own
+/// deadline: twice the budget, which the caller used to wait out in full (up to
+/// `SYNC_XCALL_WAIT`, 3 s, whatever its budget had left). It ends `TIMEOUT` at its own
+/// deadline instead, as a run that overruns in its own code does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_waiting_in_a_host_call_ends_at_its_own_deadline() {
+    const WALL: Duration = Duration::from_millis(600);
+    // Unlimited fuel: the targets spin (host-made randomness) until their wall clock stops
+    // them, never out of fuel.
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: WALL,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "target"] {
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        // Warm: the component is prepared and the app's group leads before anything is timed.
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "warm", "value": "1" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+    let (source, target) = (&apps[0], &apps[1]);
+    // Sent once, raw: `apps().call` sends a call again while the node answers `503`.
+    let started = std::time::Instant::now();
+    let answer = alice
+        .transport()
+        .json(
+            Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                "method": "bumpBoth",
+                "args": { "a": target, "b": target, "key": "k", "spins": 1_000_000 },
+            })),
+        )
+        .await;
+    let took = started.elapsed();
+    eprintln!("a {WALL:?} run waiting on two {WALL:?} calls in turn answered after {took:?}");
+    let e = answer.unwrap_err();
+    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
+    assert!(
+        took < WALL + WALL / 2,
+        "the run went on {took:?} on a {WALL:?} budget"
+    );
+    // The target's second call goes on without the run that asked for it: let it end before
+    // the cluster stops under it.
+    tokio::time::sleep(WALL * 2).await;
+}
+
 /// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
-/// service (a signed release declaring Turnstile's siteverify) inside its call; the
-/// service checks the token with Turnstile from its own call, through the outbound gate
-/// (declared, approved, the operator's host and secret), and the forms app writes only
-/// on a pass. A spent token does not pass again.
+/// service (a signed release declaring Turnstile's siteverify, and binding
+/// `TURNSTILE_SECRET` to its `secret` body field) inside its call; the service checks the
+/// token with Turnstile from its own call, through the outbound gate (declared, approved,
+/// the operator's host and secret, which the node attaches to the form itself), and the
+/// forms app writes only on a pass. A spent token does not pass again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     const PACKAGE: &str = "com.calimero.captcha";
@@ -7850,12 +8384,24 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     let _ = alice
         .packages()
         .upload(
-            mpk_declaring(
+            mpk_bound(
                 PACKAGE,
                 "0.1.0",
                 &wasm("fixture-captcha"),
                 &publisher,
                 &[calimero_outbound::TURNSTILE_VERIFY_URL],
+                Some(
+                    [(
+                        "TURNSTILE_SECRET".to_owned(),
+                        calimero_bundle::BundleSecret::body_field(
+                            HOST,
+                            &["/turnstile/v0/siteverify"],
+                            "secret",
+                        ),
+                    )]
+                    .into(),
+                ),
+                Value::Null,
             ),
             None,
         )

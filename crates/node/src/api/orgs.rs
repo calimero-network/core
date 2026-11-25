@@ -195,6 +195,7 @@ async fn org_get(
     // Its settings, whatever they are: the state leaves a default out.
     v["allowGuests"] = json!(o.allow_guests);
     v["allowPublicLinks"] = json!(o.allow_public_links);
+    v["egressOff"] = json!(o.egress_off);
     for field in ["members", "capabilities", "memberMetadata"] {
         if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
             m.retain(|a, _| o.sees_member(&account, a));

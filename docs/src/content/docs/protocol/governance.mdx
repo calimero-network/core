@@ -561,7 +561,7 @@ release it names; from the logged cluster version that brings
 `privateReleases`, apply judges the same.
 
 **Secrets**: a value a manager sets for a secret its offered releases declare
-fills `{{secret:NAME}}` for every instance created from the deployment that
+is the value the node attaches where the release binds `NAME`, for every instance created from the deployment that
 set no value of its own (`PUT /apps/{app}/secrets/{name}`), and goes before
 the operator's: the instance's value, then the deployment's, then the
 operator's. Only for a name the release the instance runs declares, only

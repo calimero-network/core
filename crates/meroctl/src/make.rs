@@ -1133,15 +1133,16 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if !outbound.is_empty() {
         let _ = manifest.insert("outbound".into(), json!(outbound));
     }
-    // `[package.metadata.calimero.secrets.NAME] hosts, description, required`: what the
-    // app's outbound requests name, so whoever deploys it knows what to supply. Checked
+    // `[package.metadata.calimero.secrets.NAME] host, paths, header (+ format) or
+    // bodyField, description, required`: each credential the app needs and where the node attaches
+    // it, so whoever deploys it knows what to supply and the app never places it. Checked
     // as a node checks it at install (`BundleManifest::check_secrets`), against the
     // outbound prefixes above.
     if let Some(secrets) = meta.table.get("secrets") {
         let secrets: std::collections::BTreeMap<String, calimero_bundle::BundleSecret> =
             serde_json::to_value(secrets)
                 .and_then(serde_json::from_value)
-                .wrap_err("[package.metadata.calimero.secrets]: each NAME takes hosts, description and required")?;
+                .wrap_err("[package.metadata.calimero.secrets]: each NAME takes host, paths (path prefixes on it, [\"/\"] for all), then header (with an optional format, \"Bearer {}\") or bodyField, and description and required")?;
         let probe = calimero_bundle::BundleManifest {
             outbound: outbound.clone(),
             secrets: Some(secrets.clone()),

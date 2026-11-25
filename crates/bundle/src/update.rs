@@ -10,8 +10,8 @@
 //! ## Egress
 //!
 //! A release's egress is the set of destinations its runs may send a request to: its
-//! `outbound` prefixes, and the host of each secret it declares (`https://<host>/`) where no
-//! prefix already names that host (a manifest the node installs never has one:
+//! `outbound` prefixes, and the host each secret it declares is bound to (`https://<host>/`)
+//! where no prefix already names that host (a manifest the node installs never has one:
 //! [`BundleManifest::check_secrets`] refuses a host no prefix covers). A unit's egress is
 //! the union over the app and its members. A destination is covered by another when it is
 //! the same `https://` authority and its path is the other's or below it at a `/`
@@ -41,16 +41,20 @@
 //!   consent. A member without egress joins or leaves green.
 //! - **`delegatedMethodsAdded`**: a release calls a method of another app as the person
 //!   (`uses.<name>.methods`) it did not call as them before: a new way to act as the user.
+//! - **`secretBindingChanged`**: a release declares a secret it did not, or binds one to
+//!   another host, header, format or body field, or to a path its earlier binding did not
+//!   cover ([`crate::BundleSecret`]): a credential someone supplied would be sent somewhere,
+//!   or in a way, they did not agree to. A binding narrowed to fewer paths stays green.
 //!
 //! Otherwise it is **green**: the same signers, egress the same or smaller, the same state
-//! versions, and no new way to act as the person. New and removed methods are reported
+//! versions, the same credential bindings or fewer, and no new way to act as the person. New and removed methods are reported
 //! (`newMethods`, `removedMethods`) but never make an update red on their own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{is_outbound_url, BundleManifest};
+use crate::{is_outbound_url, BundleManifest, BundleSecret};
 
 /// What the classifier reads of one release: its identity, where its runs may send
 /// requests, how it acts as the person, and its ABI's state version and methods.
@@ -64,9 +68,9 @@ pub struct Release {
     /// The manifest's `outbound` prefixes.
     #[serde(default)]
     pub outbound: BTreeSet<String>,
-    /// Each declared secret's hosts, by secret name.
+    /// Each declared secret's binding, by secret name.
     #[serde(default)]
-    pub secrets: BTreeMap<String, BTreeSet<String>>,
+    pub secrets: BTreeMap<String, BundleSecret>,
     /// The methods this release calls as the person, by the package of the app it calls
     /// (`uses.<name>.methods`, every reference to that package together).
     #[serde(default)]
@@ -99,12 +103,7 @@ impl Release {
             version: manifest.app_version.clone(),
             signer: signer.to_owned(),
             outbound: manifest.outbound.iter().cloned().collect(),
-            secrets: manifest
-                .secrets
-                .iter()
-                .flatten()
-                .map(|(name, s)| (name.clone(), s.hosts.iter().cloned().collect()))
-                .collect(),
+            secrets: manifest.secrets.clone().unwrap_or_default(),
             delegated,
             state_version: abi.and_then(|a| a["state"]["version"].as_u64()),
             methods: abi.map(|a| {
@@ -126,8 +125,8 @@ impl Release {
             .filter_map(|p| Destination::parse(p).map(|d| d.authority))
             .collect();
         let mut out = self.outbound.clone();
-        for host in self.secrets.values().flatten() {
-            let host = host.to_ascii_lowercase();
+        for secret in self.secrets.values() {
+            let host = secret.host.to_ascii_lowercase();
             if !named.contains(&host) {
                 let _new = out.insert(format!("https://{host}/"));
             }
@@ -268,6 +267,15 @@ pub enum Reason {
         package: String,
         methods: Vec<String>,
     },
+    /// A secret it declares now that it did not, or binds elsewhere: `before` is `None`
+    /// for a new one; each binding as [`BundleSecret::describe`] words it.
+    #[serde(rename_all = "camelCase")]
+    SecretBindingChanged {
+        member: Option<String>,
+        name: String,
+        before: Option<String>,
+        after: String,
+    },
     /// Not classified: `package`@`version`, which the app (or the member) runs or moves to,
     /// is no longer installed, so what it declared cannot be read. Taken as red. The node
     /// says it (a release uninstalled while another ships its WASM); [`classify`] never
@@ -355,6 +363,18 @@ pub fn classify(before: &Unit, after: &Unit) -> Classification {
                     member: member(path),
                     package: package.clone(),
                     methods: added,
+                });
+            }
+        }
+        for (name, secret) in &to.secrets {
+            let had = from.secrets.get(name);
+            // Narrowed (fewer paths, the same host and place): no new reach.
+            if !had.is_some_and(|h| secret.narrows(h)) {
+                reasons.push(Reason::SecretBindingChanged {
+                    member: member(path),
+                    name: name.clone(),
+                    before: had.map(|h| h.describe(name)),
+                    after: secret.describe(name),
                 });
             }
         }
@@ -580,7 +600,7 @@ mod tests {
         let mut r = release("p", "1.0.0");
         r.secrets = BTreeMap::from([(
             "KEY".to_owned(),
-            BTreeSet::from(["Keys.Example.com".to_owned()]),
+            BundleSecret::header("Keys.Example.com", &["/"], "x-api-key", None),
         )]);
         assert_eq!(
             r.egress(),
@@ -593,6 +613,86 @@ mod tests {
             named.egress(),
             BTreeSet::from(["https://keys.example.com/v1/".to_owned()])
         );
+    }
+
+    /// A credential goes only where, and how, the person agreed: a new secret, or one bound
+    /// to another place, is red even when the egress stays; a removed one is green.
+    #[test]
+    fn a_new_or_moved_secret_binding_is_red() {
+        let with = |r: Release, s: &[(&str, BundleSecret)]| Release {
+            secrets: s
+                .iter()
+                .map(|(n, b)| ((*n).to_owned(), b.clone()))
+                .collect(),
+            ..with_outbound(r, &[ACME])
+        };
+        let header = BundleSecret::header(
+            "api.acme.com",
+            &["/v1/"],
+            "authorization",
+            Some("Bearer {}"),
+        );
+        let body = BundleSecret::body_field("api.acme.com", &["/v1/"], "prompt");
+        let before = Unit::of(with(release("p", "1.0.0"), &[("KEY", header.clone())]));
+
+        let same = Unit::of(with(release("p", "1.1.0"), &[("KEY", header.clone())]));
+        assert_eq!(classify(&before, &same).class, Class::Green);
+        let gone = Unit::of(with(release("p", "1.1.0"), &[]));
+        assert_eq!(classify(&before, &gone).class, Class::Green);
+
+        let moved = Unit::of(with(release("p", "1.1.0"), &[("KEY", body)]));
+        let c = classify(&before, &moved);
+        assert_eq!(codes(&c), ["secretBindingChanged"]);
+        assert_eq!(
+            c.reasons[0],
+            Reason::SecretBindingChanged {
+                member: None,
+                name: "KEY".to_owned(),
+                before: Some(
+                    "sends KEY as the Authorization header (Bearer …) to api.acme.com under /v1/"
+                        .to_owned()
+                ),
+                after: "sends KEY as the body field \"prompt\" to api.acme.com under /v1/"
+                    .to_owned(),
+            }
+        );
+        let added = Unit::of(with(
+            release("p", "1.1.0"),
+            &[
+                ("KEY", header.clone()),
+                (
+                    "OTHER",
+                    BundleSecret::header("api.acme.com", &["/v1/"], "x-other", None),
+                ),
+            ],
+        ));
+        assert_eq!(codes(&classify(&before, &added)), ["secretBindingChanged"]);
+        // A widened path set is red; a narrowed one is green.
+        let widened = Unit::of(with(
+            release("p", "1.1.0"),
+            &[(
+                "KEY",
+                BundleSecret {
+                    paths: vec!["/".to_owned()],
+                    ..header.clone()
+                },
+            )],
+        ));
+        assert_eq!(
+            codes(&classify(&before, &widened)),
+            ["secretBindingChanged"]
+        );
+        let narrowed = Unit::of(with(
+            release("p", "1.1.0"),
+            &[(
+                "KEY",
+                BundleSecret {
+                    paths: vec!["/v1/chat".to_owned()],
+                    ..header
+                },
+            )],
+        ));
+        assert_eq!(classify(&before, &narrowed).class, Class::Green);
     }
 
     #[test]
@@ -739,7 +839,7 @@ mod tests {
             "version": "1.0", "package": "com.acme.notes", "appVersion": "1.4.0",
             "minRuntimeVersion": "0.1.0",
             "outbound": [ACME],
-            "secrets": { "KEY": { "hosts": ["api.acme.com"] } },
+            "secrets": { "KEY": { "host": "api.acme.com", "paths": ["/"], "header": "x-api-key" } },
             "uses": {
                 "cal": { "package": "com.cal", "range": "^1", "mode": "attach", "methods": ["book"] },
                 "store": { "package": "com.calimero.kv", "range": "^1" },

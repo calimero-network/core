@@ -2174,6 +2174,65 @@ async fn a_stranger_cannot_subscribe_to_a_private_apps_run() {
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
 }
 
+/// G4: a run's event stream was judged once, when it was opened, then polled the run as the
+/// subscriber for up to an hour. A member removed from the app's organization went on seeing
+/// every step move and the run end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_member_stops_receiving_a_runs_events() {
+    use futures_util::StreamExt as _;
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let org = wire(rig.alice.apps().get(&rig.app).await.unwrap())["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let token = wire(
+        rig.alice
+            .orgs()
+            .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut rig.pk))
+            .await
+            .unwrap(),
+    )["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = wire(bob.auth().me().await.unwrap())["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let mut events = Box::pin(bob.pipeline_run_events(&rig.app, &run).await.unwrap());
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .unwrap(),
+        Some(PipelineEvent::Snapshot(_))
+    ));
+
+    let _r = rig
+        .alice
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut rig.pk))
+        .await
+        .unwrap();
+    let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+    let _ended = rig.ended(&run).await;
+    let seen = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut seen = Vec::new();
+        while let Some(e) = events.next().await {
+            seen.push(e);
+        }
+        seen
+    })
+    .await
+    .unwrap_or_default();
+    assert!(
+        seen.is_empty(),
+        "a removed member still received the run's events: {seen:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn subscribers_are_bounded() {
     let rig = Rig::start(&[JOB_A]).await;

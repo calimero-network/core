@@ -46,12 +46,14 @@ pub trait Store {
 
     /// The value at `k`.
     fn get(&self, k: &[u8]) -> Option<Vec<u8>>;
-    /// Set `k` to `v`.
-    fn put(&mut self, k: &[u8], v: &[u8]);
-    /// Remove `k`.
-    fn delete(&mut self, k: &[u8]);
-    /// Add `delta` to the CBOR integer at `k` (absent is 0) without reading it (D47).
-    fn add(&mut self, k: &[u8], delta: i64);
+    /// Set `k` to `v`. A write past the run's limits is [`StorageError::RunLimit`] and
+    /// writes nothing.
+    fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), StorageError>;
+    /// Remove `k`; limits as [`Store::put`].
+    fn delete(&mut self, k: &[u8]) -> Result<(), StorageError>;
+    /// Add `delta` to the CBOR integer at `k` (absent is 0) without reading it (D47); limits
+    /// as [`Store::put`].
+    fn add(&mut self, k: &[u8], delta: i64) -> Result<(), StorageError>;
     /// Open a cursor over `[start, end)`, newest-first when `reverse`.
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> Self::Range;
 }

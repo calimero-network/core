@@ -1,4 +1,5 @@
-//! System commands for release approvals, release deadlines and outbound approvals.
+//! System commands for release approvals, release deadlines, outbound approvals and the
+//! egress switch.
 //!
 //! [`authorize`] judges the proof each carries and [`apply`] applies it;
 //! `system.rs` sends a command here by its [`super::Area`].
@@ -70,6 +71,19 @@ pub(super) fn authorize(
                         && a["replace"].as_bool().unwrap_or(false) == *replace
                 },
             )?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetEgress {
+            org,
+            app,
+            egress,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            proofs.states(&st, &format!("org:{org}"), "__set_egress", &|a| {
+                *a == egress_args(app.as_deref(), *egress)
+            })?;
             Ok(Some(used))
         }
         SystemCmd::SetReleaseDeadline {
@@ -197,6 +211,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let approvals = match &scope {
                 ReleaseScope::Cluster => &mut s.operator_outbound,
+                ReleaseScope::Org { org } if s.orgs.get(org).is_some_and(|o| o.egress_off) => {
+                    return Err(EGRESS_OFF);
+                }
                 ReleaseScope::Org { org } => {
                     // One approval covers every app of the organization,
                     // so only an org-wide grant reaches it.
@@ -227,8 +244,46 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let _prev = approvals.insert(signer.clone(), approval.clone());
             Ok(json!({ "signer": signer, "approval": approval }))
         }
+        SystemCmd::SetEgress {
+            org,
+            app,
+            egress,
+            actor,
+            consent: _,
+        } => {
+            if !s.is_org_admin(&org, &actor) {
+                return Err("only the organization's owner or an admin turns its egress off or on");
+            }
+            match &app {
+                None => {
+                    let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                    o.egress_off = !egress;
+                }
+                Some(id) => {
+                    let a = s
+                        .apps
+                        .get_mut(id)
+                        .filter(|a| a.org == org)
+                        .ok_or("no such app in the organization")?;
+                    a.egress_off = !egress;
+                }
+            }
+            let org_off = s.orgs.get(&org).is_some_and(|o| o.egress_off);
+            let mut out = json!({ "org": org, "egress": egress, "orgEgressOff": org_off });
+            if let Some(id) = app {
+                out["app"] = json!(id);
+            }
+            Ok(out)
+        }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached approvals::apply"),
     }
+}
+
+/// What a `SetEgress` consent states (`org:<org> / __set_egress`): the instance, or `null`
+/// for the whole organization, and the switch.
+#[must_use]
+pub fn egress_args(app: Option<&str>, egress: bool) -> Value {
+    json!({ "app": app, "egress": egress })
 }
