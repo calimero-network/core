@@ -321,10 +321,16 @@ bump_cargo_workspace() {
   # followed a stale `cargo install` line in a Makefile gets that silently.
   bump_workspace_toolchain
 
-  # The client generator, and the clients it wrote: see bump_app_build_pin.
+  # The client generator's pin: see bump_app_build_pin.
   bump_app_build_pin
 
   verify_workspace_consistency
+
+  refresh_workspace_locks
+
+  # After the lockfiles: the ABIs are rebuilt against the release they name,
+  # then the clients from them. See "the client generator".
+  [ "$GEN_MOVED" -eq 0 ] || regenerate_clients
 
   # Workspace path only. The report itself is repo-shape agnostic, but it has
   # only been calibrated against calimero-network/apps: turning it on for the
@@ -332,7 +338,9 @@ bump_cargo_workspace() {
   # and a report that cries wolf on its first run is a report people learn to
   # scroll past. Worth extending to them deliberately, one repo at a time.
   report_unclaimed
+}
 
+refresh_workspace_locks() {
   if [ "$NO_LOCK" -eq 1 ]; then
     note "skipping Cargo.lock refresh (--no-lock)"
     return 0
@@ -630,11 +638,29 @@ bump_workspace_toolchain() {
 # the SDK on purpose (a generator fix the SDK has not caught up with), so it
 # never moves backwards.
 #
-# When the clients cannot be regenerated here (--no-codegen, no pnpm, a release
-# that ships no such binary, a codegen failure), the pin still moves and the
+# The clients are generated FROM each app's committed ABI
+# (apps/<app>/logic/res/abi.json), and the ABI is not the generator's: the SDK's
+# `#[app::logic]` writes it into the component at compile time, world included
+# (`calimero:app@X`), and scripts/component-build.sh (`meroctl app build`, then
+# `meroctl app abi show`) copies it out. So a release that changes what the SDK
+# writes (rc.37 moved the world from 0.5.6 to 0.5.7) leaves every committed ABI
+# stale, and `codegen` over a stale ABI writes stale clients (apps#1034: all 27
+# `Rust (<app>)` jobs failed the stale-ABI check). No tool can re-emit an ABI
+# without the build: what it holds is the macro's output for the app's source.
+# So after the pin moves and the lockfiles are resolved, in this order:
+#
+#   1. every component app's ABI, rebuilt by scripts/component-build.sh
+#      (one Cargo target directory for all of them, so core builds once)
+#   2. every package's `codegen` (the web clients), from those ABIs
+#   3. scripts/mobile-codegen.sh (the Swift and Kotlin clients), from them too
+#
+# When a step cannot run here (--no-codegen, no cargo or pnpm, a release that
+# ships no such binary, a build or codegen failure), the pin still moves and the
 # report says what to run, since a pull request that only lacks that step is
 # still the right pull request.
 CODEGEN_PENDING=""
+# Set by bump_app_build_pin when it moved the pin: the regeneration is due.
+GEN_MOVED=0
 # Set by generator_installer: the installer, the tool it pins, and its variable.
 APP_BUILD_INSTALLER=""
 GEN_TOOL=""
@@ -697,7 +723,9 @@ bump_app_build_pin() {
   record_change "$APP_BUILD_INSTALLER"
   note "$APP_BUILD_INSTALLER: $GEN_TOOL $current -> $VERSION"
 
-  regenerate_clients
+  # Run by bump_cargo_workspace once the lockfiles name the release: the ABIs
+  # are rebuilt against it.
+  GEN_MOVED=1
 }
 
 # The release's own generator ($GEN_TOOL), checked against its SHA256SUMS,
@@ -737,19 +765,76 @@ dirty_paths() {
   ( cd "$DIR" && git diff --name-only HEAD ) | sort -u
 }
 
-regenerate_clients() {
-  if [ "$NO_CODEGEN" -eq 1 ]; then
-    CODEGEN_PENDING="--no-codegen"
+# One reason per line for what was not regenerated; set means the report gives
+# the whole sequence to run.
+pending() {
+  CODEGEN_PENDING="${CODEGEN_PENDING:+$CODEGEN_PENDING
+}$1"
+}
+
+# Every component app with a committed ABI, as its crate directory
+# (apps/<app>/logic, holding a Cargo.toml and a tracked res/abi.json).
+abi_dirs() {
+  local f d
+  ( cd "$DIR" && git ls-files -- ':(glob)apps/*/logic/res/abi.json' ) | while IFS= read -r f; do
+    d=${f%/res/abi.json}
+    [ -f "$DIR/$d/Cargo.toml" ] && printf '%s\n' "$d"
+  done
+}
+
+# Whether the ABIs are this repository's to rebuild: it builds them with
+# scripts/component-build.sh (meroctl's), and commits at least one.
+has_abis() {
+  [ "$GEN_TOOL" = meroctl ] && [ -f "$DIR/scripts/component-build.sh" ] && [ -n "$(abi_dirs)" ]
+}
+
+# The commands that regenerate everything this repository generates, in order.
+regenerate_commands() {
+  local cmd="$APP_BUILD_INSTALLER"
+  has_abis \
+    && cmd="$cmd && git ls-files ':(glob)apps/*/logic/res/abi.json' | sed 's#/res/abi.json\$##' | xargs -n1 scripts/component-build.sh"
+  cmd="$cmd && pnpm -r --if-present run codegen"
+  [ -f "$DIR/scripts/mobile-codegen.sh" ] && cmd="$cmd && scripts/mobile-codegen.sh"
+  printf '%s' "$cmd"
+}
+
+# Step 1: every committed ABI, rebuilt with the release's meroctl ($1) against
+# the manifests and lockfiles this bump wrote.
+rebuild_abis() {
+  local bin="$1" d n=0 failed=""
+  has_abis || return 0
+  if ! command -v cargo >/dev/null 2>&1; then
+    pending "the ABIs: cargo is not installed where the bump ran"
     return 0
   fi
-  if ! command -v pnpm >/dev/null 2>&1; then
-    CODEGEN_PENDING="pnpm is not installed where the bump ran"
+  # One target directory across the apps: they share core's crates at one tag.
+  local target="${CARGO_TARGET_DIR:-$TMPDIR_RUN/target}"
+  for d in $(abi_dirs); do
+    if ( cd "$DIR" && PATH="$(dirname "$bin"):$PATH" CARGO_TARGET_DIR="$target" \
+        bash scripts/component-build.sh "$d" ) > "$TMPDIR_RUN/abi.log" 2>&1; then
+      n=$((n + 1))
+    else
+      note "scripts/component-build.sh $d failed:"
+      tail -n 40 "$TMPDIR_RUN/abi.log" | sed 's/^/      /' >&2
+      # It writes the ABI through a redirect: a failed `abi show` leaves it empty.
+      ( cd "$DIR" && git checkout -- "$d/res/abi.json" ) 2>/dev/null || true
+      failed="$failed $d"
+    fi
+  done
+  note "rebuilt $n committed ABI(s) with meroctl $VERSION"
+  [ -z "$failed" ] \
+    || pending "the ABIs of$failed: scripts/component-build.sh failed with $VERSION's meroctl; see the bump's log"
+}
+
+regenerate_clients() {
+  if [ "$NO_CODEGEN" -eq 1 ]; then
+    pending "the bump ran with --no-codegen"
     return 0
   fi
   local bin
   bin=$(app_build_binary)
   if [ -z "$bin" ] || [ ! -x "$bin" ]; then
-    CODEGEN_PENDING="release $VERSION ships no $GEN_TOOL binary for this machine"
+    pending "release $VERSION ships no $GEN_TOOL binary for this machine"
     return 0
   fi
   local built
@@ -758,29 +843,45 @@ regenerate_clients() {
   case "$built" in
     "$GEN_TOOL $VERSION" | "$GEN_TOOL $VERSION "*) ;;
     *)
-      CODEGEN_PENDING="the release's binary says '${built:-nothing}' to --version, not $GEN_TOOL $VERSION"
+      pending "the release's binary says '${built:-nothing}' to --version, not $GEN_TOOL $VERSION"
       return 0
       ;;
   esac
 
   local before after p
   before=$(dirty_paths)
+
+  rebuild_abis "$bin"
+
   # The bin directory first, so every package's `codegen` script runs this
   # binary under its plain name and not one already on PATH.
-  if ! ( cd "$DIR" && PATH="$(dirname "$bin"):$PATH" pnpm -r --if-present run codegen ) \
+  if ! command -v pnpm >/dev/null 2>&1; then
+    pending "the web clients: pnpm is not installed where the bump ran"
+  elif ! ( cd "$DIR" && PATH="$(dirname "$bin"):$PATH" pnpm -r --if-present run codegen ) \
       > "$TMPDIR_RUN/codegen.log" 2>&1; then
     note "codegen failed:"
     sed 's/^/      /' "$TMPDIR_RUN/codegen.log" >&2
-    CODEGEN_PENDING="pnpm -r --if-present run codegen failed with $VERSION's generator; see the bump's log"
-    return 0
+    pending "the web clients: pnpm -r --if-present run codegen failed with $VERSION's generator; see the bump's log"
   fi
+
+  if [ -f "$DIR/scripts/mobile-codegen.sh" ]; then
+    if ! ( cd "$DIR" && PATH="$(dirname "$bin"):$PATH" bash scripts/mobile-codegen.sh ) \
+        > "$TMPDIR_RUN/mobile-codegen.log" 2>&1; then
+      note "scripts/mobile-codegen.sh failed:"
+      sed 's/^/      /' "$TMPDIR_RUN/mobile-codegen.log" >&2
+      pending "the mobile clients: scripts/mobile-codegen.sh failed with $VERSION's generator; see the bump's log"
+    fi
+  fi
+
   after=$(dirty_paths)
   local n=0
   for p in $(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after")); do
+    # A build resolves a lockfile --no-lock left alone; that is not this step's.
+    case "$p" in Cargo.lock | */Cargo.lock) continue ;; esac
     record_change "$p"
     n=$((n + 1))
   done
-  note "regenerated the committed clients with $GEN_TOOL $VERSION: $n file(s) changed"
+  note "regenerated the committed ABIs and clients with $GEN_TOOL $VERSION: $n file(s) changed"
 }
 
 # Every occurrence of a core version pin left in the tree naming some other
@@ -841,10 +942,13 @@ REPORT
 
   local body=""
   [ -n "$CODEGEN_PENDING" ] && body="$body
-NOT REGENERATED — $APP_BUILD_INSTALLER now pins $GEN_TOOL $VERSION, but the
-committed clients were not rewritten with it ($CODEGEN_PENDING). The repository's
-\"generated clients are current\" check fails until they are:
-  $APP_BUILD_INSTALLER && pnpm -r --if-present run codegen
+NOT REGENERATED — $APP_BUILD_INSTALLER now pins $GEN_TOOL $VERSION, but what is
+generated from it (the committed ABIs, then the web and mobile clients made from
+them) was not all rewritten with it:
+$(printf '%s\n' "$CODEGEN_PENDING" | sed 's/^/  - /')
+The repository's \"ABI current\" and \"generated clients are current\" checks
+fail until it is. Run, in order:
+  $(regenerate_commands)
 "
   [ -n "$CHECKSUM_PINNED" ] && body="$body
 NOT REWRITTEN — pins asset checksums next to the release, and the release's
