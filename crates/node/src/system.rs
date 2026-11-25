@@ -1517,6 +1517,15 @@ pub(crate) const REDEMPTION_USED: Rejection =
 /// neither manages the team nor holds `MANAGE_MEMBERS` there.
 pub(crate) const MAY_NOT_MANAGE_TEAM: Rejection =
     Rejection::new(RejectionKind::Rejected, "not allowed to manage this team");
+/// A refusal: a passkey of that credential id is registered already.
+pub(crate) const CREDENTIAL_REGISTERED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "credential already registered");
+/// A refusal: a refresh token of that id was issued already.
+pub(crate) const REFRESH_ISSUED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "refresh token already issued");
+/// A refusal: the command needs the cluster's governance, which genesis writes.
+pub(crate) const NO_GOVERNANCE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "the cluster has no governance yet");
 
 /// How many deployer grants a cluster keeps.
 pub const MAX_DEPLOYERS: usize = 10_000;

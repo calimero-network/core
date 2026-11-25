@@ -2670,6 +2670,236 @@ fn an_org_commands_refusals_keep_their_wording_and_code() {
     }
 }
 
+/// Each logged command (its JSON, as the log keeps it) is refused with this
+/// message as `400 REJECTED`, by its own rules on `m`'s state.
+fn assert_rejected(m: &mut SystemMachine, cases: Vec<(Value, &str)>) {
+    for (logged, message) in cases {
+        let cmd = serde_json::from_value::<SystemCmd>(logged.clone()).unwrap();
+        let refused = m.run_unproven(cmd).unwrap_err();
+        let api = crate::node::rejected(&refused);
+        assert_eq!(
+            (api.message.as_str(), api.status, api.code.as_str()),
+            (message, 400, "REJECTED"),
+            "{logged}"
+        );
+    }
+}
+
+/// The sign-up area's refusals keep their wording and code.
+#[test]
+fn sign_up_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let invite =
+        |by: &str| json!({ "expiresAt": 20, "usesLeft": 1, "createdBy": by, "createdAt": 10 });
+    let key = "11".repeat(32);
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "createSignUpInvite", "invite_key": key,
+                        "invite": invite("alice"), "actor": OPERATOR }),
+                "a sign-up invite names who issued it",
+            ),
+            (
+                json!({ "op": "createSignUpInvite", "invite_key": "zz",
+                        "invite": invite(OPERATOR), "actor": OPERATOR }),
+                "an invite key is 32 bytes, hex",
+            ),
+            (
+                json!({ "op": "revokeSignUpInvite", "invite_key": key, "actor": OPERATOR }),
+                "no such sign-up invite",
+            ),
+        ],
+    );
+}
+
+/// The fleet's refusals keep their wording and code.
+#[test]
+fn fleet_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (json!({ "op": "removeNode", "id": 99 }), "no such node"),
+            (
+                json!({ "op": "setOrgQuotas", "payer": "", "quotas": {} }),
+                "a payer is named, in at most 128 bytes",
+            ),
+            (
+                json!({ "op": "requireSessionProofs" }),
+                "session proofs are required already",
+            ),
+        ],
+    );
+}
+
+/// The approval area's refusals keep their wording and code.
+#[test]
+fn approval_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "setOperatorRelease", "version": "2.0.0", "approved": true }),
+                "this cluster's releases are approved by each app's owner",
+            ),
+            (
+                json!({ "op": "setReleaseDeadline", "version": "soon", "after": null }),
+                "a deadline names a semver release of at most 64 bytes",
+            ),
+            (
+                json!({ "op": "setEgress", "org": "org", "app": null, "egress": true,
+                        "actor": "bob" }),
+                "only the organization's owner or an admin turns its egress off or on",
+            ),
+        ],
+    );
+}
+
+/// The package area's refusals keep their wording and code.
+#[test]
+fn package_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let proof = json!({ "publicKey": "k", "signature": "s" });
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "putBundle", "hash": "h", "size": 1, "actor": "nobody", "at": 0 }),
+                "unknown account",
+            ),
+            (
+                json!({ "op": "uninstallPackage", "package": "nope", "version": null,
+                        "actor": "alice" }),
+                "no such package",
+            ),
+            (
+                json!({ "op": "bindPublisher", "signer_id": "s".repeat(129), "org": "org",
+                        "cluster": "", "proof": proof, "actor": "alice" }),
+                "a signer id or cluster name is at most 128 bytes",
+            ),
+            (
+                json!({ "op": "bindPublisher", "signer_id": "s", "org": "org",
+                        "cluster": "elsewhere", "proof": proof, "actor": "alice" }),
+                "the binding names another cluster",
+            ),
+        ],
+    );
+}
+
+/// The deployment area's refusals keep their wording and code.
+#[test]
+fn deployment_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "grantDeployer", "deployer": { "account": "nobody" },
+                        "until": null, "at": 1, "actor": OPERATOR }),
+                "no such account or organization",
+            ),
+            (
+                json!({ "op": "revokeDeployer", "deployer": { "account": "alice" },
+                        "at": 1, "actor": OPERATOR }),
+                "no such deployer grant",
+            ),
+            (
+                json!({ "op": "setClusterOwner", "owner": { "account": "alice" } }),
+                "this cluster's operator grants its deployers; it has no owner to name",
+            ),
+            (
+                json!({ "op": "withdrawApp", "deployment": "nope", "app": "a",
+                        "actor": "alice" }),
+                "no such deployment",
+            ),
+        ],
+    );
+}
+
+/// The account area's refusals keep their wording and code.
+#[test]
+fn account_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let passkey = m.state.accounts["alice"].passkeys[0].id.clone();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "removePasskey", "account": "alice", "credential_id": passkey,
+                        "now": 1 }),
+                "cannot remove the last passkey",
+            ),
+            (
+                json!({ "op": "setPasskeyLabel", "account": "alice", "credential": passkey,
+                        "label": "l".repeat(65) }),
+                "a passkey label is at most 64 characters",
+            ),
+            (
+                json!({ "op": "revokeApiKey", "key_id": "nope", "actor": "alice" }),
+                "no such key",
+            ),
+            (
+                json!({ "op": "setSignCount", "credential_id": "nope", "count": 1,
+                        "assertion": null }),
+                "unknown credential",
+            ),
+        ],
+    );
+}
+
+/// The recovery area's refusals keep their wording and code.
+#[test]
+fn recovery_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "setAccountRecoveryKey", "account": "nobody",
+                        "recovery_key": "k", "consent": null }),
+                "unknown account",
+            ),
+            (
+                json!({ "op": "removeAccountRecoveryKey", "account": "alice", "consent": null }),
+                "no recovery code is set",
+            ),
+            (
+                json!({ "op": "startRecovery", "org": "org", "account": "alice",
+                        "nonce": "n", "signature": "s", "at": 1 }),
+                "that account owns the organization already",
+            ),
+        ],
+    );
+}
+
+/// The update area's refusals keep their wording and code.
+#[test]
+fn update_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "setUpgradePolicy", "org": "nope", "app": null,
+                        "policy": null, "actor": "alice" }),
+                "no such organization",
+            ),
+            (
+                json!({ "op": "setUpgradePolicy", "org": "org", "app": "nope",
+                        "policy": null, "actor": "alice" }),
+                "no such app in that organization",
+            ),
+            (
+                json!({ "op": "undoUpgrade", "app_id": "nope", "apps": {},
+                        "actor": "alice", "at": 1 }),
+                "no such app",
+            ),
+        ],
+    );
+}
+
 /// Every account has its personal organization from sign-up
 /// (`CreateAccount { personal_org }`): it alone owns it, it is outside the
 /// organization quota, and a second one is refused. An ordinary
