@@ -1698,7 +1698,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/orgs/{org}/settings", post(org_settings))
 }
 
-/// The typed answers write the bytes the `json!` they replaced wrote (review finding E7): each
+/// The typed answers write the bytes the `json!` they replaced wrote: each
 /// test keeps the replaced expression and compares the serialized text, key order included.
 #[cfg(test)]
 mod answer_tests {

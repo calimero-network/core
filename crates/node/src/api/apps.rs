@@ -2426,7 +2426,7 @@ pub(super) struct AppAbi {
 #[serde(transparent)]
 pub(super) struct AppOpenApi(serde_json::Map<String, Value>);
 
-/// One day of an app's usage book: every figure a decimal string (D20); `wallMs` is for
+/// One day of an app's usage book: every figure a decimal string; `wallMs` is for
 /// information only.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

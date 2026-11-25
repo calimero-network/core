@@ -1,4 +1,4 @@
-//! The system log's answers write the bytes the `json!` they replaced wrote (review finding E7):
+//! The system log's answers write the bytes the `json!` they replaced wrote:
 //! each test keeps the replaced expression and compares the serialized text, key order
 //! included.
 

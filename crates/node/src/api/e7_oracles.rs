@@ -1,7 +1,7 @@
-//! The typed answers of the last E7 conversion write the bytes the `json!` they replaced wrote
-//! (review finding E7). Each test keeps the replaced expression, fed representative values,
-//! reads its text into the answer's type and writes it back: the same text, key order and
-//! `null` against absent included, or the type would answer something else.
+//! The typed answers write the bytes the `json!` they replaced wrote. Each test keeps the
+//! replaced expression, fed representative values, reads its text into the answer's type and
+//! writes it back: the same text, key order and `null` against absent included, or the type
+//! would answer something else.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

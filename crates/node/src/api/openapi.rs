@@ -598,7 +598,7 @@ other integer is `format: int64` (read it into a 64-bit integer), and stays belo
 /// The shared shapes.
 fn components() -> Vec<Component> {
     vec![
-        // ---------------------------------------------------------------- request bodies (E7)
+        // ---------------------------------------------------------------- request bodies
         component(
             "AllAppsBody",
             "The request body of `POST /orgs/{org}/all-apps`.",
@@ -746,7 +746,7 @@ fn components() -> Vec<Component> {
             "{ policy?: { autoApply?: \"never\" | \"noDestinations\", holdHours?: uint, secondApprover?: bool } | null, confirm?: #Confirm }",
         )
         .closed_body(),
-        // ---------------------------------------------------------------- typed answers (E7)
+        // ---------------------------------------------------------------- typed answers
         component(
             "ReplicaAttestation",
             "One replica's receipt-key attestation, or the error fetching it.",
@@ -4361,7 +4361,7 @@ mod tests {
     /// An operation's JSON answer is `{}`, a plain value or a named component (`#Name`), so
     /// every SDK names its type after the node's (`MemberSecurityList`, never
     /// `OrgMembers200Response`); [`every_component_answered_whole_is_a_types`] binds that
-    /// component to the Rust type the handler serializes (review finding E7). A new route that
+    /// component to the Rust type the handler serializes. A new route that
     /// writes its answer inline turns this red.
     #[test]
     fn answers_are_named_components() {

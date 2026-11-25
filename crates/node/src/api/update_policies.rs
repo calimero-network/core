@@ -367,7 +367,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/orgs/{org}/updates", get(org_updates))
 }
 
-/// `OrgUpdates` writes the bytes the `json!` it replaced wrote (review finding E7).
+/// `OrgUpdates` writes the bytes the `json!` it replaced wrote.
 #[cfg(test)]
 mod answer_tests {
     use serde_json::json;
