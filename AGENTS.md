@@ -17,6 +17,7 @@ A confidential cloud for collaborative apps. Apps are `calimero:app` WASM compon
 
 ## Testing
 
+- **Earns its place**: a new test catches a break no existing test catches; make that break and watch it go red first ([Before adding a test](docs/src/content/docs/contribute/testing.mdx#before-adding-a-test)).
 - **Reproduce first**: write the failing test at the layer a user hits the bug and watch it go red before changing code.
 - **Blind spot**: scenarios and the process suite run one build on fresh state, so they never test backward compatibility; an on-disk or wire format change needs its own migration test.
 - **Old shapes**: a stored or replicated shape (row, log entry, snapshot, sealed file record) changes by raising its format version (`STORE_FORMAT`, `SNAPSHOT_FORMAT`, `ENTRY_FORMAT`) and keeping a reader for the old one, with a test that reads data written in the old shape ([Compatibility](docs/src/content/docs/operate/compatibility.mdx), "Changing a stored format").

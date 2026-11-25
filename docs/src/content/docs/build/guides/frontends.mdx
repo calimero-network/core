@@ -125,7 +125,7 @@ is 52 base32 characters of the package's hashed name
 | `/{version}/{path}` | that release's file; any other path under the version is the entry, for client-side routes |
 | `/app/{app}/{path}` | redirects to `/{version}/{path}` of the release that instance runs, so a link you give a customer keeps opening the frontend that matches their instance |
 | `/d/{deployment}/{path}` | redirects to `/{version}/{path}?deployment={id}`, the release that deployment offers |
-| `/.well-known/calimero.json` | `{ package, versions, deployments, api }`: the releases, the deployments offering the package and the cluster's API URLs |
+| `/.well-known/calimero.json` | `{ package, cluster, versions, deployments, api }`: the cluster serving the page (its name, for display and routing, never trust), the releases, the deployments offering the package and the cluster's API URLs |
 
 Every redirect keeps the query, so `/?invite=…` reaches the page with its token.
 Only `GET` and `HEAD` are served; an unknown label is a `404`, never a node
@@ -157,15 +157,20 @@ register ([below](#serve-it-on-your-own-domain)).
 
 ```ts
 import {
-  CalimeroClient, browserPasskey, frontendManifest, pageDeployment, PasskeyUnknownHere,
+  CLOUD_ENVIRONMENTS, CalimeroClient, browserPasskey, cloudEnvironment, PasskeyUnknownHere,
 } from '@calimero-network/mero-js';
 
-const { package: pkg, api } = await frontendManifest();     // this page's /.well-known/calimero.json
-const client = new CalimeroClient({
-  baseUrl: api[0],
-  nodes: api.slice(1),
-  policy: { release: { minReleaseVersion: '2.3.109' } },  // { allowMock: true } on merod local
+// Connects to the cluster that served this page (its /.well-known/calimero.json),
+// so one build works on staging, shared and dedicated clusters alike. Staging's
+// debug images are trusted from the page's hostname, never from the manifest.
+const cloud = CLOUD_ENVIRONMENTS[cloudEnvironment() ?? 'production'];
+const client = await CalimeroClient.connectHere({
+  // { allowMock: true } on merod local
+  policy: { release: { minReleaseVersion: '2.3.109', ...cloud.trust } },
+  // Only where no cluster serves the page (Vercel, localhost): fixed at build time.
+  fallback: { cluster: 'eu-shared-1' },
 });
+const pkg = 'com.example.notes';
 
 const saved = sessionStorage.getItem('calimero');
 if (saved) client.useSession(JSON.parse(saved));
@@ -178,17 +183,17 @@ else {
   }
 }
 
-// Opened through /d/{deployment}/: create the person's instance from that deployment.
-const deployment = pageDeployment();
+// Opened through /d/{deployment}/ or a deployment's host: create the person's instance from it.
+const deployment = client.deployment;
 const { appId } = deployment
   ? await client.apps.create({ name: 'My notes', deployment, package: pkg })
   : { appId: appFromPath() };
 await client.apps.call({ app: appId, method: 'add', args: { text: 'hello' } });
 ```
 
-- The well-known file is fetched in the clear and only says where the API is;
-  trust comes from the attestation the client checks before it sends
-  anything.
+- The well-known file is fetched in the clear and only says where the API is
+  and which cluster it is (`client.cluster`); trust comes from the attestation
+  the client checks before it sends anything, under the page's own `policy`.
 - In a browser, `signIn` and `signUp` send the page's origin when it is not
   one of the client's nodes, and the node answers with the relying-party id
   to use. The session is bound to the package of that origin; `me()` answers

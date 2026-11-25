@@ -6,43 +6,71 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="ConsentPageCreateBodyType18SubjectNewOrg")
+from ..types import UNSET, Unset
+from typing import Union
+
+T = TypeVar("T", bound="AppSetEgressResponse200")
 
 
 @_attrs_define
-class ConsentPageCreateBodyType18SubjectNewOrg:
+class AppSetEgressResponse200:
     """
     Attributes:
-        name (str):
+        org (str):
+        egress (bool):
+        org_egress_off (bool):
+        app (Union[Unset, str]):
     """
 
-    name: str
+    org: str
+    egress: bool
+    org_egress_off: bool
+    app: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        name = self.name
+        org = self.org
+
+        egress = self.egress
+
+        org_egress_off = self.org_egress_off
+
+        app = self.app
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "name": name,
+                "org": org,
+                "egress": egress,
+                "orgEgressOff": org_egress_off,
             }
         )
+        if app is not UNSET:
+            field_dict["app"] = app
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        name = d.pop("name")
+        org = d.pop("org")
 
-        consent_page_create_body_type_18_subject_new_org = cls(
-            name=name,
+        egress = d.pop("egress")
+
+        org_egress_off = d.pop("orgEgressOff")
+
+        app = d.pop("app", UNSET)
+
+        app_set_egress_response_200 = cls(
+            org=org,
+            egress=egress,
+            org_egress_off=org_egress_off,
+            app=app,
         )
 
-        consent_page_create_body_type_18_subject_new_org.additional_properties = d
-        return consent_page_create_body_type_18_subject_new_org
+        app_set_egress_response_200.additional_properties = d
+        return app_set_egress_response_200
 
     @property
     def additional_keys(self) -> list[str]:

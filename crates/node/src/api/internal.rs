@@ -207,18 +207,7 @@ async fn internal_raft(
     // handled as this node's. A genuine member's vote or append there would
     // move this node's term or log for a sender that meant someone else.
     match body.target {
-        Some(target) if target != node.config.node_id => {
-            let _seen =
-                crate::metrics::raft_misaddressed(crate::metrics::RaftAddressee::NotAddressee);
-            return Err(ApiError::new(
-                421,
-                "NOT_ADDRESSEE",
-                &format!(
-                    "this Raft message is for node {target}; this is node {}",
-                    node.config.node_id
-                ),
-            ));
-        }
+        Some(target) if target != node.config.node_id => return Err(not_addressee(&node, target)),
         Some(_) => {}
         // No addressee: a peer on a release before it. Accepted this release,
         // counted, and warned about at most once per `NO_TARGET_WARN_EVERY`;
@@ -234,22 +223,49 @@ async fn internal_raft(
             }
         }
     }
+    admit_raft(&node, &caller, body.group, &body.rpc)?;
+    let r = node.engine.handle_rpc(body.group, body.rpc).await;
+    Ok(Json(serde_json::to_value(r).unwrap_or_default()))
+}
+
+/// A message for another node (`internal_raft`, `internal_raft_batch`).
+fn not_addressee(node: &Node, target: calimero_log::NodeId) -> ApiError {
+    let _seen = crate::metrics::raft_misaddressed(crate::metrics::RaftAddressee::NotAddressee);
+    ApiError::new(
+        421,
+        "NOT_ADDRESSEE",
+        &format!(
+            "this Raft message is for node {target}; this is node {}",
+            node.config.node_id
+        ),
+    )
+}
+
+/// Whether `caller` may hand this node `rpc` for `group`: the checks every
+/// Raft message passes, alone (`internal_raft`) or in a batch
+/// (`internal_raft_batch`).
+fn admit_raft(
+    node: &Node,
+    caller: &PeerCaller,
+    group: u64,
+    rpc: &calimero_log::RpcRequest,
+) -> Result<(), ApiError> {
     // openraft takes the sender an RPC names on trust, and a follower takes
     // an append from any node with a higher term: the sender must be the
     // caller, and a member of the group (F4).
-    if body.rpc.sender() != Some(caller.node) {
+    if rpc.sender() != Some(caller.node) {
         return Err(ApiError::forbidden(
             "a Raft message names another node than the one that sent it",
         ));
     }
-    if body.group != crate::node::SYSTEM_GROUP {
+    if group != crate::node::SYSTEM_GROUP {
         // Every heartbeat of every app group comes through here: an index
         // probe and a cached decision, no scan of the apps and no clone.
         let (approved, replica) = node
             .sys_machine(|m| {
-                let app = m.app_of_group(body.group)?;
+                let app = m.app_of_group(group)?;
                 Some((
-                    m.group_may_hold(body.group, caller.release.as_deref())?,
+                    m.group_may_hold(group, caller.release.as_deref())?,
                     app.replicas.contains(&caller.node),
                 ))
             })
@@ -259,7 +275,7 @@ async fn internal_raft(
         }
         let member = replica
             || node
-                .group_members(body.group)
+                .group_members(group)
                 .is_some_and(|m| m.contains(&caller.node));
         if !member {
             return Err(ApiError::forbidden(
@@ -269,11 +285,81 @@ async fn internal_raft(
     }
     // A test holding this node's system replica back while its app groups go on.
     #[cfg(feature = "testing")]
-    if body.group == crate::node::SYSTEM_GROUP && node.system_log_held() {
+    if group == crate::node::SYSTEM_GROUP && node.system_log_held() {
         return Err(ApiError::unavailable("the system log is held by a test"));
     }
-    let r = node.engine.handle_rpc(body.group, body.rpc).await;
-    Ok(Json(serde_json::to_value(r).unwrap_or_default()))
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct RaftBatchBody {
+    /// The node the sender meant, as in [`RaftBody`]; always named.
+    target: calimero_log::NodeId,
+    items: Vec<RaftItem>,
+}
+
+#[derive(Deserialize)]
+struct RaftItem {
+    group: u64,
+    rpc: calimero_log::RpcRequest,
+}
+
+/// Heartbeats of several groups from one peer (`PeerTransport::send_batch`,
+/// B6), answered in order. Each item passes the checks a message alone does
+/// ([`admit_raft`]) and only a heartbeat (an append with no entries) travels
+/// in one; an item that fails is answered with its error, and the others
+/// still go to their groups.
+async fn internal_raft_batch(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<RaftBatchBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    if body.target != node.config.node_id {
+        return Err(not_addressee(&node, body.target));
+    }
+    if body.items.len() > calimero_log::MAX_HEARTBEATS_PER_BATCH {
+        return Err(ApiError::new(
+            413,
+            "TOO_MANY_HEARTBEATS",
+            &format!(
+                "{} heartbeats in one batch; at most {}",
+                body.items.len(),
+                calimero_log::MAX_HEARTBEATS_PER_BATCH
+            ),
+        ));
+    }
+    let mut answers: Vec<Option<calimero_log::RpcResponse>> = Vec::new();
+    let mut admitted = Vec::new();
+    for item in body.items {
+        let heartbeat =
+            matches!(&item.rpc, calimero_log::RpcRequest::Append(r) if r.entries.is_empty());
+        let refused = if heartbeat {
+            admit_raft(&node, &caller, item.group, &item.rpc).err()
+        } else {
+            Some(ApiError::bad_request(
+                "NOT_A_HEARTBEAT",
+                "only heartbeats travel in a batch",
+            ))
+        };
+        match refused {
+            Some(e) => answers.push(Some(calimero_log::RpcResponse::Error(e.to_string()))),
+            None => {
+                answers.push(None);
+                admitted.push((item.group, item.rpc));
+            }
+        }
+    }
+    let mut handled = node.engine.handle_rpc_batch(admitted).await.into_iter();
+    let answers: Vec<_> = answers
+        .into_iter()
+        .map(|a| {
+            a.or_else(|| handled.next())
+                .unwrap_or_else(|| calimero_log::RpcResponse::Error("no answer".to_owned()))
+        })
+        .collect();
+    Ok(Json(serde_json::to_value(answers).unwrap_or_default()))
 }
 
 async fn internal_system(
@@ -920,7 +1006,7 @@ async fn internal_events(
     let caller = peer(&node, &headers, key).await?;
     caller_may_hold_app(&node, &caller, &q.app).await?;
     let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
-    let stream = local_events(&node, &q.app, q.from, subscriber)
+    let stream = local_events(&node, &q.app, q.from, subscriber, None)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -932,6 +1018,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/internal/cluster-key", post(internal_cluster_key))
         .route("/internal/raft", post(internal_raft))
+        .route("/internal/raft-batch", post(internal_raft_batch))
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/app/index", post(internal_app_index))

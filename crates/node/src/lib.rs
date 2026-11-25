@@ -30,6 +30,7 @@ pub mod job_node;
 pub mod job_wire;
 pub mod kms;
 pub mod local;
+pub mod log_safe;
 pub mod membership;
 pub mod metrics;
 pub mod node;
@@ -346,6 +347,29 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             let Some(node) = weak.upgrade() else { return };
             if let Err(e) = tokio::task::spawn_blocking(move || node.sweep_segments()).await {
                 warn!(error = %e, "segment sweep failed");
+            }
+        }
+    }));
+
+    // Compiled components no app uses any more.
+    let (weak, stop) = (Arc::downgrade(&node), shutdown.clone());
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(crate::node::COMPONENT_CACHE_SWEEP_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || node.sweep_component_cache()).await {
+                Ok(swept) if swept.files > 0 => {
+                    info!(
+                        files = swept.files,
+                        bytes = swept.bytes,
+                        "compiled components swept"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "component cache sweep failed"),
             }
         }
     }));

@@ -62,8 +62,8 @@ impl<T: ToKey, S: Store> Set<T, S> {
         if self.store.get(&key).is_some() {
             return Ok(false);
         }
-        self.store.put(&key, PRESENT);
-        self.store.add(&self.count_key()?, 1);
+        self.store.put(&key, PRESENT)?;
+        self.store.add(&self.count_key()?, 1)?;
         Ok(true)
     }
 
@@ -73,8 +73,8 @@ impl<T: ToKey, S: Store> Set<T, S> {
         if self.store.get(&key).is_none() {
             return Ok(false);
         }
-        self.store.delete(&key);
-        self.store.add(&self.count_key()?, -1);
+        self.store.delete(&key)?;
+        self.store.add(&self.count_key()?, -1)?;
         Ok(true)
     }
 
@@ -97,9 +97,9 @@ impl<T: ToKey, S: Store> Set<T, S> {
     /// whether the set is empty (see [`UnorderedMap::clear_some`](super::UnorderedMap::clear_some)).
     pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
         let base = self.base()?;
-        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max);
+        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max)?;
         if removed > 0 {
-            self.store.add(&self.count_key()?, -(removed as i64));
+            self.store.add(&self.count_key()?, -(removed as i64))?;
         }
         Ok(Progress { removed, done })
     }
@@ -119,18 +119,18 @@ impl<T: ToKey, S: Store> Set<T, S> {
                 Ok(key) => key,
                 Err(e) => {
                     if new > 0 {
-                        self.store.add(&self.count_key()?, new);
+                        self.store.add(&self.count_key()?, new)?;
                     }
                     return Err(e);
                 }
             };
             if self.store.get(&key).is_none() {
-                self.store.put(&key, PRESENT);
+                self.store.put(&key, PRESENT)?;
                 new += 1;
             }
         }
         if new > 0 {
-            self.store.add(&self.count_key()?, new);
+            self.store.add(&self.count_key()?, new)?;
         }
         Ok(new as u64)
     }
@@ -139,8 +139,8 @@ impl<T: ToKey, S: Store> Set<T, S> {
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let base = self.base()?;
         let count = self.count_key()?;
-        let removed = clear_prefix(&mut self.store, &base);
-        self.store.delete(&count);
+        let removed = clear_prefix(&mut self.store, &base)?;
+        self.store.delete(&count)?;
         Ok(removed)
     }
 }
@@ -253,7 +253,7 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
             for (stored, bytes) in batch {
                 match Self::decode(&set_base, (stored.clone(), bytes)) {
                     Ok(v) if !keep(&v) => {
-                        self.store.delete(&stored);
+                        self.store.delete(&stored)?;
                         removed += 1;
                     }
                     Ok(_) => {}
@@ -265,7 +265,7 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
             }
         }
         if removed > 0 {
-            self.store.add(&self.count_key()?, -removed);
+            self.store.add(&self.count_key()?, -removed)?;
         }
         match failed {
             Some(e) => Err(e),

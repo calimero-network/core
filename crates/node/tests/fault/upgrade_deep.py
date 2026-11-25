@@ -61,6 +61,11 @@ NOT_COVERED = [
      "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "
      "(the rp-id each registered origin gets and the refusal of any other), and the finish on a frontend the node "
      "serves is `Bound`'s (the packages' own frontends)"),
+    ("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
+     "`AppRecord::egress_off`, `SetEgress`)",
+     "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
+     "cluster is recreated rather than rolled, and no release before it has the switch to seed. "
+     "`tests/it/egress.rs` covers the switch, its refusals and the consent page on one build"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -82,6 +87,19 @@ NOT_COVERED = [
      "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
      "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
      "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build"),
+    ("Apps", "An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`)",
+     "it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster "
+     "version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. "
+     "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
+     "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
+     "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
+    ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per run (`calimero_app_host`'s fuel table)",
+     "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
+     "the log replays alike on either release, and below cluster version 1.0.0-rc.36 (`Feature::HostFuel`) "
+     "the new release runs calls without the charges, as the old one did; a search cap answers a view, which "
+     "is never logged. The deep cases' calls and searches run far within the default fuel on both releases. "
+     "`tests/engine.rs` (`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
+     "`a_host_without_host_fuel_charges_as_before`) covers it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
@@ -95,7 +113,7 @@ NOT_COVERED = [
     ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
                   "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
                   "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
-                  "`deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link"),
+                  "`deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link"),
      "a consent request is approved in a browser on the node's consent page; the cluster test "
      "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
      "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "

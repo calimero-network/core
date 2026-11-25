@@ -27,8 +27,8 @@ export { newVisitorSeed, publicLinkKey, Visitor } from './visitor.js';
 export { jobKeyBinding, receiptMessage, reportMessage, verifyAppCluster, verifyJobReports, verifyPipelineReceipt, verifyReceiptKey } from './receipts.js';
 export type { AttestedCluster, CachedRun, FileRef, JobAttestationDoc, JobEvidence, JobOutput, PipelineReceipt, ReportFields, StepReceipt, StepRunProof, ReceiptAnswer, ReceiptKeyDoc } from './receipts.js';
 export type { ExportErrorCode, ExportedFile, FileSink } from './files.js';
-export { DEFAULT_DIRECTORY, DirectoryError } from '../runtime/directory.js';
-export type { DirectoryFailure } from '../runtime/directory.js';
+export { CLOUD_ENVIRONMENTS, DEFAULT_DIRECTORY, DirectoryError, cloudEnvironment } from '../runtime/directory.js';
+export type { CloudEnvironment, CloudEnvironmentInfo, DirectoryFailure } from '../runtime/directory.js';
 export {
   AppError,
   ArgsTooLarge,
@@ -77,6 +77,8 @@ export type {
   CallResult,
   CalimeroClientOptions,
   CalimeroConnectOptions,
+  ConnectHereOptions,
+  ConnectFallback,
   NodeEvent,
   CalimeroSession,
   PackageInfo,

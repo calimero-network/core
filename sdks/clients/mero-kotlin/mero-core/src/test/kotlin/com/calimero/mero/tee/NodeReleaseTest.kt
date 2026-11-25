@@ -3,7 +3,8 @@ package com.calimero.mero.tee
 import com.calimero.mero.crypto.Hex
 import com.calimero.mero.crypto.sha256
 import com.calimero.mero.tee.TeeFixtures.AT
-import com.calimero.mero.tee.TeeFixtures.COLLATERAL
+import com.calimero.mero.tee.TeeFixtures.CURRENT
+import com.calimero.mero.tee.TeeFixtures.GENUINE
 import com.calimero.mero.tee.TeeFixtures.NONCE
 import com.calimero.mero.tee.TeeFixtures.QUOTE_B64
 import com.calimero.mero.tee.TeeFixtures.SUFFIX
@@ -344,12 +345,12 @@ class NodeReleaseTest {
 
     // ---- the release a node names -----------------------------------------------------------
 
-    private val args = TransportQuote(QUOTE_B64, NONCE, SUFFIX, COLLATERAL)
+    private val args = TransportQuote(QUOTE_B64, NONCE, SUFFIX, CURRENT)
 
     private fun verifier(
         minReleaseVersion: String = "2.3.86",
         release: suspend () -> SignedNodeRelease,
-    ) = createSignedReleaseVerifier(SignedReleaseVerifierOptions(release, minReleaseVersion, "locked-read-only", now = { AT }))
+    ) = createSignedReleaseVerifier(SignedReleaseVerifierOptions(release, minReleaseVersion, "locked-read-only", dcapVerify = GENUINE, now = { AT }))
 
     @Test
     fun `verifies the quote against the signed release, and refuses an image not of it`() {

@@ -425,6 +425,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             owner_approves,
             class,
             auto,
+            members_stay,
             restore_point,
         } => {
             if !s.bundles.contains_key(&bundle) {
@@ -478,6 +479,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     class.as_ref(),
                     at,
                     restore_point.as_ref(),
+                    s.members_stay(members_stay),
                 )?;
             }
             let allowed = if by_operator {

@@ -22,9 +22,11 @@
 //!   `/{version}/{path}?deployment={id}`, the release that deployment offers
 //!   for this package (the newest, if it offers several), so the page knows
 //!   which deployment to create instances from.
-//! - `GET /.well-known/calimero.json`: the package, its releases, the
-//!   deployments offering it (`id`, `name`, `app`, `version`) and the
-//!   cluster's API URLs, for the page to connect to.
+//! - `GET /.well-known/calimero.json`: the package, the node's cluster (its
+//!   `--cluster`), its releases, the deployments offering it (`id`, `name`,
+//!   `app`, `version`) and the cluster's API URLs, for the page to connect
+//!   to. Like the page, it is for finding the cluster, never for trust: the
+//!   client attests every node under its own policy.
 //! - Nothing else: only `GET` and `HEAD`, never the node's own routes.
 //!
 //! Every redirect keeps the request's query, after the `deployment` it adds
@@ -416,7 +418,7 @@ impl Node {
         self.frontends
             .get_or_load(key, || async {
                 let mpk = self.release_mpk(package, &v).await?;
-                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk))?;
+                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk)).await?;
                 let Some(entry) = bundle.manifest().frontend.as_ref().map(|f| f.entry.clone())
                 else {
                     return Ok(None);
@@ -573,6 +575,7 @@ async fn serve(node: &Node, site: &Site, req: Request) -> Response {
         deployments.sort_by_key(|d| own.is_none_or(|own| d["id"] != own));
         let body = serde_json::json!({
             "package": package,
+            "cluster": node.config.cluster,
             "deployment": own,
             "versions": versions,
             "deployments": deployments,
