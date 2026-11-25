@@ -39,7 +39,7 @@ Generated from core's `docs/public/openapi.json`.
 | `blob_revoke(app, id)` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate a blob's grants |
 | `blob_upload(app, sealed=…, body, content_type='application/octet-stream')` | `POST /apps/{app}/blobs` | Upload a blob. *Refusals:* `400 USE_FILES_API`, `429 QUOTA_EXCEEDED` |
 | `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
-| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
+| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `403 ACCOUNT_NOT_LINKED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
 | `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
 | `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNIT_MEMBER` |
@@ -276,7 +276,7 @@ Generated from core's `docs/public/openapi.json`.
 | `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `503 BUSY` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
 | `get(package)` | `GET /packages/{package}` | One package |
-| `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 ACCOUNT_NOT_LINKED`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `list()` | `GET /packages` | Installed packages |
 | `origins_add(package, origin, rp_id=…, served=…, confirm=None)` | `POST /package-origins/{package}` | Register a frontend origin. **passkey**. *Refusals:* `400 BAD_RP_ID`, `429 QUOTA_EXCEEDED` |
 | `origins_list(package)` | `GET /package-origins/{package}` | A package's frontend origins |
