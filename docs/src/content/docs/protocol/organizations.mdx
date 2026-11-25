@@ -792,3 +792,276 @@ operator admits the import with its signature (`SystemCmd::ImportHolder`). The
 organization, its people (who sign in with the passkeys they had), its apps and
 its backup key come back; it is refused where any of them is on the cluster
 already ([Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone)).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Every app is in an organization
+
+Code: `AppRecord::org`, required; hard cutover in 1.0.0-rc.20: a record or entry without one is not
+read, so clusters are recreated.
+
+**Ordinary organizations** (`Feature::OrdinaryOrgs`, rc.32; `SystemState::ordinary_orgs`, over
+`cluster_brings`; docs: protocol organizations "Where an instance goes"): from that logged version a
+sign-up makes no organization (`register/finish` sends no `CreateAccount { personal_org }` and apply
+drops one an entry carries), and `POST /apps` places an instance by its release's signed
+`instanceOrg` (`calimero_bundle::InstanceOrg`: `standalone` | `org` | `either`, absent = `either`;
+kept on `PackageVersion::instance_org`, recorded by `InstallPackage` only once the feature is active
+and filled in by a reinstall, else read from the `.mpk`, `api::apps::instance_org_of`):
+`api::apps::instance_org` answers the org named, the creator's only one (`SystemState::orgs_of`,
+`member` or above), or a new ordinary one it writes first (`CreateOrg`, named `newOrg.name`, else
+the instance's name made to fit, `standalone_org_name`); refusals `400 ORG_REQUIRED`, `409
+NO_ORGANIZATION`, `400 STANDALONE_INSTANCE`, `400 ORG_INSTANCE`.
+A unit's members join their instance's org; a deployment's instance follows its release's mode.
+The mode is judged by the API only (apply sees an ordinary `CreateOrg` and `CreateApp`).
+
+**Personal organizations** (`Org::personal`, made below that version): a sign-up made the account's
+in the same entry (`CreateAccount { personal_org: PersonalOrgSeed }`, `orgs::new_org`, named
+`PERSONAL_ORG_NAME`), and `POST /apps` with no `org` created the instance there
+(`api::apps::personal_org`).
+Below the version every rule applies as logged; from it, `SystemState::acts_personal` is false for
+all of them: `CreateOrg { personal }` is refused (`NO_PERSONAL_ORGS`, `409 PERSONAL_ORGS_ENDED`),
+every owned org counts against `maxOrgsPerAccount`, `TransferApp` hands an app only to a member
+(`NEW_OWNER_NOT_A_MEMBER`, `400 REJECTED`, checked by `app_transfer` before the passkey),
+`personal_org_of` answers none, `deployment_orgs` names it, the consent page's `scope: account` is
+the account's only org, and `/auth/apps` reads that org's approvals.
+`may_reach` still lets an instance in an org flagged `personal` reach the accounts it names without
+membership.
+There are no account approvals (`ReleaseScope` is `Org` or `Cluster`); `release_may_serve_account`
+reads the account's organizations.
+
+### Access grants
+
+Code: `Feature::AccessGrants`, rc.33; `types::Access`, a list of `types::Grant`, serialized as the
+record's `grants`; `SystemState::grants_reach`, `check_grants`, `manages_access`, `manages_grants`;
+docs: protocol organizations "App access".
+
+An instance's access is a list of grants and nothing else, `org`, `team { team }` (at most
+`MAX_TEAM_GRANTS`), `account { account, scope? }` (a named member or a guest, at most
+`MAX_ACCOUNT_GRANTS`; `scope` opaque JSON of at most `MAX_GRANT_SCOPE_BYTES` the app defines) and
+`anyone` (any signed-in account; no grant admits a caller without one), each judged on its own in
+`may_reach` (`grants_reach`); no grant is the owner alone, and an owner of an instance only teams
+admit reaches it while in one of them.
+Every `SetAccess` and a `CreateApp` with any grant need the feature (`SystemCmd::features`) and
+apply only a list `check_grants` accepts (no grant twice, `org` not beside a team, known teams and
+accounts, scopes within the limit).
+The sites that read access go through `Access` helpers: `teams`/`the_team` (team-scoped management,
+`may_set_access` and `may_upgrade` through `manages_access`, `owner_in_team`, read-only rows, team
+runs, the report's `team`), `org_wide` (`ScopeApps`, which swaps the `org` grant for the app team's,
+`onto_team`), `named_only` (`MoveApp`'s `accounts_in_app_team`), `teams_to_org` (`MoveApp`,
+`TransferApp`), `anyone` (listing, `member_apps`).
+`DeleteTeam` takes the instances whose every team grant goes (`team_apps`) and strips the team's
+grants from the rest (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.33; API
+`keepApps`, stated in the consent, `delete_team_args`) it keeps them too, without the team's grants
+(a list left empty: the owner alone), answered as `keptApps`; absent, they are deleted.
+The API takes `grants` on `POST /apps` (absent: `[org]`; a request still naming the old `access` is
+refused `400 ACCESS_REMOVED`, never read as no grants) and `POST /apps/{app}/access`, and answers
+them on `GET /apps/{app}` and a move.
+A hard cutover (#5194, rc.33, `hard-cutover:` in `.github/upgrade-from`): no earlier access shape is
+read, so clusters are recreated.
+
+### Guests
+
+Code: `Feature::Guests`, rc.33; `SystemState::guest_reaches`, `guests_on`, `guests_allowed`,
+`guest_holder`, `is_guest`, `manages_grants`; docs: protocol organizations "Guests".
+
+An account an instance names (an `account` grant) that is not a member of its organization reaches
+it (and its unit's members: `guest_holder` walks `unit_parent` up at most `MAX_UNIT_LINKS_UP`) from
+the logged version on, while the release it runs says `guests: allowed`
+(`calimero_bundle::GuestPolicy`, absent = forbidden; kept on `PackageVersion::guests`, recorded only
+under the feature and filled in by a reinstall; a release recorded without it, or a raw bundle,
+takes none) and its organization's `Org::allow_guests` is on (default; `SetOrgSettings { settings:
+OrgSettings }`, owner or admin, consent `org:<org> / __set_org_settings / settings`, `POST
+/orgs/{org}/settings`).
+Judged in `may_reach` before the membership check, so every gated route and `receives` follow it; a
+guest is no member, so org routes, `/files`, management and upgrades refuse them; `GET /apps/{app}`
+shows a guest only their own grant (`Access::only`).
+Grants change with `SetAccess` by whoever may change the access (`manages_grants`), or by an
+instance invite, on any instance (`SystemState::app_invites`, `types::AppInvite` under the token's
+Ed25519 key, with an optional `scope`): `CreateAppInvite` (consent `<app> / __create_app_invite /
+app_invite_args`, `scope` stated only when set; made whatever the guest switches say, which are
+judged at redemption; bounds `MAX_APP_INVITES_PER_APP`, `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`,
+`MAX_APP_INVITE_TTL_SECS`), `RevokeAppInvite` (`__revoke_app_invite`), `RedeemAppInvite` (the token
+key's `sign_invite_redeem`; adds an `account` grant with the invite's scope, `Access::naming`; a
+guest only while guests are allowed, a member always, answered `member`; free when named already;
+both invite commands need `Feature::AccessGrants` too); `remove_app` drops them.
+Routes `POST|GET /apps/{app}/invites`, `DELETE /apps/{app}/invites/{key}`; the redemption is `POST
+/invites/{token}/redeem` (`api::orgs::redeem_invite` tells the kinds apart), and the consent page's
+`acceptInvite` shows an instance invite as joining that app as a guest, or as the member they are
+(`consent_page::app_invite_model`).
+An organization flagged `personal` keeps its named accounts' reach whatever the switches say.
+
+### Public links and visitors
+
+Code: `Feature::PublicLinks`, rc.33; `api/public_links.rs`, `types::Grant::Link`,
+`types::LinkGrant`, `SystemState::public_link`, `public_link_admits`, `public_link_count`; docs:
+protocol organizations "Public links".
+
+A link is a grant of the instance (`Grant::Link`, in its `Access`, `Access::with_link`), which
+admits no account in `may_reach`, only its visitors; `public_link` finds it by key among the
+instances (a visitor's request and making one are the only callers).
+`SetAccess` keeps an instance's links as they are (`Access::keeping_links`) and refuses one it does
+not hold, and `check_grants` refuses any in a list, so a link is made only with its consent; `GET
+/apps/{app}` shows link grants only to whoever may change the access (`Access::without_links`).
+Whoever may change an instance's access makes a link with a passkey (`CreatePublicLink`, consent
+`<app> / __create_public_link / public_link_args`, `POST /apps/{app}/public-links { label?,
+expiresAt?, ratePerMinute? }` → `{ link, token }` once; the log keeps
+`proof::public_link_key(token)`), lists them (`GET`, no token) and revokes them (`RevokePublicLink`,
+`__revoke_public_link`); bounds `MAX_PUBLIC_LINKS_PER_APP`, `MAX_PUBLIC_LINKS`,
+`MAX_PUBLIC_LINK_LABEL_CHARS`, `MAX_PUBLIC_LINK_RATE`; no forced expiry; they go with their
+instance; the organization's `allowPublicLinks` (`SetOrgSettings`) off refuses new links and admits
+nobody.
+A visitor sends `Bearer vis1.<token>.<key>.<at>.<sig>`, its own Ed25519 key over
+`proof::visitor_message` within `VISITOR_PROOF_WINDOW_SECS` (`proof::verify_visitor`); nothing about
+it is logged.
+`api::credential` makes it `Caller::Visitor { link, key }`, `principal` refuses it on every route
+(`403 VISITOR_ONLY`), and only `gate` admits it (`public_links::visitor_gate`): a method (never `*`
+or a reserved one) of its link's instance, the link admitted on fresh state, the cluster version
+bringing the feature (the caller is in the app's log entry), and `VisitorLimits` (a token bucket per
+link and visitor key, the link's `ratePerMinute`, `MAX_TRACKED_VISITORS`, `429 TOO_MANY_VISITS`).
+`abi_check` refuses a method that is not `public` (`403`), and the app's leader judges the link
+again before the call (`NOT_REACHED`).
+The component sees `public` through the WIT `caller` and the visitor through `context.visitor`
+(0.5.6).
+The caller's grant scope reaches the component through `context.grant-scope` (0.5.6,
+`Directory::grant_scope`, `SystemState::grant_scope`: the person's `account` grant on the instance
+or on the instance whose unit made it).
+
+### An org app's owner, while a member
+
+Code: `SystemState::owner_acts`.
+
+An organization's app gives its owner the owner's powers (access, metadata, transfer, delete,
+upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above)
+of its organization; its admins keep transfer and delete (`manages_app`).
+Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and
+`CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier
+release logged, which replays judging ownership alone.
+
+### An app on a team, its owner while in the team
+
+Code: `SystemState::owner_acts`, `may_reach`.
+
+An app only teams admit is reached and managed by its owner only while they are in one of them
+(`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private
+channel) loses the channels they created there; admins transfer them.
+The six owner commands above carry `owner_in_team`, which the API always sets; absent, an entry
+replays judging the owner without the team (`OwnerRule`).
+
+### Teams
+
+Code: `types::Org`.
+
+Nested (`parent`, moved with `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent,
+the organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`) or restricted
+(direct rows only).
+A direct row has a role (`TeamRole`: lead, member, read-only) and capabilities (`caps`,
+`MemberCapabilities` bits; the organization keeps a default).
+An app deployed with `access: team` is reached by the team's members; a member whose direct row
+there is read-only runs only its views, any other call refused before it runs (`403`,
+`node::READ_ONLY`), so no run burns the developer's fuel uncounted.
+A team's creator leads it.
+Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide)
+and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in
+`caps::DEFAULT`, and a team's leads hold both there.
+`caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide),
+start org upgrade runs, and approve the org's outbound hosts (org-wide grants only)
+(`SystemState::manages_apps`).
+A member who left, or whom a manager removed, does not come back by inheritance until a manager adds
+them again or an invite names the team (`Team::removed`).
+Losing a team takes one's direct rows in the teams below it (`Org::drop_rows_below`), whether by
+removal or leaving (`RemoveTeamMember { subtree }`), a `ScopeApps` close, or a plain close
+(`UpdateTeam { join: invite }`, for those in it by inheritance alone; `close_drops_below`, which the
+API always sets, absent in an entry an earlier release logged, which replays keeping the rows).
+Reads are filtered: a team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
+answers `404` (`GET /orgs/{org}/teams/{team}`).
+`DeleteTeam` takes the teams below it and their apps.
+Metadata (`POST /orgs/{org}/teams/{team}`) is the app's (a folder's name and colour).
+A team's `default_capabilities` (`Team`, left out when unset) count for everyone in it without a row
+of their own, on top of their org-wide caps (`Org::team_caps`, used by `may` and open-team
+inheritance; a new row takes them too); set by `SetDefaultCapabilities { team }` (`POST
+/orgs/{org}/capabilities { team, capabilities }`, the team's managers or `MANAGE_MEMBERS`).
+In an org with app teams a guest inherits no open top-level team and reaches no app through an `org`
+grant (`Org::app_only`, used by `in_team_at` and `may_reach`); a legacy org's guests are as before.
+
+### App teams and modes
+
+Code: `Team::app_package`: `metadata.app.package` on a top-level team; `Org::app_team`, `Org::mode`
+= legacy | standalone | shared, derived.
+
+One per package per org (`UpdateTeam` refuses a second, `APP_TEAM_EXISTS`); making, changing or
+dropping the mark, scoping apps and creating the first instance of a package with no app team in an
+org that has app teams are admin-only (`ONLY_ADMINS_INSTALL`).
+`ScopeApps` (`POST /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team (id
+from the entry's `nonce`, `app_team_id`; an instance's package is the one its release names,
+`SystemState::instance_package`, since two packages may ship one component, unless the entry
+predates `by_release`), gives a row to every member who `may_reach` the instances first, gives them
+its `team` grant in place of `org` (`Access::onto_team`), and with `shared` (default: two app teams
+or more) closes every app team after writing its inherited people as rows and drops `INVITE_MEMBERS`
+from its default (standalone teams it makes default to `INVITE_MEMBERS`); a package's `childTeams`
+(`ScopeApp::child_teams`) adds `CREATE_CHILD_TEAM` to (or takes it from) its app team's default and
+the rows that set their own capabilities, the only way an app team made before that default gets it;
+bounded by `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
+`GET /orgs/{org}/app-teams` (any member; a guest only theirs).
+`GET /orgs/{org}` filters members, capabilities, member metadata and team rows by `Org::sees_member`
+(admins all; members all unless shared, then co-team people and admins; guests co-team people).
+`SetAccess` is also open to `SystemState::may_set_access` (`MANAGE_APPLICATION` where the app is and
+where it goes, org-wide for non-team access).
+Invites record `created_by` (set at apply) and `created_at` (both left out when unset); `GET
+/orgs/{org}/invites` and `DELETE /orgs/{org}/invites/{key}` (`RevokeInvite`) for whoever
+`SystemState::sees_invite`.
+
+### Transfers
+
+`POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org
+admin, `SystemState::manages_app`; passkey consent; only to a member of the app's org, refused
+before the passkey once organizations are ordinary).
+
+### Moves
+
+`POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`;
+consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`.
+Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's
+quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the
+API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's
+limits).
+`org`/app-team access becomes the target's app team (made open, or closed when every app team of the
+target is; `org` access in a legacy target); a team other than the package's app team is refused
+(`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards
+(`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app
+(`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message.
+`bringMembers` adds the source's members who reach the app, capped at member, with app-team rows.
+
+### Metadata and org lifecycle
+
+(Org/member/app metadata, device labels, owner-delete.)
+
+`Org::metadata` (admins or `MANAGE_METADATA`), `Org::member_metadata` (the member or an admin),
+`AppRecord::metadata` (owner, while a member for an org app, or org admin), each at most
+`MAX_METADATA_BYTES` (16 KiB, team metadata too); `Account::passkey_labels` (`POST
+/auth/passkeys/{cred} { label }`).
+`DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first), and takes the org's
+teams, invites and apps.
+`POST /orgs/{org}/name` renames it (`RenameOrg`: owner or admin, passkey `__rename_org { name }`,
+`system::org_name_fits`, as `CreateOrg { name_fits }` checks a new one).
+Ownership moves with `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
+
+### Organization recovery
+
+Code: `docs/specs/org-recovery.md`; `Org::recovery`, `types::OrgRecovery`.
+
+An org may hold a recovery key (Ed25519 public half; the owner keeps the seed).
+`SetRecoveryKey` (owner, consent `__set_recovery_key { publicKey }`; a new key or `null` ends a
+pending recovery), `StartRecovery` (any account, with the seed's signature over org, account and
+nonce, `calimero_identity::recovery`, checked against the org's current key in `authorize` and
+spent), `CancelRecovery` (owner, `__cancel_recovery { account }`), `FinishRecovery` (the named
+account, `__finish_recovery { org }`, at least `RECOVERY_DELAY_SECS` (72 h) after the start, judged
+at the commands' `at`: the node's clock, `Node::app_clock`, so tests move it).
+Finishing removes every previous owner from the org and its teams and moves their org apps to the
+new owner; account credentials are never touched.
+One pending recovery per org (`409 RECOVERY_PENDING`); `403 WRONG_RECOVERY_KEY` for no org, no key
+or a wrong signature alike.
+Routes: `POST /orgs/{org}/recovery`, `.../recovery/{start,cancel,finish}`.

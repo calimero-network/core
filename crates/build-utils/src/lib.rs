@@ -3,6 +3,9 @@
 //! Provides workspace version reading and git metadata so build scripts stay DRY
 //! and consistent (e.g. correct git_dir resolution for rerun-if-changed), plus,
 //! behind the `fetch` feature, cached download and extraction of zip archives.
+//!
+//! Spec: [Development workflow](https://calimero-network.github.io/core/contribute/development/).
+//! Crate guide: [`crates/build-utils/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/build-utils/AGENTS.md).
 
 use std::error::Error;
 use std::path::Path;

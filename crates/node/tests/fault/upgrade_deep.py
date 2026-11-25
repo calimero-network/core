@@ -43,8 +43,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.modules.setdefault("upgrade_deep", sys.modules[__name__])
-import upgrade_path  # noqa: E402
 import ed25519_sign  # noqa: E402
+import upgrade_path  # noqa: E402
 from rollout import OPERATOR_SEED  # noqa: E402
 from rv2 import ORIGIN, CliError, HttpError  # noqa: E402
 from upgrade_path import Case, Failed  # noqa: E402
@@ -93,13 +93,13 @@ NOT_COVERED = [
      "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
      "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
      "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
-    ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per run (`calimero_app_host`'s fuel table)",
+    ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per request (`calimero_app_host`'s fuel table)",
      "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
-     "the log replays alike on either release, and below cluster version 1.0.0-rc.37 (`Feature::HostFuel`) "
-     "the new release runs calls without the charges, as the old one did; a search cap answers a view, which "
-     "is never logged. The deep cases' calls and searches run far within the default fuel on both releases. "
-     "`tests/engine.rs` (`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
-     "`a_host_without_host_fuel_charges_as_before`) covers it on one build"),
+     "the log replays alike on either release, and a search cap answers a view, which is never logged. The "
+     "deep cases' calls and searches run far within the default fuel on both releases. `tests/engine.rs` "
+     "(`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
+     "`a_guest_cannot_spend_fuel_its_host_calls_already_owe`, `refused_xcall_arguments_cost_fuel`, "
+     "`stdout_costs_fuel_after_the_log_is_full`) covers it on one build"),
     ("Keys", "An API key made with follow-ups (`POST /auth/apikeys { then }`): confirm calls approved by the "
      "key's one passkey prompt",
      "it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its "
@@ -110,9 +110,12 @@ NOT_COVERED = [
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
      "recovery code (`account-recovery-code`) is covered"),
-    ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
-     "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
-     "the policy and the invite list are read back (`ops-state`)"),
+    ("Accounts", "Finishing a sign-up with a cluster sign-up invite (`register/finish { invite }`, which spends a use)",
+     "the finish carries a WebAuthn registration made by a new P-256 passkey, which the suite's standard-library "
+     "Python cannot make; meroctl's `login --dev-passkey` registers a new file but takes no invite, and the "
+     "release's meroctl is the one that seeds. Issuing, listing and revoking an invite and the node's refusal or "
+     "acceptance of a token at `register/begin` are covered (`sign-up-invites`); "
+     "`tests/sign_up.rs` covers the finish and the spent use on one build"),
     ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
                   "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
                   "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
@@ -143,9 +146,6 @@ NOT_COVERED = [
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
-    ("Ops", "Restoring a backup onto the new release",
-     "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
-     "not a rollout"),
     ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
      "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
      "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),

@@ -558,3 +558,116 @@ consent: `result=approved` (they approved the withdrawal).
   `--origins`, never from an app's origin.
 - **Requests live in one node's memory.** A restart forgets them; the app asks
   again. The page is on the node that issued the request (its `url`).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Consent page
+
+Code: `consent_page.rs`; docs: protocol "The consent page".
+
+An app (any session of the account, package-bound included) asks `POST /consent/requests { kind:
+release|upgrade|upgradeUnit|delegate|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps|install|updatePolicy|updates,
+scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`, `withdraw:
+true` withdrawing its approval) and gets `{ requestId, url, expiresAt, code }`
+(`consent_page::confirmation_code`, shown on the page and by the console); `returnTo` is the
+package's own frontend origin or one its newest signed manifest names (unbound sessions:
+`config.origins`).
+The request (this node's memory, `CONSENT_REQUEST_TTL`, one undecided request per account and node
+(a new one replaces it, so a forged page has no other request to swap in), a per-node bound, decided
+once; page answers carry HSTS) freezes a model from node state and verified manifests (an upgrade's
+capability sheet is `consent_page::diff`, its methods, events, timers and state version from the
+`calimero:abi` each component embeds, `component::embedded_abi`).
+`GET /consent/{id}` (static HTML in the binary, hash-only CSP, `frame-ancestors 'none'`), `/model`,
+`/approve`, `/decline` are an outer layer in the clear on the node's own origin (outside CORS and
+the sealed channel); `/approve` runs the same route code (`api::upgrade_app`,
+`set_release_approval`, `set_outbound_approval`) as a `Principal { consent_page: true }` for the
+request's account, so the `412 CONFIRM_REQUIRED` challenge is over the frozen arguments, and the
+step-up may come from the nodes' own origins (`consent_page::relying_party`).
+Upgrade consent always binds the target's manifest hash (`VerifiedBundle::manifest_hash`); a release
+approval always binds its measurements digest (`consent_page::release_digest`: Sigstore-verified,
+`503` when unfetchable, over no measurements on mock attestation); a withdrawal binds `{ version }`
+alone and fetches nothing (`ReleaseChange::Withdraw`); neither route takes the hash from the client.
+`GET /consent/{id}/result` (sealed, same account; forwarded to the holder over
+`internal/consent/result`).
+Package-bound sessions are still refused the approval routes themselves.
+`createOrg { name }`, `createInvite { org, role, teams?, ttlSecs?, uses?, allApps? }` and
+`acceptInvite { token }` are how an app's frontend manages organizations (refused `POST /orgs`,
+invites and redemption): `act` runs `api::create_org`, `api::create_invite` (its own logged
+`__create_invite` consent) and `api::redeem_invite`, the first and last behind an unlogged step-up
+over `account:<a>` (`__create_org { name }`, `__accept_invite { inviteKey }`), so the log entries
+are exactly the API's and no feature gate is needed.
+What the approval made (`orgId`, the invite's `token`, the `org` joined) is kept with the decision
+(`ConsentRequests::decide`, `Outcome`, redacted in `Debug` as `InviteToken` is) and answered as
+`/result`'s `outcome`, never in the page's clear answer.
+A `createOrg` from a package-bound session also makes that package's app team (`Action::CreateOrg {
+app_team }`, `consent_page::org_app_team`: the package installed and `Feature::OrgAppTeam` active,
+else a bare organization), in the same `CreateOrg { app_team }` entry: apply runs
+`SystemState::scope_apps` for the package with no instances (`ScopeAsLogged::CURRENT`, standalone,
+nonce `{org}/app-team`, so the team id is the same on every replica) and takes the organization back
+on a refusal; `outcome` gains `teamId`, the model `appTeam`, the step-up `appTeam`.
+`createOrg { capabilities }` sets the org's member default in that same entry (`CreateOrg {
+capabilities }`, after the app team, `Feature::OrgCapabilities`); `createInvite { capabilities }` is
+`Invite::capabilities`, which a new member holds as their own `Org::capabilities` entry
+(`Feature::InviteCapabilities`), refused above the creator's own bits (`Org::may_grant`, in
+`CreateInvite`'s apply and asked first by the route and the page); the page lists the bits in full
+(`consent_page::capabilities_point`), the step-up names them only when given.
+Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`, `removeMember { org, account
+}`, `setMemberRole { org, account, role }`, `setMemberTeams { org, account, teams: [TeamRow] }`,
+`removeMemberTeams { org, account, teams }`, `revokeInvite { org, inviteKey }`, `renameOrg { org,
+name }`, `deleteOrg { org }`, `setCapabilities { org, account?, team?, capabilities }` (both shapes)
+and `setAllApps { org, account, allApps }`.
+Each is judged at request time with the log's predicates (role, a team's lead or `MANAGE_MEMBERS`,
+`sees_invite`; `system::judge_team_rows` and `judge_remove_team_rows` run the batch rules on a copy
+of the org) and the routes' feature gates, and `act` runs the route's `pub(crate)` function
+(`api::remove_member`, `set_member_role`, `set_member_teams`, `remove_member_teams`,
+`revoke_invite`, `rename_org`, `delete_org`, `set_capabilities`, `set_all_apps`), so consent and log
+entry are the API's.
+`still_current` refuses a page whose role, name, deletion counts, capabilities or all-apps grant
+changed (`409 CONSENT_STALE`).
+People are named as the approver sees them (`Org::member_metadata` name, else the account's).
+The route's non-empty answer is the `outcome` (`renameOrg`, `deleteOrg`).
+With `Config::attestation_verifier_url` (`merod --attestation-verifier-url`, checked by
+`consent_page::verifier_base`) `model` adds `verifier { url, host, release, mock }` for every kind
+(`null` without it): mdma's link
+`{base}/mero-tee?node_url=<public_url>&release_tag=mero-tee-v<own_release>` (`verifier_link`).
+The page links to it (new tab, host shown as text, "check it opens there") and runs no check itself:
+a tampered node could fake any in-page verdict, so the check runs on the verifier's own origin.
+On mock attestation it says there is nothing to verify.
+
+### Install and update pages
+
+(C10; `consent_page/updates.rs`; docs: protocol consent page "Installs, updates and update
+policies", build "Show updates in your app".)
+
+The words (`reason_words`, `update_summary`, `policy_words`) shared by the sheets, the updates page
+and `GET /apps/{app}/update`'s `available.summary` (the design's `GET /apps/{app}/updates`:
+`/update` already answers it; `unit` says whether members move with it).
+Consent kinds: `install` (`install_request`: a bound frontend asks for its own installed package
+only; the release installed already, `409 NOT_INSTALLED`; the unit from `egress::release_unit`;
+`act` runs `api::apps::create_installed` (`POST /apps`'s `create_instance`, `from_frontend` for the
+bound session's visibility) behind an unlogged `account:<a> / __create_instance` step-up; `outcome {
+appId, links }`; `install.privateTo` names the reader's organizations a private release is for;
+installing with no `org`, a private release in exactly one of the person's organizations is created
+there (filled in as `org`), else they choose among its organizations they are in, or, with none of
+those or a public, catalog or earlier release, among all of theirs when several
+(`install.chooseOrg`, each with its own first `point`; `org_choices`), and
+`POST /consent/{id}/approve { org }` takes the choice into the action before the step-up, so the
+passkey signs it (`with_chosen_org`: none `400 ORG_REQUIRED`, not theirs `404`, offered nothing
+`400`; regression `the_install_sheet_offers_the_organizations_a_release_is_for`), `updatePolicy` (`policy_request`; `act` runs `api::set_upgrade_policy`, the
+routes' shared code), and the upgrade sheets' `update` (`update_section`: class, reasons in words,
+destinations, state version, policy, `approval { needed, step: only|first|second }`, `keepByDefault`
+for a red update adding a destination).
+`approval_step`: under `secondApprover` a red (or unclassified) update with no other approver's live
+first approval is `Action::ApproveFirst` ("Approve (1 of 2)", `act` runs `api::approve_upgrade`, the
+upgrade-approvals route's code); with one, the usual upgrade ("Approve and update (2 of 2)"); the
+person's own waiting is `409 SECOND_APPROVAL_REQUIRED`.
+The updates page (`updates { org? }`, `Action::Updates`, served at `/updates/{id}`) lists nothing
+until an unlogged `__view_updates` step-up (its address is the app's), then `page_model` reads
+`hub_model` live (`MAX_UPDATES_PAGE_APPS`); `POST /consent/{id}/open` (same-origin, unlocked, `409
+LOCKED`) holds an ordinary child request returning to it.
+`ConsentRequests::insert` keeps it apart from the one undecided request per account (`is_hub`).
+No feature gate: the log entries are the routes'.

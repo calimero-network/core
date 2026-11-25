@@ -150,42 +150,91 @@ pub(super) async fn visitor_gate(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(test, derive(utoipa::ToSchema))]
 pub(super) struct PublicLinkBody {
     /// A name its managers know it by.
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     label: Option<String>,
     /// When it stops admitting visitors (Unix seconds); none: until revoked.
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     expires_at: Option<u64>,
     /// Calls one visitor may make through it a minute (default 60, at most 600).
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     rate_per_minute: Option<u32>,
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     confirm: Option<ConfirmBody>,
 }
 
 /// A link as its list shows it: its key and terms, never a token.
-fn link_json(l: &LinkGrant, now: u64) -> Value {
-    json!({
-        "link": l.link,
-        "label": l.label,
-        "expiresAt": l.expires_at,
-        "expired": l.expires_at.is_some_and(|at| at <= now),
-        "ratePerMinute": l.rate_per_minute,
-        "createdBy": l.created_by,
-        "createdAt": l.created_at,
-    })
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(utoipa::ToSchema))]
+pub(super) struct LinkView {
+    link: String,
+    #[cfg_attr(test, schema(required = true))]
+    label: Option<String>,
+    #[cfg_attr(test, schema(required = true))]
+    expires_at: Option<u64>,
+    expired: bool,
+    rate_per_minute: u32,
+    created_by: String,
+    created_at: u64,
+}
+
+impl LinkView {
+    fn of(l: &LinkGrant, now: u64) -> Self {
+        Self {
+            link: l.link.clone(),
+            label: l.label.clone(),
+            expires_at: l.expires_at,
+            expired: l.expires_at.is_some_and(|at| at <= now),
+            rate_per_minute: l.rate_per_minute,
+            created_by: l.created_by.clone(),
+            created_at: l.created_at,
+        }
+    }
+}
+
+/// `GET /apps/{app}/public-links`.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(utoipa::ToSchema))]
+pub(super) struct PublicLinks {
+    links: Vec<LinkView>,
+}
+
+/// `DELETE /apps/{app}/public-links/{link}`: `{}`.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(utoipa::ToSchema))]
+pub(super) struct Done {}
+
+/// `POST /apps/{app}/public-links`: the link's key and, this once, its token.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(utoipa::ToSchema))]
+pub(super) struct PublicLinkMade {
+    link: String,
+    token: String,
 }
 
 /// Make a public link of an instance: whoever may change its access, with their passkey over
 /// the link's key and terms (`412` first). The token is answered once; the log keeps only its
 /// public key.
-async fn public_link_create(
+#[cfg_attr(test, utoipa::path(
+    post,
+    path = "/apps/{app}/public-links",
+    params(("app" = String, Path)),
+    request_body = PublicLinkBody,
+    responses((status = 200, description = "OK", body = PublicLinkMade)),
+))]
+pub(super) async fn public_link_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
     Json(body): Json<PublicLinkBody>,
-) -> ApiResult {
+) -> ApiResult<Json<PublicLinkMade>> {
     let app_id = node.canonical_app_id(&app_id);
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
@@ -277,16 +326,25 @@ async fn public_link_create(
             consent: c.consent,
         })
         .await?;
-    Ok(Json(json!({ "link": link_key, "token": token })))
+    Ok(Json(PublicLinkMade {
+        link: link_key,
+        token,
+    }))
 }
 
 /// The instance's public links, for whoever may change its access: keys and terms, never a
 /// token. `404` to anyone else.
-async fn public_link_list(
+#[cfg_attr(test, utoipa::path(
+    get,
+    path = "/apps/{app}/public-links",
+    params(("app" = String, Path)),
+    responses((status = 200, description = "OK", body = PublicLinks)),
+))]
+pub(super) async fn public_link_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PublicLinks>> {
     let app_id = node.canonical_app_id(&app_id);
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
@@ -297,24 +355,31 @@ async fn public_link_list(
         if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
             return Err(ApiError::not_found("no such app"));
         }
-        let links: Vec<Value> = app
+        let links = app
             .access
             .links()
             .into_iter()
-            .map(|l| link_json(l, now))
+            .map(|l| LinkView::of(l, now))
             .collect();
-        Ok(Json(json!({ "links": links })))
+        Ok(Json(PublicLinks { links }))
     })
 }
 
 /// Revoke a public link: its creator or whoever may change the instance's access, with their
 /// passkey (`412` first). It admits nobody from the next request.
-async fn public_link_revoke(
+#[cfg_attr(test, utoipa::path(
+    delete,
+    path = "/apps/{app}/public-links/{link}",
+    params(("app" = String, Path), ("link" = String, Path)),
+    request_body(content = Option<ConfirmOnlyBody>),
+    responses((status = 200, description = "OK", body = Done)),
+))]
+pub(super) async fn public_link_revoke(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, link)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
-) -> ApiResult {
+) -> ApiResult<Json<Done>> {
     let app_id = node.canonical_app_id(&app_id);
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
@@ -346,7 +411,7 @@ async fn public_link_revoke(
             consent,
         })
         .await?;
-    Ok(Json(json!({})))
+    Ok(Json(Done {}))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -360,4 +425,53 @@ pub(super) fn routes() -> Router<Arc<Node>> {
             "/apps/{app}/public-links/{link}",
             delete(public_link_revoke),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{LinkGrant, LinkView, PublicLinkMade};
+
+    /// The typed answers write the bytes the `json!` they replaced wrote, key order included.
+    #[test]
+    fn the_typed_link_answers_write_what_they_wrote_before() {
+        let with: LinkGrant = serde_json::from_value(json!({
+            "link": "k1", "label": "Team page", "expiresAt": 100,
+            "ratePerMinute": 60, "createdBy": "alice", "createdAt": 7
+        }))
+        .expect("a link");
+        let without: LinkGrant = serde_json::from_value(json!({
+            "link": "k2", "ratePerMinute": 5, "createdBy": "bob", "createdAt": 8
+        }))
+        .expect("a link");
+        for (l, now) in [(&with, 99), (&with, 100), (&without, 1)] {
+            // The answer as `link_json` built it before.
+            let before = json!({
+                "link": l.link,
+                "label": l.label,
+                "expiresAt": l.expires_at,
+                "expired": l.expires_at.is_some_and(|at| at <= now),
+                "ratePerMinute": l.rate_per_minute,
+                "createdBy": l.created_by,
+                "createdAt": l.created_at,
+            });
+            assert_eq!(
+                serde_json::to_string(&LinkView::of(l, now)).expect("serializes"),
+                serde_json::to_string(&before).expect("serializes"),
+            );
+        }
+        let made = PublicLinkMade {
+            link: "k1".to_owned(),
+            token: "pl_t".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&made).expect("serializes"),
+            r#"{"link":"k1","token":"pl_t"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&super::Done {}).expect("serializes"),
+            "{}"
+        );
+    }
 }

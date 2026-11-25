@@ -212,7 +212,7 @@ fn blocked(
 
 /// The newest of `newer` (oldest first, as [`newer_versions`] lists them) that `app`,
 /// running `current`, can be upgraded to as far as the system state and `runtimes`
-/// tell ([`blocked`]): what a report names `latestReachable`.
+/// tell (`blocked`): what a report names `latestReachable`.
 #[must_use]
 pub fn newest_reachable<'v>(
     s: &SystemState,

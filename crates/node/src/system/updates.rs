@@ -660,7 +660,7 @@ impl SystemState {
     }
 
     /// Where an update of `app` on its own begins (`UpgradeFailed::from_release`): the
-    /// release it runs as the candidates and the gate judge it ([`Self::running`]: its
+    /// release it runs as the candidates and the gate judge it (`Self::running`: its
     /// record's, else the one its bundle is governed by).
     #[must_use]
     pub fn auto_update_from(&self, app: &AppRecord) -> Option<PackageRef> {

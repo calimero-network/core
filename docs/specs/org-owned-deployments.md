@@ -5,7 +5,7 @@ owner, `/d/{deployment}/` and per-deployment hosts, `AppRecord::deployment` and
 `GET /deployments/{id}/orgs` (phases 1 to 3; `crates/node/src/system/deployments.rs`,
 `crates/node/src/api/deployments.rs`). Not done: migrating old installs into deployments,
 transfer, the lockout guard and the consent page naming the deployment (`crates/node/AGENTS.md`,
-"Deployments"); phase 5 is mdma's.
+"Not done yet"); phase 5 is mdma's.
 
 A developer deploys apps from Calimero Cloud: their releases are installed on a
 cluster, and instances of them are created later, mostly from the app's own
