@@ -94,6 +94,29 @@ Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero
   Pass `github.*` and `steps.*` values to a `run:` script through `env:`, never `${{ }}`; `Workflow lint` runs `actionlint` and `zizmor` (`zizmor .github/workflows`) and its exceptions are in `.github/zizmor.yml`. `scripts/check-workflow-triggers.py` fails a privileged workflow whose job checks out the PR head without a same-repository `if`, or saves a cache.
 - **Secrets** (tokens, keys, credentials) stay in the node's local config under `~/.calimero/<node>/`, outside the repository.
 
+## Documentation in code
+
+Rustdoc, comments and `AGENTS.md` files say what the code does and how; the [docs site](https://calimero-network.github.io/core/protocol/overview/) says why.
+A reader must be able to follow every reference to its source in one click.
+
+- **Crate docs:** every `lib.rs` and `main.rs` opens with `//!`: what the crate is, a `Spec:` link to the docs chapter(s) it implements, and its `AGENTS.md`.
+- **Module docs:** a module that implements a protocol chapter links that chapter in its `//!`.
+- **Item docs:** a normative item links the exact heading that states its rule: a format version (`STORE_FORMAT`, `ENTRY_FORMAT`, `SNAPSHOT_FORMAT`), a wire or stored type, a `Feature`, an error code, an invariant. Other items get rustdoc without a link.
+- **Link the site in full:** write the literal URL with its heading, so it opens from the editor, rust-analyzer's hover and rustdoc, and grep finds it. Never a macro or a URL constant, never an `.mdx` path, never a path the site only redirects (`redirects` in `docs/astro.config.mjs`).
+
+  ```rust
+  //! Spec: [Replication](https://calimero-network.github.io/core/protocol/replication/)
+  /// Raised per [Changing a stored format](https://calimero-network.github.io/core/operate/compatibility/#changing-a-stored-format).
+  // Spec: https://calimero-network.github.io/core/protocol/upgrades/#the-cluster-version
+  ```
+
+- **Link, do not copy:** a comment does not repeat a page's prose. When a comment needs more than a sentence of why, the page is missing it: add it there and link it.
+- **No bare ids:** `(D20)`, `R8`, `C10`, `review finding F6`, `Ruling 39` and `Bugbot on #5210` lead nowhere. State the rule in words and link the page that states it; link the spec row in `docs/specs/` for the reasoning behind a decision; drop a review finding's id, since the regression test's name says what it guards and git blame leads to the PR.
+- **No issue numbers:** a bare `#4723` is not a link. Drop it where it records history; write the full issue URL for open work (`https://github.com/calimero-network/core/issues/4736`).
+- **Present tense:** a comment states what holds now. "It used to", "previously" and "was renamed" belong in the PR description. A regression test's doc says what must hold, not the bug it caught.
+- **Paths that exist:** write a repository path from the root (`crates/node/tests/it/consent_page.rs`). Moving or deleting a file, grep for its path and fix every comment that names it; renaming a heading in `docs/`, grep for its anchor.
+- **Enforced** by [`scripts/check-code-refs.py`](scripts/check-code-refs.py) (the `Code references` workflow): site links and paths must resolve (`scripts/check-code-refs.allow` lists the few that are right as written), and no file may gain a bare id or issue number (`scripts/check-code-refs.baseline` holds today's counts per file; they only go down). Editing a comment that carries one, rewrite it, then run `python3 scripts/check-code-refs.py --update-baseline`.
+
 ## Commands in docs and CI
 
 Put a tool on PATH once, then call it by its plain name at every call site; `meroctl` is the example:
