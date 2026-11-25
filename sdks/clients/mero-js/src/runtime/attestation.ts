@@ -22,8 +22,7 @@
 
 import { fromHex, hex } from '../crypto/internal.js';
 import {
-  DEFAULT_COLLATERAL_MIRROR,
-  DEFAULT_RELEASE_MIRROR,
+  cloudCollateralUrl,
   cloudNodeReleaseUrl,
   compareReleaseVersions,
   fetchGithubNodeRelease,
@@ -34,6 +33,8 @@ import {
 } from '../sealed/release.js';
 import { transportKeyBinding, type VerifyTransportQuote } from '../sealed/sealed.js';
 import { PRODUCTION_PROFILE, createQuoteVerifier, type DcapCollateral, type DcapVerify } from '../sealed/verify.js';
+
+import { CLOUD_ENVIRONMENTS, defaultCloudEnvironment } from './directory.js';
 
 /** The mock quote format development clusters use. */
 export const MOCK_QUOTE_HEADER = 'MOCK_TDX_QUOTE_V1';
@@ -62,8 +63,10 @@ export interface NodeReleasePolicy {
   /**
    * Where the release's signed measurements come from: `'github'` (the release
    * assets, what core's Rust client reads; no CORS, so not in browsers), the
-   * base URL of a mirror (default {@link DEFAULT_RELEASE_MIRROR}), or a function.
-   * Untrusted either way: the Sigstore signature is checked here.
+   * base URL of a mirror, or a function. Default: the `cloudUrl` of the Calimero
+   * Cloud the page is on (`CLOUD_ENVIRONMENTS`, read from the page's hostname),
+   * `DEFAULT_RELEASE_MIRROR` anywhere else. Untrusted either way: the
+   * Sigstore signature is checked here.
    */
   releaseSource?: 'github' | string | ((version: string) => Promise<SignedNodeRelease>);
   /** DCAP verification; defaults to `verify` from `@phala/dcap-qvl`, loaded on first use. */
@@ -75,8 +78,9 @@ export interface NodeReleasePolicy {
   fetchCollateral?: (quote: Uint8Array) => Promise<DcapCollateral>;
   /**
    * Where the default `fetchCollateral` gets Intel's collateral: a PCCS base
-   * URL (default {@link DEFAULT_COLLATERAL_MIRROR}, the cloud's mirror, which a
-   * browser on any origin can read), or `'intel'` for Intel's PCS itself (no
+   * URL (default: the mirror of the Calimero Cloud the page is on,
+   * `{cloudUrl}/api/tee/pcs`, `DEFAULT_COLLATERAL_MIRROR` anywhere else;
+   * a browser on any origin can read it), or `'intel'` for Intel's PCS itself (no
    * CORS: not in browsers). Untrusted either way: every item is signed by
    * Intel and verified up to Intel's root CA, which `@phala/dcap-qvl` carries.
    */
@@ -249,12 +253,13 @@ async function releaseFor(version: string, policy: NodeReleasePolicy, fetchImpl:
   if (typeof source === 'function') return source(version);
   const fetchMirror = answered(fetchImpl, 'the release mirror');
   if (source === 'github') return fetchGithubNodeRelease(version, { fetch: fetchMirror });
-  return fetchNodeRelease(cloudNodeReleaseUrl(source ?? DEFAULT_RELEASE_MIRROR, version), { fetch: fetchMirror });
+  const mirror = source ?? CLOUD_ENVIRONMENTS[defaultCloudEnvironment()].cloudUrl;
+  return fetchNodeRelease(cloudNodeReleaseUrl(mirror, version), { fetch: fetchMirror });
 }
 
 /** The collateral fetch a policy gets unless it brings its own: `@phala/dcap-qvl` against `collateralSource`. */
 function defaultCollateral(policy: NodeReleasePolicy): (quote: Uint8Array) => Promise<DcapCollateral> {
-  const source = policy.collateralSource ?? DEFAULT_COLLATERAL_MIRROR;
+  const source = policy.collateralSource ?? cloudCollateralUrl(CLOUD_ENVIRONMENTS[defaultCloudEnvironment()].cloudUrl);
   // dcap-qvl fetches with its own `fetch`: only its call's `TypeError` is no answer, never a bad URL or bundle.
   if (source === 'intel') {
     return async (quote) => {
