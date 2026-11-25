@@ -224,8 +224,6 @@ unless another crate is named. The design and its reasons are above; a module's 
 
 ### Peer identity and the inbound gate
 
-(Phase 0 of `docs/specs/gate-system-group.md`.)
-
 A node's channel to a peer is identified (Noise IK with its own transport key, `x-calimero-node:
 <id>`); `Node::identify_peer` attests the claimed node's registered address itself and takes the
 claim only if that quote names the proven key (cached by key; the quote's release with it).

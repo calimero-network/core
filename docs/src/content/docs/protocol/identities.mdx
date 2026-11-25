@@ -608,8 +608,8 @@ consent, or an earlier release's) records nothing, so a replayed old log adds no
 
 ### Account recovery
 
-Code: `docs/specs/account-recovery.md`; shaped like [organization
-recovery](/protocol/organizations/), same `RECOVERY_DELAY_SECS`.
+Code: `crates/node/src/system/recovery.rs`, `crates/node/src/api/recovery.rs`; shaped like
+[organization recovery](/protocol/organizations/#recovery), same `RECOVERY_DELAY_SECS`.
 
 An account may hold one recovery code (`calimero_identity::new_recovery_code`, Crockford base32,
 `normalize_recovery_code`, `MAX_RECOVERY_CODE_CHARS`); the log keeps only its Ed25519 public key
@@ -686,7 +686,7 @@ origin only; the sign-up policy judges it like any other.
 Limits `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`; `http` only for `localhost` names on a
 `--dev` node (`allow_package_uploads`).
 
-**Served origins** (custom domains; design `docs/specs/custom-domains.md`): `served: true` on the
+**Served origins** ([custom domains](/protocol/applications/#custom-domains)): `served: true` on the
 body, `PackageOrigin::served` and `AddPackageOrigin::served` (both left out when false), consent `{
 origin, rpId, served: true }` (`origins::add_args`, the one builder for the API and `authorize`).
 `app_host::layer` serves the package's site on a `Host` whose origin (`served_origin_of`:

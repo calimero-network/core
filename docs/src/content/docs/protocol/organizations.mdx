@@ -1048,7 +1048,7 @@ Ownership moves with `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` 
 
 ### Organization recovery
 
-Code: `docs/specs/org-recovery.md`; `Org::recovery`, `types::OrgRecovery`.
+Code: `crates/node/src/system/recovery.rs`; `Org::recovery`, `types::OrgRecovery`.
 
 An org may hold a recovery key (Ed25519 public half; the owner keeps the seed).
 `SetRecoveryKey` (owner, consent `__set_recovery_key { publicKey }`; a new key or `null` ends a

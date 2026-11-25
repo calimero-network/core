@@ -200,7 +200,7 @@ The first event is a `snapshot` of the run and every step, then a `run` event wh
 Events carry metadata only: no results, output or input file ids, hashes, params or args.
 A stream lasts at most an hour (reconnect for a new snapshot), a node serves at most 64 per app (`429 TOO_MANY_SUBSCRIBERS`), and quiet streams carry a comment every 15 seconds.
 `Client::pipeline_run_events` returns the typed events and `meroctl cloud compute pipeline watch APP RUN` prints one JSON line per event.
-It does not yet verify each job's report signature on the client (the node's signature vouches for them), and it carries no module logs.
+Events are not signed and carry no module logs: what a job signed is in the run's [receipt](#pipeline-run-receipts).
 
 ## Start, list and cancel runs
 

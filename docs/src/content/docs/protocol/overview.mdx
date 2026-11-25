@@ -152,9 +152,9 @@ and [Replication](/protocol/replication/).
 This describes the system as the code stands (1.0.0-rc.20). It is not a
 frozen wire specification: requests and entries are JSON, though what a node
 keeps already names its format ([Format versions](/protocol/storage/#format-versions)).
-Some parts are not done yet and are named where they matter: keys per app from
-mero-kms, the rollback epoch in the attested KMS evidence (a node reports it in
-`/health` today), and search indexes that survive a restart.
+Limits that matter are named where they apply: one cluster key covers every app
+([Encryption](/protocol/encryption/)), the rollback epoch is reported in `/health`,
+not in the attested KMS evidence, and search indexes are rebuilt after a restart.
 :::
 
 Apps are built with `calimero-sdk` into `calimero:app` components, which run on

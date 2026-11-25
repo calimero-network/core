@@ -133,9 +133,9 @@ code, and app code beyond what its owner approved.
 - **Rollback, partly.** A rollback shorter than one checkpoint (1 s) looks like
   a crash; a store spliced from rows of different ages is not caught; an
   operator can force a rollback (`--accept-rollback`), which is visible in
-  `/health` and `/ops/status` but not yet in the attested KMS evidence; and an
-  older mero-kms without counters starts nodes unprotected. Requiring the
-  owner's consent to force one is not done.
+  `/health` and `/ops/status` but not in the attested KMS evidence; and an
+  older mero-kms without counters starts nodes unprotected. Forcing one needs no
+  consent from the app's owner.
 - **The recovery disk's holder.** Whoever holds an app's upgrades holds the key
   to its recovery-disk files: where governance gives app upgrades to the
   operator, the operator's backup key opens every app's state and the whole
