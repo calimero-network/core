@@ -305,7 +305,7 @@ is its command line.
   registry, which any node can fetch it from again). An account installs for an
   organization (`Node::install_org`): `org`, which it must be a member of (else `404`),
   else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`). Public or
-  private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.37;
+  private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.38;
   `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out
   first, and a release served so is public (a `401` or `403` to that fetch,
   `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential
@@ -1432,7 +1432,7 @@ is its command line.
   them at the latest index both recorded (`Node::compare_digests`). A difference logs an
   error once per (group, peer) and sets `calimero_group_diverged{group,peer}` (the index)
   until a comparison agrees (`metrics::digest_compared`); `calimero_group_divergences_total`
-  counts them. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
+  counts them, and `calimero_group_digest_comparisons_total{group}` every comparison that agreed or differed. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
   not compared. The system group is not (in-memory machine). Regression:
   `a_replica_whose_state_differs_from_its_leaders_is_reported`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most

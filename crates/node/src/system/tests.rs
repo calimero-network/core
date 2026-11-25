@@ -14483,7 +14483,7 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
             .collect()
     };
     assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
-    // rc.37 also brings who may use a release: the owner uses these, as public ones.
+    // rc.38 also brings who may use a release: the owner uses these, as public ones.
     for v in m.state.packages.get_mut("p").unwrap().versions.values_mut() {
         v.visibility = Some(super::Visibility::Public);
     }

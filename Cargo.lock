@@ -753,7 +753,7 @@ dependencies = [
 name = "calimero-app-wit"
 version = "0.0.0"
 dependencies = [
- "wit-parser 0.261.0",
+ "wit-parser 0.262.0",
 ]
 
 [[package]]
