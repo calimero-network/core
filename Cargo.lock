@@ -701,6 +701,7 @@ dependencies = [
  "calimero-app-engine-wasmtime",
  "calimero-app-host",
  "calimero-app-wit",
+ "criterion",
  "eyre",
  "hex",
  "libc",

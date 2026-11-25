@@ -17,8 +17,11 @@ shape in Tier 2.
     cargo bench -p calimero-log --bench log                         # append + commit, 1 vs 3 nodes; one synced RocksDB write
     cargo bench -p calimero-log --bench heartbeats                  # Raft messages per peer and CPU per message at 1/100/1000 groups
     cargo bench -p calimero-sealed --bench sealed                   # a request sealed vs plain, 1 KiB / 64 KiB / 1 MiB
+    cargo bench -p calimero-app-engine-wasmtime --bench guest_memory # memory-bound guest code per call; pool start-up, VmSize and RSS
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
+
+`guest_memory` answers what the replica engine's memory reservation costs: with 4 GiB plus a guard per pool slot, cranelift emits no bounds check on a load or store. Before its groups it prints the engine's start-up time and the process's `VmSize`/`VmRSS`. Reference run (4-core Xeon VM, shared): 64 MiB slots then 4 GiB slots, sort 1 Mi u32 49.2 to 25.5 ms, sieve below 8 Mi 85.9 to 57.1 ms, 192x192 matmul 6.80 to 4.05 ms, an empty call 16.7 to 16.6 us; engine start 1.2 to 1.3 ms; `VmSize` 26.4 to 1034.5 GiB with `VmRSS` 7.5 to 7.8 MiB.
 
 Two benches are not criterion, and run as their own jobs of the same workflow:
 
