@@ -50,13 +50,10 @@ async fn approved_app() -> (Cluster, Client, SoftAuthenticator, String, String) 
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let _ = alice
         .packages()
-        .upload(mpk_declaring(
-            PACKAGE,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-        ))
+        .upload(
+            mpk_declaring(PACKAGE, "0.1.0", &kv_wasm(), &publisher, &[PREFIX]),
+            None,
+        )
         .await
         .unwrap();
     let org = home_org(&alice).await;

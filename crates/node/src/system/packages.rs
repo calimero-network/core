@@ -256,6 +256,16 @@ fn install_package(
     if !state.modules_installed(&release) {
         return Err(MODULE_GONE);
     }
+    if release.orgs.iter().any(|org| !state.member_of(org, &actor)) {
+        return Err(NOT_AN_ORG_MEMBER.into());
+    }
+    // A pinned module never reaches more than may run it, judged on the release as this
+    // install leaves it; entries logged below private releases apply as they did.
+    if state.cluster_brings(cluster_version::Feature::PrivateReleases)
+        && !pins_reach_no_further(state, &package, &signer_id, &release, &actor)
+    {
+        return Err(MODULE_GONE);
+    }
     if let Some(record) = state.packages.get(&package) {
         if record.signer_id != signer_id {
             return Err(OTHER_PUBLISHER_KEY);
@@ -359,7 +369,43 @@ fn reinstall(
     if recorded.guests.is_none() && release.guests.is_some() {
         recorded.guests = release.guests;
     }
+    // The registry serving it to anyone makes it public; nothing makes it private again,
+    // and a private install leaves a record from before as it is.
+    if release.visibility == Some(Visibility::Public) {
+        recorded.visibility = release.visibility;
+    }
+    recorded.orgs.extend(release.orgs);
     Ok(json!({ "package": package, "version": release.version }))
+}
+
+/// Whether the modules the release's pipelines pin may run wherever the release may, judged
+/// on the release as this install leaves it: the one recorded under its version (made
+/// public by a public install, its organizations joined by this one's), else this one.
+fn pins_reach_no_further(
+    state: &SystemState,
+    package: &str,
+    signer_id: &str,
+    release: &PackageVersion,
+    actor: &str,
+) -> bool {
+    let kept = state
+        .packages
+        .get(package)
+        .and_then(|record| record.versions.get(&release.version));
+    let (pins, visibility, orgs) = match kept {
+        Some(recorded) => (
+            recorded,
+            if release.visibility == Some(Visibility::Public) {
+                release.visibility
+            } else {
+                recorded.visibility
+            },
+            recorded.orgs.union(&release.orgs).cloned().collect(),
+        ),
+        None => (release, release.visibility, release.orgs.clone()),
+    };
+    let private_for = (visibility == Some(Visibility::Private)).then_some(&orgs);
+    state.may_pin_all(pins, actor, signer_id, private_for)
 }
 
 /// Uninstall a package's version, or every version: whoever installed it,
@@ -372,13 +418,27 @@ fn uninstall_package(
     actor: &str,
 ) -> Result<Value, Rejection> {
     let record = state.packages.get(package).ok_or(NO_SUCH_PACKAGE)?;
+    // A release the actor may not use answers as a missing one; entries logged below the
+    // version that brings private releases replay as they applied.
+    let gated = state.cluster_brings(cluster_version::Feature::PrivateReleases);
+    let usable = |release: &PackageVersion| !gated || state.sees_release(release, actor);
+    if !record.versions.values().any(usable) {
+        return Err(NO_SUCH_PACKAGE);
+    }
     if record.owner != actor {
         return Err(ONLY_INSTALLER_UNINSTALLS);
     }
     let gone: Vec<String> = match version {
-        Some(version) if !record.versions.contains_key(version) => return Err(NO_SUCH_VERSION),
+        Some(version) if !record.versions.get(version).is_some_and(usable) => {
+            return Err(NO_SUCH_VERSION)
+        }
         Some(version) => vec![version.to_owned()],
-        None => record.versions.keys().cloned().collect(),
+        None => record
+            .versions
+            .iter()
+            .filter(|(_, release)| usable(release))
+            .map(|(version, _)| version.clone())
+            .collect(),
     };
     // An offered release is the deployments' to keep: whoever installed it
     // first does not take it from them.

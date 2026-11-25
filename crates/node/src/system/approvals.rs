@@ -364,8 +364,16 @@ fn set_outbound_approval(
 ) -> Result<Value, Rejection> {
     let record = state.packages.get(package).ok_or(NO_SUCH_PACKAGE)?;
     let signer = record.signer_id.clone();
-    let declared = record
-        .latest()
+    // The newest release the actor reads (the operator, holding the cluster's approvals,
+    // the newest of all); entries logged below private releases apply as they did.
+    let gated = state.cluster_brings(cluster_version::Feature::PrivateReleases)
+        && *scope != ReleaseScope::Cluster;
+    let newest =
+        record.latest_where(|version| !gated || state.reads_release(package, version, actor));
+    if gated && newest.is_none() {
+        return Err(NO_SUCH_PACKAGE);
+    }
+    let declared = newest
         .map(|version| version.outbound.clone())
         .unwrap_or_default();
     let operator = state.governance().outbound == Authority::Operator;

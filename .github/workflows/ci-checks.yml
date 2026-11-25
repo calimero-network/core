@@ -19,9 +19,11 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded PR runs; never cancel a run of master.
+# Cancel superseded PR runs. Master is never cancelled and gets a run per commit:
+# its push runs every test, after a queue that ran only the tests the change
+# reaches, so a replaced pending run would leave a merged commit untested.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
@@ -42,6 +44,8 @@ jobs:
       rust: ${{ steps.decide.outputs.rust }}
       upgrade_path: ${{ steps.decide.outputs.upgrade_path }}
       standalone_apps: ${{ steps.decide.outputs.standalone_apps }}
+      # The tests `Rust tests` runs on a PR (a nextest filterset; empty runs every test).
+      test_filter: ${{ steps.decide.outputs.test_filter }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,8 +130,8 @@ jobs:
           # job -> the `scope` output that decides whether it runs
           GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
-          # A push to master runs only the jobs that save caches (the merge queue ran
-          # the rest on this tree), so there a gated job may be skipped.
+          # A push to master runs every test and the jobs that save caches (the merge
+          # queue ran the other jobs on this tree), so there a gated job may be skipped.
           jq -e --argjson gates "$GATES" --arg event "$EVENT" '
             .scope.outputs as $scope
             | to_entries | all(
@@ -135,6 +139,30 @@ jobs:
                 or (.value.result == "skipped" and ($gates[.key] // "") != ""
                     and ($scope[$gates[.key]] == "false" or $event == "push"))
               )' <<<"$NEEDS"
+
+  # Master's push runs what the queue does not (every test; e2e.yml): a red push opens
+  # an issue, a green one closes it (.github/actions/report-master).
+  report-master:
+    name: Report master
+    needs: [rust]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Report
+        uses: ./.github/actions/report-master
+        with:
+          needs: ${{ toJSON(needs) }}
+          workflow: CI
 
   # The checks that need no build: they fail a PR in about a minute, before the
   # jobs that compile start (they wait on this one).
@@ -270,14 +298,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push to master runs shard 1 alone, the same quarter of the tests a PR's
-        # shard 1 runs: the merge queue already ran every test on this tree, and the
-        # push only refreshes the caches. The build it saves is the whole workspace's
-        # whatever the quarter, and the test apps it saves are those its tests build
-        # (the shared fixtures; a guest only another quarter uses is built on a miss).
-        # Running every test here took past the job's hour on four cores, so nothing
-        # was saved.
-        shard: ${{ fromJSON(github.event_name == 'push' && '[1]' || '[1, 2, 3, 4]') }}
+        # A push to master runs every shard with no filter: the queue ran only the
+        # tests its change reaches. Shard 1 alone saves; the build it saves is the
+        # whole workspace's whatever the quarter, and the test apps it saves are those
+        # its tests build (the shared fixtures; a guest only another quarter uses is
+        # built on a miss).
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -323,9 +349,16 @@ jobs:
       # Twice the cores: most slow tests wait on timers and the network, not the
       # CPU. The node's integration tests, which do load it, take three or four of
       # these slots each (.config/nextest.toml).
+      # A PR and its merge-queue entry run the tests of the crates the change touches
+      # and of every crate depending on them (`scope`'s test_filter: nextest `rdeps`;
+      # the queue's diff is the entry against its base, so it still catches two
+      # changes that break each other within that graph); a change reaching beyond
+      # the workspace's crate graph runs every test. A push to master runs every test,
+      # after the merge, and opens the red-master issue when one fails.
       - name: Cargo test
         env:
           PARTITION: ${{ format('count:{0}/4', matrix.shard) }}
+          FILTER: ${{ github.event_name != 'push' && needs.scope.outputs.test_filter || '' }}
           NEXTEST_TEST_THREADS: "8"
           # No test may run past 15 s: .config/nextest.toml's ci profile kills it at 30 s,
           # past its own listed limit for the tests over budget when the rule came in.
@@ -334,7 +367,9 @@ jobs:
           FIRST_HOST=$(hostname -I | awk '{print $1}')
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo "$TEST_HOSTS"
-          cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} --no-fail-fast
+          # A filtered shard may be left with no test of its own; that passes.
+          echo "filter: ${FILTER:-every test}"
+          cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} ${FILTER:+-E "$FILTER" --no-tests=pass} --no-fail-fast
 
       # The doctests, in the shard that already built the libraries they link.
       - name: Cargo doctests

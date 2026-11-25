@@ -12,7 +12,7 @@ await CalimeroClient.connect({
   cluster: string,         // e.g. 'eu-shared-1'
   policy: NodePolicy,
   directory?: string,      // default: environment's directory (DEFAULT_DIRECTORY for production)
-  environment?: 'production' | 'staging', // which Calimero Cloud; default 'production'
+  environment?: 'production' | 'staging', // which Calimero Cloud; default the page's (cloudEnvironment()), else 'production'
   zone?: string,           // try this zone's nodes first
   fetch?: typeof fetch,
   retry?: { retries?: number; baseDelayMs?: number; maxDelayMs?: number },

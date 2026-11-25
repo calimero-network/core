@@ -69,17 +69,23 @@ fn joined(path: &str, name: &str) -> String {
     }
 }
 
-/// The unit an instance of release `at` would be: the release, and each release its
-/// `uses` (mode `create`) would create, transitively, as `create_instance` picks them
-/// (`unit_members`), at most [`MAX_UNIT_DEPTH`] deep.
-pub(crate) async fn release_unit(node: &Node, at: &PackageRef) -> Result<Unit, ApiError> {
+/// The unit an instance of release `at` would be, created by `creator` (from `deployment`):
+/// the release, and each release its `uses` (mode `create`) would create, transitively, as
+/// `create_instance` picks them (`unit_members`), at most [`MAX_UNIT_DEPTH`] deep.
+pub(crate) async fn release_unit(
+    node: &Node,
+    at: &PackageRef,
+    (creator, deployment): (&str, Option<&str>),
+) -> Result<Unit, ApiError> {
     let mut unit = Unit::of(release_at(node, at).await?);
     let mut stack = vec![(String::new(), at.clone(), 0_usize)];
     while let Some((path, at, depth)) = stack.pop() {
         if depth >= MAX_UNIT_DEPTH {
             continue;
         }
-        for (name, (package, version)) in unit_members(node, &at).await?.members {
+        for (name, (package, version)) in
+            unit_members(node, &at, creator, deployment).await?.members
+        {
             let member = PackageRef {
                 package,
                 version,
@@ -198,7 +204,9 @@ pub(crate) async fn update(
         compute: false,
     };
     let moves = if whole_unit {
-        unit_members(node, &target).await?.members
+        unit_members(node, &target, &app.owner, app.deployment.as_deref())
+            .await?
+            .members
     } else {
         BTreeMap::new()
     };

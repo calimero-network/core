@@ -61,6 +61,7 @@ mod public_links;
 mod recovery;
 mod recovery_disk;
 mod refresh;
+mod release_lookups;
 mod restore;
 mod rollback;
 mod rooms;

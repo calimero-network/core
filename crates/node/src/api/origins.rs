@@ -63,14 +63,10 @@ fn taken(why: &str) -> ApiError {
 async fn managed(node: &Node, account: &str, package: &str) -> Result<(), ApiError> {
     let _caught_up = node.sys_fresh().await;
     node.sys(|s| {
-        let p = s
-            .packages
-            .get(package)
-            .ok_or_else(|| ApiError::not_found("no such package"))?;
         if s.manages_package(package, account) {
             return Ok(());
         }
-        if p.versions.values().any(|v| s.sees_release(v, account)) {
+        if s.package_used(package, account, false).is_some() {
             return Err(ApiError::forbidden(
                 "only the package's manager handles its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first",
             ));

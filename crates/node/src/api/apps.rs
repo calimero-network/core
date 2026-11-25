@@ -89,7 +89,8 @@ pub(crate) async fn offered_bundle(
                 .values()
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
-                    let r = s.offered_release(o)?;
+                    // An offer serves only while its owner's side may still use the release.
+                    let r = s.offered_release(o).filter(|r| s.offer_serves(d, r))?;
                     Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
@@ -189,6 +190,30 @@ pub(crate) const NO_ORGANIZATION: &str = "NO_ORGANIZATION";
 pub(crate) const STANDALONE_INSTANCE: &str = "STANDALONE_INSTANCE";
 /// `400 ORG_INSTANCE`: an `org` instance asks for a new organization.
 pub(crate) const ORG_INSTANCE: &str = "ORG_INSTANCE";
+
+/// `account`'s only organization (`member` or above), on fresh state: `None` when it is in
+/// none, `400 ORG_REQUIRED` when it is in several.
+pub(crate) async fn only_org(node: &Node, account: &str) -> Result<Option<String>, ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    let mine: Vec<String> = node.sys(|s| s.orgs_of(account).into_iter().cloned().collect());
+    match mine.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(one.clone())),
+        _ => Err(ApiError::bad_request(
+            ORG_REQUIRED,
+            "you are in several organizations: name the one this is for (`org`)",
+        )),
+    }
+}
+
+/// `409 NO_ORGANIZATION`: what `needs` asks for an organization the caller is in, and it is in none.
+pub(crate) fn no_organization(needs: &str) -> ApiError {
+    ApiError::new(
+        409,
+        NO_ORGANIZATION,
+        &format!("{needs}, and you are in none: create one or accept an invite first"),
+    )
+}
 
 /// The instance mode of `release` (`instanceOrg` in its signed manifest): the one its
 /// record keeps, else (a release recorded before the node kept it) its `.mpk`'s. A raw
@@ -302,27 +327,15 @@ async fn instance_org(
             ))
         }
         (InstanceOrg::Standalone, _) | (InstanceOrg::Either, Some(_)) => {}
-        (InstanceOrg::Org | InstanceOrg::Either, None) => {
-            let _caught_up = node.sys_fresh().await;
-            let mine: Vec<String> = node.sys(|s| s.orgs_of(owner).into_iter().cloned().collect());
-            match mine.as_slice() {
-                [one] => return Ok(one.clone()),
-                [] if mode == InstanceOrg::Org => {
-                    return Err(ApiError::new(
-                        409,
-                        NO_ORGANIZATION,
-                        &format!("an instance of {label} goes into an organization you are in, and you are in none: create one or accept an invite first"),
-                    ))
-                }
-                [] => {}
-                _ => {
-                    return Err(ApiError::bad_request(
-                        ORG_REQUIRED,
-                        "you are in several organizations: name the one the instance goes into (`org`)",
-                    ))
-                }
+        (InstanceOrg::Org | InstanceOrg::Either, None) => match only_org(node, owner).await? {
+            Some(one) => return Ok(one),
+            None if mode == InstanceOrg::Org => {
+                return Err(no_organization(&format!(
+                    "an instance of {label} goes into an organization you are in"
+                )))
             }
-        }
+            None => {}
+        },
     }
     // A new organization, its creator the owner, approving this node's release as the
     // personal one did.
@@ -394,6 +407,10 @@ pub(super) struct CreateAppBody {
     /// unit_offer }`). The node's own, never a client's.
     #[serde(skip)]
     unit_offer: Option<PackageRef>,
+    /// A unit's member: the release `unit_members` chose for it, which it runs as judged
+    /// there. The node's own, never a client's.
+    #[serde(skip)]
+    unit_release: Option<PackageRef>,
     /// Asked by a session bound to the package's own frontend through the consent page's
     /// install sheet: it runs a release that frontend sees, as `POST /apps` from that
     /// session does. The node's own, never a client's.
@@ -435,6 +452,7 @@ pub(crate) async fn create_installed(
         metadata: Value::Null,
         deployment: i.deployment,
         unit_offer: None,
+        unit_release: None,
         from_frontend: i.from_frontend,
     };
     create_instance(node, p, owner, body, 0).await
@@ -522,7 +540,12 @@ async fn create_instance(
     depth: usize,
 ) -> Result<Value, ApiError> {
     let now = now_secs();
-    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_offer) {
+    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_release) {
+        // A unit's member: the release `unit_members` chose, nothing else.
+        (_, Some(chosen)) => {
+            let (bundle, compute) = chosen_parts(node, chosen)?;
+            (bundle, compute, Some(chosen.clone()))
+        }
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
         (Some(d), None) => {
@@ -545,19 +568,22 @@ async fn create_instance(
             .await?;
             (bundle, compute, Some(release))
         }
-        // A unit's member, or an app from a release or a bundle.
-        _ => {
+        // An app from a release or a bundle.
+        (None, None) => {
+            // Checked above: a bound session names its own package only.
+            let via = if p.bound_app().is_some() || body.from_frontend {
+                Via::Frontend
+            } else {
+                Via::Account
+            };
             bundle_named(
                 node,
                 body.bundle.clone(),
                 body.package.as_deref(),
                 body.version.as_deref(),
                 body.service.as_deref(),
-                &owner,
-                // Checked above: a bound session names its own package only. A member from
-                // a deployment runs the release its instance's offered release pins, whether
-                // or not its owner sees it otherwise, as the instance does.
-                p.bound_app().is_some() || body.unit_offer.is_some() || body.from_frontend,
+                (&owner, body.org.as_deref()),
+                via,
             )
             .await?
         }
@@ -625,7 +651,7 @@ async fn create_instance(
     let mut init_args = body.init_args;
     let links = match &release {
         Some(release) => {
-            let unit = unit_members(node, release).await?;
+            let unit = unit_members(node, release, &owner, body.deployment.as_deref()).await?;
             if unit.is_empty() {
                 BTreeMap::new()
             } else {
@@ -659,6 +685,12 @@ async fn create_instance(
                 });
                 let mut links = BTreeMap::new();
                 for (name, (package, version)) in unit.members {
+                    let chosen = PackageRef {
+                        package: package.clone(),
+                        version: version.clone(),
+                        service: None,
+                        compute: false,
+                    };
                     let member = CreateAppBody {
                         name: format!("{}.{name}", body.name),
                         bundle: None,
@@ -672,6 +704,7 @@ async fn create_instance(
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
                         unit_offer: unit_offer.clone(),
+                        unit_release: Some(chosen),
                         from_frontend: body.from_frontend,
                     };
                     let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
@@ -768,13 +801,32 @@ impl Unit {
     }
 }
 
+/// The app component and compute component of the installed release `r`, a unit member's.
+fn chosen_parts(node: &Node, r: &PackageRef) -> Result<(String, Option<String>), ApiError> {
+    let (services, compute) = node
+        .sys(|s| {
+            let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
+            Some((v.app_parts().clone(), v.compute.clone()))
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    let key = r.service.as_deref().unwrap_or_default();
+    let bundle = services
+        .get(key)
+        .cloned()
+        .ok_or_else(|| crate::packages::no_such_service(&r.package, &r.version, key, &services))?;
+    Ok((bundle, compute.get(key).cloned()))
+}
+
 /// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
-/// release of the package inside its range; a package with none is `409
-/// USES_NOT_INSTALLED`, naming what to install.
+/// release of the package inside its range, among those `creator` may use, the release's
+/// own signer published, or someone acting for the owner of `deployment` (the instance's)
+/// may use; a package with none is `409 USES_NOT_INSTALLED`, naming what to install.
 pub(crate) async fn unit_members(
     node: &Node,
     release: &crate::system::PackageRef,
+    creator: &str,
+    deployment: Option<&str>,
 ) -> Result<Unit, ApiError> {
     let Some(version) = node.sys(|s| {
         s.packages
@@ -809,10 +861,36 @@ pub(crate) async fn unit_members(
         if u.mode != calimero_bundle::UseMode::Create {
             continue;
         }
-        if let Err(e) = semver::VersionReq::parse(&u.range) {
-            return Err(ApiError::bad_request("BAD_USES", &e.to_string()));
-        }
-        let chosen = node.sys(|s| s.release_of_use(&(&u).into()).map(|(_, v)| v));
+        let range = semver::VersionReq::parse(&u.range)
+            .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
+        let installed: Vec<String> = node.sys(|s| {
+            let same_signer = s.same_signer(&release.package, &u.package);
+            let serves = |v: &crate::system::PackageVersion| {
+                deployment
+                    .and_then(|d| s.deployments.get(d))
+                    .is_some_and(|d| s.offer_serves(d, v))
+            };
+            s.packages
+                .get(&u.package)
+                .map(|p| {
+                    p.versions
+                        .iter()
+                        .filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))
+                        .map(|(k, _)| k.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        let chosen = match &u.version {
+            Some(v) if installed.contains(v) => Some(v.clone()),
+            Some(_) => None,
+            None => installed
+                .iter()
+                .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                .filter(|(p, _)| range.matches(p))
+                .max_by(|a, b| a.0.cmp(&b.0))
+                .map(|(_, v)| v.clone()),
+        };
         let Some(chosen) = chosen else {
             return Err(ApiError::new(
                 409,
@@ -882,6 +960,7 @@ async fn app_list(
         .as_ref()
         .and_then(|p| p.caller.account().map(str::to_owned));
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
+    let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
     let key = p.as_ref().and_then(|p| p.api_key.clone());
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
@@ -890,19 +969,15 @@ async fn app_list(
                 key.as_ref()
                     .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
             })
-            .map(|a| (a, s.running_release(a)))
-            .filter(|(_, r)| {
-                bound
-                    .as_ref()
-                    .is_none_or(|pkg| r.as_ref().is_some_and(|r| r.package == *pkg))
-            })
-            .filter(|(a, _)| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
-            .filter(|(a, _)| s.may_reach(a, account.as_deref()))
-            .filter(|(a, _)| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
-            .filter(|(_, r)| {
-                q.package
-                    .as_ref()
-                    .is_none_or(|p| r.as_ref().is_some_and(|r| r.package == *p))
+            .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
+            .filter(|a| s.may_reach(a, account.as_deref()))
+            .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
+            .map(|a| (a, crate::report::release_of_app(s, a, reader)))
+            // Releases may share a WASM: filter by the release the row names, not the bundle's.
+            .filter(|(_, release)| {
+                [&bound, &q.package].into_iter().flatten().all(|pkg| {
+                    release.as_ref().is_some_and(|r| r.package == *pkg)
+                })
             })
             .map(|(a, release)| {
                 json!({

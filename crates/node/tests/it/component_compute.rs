@@ -8,7 +8,7 @@ use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::{RunRecord, RunState};
 use calimero_node::Node;
-use common::{mpk_with, signed_up, typed, wire, Cluster, PUBLISHER};
+use common::{home_org, mpk_with, signed_up, typed, wire, Cluster, PUBLISHER};
 use serde_json::json;
 use sha2::Digest;
 
@@ -46,13 +46,10 @@ async fn install(owner: &Client, version: &str, app: &[u8], compute: &[u8]) {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = owner
         .packages()
-        .upload(mpk_with(
-            "com.test.compute",
-            version,
-            app,
-            Some(compute),
-            &key,
-        ))
+        .upload(
+            mpk_with("com.test.compute", version, app, Some(compute), &key),
+            Some(&home_org(owner).await),
+        )
         .await
         .unwrap();
 }

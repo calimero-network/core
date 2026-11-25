@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fromHex, hex } from '../crypto/internal.js';
 import type { SignedNodeRelease } from '../sealed/release.js';
@@ -149,13 +149,20 @@ async function attest(
     },
     ...opts.policy,
   };
+  // A release mirror (`{cloudUrl}/api/tee/node-releases/{version}`) answers the fixture and is recorded.
+  const mirrorAsked: string[] = [];
   const wrapped = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/api/tee/node-releases/')) {
+      mirrorAsked.push(url);
+      return new Response(JSON.stringify({ data: R87 }));
+    }
     const response = await n.fetchImpl(input, init);
     report = await n.verify();
     return response;
   }) as typeof fetch;
   const result = opts.verify ? verifyNode(BASE, policy, wrapped) : fetchAttestedKey(BASE, policy, wrapped);
-  return { result, releaseSource, queries: n.queries };
+  return { result, releaseSource, queries: n.queries, mirrorAsked };
 }
 
 describe('fetchAttestedKey with a release policy (core Measurements::Release)', () => {
@@ -461,5 +468,56 @@ describe('an app-bound attestation (the node binds its own record of the app)', 
   it('records the bound app hash of a mock attestation too, marked as mock', async () => {
     const { verification } = await verifyNode(BASE, { allowMock: true, app: 'app-1' }, mockNode(APP_HASH));
     expect(verification).toMatchObject({ mock: true, appHash: hex(APP_HASH) });
+  });
+});
+
+describe("the default mirrors follow the page's Calimero Cloud", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Attest with no `releaseSource` and no collateral fetch, so both come from the default mirrors. */
+  async function defaults() {
+    dcapCalls.getCollateral.length = 0;
+    const { result, mirrorAsked } = await attest({}, { releaseSource: undefined, fetchCollateral: undefined });
+    await expect(result).resolves.toEqual(TRANSPORT_KEY);
+    return { release: mirrorAsked, collateral: dcapCalls.getCollateral.map((a) => a[0]) };
+  }
+
+  it("a page on staging's apps domain reads staging's mirrors", async () => {
+    vi.stubGlobal('location', { hostname: 'abc.apps.relay.staging.cloud.calimero.network' });
+    expect(await defaults()).toEqual({
+      release: ['https://staging.cloud.calimero.network/api/tee/node-releases/2.3.87'],
+      collateral: ['https://staging.cloud.calimero.network/api/tee/pcs'],
+    });
+  });
+
+  it("production pages, every other host and Node (no location) read production's", async () => {
+    const production = {
+      release: ['https://cloud.calimero.network/api/tee/node-releases/2.3.87'],
+      collateral: ['https://cloud.calimero.network/api/tee/pcs'],
+    };
+    expect(globalThis.location).toBeUndefined();
+    expect(await defaults()).toEqual(production);
+    for (const hostname of [
+      'abc.apps.calimero.network',
+      'localhost',
+      'my-app.vercel.app',
+      'evil-apps.relay.staging.cloud.calimero.network.attacker.com',
+      'xapps.relay.staging.cloud.calimero.network',
+    ]) {
+      vi.stubGlobal('location', { hostname });
+      expect(await defaults(), hostname).toEqual(production);
+    }
+  });
+
+  it('an explicit releaseSource or collateralSource wins on staging too', async () => {
+    vi.stubGlobal('location', { hostname: 'abc.apps.relay.staging.cloud.calimero.network' });
+    dcapCalls.getCollateral.length = 0;
+    const { result, mirrorAsked } = await attest(
+      {},
+      { releaseSource: 'https://mirror.example', fetchCollateral: undefined, collateralSource: 'https://pccs.example' },
+    );
+    await expect(result).resolves.toEqual(TRANSPORT_KEY);
+    expect(mirrorAsked).toEqual(['https://mirror.example/api/tee/node-releases/2.3.87']);
+    expect(dcapCalls.getCollateral.map((a) => a[0])).toEqual(['https://pccs.example']);
   });
 });

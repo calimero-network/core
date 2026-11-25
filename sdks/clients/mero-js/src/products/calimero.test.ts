@@ -88,6 +88,91 @@ describe('Calimero.fromEnv: a cluster', () => {
   });
 });
 
+describe('Calimero.fromEnv: CALIMERO_ENVIRONMENT and CALIMERO_DIRECTORY', () => {
+  const cluster = { CALIMERO_CLUSTER: 'staging-1', CALIMERO_MIN_RELEASE: '2.3.109', CALIMERO_API_KEY: 'cal_test' };
+  const stub = () => vi.spyOn(CalimeroClient, 'connect').mockResolvedValue(new CalimeroClient({ baseUrl: node.url, policy: { allowMock: true } }));
+
+  it("staging: staging's directory, mirrors and image profiles, as a staging page gets them", async () => {
+    const connect = stub();
+    await Calimero.fromEnv({ ...cluster, CALIMERO_ENVIRONMENT: 'staging' });
+    expect(connect).toHaveBeenCalledWith({
+      cluster: 'staging-1',
+      environment: 'staging',
+      policy: {
+        release: {
+          minReleaseVersion: '2.3.109',
+          profiles: ['locked-read-only', 'debug', 'debug-read-only'],
+          allowDebugProfile: true,
+          releaseSource: 'https://staging.cloud.calimero.network',
+          collateralSource: 'https://staging.cloud.calimero.network/api/tee/pcs',
+        },
+      },
+    });
+  });
+
+  it("staging asks staging's directory and nothing of production's", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', async (input: string | URL | Request) => {
+      asked.push(String(input));
+      return new Response('not found', { status: 404 });
+    });
+    try {
+      await failure(Calimero.fromEnv({ ...cluster, CALIMERO_ENVIRONMENT: 'staging' }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(asked).toEqual(['https://manager.staging.cloud.calimero.network/api/directory/staging-1']);
+  });
+
+  it('an explicit CALIMERO_TEE_PROFILE wins over the environment\'s profiles', async () => {
+    const connect = stub();
+    await Calimero.fromEnv({ ...cluster, CALIMERO_ENVIRONMENT: 'staging', CALIMERO_TEE_PROFILE: 'locked-read-only' });
+    expect(connect.mock.calls[0][0].policy.release).toEqual({
+      minReleaseVersion: '2.3.109',
+      profile: 'locked-read-only',
+      allowDebugProfile: false,
+      releaseSource: 'https://staging.cloud.calimero.network',
+      collateralSource: 'https://staging.cloud.calimero.network/api/tee/pcs',
+    });
+  });
+
+  it("production names production's mirrors and adds no trust", async () => {
+    const connect = stub();
+    await Calimero.fromEnv({ ...cluster, CALIMERO_ENVIRONMENT: 'production' });
+    expect(connect).toHaveBeenCalledWith({
+      cluster: 'staging-1',
+      environment: 'production',
+      policy: {
+        release: {
+          minReleaseVersion: '2.3.109',
+          releaseSource: 'https://cloud.calimero.network',
+          collateralSource: 'https://cloud.calimero.network/api/tee/pcs',
+        },
+      },
+    });
+  });
+
+  it('unset leaves the connection exactly as before', async () => {
+    const connect = stub();
+    await Calimero.fromEnv({ ...cluster, CALIMERO_ENVIRONMENT: '' });
+    await Calimero.fromEnv(cluster);
+    expect(connect).toHaveBeenCalledTimes(2);
+    for (const [options] of connect.mock.calls) {
+      expect(options).toEqual({ cluster: 'staging-1', policy: { release: { minReleaseVersion: '2.3.109' } } });
+    }
+  });
+
+  it('CALIMERO_DIRECTORY names the directory, with or without an environment', async () => {
+    const connect = stub();
+    await Calimero.fromEnv({ ...cluster, CALIMERO_DIRECTORY: 'https://dir.example/api/directory' });
+    await Calimero.fromEnv({ ...cluster, CALIMERO_ENVIRONMENT: 'staging', CALIMERO_DIRECTORY: 'https://dir.example/api/directory' });
+    expect(connect.mock.calls.map(([o]) => [o.directory, o.environment])).toEqual([
+      ['https://dir.example/api/directory', undefined],
+      ['https://dir.example/api/directory', 'staging'],
+    ]);
+  });
+});
+
 describe('Calimero.fromEnv: what each mistake says', () => {
   const cluster = { CALIMERO_CLUSTER: 'eu-shared-1', CALIMERO_MIN_RELEASE: '2.3.109', CALIMERO_API_KEY: 'cal_test' };
   it.each([
@@ -98,6 +183,10 @@ describe('Calimero.fromEnv: what each mistake says', () => {
     ['no API key', { ...cluster, CALIMERO_API_KEY: '' }, /CALIMERO_API_KEY/],
     ['no release floor for a cluster', { ...cluster, CALIMERO_MIN_RELEASE: undefined }, /CALIMERO_MIN_RELEASE/],
     ['no release floor for an attested node', { CALIMERO_NODE_URL: 'http://127.0.0.1:1', CALIMERO_API_KEY: 'cal_test' }, /CALIMERO_MIN_RELEASE/],
+    ['an unknown environment', { ...cluster, CALIMERO_ENVIRONMENT: 'prod' }, /CALIMERO_ENVIRONMENT must be production or staging.*"prod"/],
+    ['an environment in another case', { ...cluster, CALIMERO_ENVIRONMENT: 'Staging' }, /CALIMERO_ENVIRONMENT must be production or staging/],
+    ['a directory for a dev node', { CALIMERO_NODE_URL: 'http://127.0.0.1:1', CALIMERO_API_KEY: 'cal_test', CALIMERO_ALLOW_UNATTESTED: '1', CALIMERO_DIRECTORY: 'https://dir.example' }, /CALIMERO_DIRECTORY is for a cluster/],
+    ['a directory that is not a URL', { ...cluster, CALIMERO_DIRECTORY: 'manager.staging.cloud.calimero.network' }, /CALIMERO_DIRECTORY must be an http\(s\) URL/],
     ['a profile without a release floor', { CALIMERO_NODE_URL: 'http://127.0.0.1:1', CALIMERO_API_KEY: 'cal_test', CALIMERO_ALLOW_UNATTESTED: '1', CALIMERO_TEE_PROFILE: 'debug' }, /CALIMERO_TEE_PROFILE needs CALIMERO_MIN_RELEASE/],
   ])('%s', async (_, env, message) => {
     const connect = vi.spyOn(CalimeroClient, 'connect').mockRejectedValue(new Error('connected'));

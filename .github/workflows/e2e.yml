@@ -3,16 +3,20 @@ name: E2E
 # The scenarios, the process suite and the clients on this tree's node, plus their nightly runs
 # against the latest release; each job is described in docs contribute/testing.
 
-# Runs on a PR labelled `ci:e2e`, on every merge-queue entry and nightly; `plan` decides
-# what the change reaches (scripts/ci-scope.py).
+# Runs on every push to master (after the merge), on a PR labelled `ci:e2e` or cutting a
+# release, and nightly; `plan` decides what the change reaches (scripts/ci-scope.py). In
+# the merge queue it reports `E2E result` and runs nothing: the queue gates on the
+# fast checks, and master runs this after the merge (`report-master` opens an issue
+# when it fails; the commit is reverted).
 on:
   # No `paths:` filter: `E2E result` is a required check and must report on every PR;
   # `plan` skips what the change cannot reach.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-  # No push trigger: every PR into master ran this already, and the nightly
-  # (schedule) runs all of it again on master, with the long soak.
+  # `E2E result` is required in the queue too, so it must report there; `plan` skips.
   merge_group:
+  push:
+    branches: ["master"]
   schedule:
     - cron: "23 3 * * *" # nightly soak, off the hour
   workflow_dispatch:
@@ -40,9 +44,11 @@ permissions:
   contents: read
 
 # A nightly has its own group so a push neither cancels nor queues it; master is never
-# cancelled, and a label other than `ci:e2e` gets its own group.
+# cancelled and gets a group per commit (`plan` scopes a push by its own range, so a
+# pending run a newer push replaced would leave its files untested), and a label
+# other than `ci:e2e` gets its own group.
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && github.event.label.name || 'run' }}
+  group: e2e-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.event_name == 'push' && github.sha || github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && github.event.label.name || 'run' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
@@ -83,8 +89,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
-          FROM: ${{ github.event.merge_group.base_sha }}
-          TO: ${{ github.event.merge_group.head_sha }}
+          FROM: ${{ github.event.before }}
+          TO: ${{ github.sha }}
         run: |
           set -uo pipefail
           files=""
@@ -95,7 +101,7 @@ jobs:
                 files=$listed
               fi
               ;;
-            merge_group)
+            push)
               if [ -n "${FROM//0/}" ] \
                 && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
                 && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
@@ -112,7 +118,21 @@ jobs:
           [ -n "$files" ] || all=true
           grep -qE '^(\.github/workflows/e2e\.yml|\.github/actions/)' <<<"$files" && all=true
           wanted=true
-          if [ "$EVENT" = pull_request ] && [ "$LABELLED" != true ]; then wanted=false; fi
+          # A PR that cuts a release runs everything: release.yml publishes on its merge,
+          # before the push run could fail. A cut is what release.yml calls one: the
+          # workspace version has no GitHub Release yet.
+          release_cut=false
+          if [ "$EVENT" = pull_request ] && grep -qx 'Cargo.toml' <<<"$files"; then
+            version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["metadata"]["workspaces"]["version"])') \
+              || version=""
+            if [ -z "$version" ] || ! gh api "repos/$REPO/releases/tags/$version" --silent 2>/dev/null; then
+              release_cut=true
+              all=true
+            fi
+          fi
+          if [ "$EVENT" = pull_request ] && [ "$LABELLED" != true ] && [ "$release_cut" != true ]; then wanted=false; fi
+          # The queue gates on the fast checks; this runs on master after the merge.
+          if [ "$EVENT" = merge_group ]; then wanted=false; all=false; fi
           # The clients' own sources, and the JS workspace they build in.
           sdk_clients=false
           grep -qE '^sdks/(clients/|package\.json$|pnpm-lock\.yaml$)' <<<"$files" && sdk_clients=true
@@ -131,7 +151,8 @@ jobs:
           # The consent page's browser tests run on every PR that reaches the page (its code, its
           # tests, this workflow), labelled or not: nothing else in the suite exercises the page.
           consent_page=false
-          if [ "$all" = true ] || grep -qE '^(crates/node/src/consent_page(/|\.rs$)|crates/node/tests/consent-page/)' <<<"$files"; then
+          if [ "$EVENT" = merge_group ]; then :
+          elif [ "$all" = true ] || grep -qE '^(crates/node/src/consent_page(/|\.rs$)|crates/node/tests/consent-page/)' <<<"$files"; then
             consent_page=true
           fi
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
@@ -140,7 +161,7 @@ jobs:
           echo "consent_page=$consent_page" >> "$GITHUB_OUTPUT"
           echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure sdk_clients=$sdk_clients all=$all -> e2e=$e2e node=$node clients=$clients consent_page=$consent_page"
           if [ "$EVENT" = pull_request ] && [ "$wanted" != true ]; then
-            echo "::notice::e2e runs in the merge queue; add the ci:e2e label to run it on this PR now"
+            echo "::notice::e2e runs on master after the merge; add the ci:e2e label to run it on this PR first"
           fi
 
   # The check to require: passes when every e2e job passed or was skipped by `plan`.
@@ -156,6 +177,30 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           jq -e '.plan.result == "success" and (to_entries | all(.value.result == "success" or .value.result == "skipped"))' <<<"$NEEDS"
+
+  # Master's push runs what the queue does not (every test; e2e.yml): a red push opens
+  # an issue, a green one closes it (.github/actions/report-master).
+  report-master:
+    name: Report master
+    needs: [result]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Report
+        uses: ./.github/actions/report-master
+        with:
+          needs: ${{ toJSON(needs) }}
+          workflow: E2E
 
   # merod, meroctl and the kv releases, built once; nightly builds with fat LTO so the soak
   # numbers are the release's, other runs skip it to link in a fraction of the time.
@@ -978,12 +1023,15 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # The cache group of platforms.yml's macOS release build; saves nothing.
+      # The `release` group, on macOS: rust-cache keys by OS, so ci-checks.yml's Linux
+      # save never reaches this job, and it built merod cold (about 38 of a queue
+      # entry's 50 minutes). The nightly saves it on master, where queue entries and
+      # PRs restore it; platforms.yml's macOS build restores it too.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: release
-          save-if: false
+          save-if: ${{ github.event_name == 'schedule' }}
 
       - name: Build merod for macOS
         run: cargo build -p merod --release --target aarch64-apple-darwin
