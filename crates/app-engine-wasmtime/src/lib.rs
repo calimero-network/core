@@ -4,6 +4,10 @@
 //! against the world and the D44 stubs, reads its ABI and compiles it through a checked
 //! disk cache; `invoke` runs `handle` in a fresh store per call (D8) under fuel, an epoch
 //! deadline, memory, table and stack limits, and maps every failure onto one `TrapKind`.
+//!
+//! Spec: [One run](https://calimero-network.github.io/core/protocol/execution/#one-run),
+//! [Limits](https://calimero-network.github.io/core/protocol/limits/).
+//! Crate guide: [`crates/app-engine-wasmtime/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-engine-wasmtime/AGENTS.md).
 
 use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;

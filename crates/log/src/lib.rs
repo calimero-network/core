@@ -7,6 +7,10 @@
 //! node runs WASM on the leader) use [`Group::propose`], which serializes
 //! proposals per group; the machine refuses, at apply, a command built on
 //! stale state, so an append needs no leadership round first.
+//!
+//! Spec: [Replication](https://calimero-network.github.io/core/protocol/replication/),
+//! [Storage](https://calimero-network.github.io/core/protocol/storage/).
+//! Crate guide: [`crates/log/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/log/AGENTS.md).
 
 #![allow(
     clippy::result_large_err,

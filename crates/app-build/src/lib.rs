@@ -3,6 +3,9 @@
 //! `cargo build --release --target wasm32-wasip2` emits a component whose
 //! `calimero:abi` custom section sits inside a nested core module. The build
 //! lifts it to the component's top level so a reader looks in one place.
+//!
+//! Spec: [Packaging & signing](https://calimero-network.github.io/core/build/packaging-signing/).
+//! Crate guide: [`crates/app-build/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-build/AGENTS.md).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
