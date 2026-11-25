@@ -416,11 +416,13 @@ impl Feature {
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
             Self::OffersOnly
             | Self::UndoToInstalledRelease
-            | Self::AutoUpdateMembersStay
-            | Self::KeyFollowUps => "1.0.0-rc.36",
-            Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers => {
-                "1.0.0-rc.38"
-            }
+            | Self::AutoUpdateMembersStay => "1.0.0-rc.36",
+            // #5356 merged after 1.0.0-rc.37 was cut (#5368), so rc.37 does not decode
+            // `then`: it rebuilds the key's statement without it and refuses the key.
+            Self::KeyFollowUps
+            | Self::HeldTeamGrants
+            | Self::InviteCreatorStanding
+            | Self::BackupKeyApprovers => "1.0.0-rc.38",
         }
     }
 }
@@ -1027,6 +1029,8 @@ mod tests {
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
     const RC36: &str = "1.0.0-rc.36";
+    const RC37: &str = "1.0.0-rc.37";
+    const RC38: &str = "1.0.0-rc.38";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1581,7 +1585,7 @@ mod tests {
             .filter(|f| f.names_an_entry())
             .partition(|f| {
                 ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC38,
                 ]
                 .contains(&f.since())
             });
@@ -1671,8 +1675,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC33);
         let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
-        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+        let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
+        let (rc36, rc38): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC36);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1863,15 +1869,14 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.36's (an instance outside every deployment is a deployer's, an undo only to a
-        // release still installed, an update on its own that keeps the unit's members, a key
-        // with follow-ups) for every node on rc.36: an rc.35 node ignores the flags and fields.
+        // release still installed, an update on its own that keeps the unit's members) for
+        // every node on rc.36: an rc.35 node ignores the flags.
         assert_eq!(
             rc36,
             [
                 Feature::OffersOnly,
                 Feature::UndoToInstalledRelease,
                 Feature::AutoUpdateMembersStay,
-                Feature::KeyFollowUps
             ]
         );
         for &feature in &rc36 {
@@ -1890,6 +1895,36 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc36 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.38's (a key with follow-ups) waits past rc.37, which was cut without it: a
+        // cluster on the published rc.37 logs rc.37 and still refuses it, as an rc.37 node
+        // would refuse the key (it rebuilds the statement without `then`).
+        assert_eq!(rc38, [Feature::KeyFollowUps]);
+        for n in &mut nodes {
+            n.release = RC37;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC37.into(),
+            nodes: (1..=3).map(|id| (id, RC37.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc38 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC37))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC38;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC38.into(),
+            nodes: (1..=3).map(|id| (id, RC38.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
