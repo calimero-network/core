@@ -254,7 +254,7 @@ the worker.
 
 ### Rollback counter
 
-Code: `rollback.rs`, `docs/specs/rollback-protection.md`.
+Code: `rollback.rs`.
 
 With a key from mero-kms that keeps counters (`kms::KmsCounter`, `Config::rollback`), the node keeps
 an entry `(generation, mark)` in its store (`Engine::put_node_meta`, row `rollback`, bound to its
