@@ -374,7 +374,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 }
                 Err(why) => {
                     let _gone = s.orgs.remove(&org_id);
-                    Err(why.into())
+                    Err(why)
                 }
             }
         }

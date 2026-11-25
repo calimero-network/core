@@ -2463,7 +2463,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
     // One per account.
     assert_eq!(
         m.run_unproven(create("mine2", "alice", true)),
-        Err(super::PERSONAL_ORG_EXISTS.into())
+        Err(super::PERSONAL_ORG_EXISTS)
     );
 
     // An app there shared with listed accounts reaches them without making
@@ -2564,7 +2564,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
     };
     assert_eq!(
         m.run_unproven(create("erins", "erin", true)),
-        Err(super::NO_PERSONAL_ORGS.into())
+        Err(super::NO_PERSONAL_ORGS)
     );
     assert!(!m.state.orgs.contains_key("erins"));
 
@@ -2763,7 +2763,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     // named on it.
     assert_eq!(
         m.run(redeem_as(&closed_key, closed_token, "erin")),
-        Err(GUESTS_NOT_ALLOWED.into())
+        Err(GUESTS_NOT_ALLOWED)
     );
     assert!(!reaches(&m, "closed", "erin"));
     let out = m.run(redeem_as(&closed_key, closed_token, "bob")).unwrap();
@@ -2825,7 +2825,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         .unwrap();
     assert_eq!(
         m.run(redeem_as(&off_key, off_token, "frank")),
-        Err(GUESTS_NOT_ALLOWED.into())
+        Err(GUESTS_NOT_ALLOWED)
     );
     assert!(!reaches(&m, "open", "frank"));
     assert!(m.state.app_invites.contains_key(&off_key));
@@ -12040,7 +12040,7 @@ fn an_updates_class_is_judged_against_the_log_and_recorded() {
     ] {
         assert_eq!(
             m.run_unproven(classified_upgrade("cora", "1.1.0", Some(wrong.clone()), 10)),
-            Err(UPGRADE_CLASS_MISMATCH.into()),
+            Err(UPGRADE_CLASS_MISMATCH),
             "{wrong:?}"
         );
     }
@@ -12163,7 +12163,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
         };
         assert_eq!(
             m.run_unproven(set(Some("oa"), Some(bad), "alice", Value::Null)),
-            Err(BAD_UPGRADE_POLICY.into()),
+            Err(BAD_UPGRADE_POLICY),
             "{hours}"
         );
     }
@@ -12227,7 +12227,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     // Without the policy, one approval, and a first approval has nothing to wait for.
     assert_eq!(
         m.run_unproven(approve("cora", "1.1.0", red(&telemetry), 5)),
-        Err(ONE_APPROVAL.into())
+        Err(ONE_APPROVAL)
     );
     let _ok = m
         .run_unproven(SystemCmd::SetUpgradePolicy {
@@ -12251,14 +12251,14 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
         .unwrap();
     assert_eq!(
         m.run_unproven(approve("cora", "1.0.1", green(), 5)),
-        Err(ONE_APPROVAL.into()),
+        Err(ONE_APPROVAL),
         "a green update needs no second"
     );
     // A red one, or one without a class, waits for a first approval by someone else.
     for class in [Some(red(&telemetry)), None] {
         assert_eq!(
             m.run_unproven(classified_upgrade("cora", "1.1.0", class, 10)),
-            Err(SECOND_APPROVAL_REQUIRED.into())
+            Err(SECOND_APPROVAL_REQUIRED)
         );
     }
     assert_eq!(
@@ -12268,7 +12268,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     );
     assert_eq!(
         m.run_unproven(approve("cora", "1.1.0", green(), 5)),
-        Err(ONE_APPROVAL.into()),
+        Err(ONE_APPROVAL),
         "approved as green"
     );
     assert!(
@@ -12281,7 +12281,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     assert_eq!(pending["by"], "cora", "{pending}");
     assert_eq!(
         m.run_unproven(approve("eve", "1.1.0", red(&telemetry), 6)),
-        Err(APPROVAL_PENDING.into()),
+        Err(APPROVAL_PENDING),
         "the second approver applies it instead"
     );
     // Not the same person twice, nor a week and a second later.
@@ -12292,7 +12292,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             Some(red(&telemetry)),
             10
         )),
-        Err(SECOND_APPROVAL_REQUIRED.into())
+        Err(SECOND_APPROVAL_REQUIRED)
     );
     let late = 5 + MAX_APPROVAL_AGE_SECS + 1;
     assert_eq!(
@@ -12306,7 +12306,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             Some(red(&telemetry)),
             late
         )),
-        Err(SECOND_APPROVAL_REQUIRED.into())
+        Err(SECOND_APPROVAL_REQUIRED)
     );
     // Not once the first approver is no longer an admin.
     let mut demoted = SystemMachine {
@@ -12326,7 +12326,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             Some(red(&telemetry)),
             10
         )),
-        Err(SECOND_APPROVAL_REQUIRED.into())
+        Err(SECOND_APPROVAL_REQUIRED)
     );
     // The second applies it; the record names the first, and the approval is spent.
     let _ok = m
@@ -12491,7 +12491,7 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
         ]
     );
     // No policy: never on its own.
-    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED.into()));
+    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED));
     assert!(m.state.auto_update_candidates(hold_over).is_empty());
     automatic(&mut m, 24);
     // Not before the hold, judged on the logged times.
@@ -12503,14 +12503,14 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
             hold_over - 1,
             Some(taken_on(1, 7))
         )),
-        Err(HOLD_NOT_OVER.into())
+        Err(HOLD_NOT_OVER)
     );
     assert!(m.state.auto_update_candidates(hold_over - 1).is_empty());
     // Not without a restore point of the group it runs on.
     for taken in [None, Some(crate::types::TakenRestorePoint::default())] {
         assert_eq!(
             m.run(auto_upgrade("1.0.1", "b3", Some(green()), hold_over, taken)),
-            Err(RESTORE_POINT_REQUIRED.into())
+            Err(RESTORE_POINT_REQUIRED)
         );
     }
     // Not red or unclassified, not with a destination, not back to an older release.
@@ -12537,7 +12537,7 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
     if let SystemCmd::UpgradeApp { actor, .. } = &mut as_cora {
         *actor = "cora".into();
     }
-    assert_eq!(m.run(as_cora), Err(AUTO_UPDATE_REFUSED.into()));
+    assert_eq!(m.run(as_cora), Err(AUTO_UPDATE_REFUSED));
     let mut unmarked = cmd.clone();
     if let SystemCmd::UpgradeApp { auto, .. } = &mut unmarked {
         *auto = false;
@@ -12592,7 +12592,7 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
             hold_over,
             Some(crate::types::TakenRestorePoint::default())
         )),
-        Err(AUTO_UPDATE_REFUSED.into())
+        Err(AUTO_UPDATE_REFUSED)
     );
 }
 
@@ -12652,13 +12652,13 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     ] {
         assert_eq!(
             m.run_unproven(undo("cora", apps, within)),
-            Err(UNDO_NOT_AS_NAMED.into()),
+            Err(UNDO_NOT_AS_NAMED),
             "{why}"
         );
     }
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [2, 1] }), within + 1)),
-        Err(UNDO_WINDOW_PASSED.into())
+        Err(UNDO_WINDOW_PASSED)
     );
     assert!(
         m.run(undo("cora", json!({ "inst": [2, 1] }), within))
@@ -12711,7 +12711,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     assert!(m.state.apps["inst"].restore_point.is_none(), "spent");
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [2, 1] }), within)),
-        Err(NO_RESTORE_POINT.into())
+        Err(NO_RESTORE_POINT)
     );
     // The release it undid never applies on its own again; a newer one may.
     let later = hold_over + 10;
@@ -12748,7 +12748,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         .unwrap();
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [1] }), 60)),
-        Err(UNDO_NOT_AS_NAMED.into())
+        Err(UNDO_NOT_AS_NAMED)
     );
     let group = m.state.apps["inst"].group;
     let _ok = m
@@ -12770,7 +12770,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     }
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [1] }), 60)),
-        Err(UNDO_STALE.into())
+        Err(UNDO_STALE)
     );
     if let Some(a) = m.state.apps.get_mut("inst") {
         a.bundle = "b3".into();
@@ -12839,7 +12839,7 @@ fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
     assert_eq!(undo(false).features(), [Feature::RestorePoints]);
 
     let mut m = moved_to_the_shared_wasm();
-    assert_eq!(m.run_unproven(undo(true)), Err(UNDO_RELEASE_GONE.into()));
+    assert_eq!(m.run_unproven(undo(true)), Err(UNDO_RELEASE_GONE));
     let a = &m.state.apps["inst"];
     assert_eq!(
         a.release.as_ref().unwrap().version,
@@ -12849,7 +12849,7 @@ fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
     assert!(a.restore_point.is_some(), "the restore point is kept");
     // The logged cluster version brings the rule to an entry without the flag.
     m.state.cluster_version = Some(Feature::UndoToInstalledRelease.since().to_owned());
-    assert_eq!(m.run_unproven(undo(false)), Err(UNDO_RELEASE_GONE.into()));
+    assert_eq!(m.run_unproven(undo(false)), Err(UNDO_RELEASE_GONE));
     // An entry logged before it, with no flag, applied.
     let mut m = moved_to_the_shared_wasm();
     let _ok = m.run_unproven(undo(false)).unwrap();
@@ -12944,7 +12944,7 @@ fn a_deployment_instances_hold_runs_from_its_offer() {
     };
     // A day after the install, but not after the offer: it waits.
     assert!(m.state.auto_update_candidates(1000 + day).is_empty());
-    assert_eq!(m.run(up(1000 + day)), Err(HOLD_NOT_OVER.into()));
+    assert_eq!(m.run(up(1000 + day)), Err(HOLD_NOT_OVER));
     // A day after the offer: found, with the offered release alone, and applied.
     let found = m.state.auto_update_candidates(2000 + day);
     let versions: Vec<&str> = found[0].1.iter().map(|r| r.version.as_str()).collect();
@@ -12973,7 +12973,7 @@ fn a_move_the_log_cannot_rebuild_is_never_applied_as_green() {
         .and_then(|p| p.versions.remove("1.0.0"));
     assert_eq!(
         m.run_unproven(classified_upgrade("cora", "1.1.0", Some(green()), 10)),
-        Err(UPGRADE_CLASS_MISMATCH.into()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a destination added, logged as green"
     );
     assert_eq!(m.state.apps["inst"].bundle, "b1", "a refusal moves nothing");
@@ -13003,7 +13003,7 @@ fn a_move_the_log_cannot_rebuild_is_never_applied_as_green() {
         .and_then(|p| p.versions.remove("1.0.1"));
     assert_eq!(
         m.run_unproven(classified_upgrade("cora", "1.1.0", Some(green()), 10)),
-        Err(UPGRADE_CLASS_MISMATCH.into()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a member the log cannot rebuild"
     );
 }
@@ -13055,7 +13055,7 @@ fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
     assert_eq!(m.state.unclassified(&inst, ("p", "1.1.0"), &empty), None);
     assert_eq!(
         m.run_unproven(approve("cora", unclassified("1.0.0"), 5)),
-        Err(UPGRADE_CLASS_MISMATCH.into())
+        Err(UPGRADE_CLASS_MISMATCH)
     );
     // `inst` runs p@1.0.0, uninstalled while p@1.0.1 still ships b1.
     let _gone = m
@@ -13069,7 +13069,7 @@ fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
     );
     assert_eq!(
         m.run_unproven(approve("cora", unclassified("1.0.1"), 5)),
-        Err(UPGRADE_CLASS_MISMATCH.into()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a release the log holds"
     );
     let pending = m
@@ -13179,7 +13179,7 @@ fn a_units_run_is_judged_once_under_its_instances_policy() {
     // The instance is judged over the unit: green is refused, the unit's red applies.
     assert_eq!(
         m.run_unproven(in_run("inst", "b1", "1.0.1", Some(green()))),
-        Err(UPGRADE_CLASS_MISMATCH.into()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a unit red through its member, logged green"
     );
     let _ok = m
@@ -13217,10 +13217,7 @@ fn a_units_run_is_judged_once_under_its_instances_policy() {
         *class = Some(red(&telemetry));
         *owner_approves = true;
     }
-    assert_eq!(
-        alone.run_unproven(cmd),
-        Err(SECOND_APPROVAL_REQUIRED.into())
-    );
+    assert_eq!(alone.run_unproven(cmd), Err(SECOND_APPROVAL_REQUIRED));
 }
 
 /// Units nest: a parent unit's first approval may cover a member that is itself the
@@ -13580,7 +13577,7 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
         .contains(&Feature::AutoUpdateMembersStay));
 
     let mut m = auto_unit_fixture();
-    assert_eq!(m.run(moving(true)), Err(AUTO_UPDATE_REFUSED.into()));
+    assert_eq!(m.run(moving(true)), Err(AUTO_UPDATE_REFUSED));
     // Logged before the rule: applies as it did, and the member stays behind.
     let mut before = auto_unit_fixture();
     let _ok = before.run(moving(false)).unwrap();
@@ -13601,7 +13598,7 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
     assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
     m.state.cluster_version = Some(Feature::AutoUpdateMembersStay.since().into());
     assert_eq!(versions(&m), ["1.0.2"]);
-    assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED.into()));
+    assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED));
     // A release whose lock keeps the member where it is still applies on its own.
     let mut keeping = auto_upgrade(
         "1.0.2",
