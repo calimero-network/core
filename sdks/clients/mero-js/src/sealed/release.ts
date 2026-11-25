@@ -55,11 +55,19 @@ const MEASUREMENTS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2', 'rtmr3'] as const;
 export const DEFAULT_RELEASE_MIRROR = 'https://cloud.calimero.network';
 
 /**
+ * Where the cloud at `cloudUrl` (e.g. `https://cloud.calimero.network`)
+ * mirrors the PCCS paths `@phala/dcap-qvl` reads, open to any origin.
+ */
+export function cloudCollateralUrl(cloudUrl: string): string {
+  return `${cloudUrl.replace(/\/+$/, '')}/api/tee/pcs`;
+}
+
+/**
  * Where browsers get Intel's collateral for a quote: the cloud's mirror of the
  * PCCS paths `@phala/dcap-qvl` reads, open to any origin. Intel's PCS sends no
  * CORS header. The mirror only carries Intel-signed items.
  */
-export const DEFAULT_COLLATERAL_MIRROR = `${DEFAULT_RELEASE_MIRROR}/api/tee/pcs`;
+export const DEFAULT_COLLATERAL_MIRROR = cloudCollateralUrl(DEFAULT_RELEASE_MIRROR);
 
 /**
  * A node release as the servers hand it out, wrapped as `{"data": ...}`: the

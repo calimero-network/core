@@ -21,8 +21,8 @@ const client = new CalimeroClient({
     release: {
       minReleaseVersion: '2.3.109', // required: the oldest mero-tee release trusted
       // profile: 'locked-read-only', // the default image profile
-      // releaseSource: 'github',     // or a mirror's URL, or a function; default the cloud's mirror
-      // collateralSource: 'intel',    // or a PCCS URL; default the cloud's mirror (DEFAULT_COLLATERAL_MIRROR)
+      // releaseSource: 'github',     // or a mirror's URL, or a function; default the page's cloud's mirror
+      // collateralSource: 'intel',    // or a PCCS URL; default the page's cloud's mirror (DEFAULT_COLLATERAL_MIRROR off staging)
       // maxCollateralAgeDays: 7,     // refuse TCB info Intel issued longer ago; default only its nextUpdate
       // minTcbEvaluationDataNumber: 22, // raise the TCB evaluation data floor (never below 20)
     },
@@ -32,7 +32,11 @@ const client = new CalimeroClient({
 
 Intel's collateral (TCB info, QE identity, CRLs) comes from the cloud's
 mirror by default, `https://cloud.calimero.network/api/tee/pcs`: Intel's PCS
-sends no CORS header, so a browser cannot read it. The mirror cannot forge
+sends no CORS header, so a browser cannot read it. A page served under
+staging's apps domain reads staging's mirrors instead
+(`CLOUD_ENVIRONMENTS.staging.cloudUrl`, `https://staging.cloud.calimero.network`),
+for releases and collateral alike; only the page's hostname picks them, and an
+explicit `releaseSource` or `collateralSource` always wins. The mirror cannot forge
 anything, since every item is Intel-signed and `@phala/dcap-qvl` checks it up
 to Intel's root CA, which it carries. What a mirror could do is replay an older
 copy that is still valid; Intel's `nextUpdate` (about 30 days) bounds that, and
@@ -50,7 +54,8 @@ as core's Rust client judges it (`attest::verify`, `Measurements::Release`):
    `minReleaseVersion` is refused before anything is fetched
    (`claimedRelease`).
 2. The release's `published-mrtds.json` and its cosign bundle are fetched, from
-   the `cloud.calimero.network` mirror by default, and the Sigstore signature
+   the `cloud.calimero.network` mirror by default (staging's on a staging
+   page), and the Sigstore signature
    is checked here against the node release workflow of
    `calimero-network/mero-tee` (`NODE_RELEASE_SIGNER`). The server is not
    trusted: a file that does not verify is refused.

@@ -745,18 +745,45 @@ change needs; the required `Rust` check waits on every job after it, and
 [`./scripts/check-like-ci.py`](/contribute/development/#before-a-pr) runs the
 same steps locally.
 
+The pull request and its merge-queue entry run the fast gate: `ci-checks.yml`
+with only the tests the change reaches (below), `sdks.yml` and the lints; in the
+queue, `E2E result` reports without running anything. The push to master runs the
+rest after the merge: every test in all four shards and `e2e.yml` in full, one run
+per commit. A red push opens an issue titled `master is red: <workflow>`
+(`.github/actions/report-master`, the `report-master` job) naming the commit, and
+the next green push closes it. A red master is reverted, not fixed forward. Master
+is not deployed, only a release is, and a pull request that cuts one runs
+`e2e.yml` in full before it merges.
+
 Every job runs on a standard GitHub-hosted runner (4 cores). The Rust jobs of
 `ci-checks.yml` and `e2e.yml` restore their rust-cache group: the dependencies
 and the workspace's own crates as master last built them. setup-rust-ci then sets
 every tracked file's mtime to an old date and touches the files that differ from
-the commit that build was made from (`target/.ci-cache-commit`), so cargo
-rebuilds only the crates a change reaches; with no such commit, every file counts
-as changed. The test apps the tests build from source on first use (every
+the commit that build was made from (`$RUNNER_TEMP/ci-cache-commit/commit`,
+saved through rust-cache's `cache-directories`: rust-cache deletes the files at
+`target/`'s root before it saves, so a marker kept there was never cached), so
+cargo rebuilds only the crates a change reaches; with no such commit, every file
+counts as changed. rust-cache saves only when its key (the dependencies) changes,
+so the cached build is as old as the last dependency change on master. The test apps the tests build from source on first use (every
 guest and fixture in `target/app-components`, built once through
 `calimero_app_build::build_in_repo_cache` into one cargo target dir;
 app-build's own test builds in `target/tmp`; the SDK's compile-fail cases in
 `target/tests/trybuild`) are cached apart, saved from master, whose push runs
-`Rust tests (1/4)` alone: the merge queue already ran every test on that tree. (sccache on the Actions cache was tried and dropped: with this many
+`Rust tests (1/4)`; that push runs every shard.
+
+A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
+(`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace
+crates it changes, so `Rust tests` runs their tests and those of every crate
+depending on them, dev-dependencies included. A change reaching beyond that graph
+runs every test: a file outside a workspace crate (`apps/`, fixtures, scripts,
+`docs/public/openapi.json`, which tests read by path), an input of every job, or a
+crate the test guests compile from (the SDK, the app engine and their
+dependencies, which the guests build against outside cargo's graph of the
+workspace). The queue's diff is the entry against its base, so two changes that
+break each other within that graph still fail there. The push to master runs every
+test whatever the filter, so a test the filter missed fails there. In `.config/nextest.toml`, the
+guest builder's tests and the SDK's compile-fail cases have a high `priority`, so
+they start first rather than leave one shard running minutes after the others. (sccache on the Actions cache was tried and dropped: with this many
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace
@@ -783,14 +810,18 @@ tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node
 answers `503` (D70), about seven times. A new slow test is made fast, not listed.
 
-`.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
-reaches code, and nightly on master with the long soak; a PR runs it only when
-labelled `ci:e2e`, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
+`.github/workflows/e2e.yml` runs on every push to master whose change reaches code
+(after the merge), and nightly on master with the long soak; a PR runs it first
+only when labelled `ci:e2e` or when it cuts a release (its workspace version has
+no GitHub Release yet, the test `release.yml` publishes on), and a merge-queue
+entry runs none of it, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
 the builds and the scenarios for any code change, and the process suite, compute
 and the clients only for a change that reaches `merod`'s closure, the compute
-fixtures or the fault tests; `E2E result` gathers them into one check the queue
-can require. A push to master runs only what saves the caches (`Rust tests (1/4)`,
-the upgrade path) and what publishes: the queue already tested that tree.
+fixtures or the fault tests; `E2E result` gathers them into one check, required on
+PRs and in the queue, where it passes when `plan` skips everything. On master its
+`report-master` job opens or closes the red-master issue. `clients against merod
+(mero-swift)` builds `merod` on macOS from the `release` cache group, which the
+nightly run saves: rust-cache keys by OS, so the Linux save never reaches it.
 
 The jobs:
 
