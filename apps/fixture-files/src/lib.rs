@@ -11,20 +11,20 @@ use sha2::{Digest, Sha256};
 /// One write call's size: the file reaches the host in pieces, as a real app's would.
 const WRITE_PIECE: usize = 64 * 1024;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct PutOut {
     pub id: String,
     pub sha256: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct ReadOut {
     /// Decimal string (D20).
     pub size: String,
     pub sha256: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct InfoOut {
     pub size: String,
     pub sha256: String,

@@ -20,7 +20,7 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
   Sigstore-verified release policy. A host that names an older release is held
   by `MERO_TEE_MIN_VERSION`; one that names another URL reaches a KMS the policy
   refuses.
-- **Key release** (`kms/`): challenge, this TD's quote over it, a signed request with
+- **Key release** (`kms.rs`, `kms/`): challenge, this TD's quote over it, a signed request with
   the identity's libp2p key; the KMS answers with the key for
   `{namespace}/{profile}/{peerId}`, sealed to the request (`kms/sealed.rs`).
 - **Disk key** (`disk_key.rs`): `fetch_disk_key(url, identity, create)` returns the key

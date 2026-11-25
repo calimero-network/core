@@ -197,7 +197,7 @@ jobs:
               --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
           done
           if [ "$NIGHTLY" = true ]; then
-            # Builds the Rooms component into target/app-components (tests/common/mod.rs).
+            # Builds the Rooms component into target/app-components (tests/it/common.rs).
             cargo test --release -p calimero-node --test it rooms::
           fi
 

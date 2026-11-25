@@ -228,10 +228,13 @@ pub enum Feature {
     /// so it is refused where its release would move the unit's members
     /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
     AutoUpdateMembersStay,
+    /// `CreateApiKey { then }`: a key whose consent also approved confirm calls. An earlier
+    /// release rebuilds the statement without them and refuses the key a later one makes.
+    KeyFollowUps,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 51] = [
+pub const FEATURES: [Feature; 52] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -283,6 +286,7 @@ pub const FEATURES: [Feature; 51] = [
     Feature::UndoToInstalledRelease,
     Feature::HostFuel,
     Feature::AutoUpdateMembersStay,
+    Feature::KeyFollowUps,
 ];
 
 impl Feature {
@@ -341,6 +345,7 @@ impl Feature {
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
             Self::HostFuel => "hostFuel",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
+            Self::KeyFollowUps => "keyFollowUps",
         }
     }
 
@@ -403,7 +408,7 @@ impl Feature {
                 "1.0.0-rc.36"
             }
             Self::HostFuel => "1.0.0-rc.37",
-            Self::PrivateReleases => "1.0.0-rc.38",
+            Self::PrivateReleases | Self::KeyFollowUps => "1.0.0-rc.38",
         }
     }
 }
@@ -710,9 +715,19 @@ impl SystemCmd {
                 f
             }
             Self::CreateApiKey {
-                owner_approves: true,
+                owner_approves,
+                then,
                 ..
-            } => vec![Feature::OwnerApprovedUpgrades],
+            } if *owner_approves || !then.is_empty() => {
+                let mut f = Vec::new();
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
+                if !then.is_empty() {
+                    f.push(Feature::KeyFollowUps);
+                }
+                f
+            }
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -1259,6 +1274,9 @@ mod tests {
             Feature::AutoUpdateMembersStay => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true,
                 "members_stay": true })),
+            Feature::KeyFollowUps => entry(json!({ "op": "createApiKey", "hash": "h",
+                "record": { "keyId": "k", "account": "a", "label": "", "expiresAt": 1 },
+                "then": [{ "app": "app", "method": "setAccess", "argsHash": "h" }] })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1870,9 +1888,9 @@ mod tests {
         for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.38's for every node on rc.38: who may use a release (an rc.36 or rc.37 node
-        // drops both fields).
-        assert_eq!(rc38, [Feature::PrivateReleases]);
+        // rc.38's for every node on rc.38: who may use a release, a key with follow-ups (an
+        // rc.36 or rc.37 node drops the fields).
+        assert_eq!(rc38, [Feature::PrivateReleases, Feature::KeyFollowUps]);
         for &feature in &rc38 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

@@ -15,7 +15,7 @@
 //! share) uses `policy_valid`. Two sites implement equivalent enforcement
 //! inline and keep it by design (they emit richer, mode-specific errors this
 //! crate cannot):
-//! - `calimero-kms-client`'s `kms/mod.rs` — `enforce_attestation_policy`
+//! - `calimero-kms-client`'s `kms.rs` — `enforce_attestation_policy`
 //!   (ReleaseStrict/Config split), over `is_valid`;
 //! - the mero-tee KMS `get_key.rs` — key-release side (external consumer).
 //!
