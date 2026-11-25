@@ -37,7 +37,7 @@ jobs:
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'run-benchmarks') }}
         run: |
           # A crate's first `[[bench]]` goes here, or it gets no baseline on a push.
-          all='["calimero-log","calimero-sealed"]'
+          all='["calimero-app-engine-wasmtime","calimero-log","calimero-sealed"]'
           if [ "$EVENT" != pull_request ]; then
             crates="$all"
           elif [ "$ACTION" = labeled ]; then
@@ -74,11 +74,13 @@ jobs:
       # for jobs that never gate, and they evicted the caches that do. No other
       # group builds the bench profile (release: fat LTO, host target), so the
       # restore finds nothing and the benches build cold.
+      # wasm32-wasip2: calimero-app-engine-wasmtime's bench builds its guest component.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: bench
           save-if: false
+          targets: wasm32-wasip2
 
       - name: Run benchmarks
         run: cargo bench -p "${MATRIX_CRATE}" -- --save-baseline "${SHA}"
