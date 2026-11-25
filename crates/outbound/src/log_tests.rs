@@ -67,13 +67,30 @@ fn app() -> AppIdentity {
     AppIdentity {
         package: "com.example.app".to_owned(),
         signer: "did:key:zApp".to_owned(),
-        secrets: None,
+        secrets: BTreeMap::new(),
         own: OwnSecrets::default(),
     }
 }
 
+/// Fails every request with the transport's own words, which quote the URL.
+#[derive(Debug)]
+struct Fails;
+
+impl Transport for Fails {
+    fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
+        Err(eyre::eyre!(
+            "connection reset while sending {}",
+            request.url
+        ))
+    }
+}
+
 fn run(approved: bool) -> Arc<dyn OutboundHost> {
-    let service = OutboundService::with_parts(&["api.example.com"], None, Arc::new(Ok200));
+    run_over(approved, Arc::new(Ok200))
+}
+
+fn run_over(approved: bool, transport: Arc<dyn Transport>) -> Arc<dyn OutboundHost> {
+    let service = OutboundService::with_parts(&["api.example.com"], None, transport);
     let approval = Approval {
         prefixes: if approved {
             vec![PREFIX.to_owned()]
@@ -159,4 +176,21 @@ fn a_sent_request_logs_its_declared_prefix_not_its_path() {
     assert!(log.contains("outbound request"), "{log}");
     assert!(log.contains(&format!("prefix=\"{PREFIX}\"")), "{log}");
     assert_no_input(&log);
+}
+
+/// Reproduction (F6): a request the transport failed logged its URL's path, which
+/// can name a user; it logs the declared prefix, as a sent one does.
+#[test]
+fn a_failed_request_logs_its_declared_prefix_not_its_path() {
+    let url = format!("{PREFIX}users/{USER}?token={TOKEN}");
+    let mut failed = String::new();
+    let log = logged(|| {
+        failed = run_over(true, Arc::new(Fails))
+            .send(&get(&url, ""))
+            .unwrap_err();
+    });
+    assert!(log.contains("outbound request failed"), "{log}");
+    assert!(log.contains(&format!("prefix=\"{PREFIX}\"")), "{log}");
+    assert_no_input(&log);
+    assert_no_input(&failed);
 }

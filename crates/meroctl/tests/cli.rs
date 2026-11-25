@@ -996,7 +996,8 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
         app.join("Cargo.toml"),
         "[package]\nname = \"dep\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
          package = \"com.test.dep\"\noutbound = [\"https://api.example.com/v1/\"]\n\n\
-         [package.metadata.calimero.secrets.API_KEY]\nhosts = [\"api.example.com\"]\n\
+         [package.metadata.calimero.secrets.API_KEY]\nhost = \"api.example.com\"\n\
+         paths = [\"/v1/\"]\nheader = \"x-api-key\"\n\
          description = \"the API's key\"\nrequired = false\n",
     )
     .unwrap();

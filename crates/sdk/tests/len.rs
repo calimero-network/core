@@ -60,8 +60,8 @@ fn row(kind: &str) -> Vec<u8> {
 /// What a table written before the length existed looks like: its rows without `n` and `l`.
 fn forget_len(store: &MemStore) {
     let mut store = store.clone();
-    store.delete(&row("n"));
-    store.delete(&row("l"));
+    store.delete(&row("n")).unwrap();
+    store.delete(&row("l")).unwrap();
 }
 
 #[test]

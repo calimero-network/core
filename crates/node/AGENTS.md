@@ -48,6 +48,15 @@ is its command line.
   proof is judged in `system/<area>.rs`'s `authorize` and it applies in that
   module's `apply`; `system.rs` keeps the state, the shared rules and the two
   dispatchers. A new command names its area there and gets an arm in both.
+  A refusal is a `system::Rejection` (`system/rejection.rs`): a `RejectionKind`
+  and a message. The status and code a client sees come from the kind
+  (`RejectionKind::status`, `code`; `node::rejected`), never from the wording:
+  `apply` answers `{"err": <message>, "code": <code>}` and `system::output` reads
+  the kind back from `code`. A refusal with its own status is a `Rejection`
+  constant (`NOT_A_DEPLOYER`, `UNIT_MEMBER`, the update refusals) or made by
+  `Rejection::quota` / `Rejection::sign_up` / `Stall::rejection`; a plain
+  `&str` converts to `REJECTED` (400). Regression:
+  `a_refusals_status_comes_from_its_kind_not_its_wording`.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader (a strong view runs on the replica that takes it once it applied the leader's read index, `internal/app/index`, `Node::app_read_index`; else on the leader; regression `a_follower_answers_a_strong_view_after_a_read_index`), over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
@@ -530,7 +539,9 @@ is its command line.
   through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
-  in the gate; each only for a name the release declares. The deployment's
+  in the gate; each only for a name the release declares, and attached by the gate
+  where its binding says (`PackageVersion::secrets`, one host and one header or body
+  field each; the shape since 1.0.0-rc.37, a hard cutover). The deployment's
   only for a run of a release of a package it offers or an offered release
   references (`SystemState::deployment_covers`, over `used_releases`; any
   version: its signer is pinned): its
@@ -557,7 +568,7 @@ is its command line.
   sign-up invite only; an invite presented is checked on every policy).
   The invite is `SignUpRedemption { inviteKey, now, signature }`, the token
   key's `proof::sign_invite_redeem` over the new account, spent in
-  `used_proofs`; refusals start with `system::SIGN_UP_PREFIX` (`403
+  `used_proofs`; refusals are `Rejection::sign_up` (`403
   SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse first
   (`api::refuse_sign_up`, fresh state before refusing; the finish before its
   challenge is spent). `SystemState::sign_up_invites` (`CreateSignUpInvite`,
@@ -1450,7 +1461,7 @@ is its command line.
   (`StartUpgradeRun` drops any other run's, whatever the entry lists), and its members are
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`).
-  The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
+  The apply errors carry their code (each a `system::Rejection` of its own `RejectionKind`).
   `autoApply` (`noDestinations`: a green update that removes no method and moves none of
   the apps it created, of an app whose unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
@@ -2520,7 +2531,7 @@ API and system group:
   D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
   the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
   (the signed release's prefixes, the owner's approval, the operator's hosts,
-  `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
+  the credentials the release binds, attached by the gate, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
   timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
   trap or removed method fails at once; a failure sends `ActionFailed { actionId,
   method, reason }` to the starter (an event with an `Accounts` audience) and runs

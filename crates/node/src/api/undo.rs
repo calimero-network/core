@@ -112,7 +112,7 @@ async fn plan(
                 s.undo_release_installed(p)?;
                 Ok((a.clone(), p.clone()))
             })
-            .collect::<Result<Vec<_>, &'static str>>()
+            .collect::<Result<Vec<_>, crate::system::Rejection>>()
     })
     .map_err(crate::node::rejected)
 }

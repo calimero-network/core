@@ -25,11 +25,13 @@
 //! - the request fits the limits below, and its host resolves only to public
 //!   addresses.
 //!
-//! Secrets the app needs (an API key) are the operator's, never the app's: the
-//! request names one as `{{secret:NAME}}` in a header value or the body, and
-//! the node substitutes it only into a request to the host the operator bound
-//! that secret to. The app never reads it, and any copy of it in the response
-//! is removed before the app sees the response.
+//! Secrets the app needs (an API key) are supplied by the operator or the
+//! instance's owner, never by the app, and the app never places them: its
+//! signed manifest binds each to one host and one header or body field
+//! (`calimero_bundle::BundleSecret`), and the node attaches it there itself.
+//! A request that sets that header or field, or still writes the retired
+//! placeholder [`SECRET_PLACEHOLDER`], is refused. Any copy of a secret in the
+//! response is removed before the app sees the response.
 //!
 //! Like search, this is node-local: the request and the response are never
 //! part of a log entry. Only the state the run writes because of them is.
@@ -58,11 +60,15 @@ pub const MAX_RESPONSE_BODY: usize = 1024 * 1024;
 /// holds its app's proposal lock meanwhile.
 pub const TIMEOUT_MS: u64 = 10_000;
 
-/// How a request names a secret the node fills in: `{{secret:NAME}}`.
-pub const SECRET_PREFIX: &str = "{{secret:";
+/// The start of the retired placeholder `{{secret:NAME}}`: a request holding it
+/// anywhere (URL, header, body) is refused, never filled in. Credentials are
+/// bound in the manifest and attached by the node instead.
+pub const SECRET_PLACEHOLDER: &str = "{{secret:";
 
-/// The end of a secret placeholder.
-pub const SECRET_SUFFIX: &str = "}}";
+/// Where an app's developer reads how secrets are bound, named in the refusal
+/// of a request that still writes [`SECRET_PLACEHOLDER`].
+pub const SECRETS_DOCS: &str =
+    "https://calimero-network.github.io/core/build/guides/outbound/#secrets";
 
 /// The methods a request may use. Append only: the borsh tag is the index.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
