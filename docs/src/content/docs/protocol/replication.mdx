@@ -440,7 +440,7 @@ one node is held by that node alone ("a majority" of one).
 Every replica set a move records keeps the current replicas first, in their order, then the new ones
 (`move_replicas`): `replicas[0]` is the node that initializes the group (`Node::ensure_app_group`),
 and a sorted union made a newcomer with a lower id form an empty group of its own, which a majority
-of newcomers elected and which then overwrote the real group's log (B8).
+of newcomers elected and which then overwrote the real group's log.
 
 ### A stopped group
 

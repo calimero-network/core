@@ -1,4 +1,4 @@
-"""Randomized fault test of Rooms on a 3-process merod cluster (acceptance criterion A4).
+"""Randomized fault test of Rooms on a 3-process merod cluster: no acknowledged write is lost or applied twice when the leader dies.
 
 Adapted from the release-v2 review's tests/raft/jepsen.py (findings/area1-2-raft.md), with
 Rooms (apps/rooms) as the workload instead of the nested-crdt-test app.

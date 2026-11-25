@@ -175,10 +175,11 @@ pub struct Governance {
     pub outbound: Authority,
     /// Who may install apps (signed packages, raw bundles). `open`: any
     /// account. `granted`: only an account holding a live deployer grant, or
-    /// a `MANAGE_APPLICATION` holder of an organization holding one; anyone
-    /// may still create instances of the releases they see. Left out of the
-    /// JSON when `open`, so a cluster with the defaults attests the bytes it
-    /// did before this field.
+    /// a `MANAGE_APPLICATION` holder of an organization holding one. Anyone
+    /// else creates instances only from a deployment's offer or of a release
+    /// the operator installed ([Deployers](https://calimero-network.github.io/core/protocol/governance/#deployers)).
+    /// Left out of the JSON when `open`, so a cluster with the defaults
+    /// attests the bytes it did before this field.
     #[serde(default, skip_serializing_if = "Deployments::is_default")]
     pub deployments: Deployments,
     /// Who grants deployers where deployments are `granted`. `operator`: the

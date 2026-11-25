@@ -1,4 +1,4 @@
-//! G1 measurements (plan Task 13 Step 1) on the in-process three-node cluster.
+//! The first milestone's measurements on the in-process three-node cluster.
 //! Ignored by default; run in release on an otherwise idle machine:
 //!
 //! `cargo test --release -p calimero-node --test it bench:: -- --ignored --nocapture --test-threads 1`
@@ -80,7 +80,7 @@ async fn account_id(c: &Client) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "measurement for the G1 report; run by hand in release"]
+#[ignore = "measurement for the first milestone's report; run by hand in release"]
 async fn g1_measurements() {
     let c = Cluster::start(3).await;
     let (owner, mut pk) = signed_up(&c, 0, "owner").await;

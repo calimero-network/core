@@ -16,7 +16,7 @@
 //! ordered, as a persistent map ([`Kv`]): a run gets the current version as its
 //! `StateView` (ordered `range` scans), and `apply` writes the next one sharing
 //! everything it does not change, so a run holding the previous one costs a write
-//! O(log n) copied nodes, never a copy of the whole state (B7). The map is rebuilt from the rows on a restart and after a
+//! O(log n) copied nodes, never a copy of the whole state. The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees.
 //!
@@ -822,7 +822,7 @@ fn stamps(raw: &[u8]) -> Option<(u64, u64)> {
 
 /// An app's stored keys and values, shared between the machine and the runs reading it.
 ///
-/// A persistent ordered map (B7): a clone is O(1) and shares every node, and a
+/// A persistent ordered map: a clone is O(1) and shares every node, and a
 /// write to a version a run still reads copies only the path to the key it
 /// changes, O(log n), never the whole state. Iterated and ranged in key order,
 /// as a `BTreeMap` is.
@@ -1263,7 +1263,7 @@ impl AppMachine {
             if !outcome.diff.is_empty() {
                 // References to blobs move with the values that hold them.
                 let mut deltas = BTreeMap::new();
-                // Copies only the paths a run's view still shares (B7).
+                // Copies only the paths a run's view still shares.
                 let kv = &mut c.kv;
                 for w in &outcome.diff {
                     // Search catches up from the records an entry touched.
@@ -2891,7 +2891,7 @@ mod tests {
         assert_eq!(held(&r), [fid(1)]);
     }
 
-    /// Reproduction (B4): an app entry this replica cannot decode (a later
+    /// Reproduction: an app entry this replica cannot decode (a later
     /// release's command) was skipped, and the replica went on serving a state
     /// the others no longer had. Its batch now fails and the group stops there.
     #[test]
@@ -3410,7 +3410,7 @@ mod tests {
         assert_eq!(r.machine.view().get(b"k"), Some(b"2".to_vec()));
     }
 
-    /// The persistent map answers every read as the `BTreeMap` it replaced (B7):
+    /// The persistent map answers every read as the `BTreeMap` it replaced:
     /// the same values, ranges in the same order both ways, the same empty and
     /// unbounded ends, after the same writes and deletes.
     #[test]
@@ -3456,7 +3456,7 @@ mod tests {
 
     /// A write while a view holds the state costs about what one with no view
     /// does: apply shares the unchanged part of a large state with the view
-    /// instead of copying all of it (B7).
+    /// instead of copying all of it.
     #[test]
     fn a_write_under_a_view_does_not_copy_the_whole_state() {
         const KEYS: usize = 100_000;

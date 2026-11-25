@@ -538,8 +538,8 @@ async fn move_replicas(
     // initializes it there): every set this move records keeps the current
     // replicas first, in their order, so it is never a node that has not
     // joined the group yet. A sorted union put a newcomer with a lower id
-    // first, and it formed an empty group of its own with the others as voters
-    // (B8). The system group compares these sets as sets, so the order is the
+    // first, and it formed an empty group of its own with the others as voters.
+    //The system group compares these sets as sets, so the order is the
     // writer's to choose.
     let kept = |set: &std::collections::BTreeSet<u64>| -> Vec<u64> {
         app.replicas

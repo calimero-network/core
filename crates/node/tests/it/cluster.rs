@@ -3781,7 +3781,7 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
 /// (`/health`), the system leader logs it once all of them do (`/ops/placement`,
 /// and every replica's system state), and a node that joins later on the same
 /// build is admitted at it (`system::cluster_version`).
-/// B4: a gated command is admitted only once the version that brings it is in
+/// A gated command is admitted only once the version that brings it is in
 /// the log, the version that keeps older nodes out of the system group, so no
 /// node joins below an entry it cannot decode. Asked right after the cluster
 /// starts, before the leader's own raise, the gate logs it itself.
@@ -4409,7 +4409,7 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     );
 }
 
-/// B8: a move must not let a node that has not joined the app's group form one
+/// A move must not let a node that has not joined the app's group form one
 /// of its own. Growing an app on node 3 to nodes 1, 2 and 3 first records the
 /// union of the replica sets, and every node of it starts the group. With the
 /// union sorted, node 1, a newcomer, was `replicas[0]`, the node that
@@ -6897,7 +6897,7 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
 }
 
-/// B6: heartbeats travel batched per peer (`internal/raft-batch`): the system
+/// Heartbeats travel batched per peer (`internal/raft-batch`): the system
 /// group keeps its leader and term over several election timeouts on them
 /// alone, every node receives batches, and writes commit. (A peer that
 /// refuses batches, answered item by item: `calimero-log`'s

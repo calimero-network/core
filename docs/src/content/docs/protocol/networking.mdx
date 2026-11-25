@@ -243,7 +243,7 @@ Both Raft checks run per heartbeat of every app group, so they read `SystemMachi
 and `group_may_hold` (`system/routing.rs`: a group -> app and node -> apps index and a (group,
 release) decision cache, derived, dropped on every system apply and restore; `Node::sys_machine`),
 never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
-Heartbeats always travel batched per peer (`internal/raft-batch`, `PeerTransport::send_batch`, B6);
+Heartbeats always travel batched per peer (`internal/raft-batch`, `PeerTransport::send_batch`);
 every item passes `admit_raft` as a message alone does, only empty appends, at most
 `MAX_HEARTBEATS_PER_BATCH`; a batch a peer refuses is sent again item by item.
 

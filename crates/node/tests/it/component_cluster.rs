@@ -2772,7 +2772,7 @@ async fn acme_with_bob_and_carol(
     (org, app, bob_id)
 }
 
-/// G4: the presence stream was judged once, when it was opened. A member removed from the
+/// The presence stream was judged once, when it was opened. A member removed from the
 /// organization kept receiving who else was present in the app, and the state each of them
 /// published, for as long as the stream stayed open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -2829,7 +2829,7 @@ async fn a_removed_member_stops_receiving_presence() {
     );
 }
 
-/// G4: an event stream judged its subscriber's account, never the credential that opened it.
+/// An event stream judged its subscriber's account, never the credential that opened it.
 /// A stream opened with an API key, or a session, went on after the key was revoked or the
 /// session ended, so revoking a leaked key did not stop it reading the app's events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -1,4 +1,4 @@
-//! Heartbeats batched per peer (B6): every group's heartbeats to one peer go
+//! Heartbeats batched per peer: every group's heartbeats to one peer go
 //! in one message, and a peer that refuses a batch is answered item by item.
 //! No group may lose its leader or move to a new term.
 

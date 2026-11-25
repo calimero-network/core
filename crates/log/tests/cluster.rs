@@ -217,7 +217,7 @@ async fn replicates_to_every_node() {
 /// A node whose machine cannot apply an entry (`StateTx::fail`) stops its
 /// group on it: nothing of it or after it applies there, not even later
 /// entries of the same batch, while the other nodes go on. This is what the
-/// node's machines do with an entry a later release wrote (B4).
+/// node's machines do with an entry a later release wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_batch_stops_that_nodes_group_on_the_entry() {
     let net = Arc::new(Net::default());

@@ -2189,7 +2189,7 @@ async fn a_stranger_cannot_subscribe_to_a_private_apps_run() {
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
 }
 
-/// G4: a run's event stream was judged once, when it was opened, then polled the run as the
+/// A run's event stream was judged once, when it was opened, then polled the run as the
 /// subscriber for up to an hour. A member removed from the app's organization went on seeing
 /// every step move and the run end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

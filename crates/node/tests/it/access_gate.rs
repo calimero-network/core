@@ -461,7 +461,7 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
 
-/// G4 (L4): the owner and admin checks a route makes after `gate` (`manages_app`,
+/// The owner and admin checks a route makes after `gate` (`manages_app`,
 /// `may_handle_files`, `read_only_in`) judged the app record the handler read before
 /// `gate`'s read-index round, so on a follower behind they saw the owner and organization
 /// the record held then. Here Bob hands his app to Alice through the leader while the

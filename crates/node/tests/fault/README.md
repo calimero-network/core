@@ -13,7 +13,7 @@ latest release image's `merod`) and in `release.yml`'s `E2E on the merod image`
 | `suite.py` | The entry point: every test below, the PR / nightly / smoke sets |
 | `rv2.py` | The cluster: ports, flags, kill/pause/resume/restart, per-node binaries, a package registry on 127.0.0.1, meroctl per account home; the tests write `instance`/`--instance`, and `spelled_for` gives a meroctl from before 1.0.0-rc.26 (the upgrade path's old release) `context`/`--context` |
 | `soak.py` | Soak metrics and the report format (`{"version": 1, "runs": [...]}`), `soak.py report` renders it |
-| `rooms_fault.py`, `linearizable.py` | Rooms under a randomized nemesis, checked for linearizability and idempotency (A4) |
+| `rooms_fault.py`, `linearizable.py` | Rooms under a randomized nemesis, checked for linearizability and idempotency |
 | `upgrade_path.py`, `rollout.py`, `upgrade_cases/` | The upgrade path (ci-checks.yml's `Upgrade path`): a cluster on the release in `.github/upgrade-from`, rolled onto this tree's merod as mdma does (`rollout.py`'s `Fleet` and `roll_forward`, reusable), with the data its cases (`upgrade_cases/NN_*.py`: `seed`, `mixed`, `verify`, `extend`) write and read; run by `scripts/upgrade-path.sh` (docs: contribute/testing, "Upgrade path") |
 | `upgrade_deep.py`, `upgrade_cases/20_*.py`.. | The deep cases: one per user-visible functionality (`DeepCase`: `populate`, `check`, `during_mix`, `exercise`, `since`), their toolkit and the coverage matrix (`--matrix`, `--check-matrix`); fixtures from `scripts/build-upgrade-deep-fixtures.sh` |
 | `upgrade_fixture.py` | Writes a release's replay fixture (`../fixtures/upgrade/<release>/`: a data directory and the answers it gave) for `../upgrade_replay.rs` |

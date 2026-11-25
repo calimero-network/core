@@ -925,7 +925,7 @@ pub(crate) struct CapabilitiesBody {
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
 /// without an account, the default: the organization's, or with `team` what
-/// everyone in that team holds there on top of their own (G6); approved with
+/// everyone in that team holds there on top of their own; approved with
 /// the actor's passkey (412 first).
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
