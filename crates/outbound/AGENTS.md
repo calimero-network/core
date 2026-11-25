@@ -50,8 +50,35 @@ as content and answers it back transformed (the reflection trick,
 redaction follows. The echo answers each attached value's length (`secretBytes`),
 never a value.
 
+**Connectors** (`connector.rs`, `connector/`): for a service where a key is worth
+more than the app (Stripe, an OpenAI-compatible API), the node builds the request.
+A `Connector` is a name, a pinned upstream API version, one host, the `Credential`
+it attaches (a header, attached through the credential binding
+`Connector::binding`, the connector's host, required; a call carries it alone,
+never the release's raw bindings; an input naming `{{secret:` is refused) and `Operation`s, each fixing method, path and where each
+typed `Field` (`Kind`: bounded integer, id, code, owner- or release-limited choice
+or map, chat messages) goes, and which `Output`s come back. An unknown operation
+or field, a wrong type, a value no `ConnectorGrant` limit allows is refused before
+anything is sent; the request then goes through `prepare` (operator hosts, the
+approval of the operation's prefix, `Connector::prefixes`, the secret's binding,
+bounds) and `transmit` (count, log, redaction), and the answer is cut to its
+declared outputs; a non-2xx answers only its status and `error.code`.
+`for_run_with_connectors` returns `RunClients`: the raw client refuses every
+declared connector's host, so the connector is the only way there, and both
+clients take the run's `EgressCheck` (`egress_gated`, `egress_gated_connectors`):
+egress off refuses a connector call with `EgressOff` as it refuses a raw request. Every
+call, sent or refused, is recorded in the run's `OutboundAudit` (`AuditEntry::of_call`:
+the connector's host, the operation's declared path, never the input's ids; the
+connector's binding name once attached), and a raw request refused as `ConnectorHost` as
+`refused` (`connector_calls_are_in_the_audit_with_the_declared_path_and_binding_name`). `STRIPE`
+(PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
+`CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
+the guest's `connector.call` (#5349); the node still calls `for_run_counted`.
+
 What it logs (every line reaches the operator): a refusal as `refusal_kind`
-(`NotApproved`, `AwaitingApproval`, `Invalid`) with the URL's host, a sent request
+(`NotApproved`, `AwaitingApproval`, `Invalid`; `ConnectorHost` for
+a raw request to a declared connector's host) with the URL's host, a refused
+connector call as its `refusal_kind` with the connector's name, a sent request
 with the declared prefix that covers it, never the URL's path, query, body or a
 name the guest wrote; the guest gets the refusal's words (`log_tests`).
 
@@ -80,7 +107,8 @@ key may do at its bound host is still the app's to use.
   `for_run_counted(.., sent, audit)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
-- `OutboundAudit` (`audit.rs`): each request a `for_run_counted` client is handed,
+- `OutboundAudit` (`audit.rs`): each request a `for_run_counted` client (or a
+  `for_run_with_connectors` client, raw or connector call) is handed,
   sent or refused, as an `AuditEntry` under the run's `context` (the instance): time,
   method, host, path (no query, `MAX_AUDIT_PATH_BYTES`), status or `AuditFailure`
   (`SecretRefused` marks a refused binding, placeholder or redaction bound; `EgressOff` for the egress switch's refusals), the names of the credential

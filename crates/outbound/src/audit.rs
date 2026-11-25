@@ -133,6 +133,42 @@ impl AuditEntry {
     }
 }
 
+impl AuditEntry {
+    /// A connector call: `connector`'s host and `operation`'s declared path (its
+    /// `{field}` slots as declared, never the ids the input filled in), or what of
+    /// them the call named (empty for a connector or operation the release does not
+    /// declare).
+    pub(crate) fn of_call(
+        connector: Option<&crate::Connector>,
+        operation: &str,
+        request_bytes: usize,
+        at_ms: u64,
+    ) -> Self {
+        let op = connector.and_then(|c| c.operations.iter().find(|o| o.name == operation));
+        let mut path = op.map_or_else(String::new, |o| o.path.to_owned());
+        let path_truncated = path.len() > MAX_AUDIT_PATH_BYTES;
+        if path_truncated {
+            let mut cut = MAX_AUDIT_PATH_BYTES;
+            while !path.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            path.truncate(cut);
+        }
+        Self {
+            at_ms,
+            method: op.map_or("", |o| method_name(o.method)).to_owned(),
+            host: connector.map_or_else(String::new, |c| c.host.to_owned()),
+            path,
+            path_truncated,
+            status: None,
+            failure: None,
+            secrets: Vec::new(),
+            request_bytes: request_bytes as u64,
+            response_bytes: 0,
+        }
+    }
+}
+
 /// What an entry keeps of the binding names the node attached: sorted, each once,
 /// at most [`MAX_AUDIT_SECRET_NAMES`]. Never a value: the names are the manifest's.
 #[must_use]

@@ -331,7 +331,7 @@ async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
         .write(serde_json::to_vec(cmd).unwrap())
         .await
         .unwrap();
-    calimero_node::system::output(&out)
+    calimero_node::system::output(&out).map_err(|e| e.to_string())
 }
 
 /// A consent as the API logs it: `pk`'s assertion over the statement.

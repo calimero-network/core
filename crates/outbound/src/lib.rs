@@ -77,10 +77,12 @@ use tracing::{info, warn};
 use zeroize::Zeroizing;
 
 mod audit;
+mod connector;
 mod redact;
 mod settings;
 
 pub use audit::*;
+pub use connector::*;
 use redact::Redactor;
 pub use redact::{
     MAX_ENCODED_SECRET_BYTES, MAX_REDACTION_PATTERNS, MAX_SECRETS_PER_REQUEST,
@@ -595,6 +597,31 @@ impl OutboundService {
         sent: Arc<AtomicU64>,
         audit: Arc<OutboundAudit>,
     ) -> Option<Arc<dyn OutboundHost>> {
+        self.run_outbound(
+            app,
+            declared,
+            BTreeMap::new(),
+            approval,
+            context,
+            sent,
+            audit,
+        )
+    }
+
+    /// The raw client for a run, refusing every host of `reserved` (a declared
+    /// connector's host, by the connector's name); `None` when the app
+    /// declared no prefix this node can use.
+    #[expect(clippy::too_many_arguments, reason = "one run's whole outbound scope")]
+    fn run_outbound(
+        self: &Arc<Self>,
+        app: AppIdentity,
+        declared: Vec<String>,
+        reserved: BTreeMap<String, String>,
+        approval: Option<Approval>,
+        context: String,
+        sent: Arc<AtomicU64>,
+        audit: Arc<OutboundAudit>,
+    ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
             .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
@@ -606,6 +633,7 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
+            reserved,
             approval,
             context,
             sent,
@@ -920,6 +948,8 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
+    /// Hosts reached only through a connector the app declares, by its name.
+    reserved: BTreeMap<String, String>,
     approval: Option<Approval>,
     context: String,
     /// Requests handed to the transport.
@@ -945,6 +975,26 @@ impl OutboundHost for RunOutbound {
         let host = reqwest::Url::parse(&request.url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+        let reserved = host
+            .as_deref()
+            .map(|h| h.trim_end_matches('.'))
+            .and_then(|h| Some((self.reserved.get(h)?, h)));
+        if let Some((connector, reserved_host)) = reserved {
+            entry.failure = Some(AuditFailure::Refused);
+            audit.record(&self.context, entry);
+            warn!(
+                context = %self.context,
+                package = %self.app.package,
+                host = reserved_host,
+                connector = %connector,
+                refusal = "ConnectorHost",
+                "outbound request refused"
+            );
+            return Err(format!(
+                "{reserved_host} is reached only through the {connector} connector this app \
+                 declares, never by a raw request"
+            ));
+        }
         let prepared =
             match self
                 .service
@@ -970,23 +1020,58 @@ impl OutboundHost for RunOutbound {
                 }
             };
         entry.secrets = audit::secret_names(&prepared.attached);
-        let _before = self.sent.fetch_add(1, Ordering::Relaxed);
-        let result = self.service.transport.send(&prepared);
-        let (status, body) = match result {
+        let answer = self.service.transmit(
+            &self.app,
+            &self.context,
+            &self.sent,
+            &self.declared,
+            &prepared,
+            started,
+        );
+        match answer {
+            Ok((status, body)) => {
+                // The size the run gets: `transmit` already redacted the body.
+                entry.status = Some(status);
+                entry.response_bytes = body.len() as u64;
+                audit.record(&self.context, entry);
+                borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+            }
+            Err(reason) => {
+                // Only that it failed in transit, never the transport's words.
+                entry.failure = Some(AuditFailure::Failed);
+                audit.record(&self.context, entry);
+                Err(reason)
+            }
+        }
+    }
+}
+
+impl OutboundService {
+    /// Sends a prepared request, counts it in `sent`, logs it (with the prefix of
+    /// `declared` that covers it, never its path) and redacts its secrets from
+    /// the answer: every raw request and connector call ends here.
+    fn transmit(
+        &self,
+        app: &AppIdentity,
+        context: &str,
+        sent: &AtomicU64,
+        declared: &BTreeSet<String>,
+        prepared: &Prepared,
+        started: Instant,
+    ) -> Result<(u16, Vec<u8>), String> {
+        let _before = sent.fetch_add(1, Ordering::Relaxed);
+        let (status, body) = match self.transport.send(prepared) {
             Ok(answer) => answer,
             Err(error) => {
                 // Only the kind the node names, never the transport's words: they can
                 // quote what was sent (a secret, in any encoding), and this line ships
-                // to the operator's log while the reason goes to the guest. The audit
-                // keeps only that it failed in transit.
+                // to the operator's log while the reason goes to the guest.
                 let kind = FailureKind::of(&error);
-                entry.failure = Some(AuditFailure::Failed);
-                audit.record(&self.context, entry);
                 warn!(
-                    context = %self.context,
-                    package = %self.app.package,
+                    context = %context,
+                    package = %app.package,
                     host = %prepared.host,
-                    path = %prepared.url.path(),
+                    prefix = covering(declared, &prepared.url).map_or("-", String::as_str),
                     kind = kind.as_str(),
                     "outbound request failed"
                 );
@@ -998,16 +1083,13 @@ impl OutboundHost for RunOutbound {
             }
         };
         let body = prepared.redactor.redact(body);
-        entry.status = Some(status);
-        entry.response_bytes = body.len() as u64;
-        audit.record(&self.context, entry);
         info!(
-            context = %self.context,
-            package = %self.app.package,
+            context = %context,
+            package = %app.package,
             host = %prepared.host,
             // The manifest's prefix that covers the URL, not its path: a path can
             // name a user (`/users/{email}`), a prefix is what the app declared.
-            prefix = covering(&self.declared, &prepared.url).map_or("-", String::as_str),
+            prefix = covering(declared, &prepared.url).map_or("-", String::as_str),
             status,
             request_bytes = prepared.body.len(),
             response_bytes = body.len(),
@@ -1015,7 +1097,7 @@ impl OutboundHost for RunOutbound {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "outbound request"
         );
-        borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+        Ok((status, body))
     }
 }
 
