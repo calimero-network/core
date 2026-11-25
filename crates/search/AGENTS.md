@@ -28,6 +28,7 @@ cargo run --release -p calimero-search-bench -- --sizes 10000,100000
 | File | What's there |
 | --- | --- |
 | `src/index.rs` | `ContextIndex`: opened over any tantivy `Directory` (merod uses one in memory), schema from a `SearchIndexSchema` (the node makes one per table: its declared fields as `Text`), idempotent delete-then-add `apply`, `commit(seq, root)` recording what it covers, `searcher` (the last commit, point in time) and `search` / `search_in` (against the last commit / a searcher; words / prefix / substring on trigrams / fuzzy, keyword and range filters, relevance or a `u64` field order, a snippet from the field that matched). Limits: `MAX_LIMIT` 100 hits, `MAX_CURSOR` 10,000, `MAX_QUERY_LEN` 256 bytes |
+| `src/records.rs` | A component app's table records as search documents, shared by the node and the SDK's test harness (review finding C10: the harness searches what a node would): `record_table`, `record_prefix`, `table_schema`, `doc_id`, `document` (declared text fields, a list of strings joined, cut at `MAX_FIELD_TEXT_BYTES`), and `TableSearch`, one table's in-memory index over one state (`build`, `search`, `key`), which `calimero-sdk`'s harness builds per view |
 | `src/tokenize.rs` | Words (Unicode segmentation, NFKD accent folding, lowercase, CJK bigrams) and trigrams; `TOKENIZER_VERSION` |
 
 ## How the index stays equal to state (in the node)

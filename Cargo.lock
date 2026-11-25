@@ -727,6 +727,7 @@ dependencies = [
 name = "calimero-app-host"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "calimero-app-host",
  "calimero-app-wit",
  "ciborium",
@@ -1017,8 +1018,10 @@ dependencies = [
  "calimero-app-host",
  "calimero-app-wit",
  "calimero-bundle",
+ "calimero-primitives",
  "calimero-sdk",
  "calimero-sdk-macros",
+ "calimero-search",
  "ciborium",
  "eyre",
  "hex",
@@ -1080,6 +1083,7 @@ name = "calimero-search"
 version = "0.0.0"
 dependencies = [
  "calimero-primitives",
+ "ciborium",
  "eyre",
  "serde",
  "serde_json",

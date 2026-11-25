@@ -778,6 +778,8 @@ from .update_reason_type_5 import UpdateReasonType5
 from .update_reason_type_5_code import UpdateReasonType5Code
 from .update_reason_type_6 import UpdateReasonType6
 from .update_reason_type_6_code import UpdateReasonType6Code
+from .update_reason_type_7 import UpdateReasonType7
+from .update_reason_type_7_code import UpdateReasonType7Code
 from .upgrade import Upgrade
 from .upgrade_class import UpgradeClass
 from .upgrade_pending import UpgradePending
@@ -1461,6 +1463,8 @@ __all__ = (
     "UpdateReasonType5Code",
     "UpdateReasonType6",
     "UpdateReasonType6Code",
+    "UpdateReasonType7",
+    "UpdateReasonType7Code",
     "Upgrade",
     "UpgradeClass",
     "UpgradePending",

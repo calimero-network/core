@@ -6,7 +6,8 @@
 //! `#[table(search = [..])]`). A table's records are the stored keys
 //! `generation ‖ (table, "r", key..)` in the SDK's key encoding (`crates/sdk`, encoding
 //! contract); each becomes one document, its id the SHA-256 of the stored key, its fields
-//! the declared ones that hold text (a list of strings is joined). The indexes are
+//! the declared ones that hold text (a list of strings is joined), as `calimero_search::records`
+//! makes them for the node and the SDK's test harness alike. The indexes are
 //! `calimero-search`'s `ContextIndex` in memory: a view's first query brings them up to the
 //! state it reads, from the record keys the entries since touched (`AppMachine::touched_after`,
 //! kept for `TOUCHED_RING` entries), else by a full scan of the app's records, on the view's
@@ -25,11 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError, Weak};
 
 use calimero_app_host::{SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, GENERATION};
-use calimero_primitives::search::{
-    SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode as IndexMode,
-    SearchOrder, SearchRequest, SearchValue,
-};
+use calimero_primitives::search::{SearchDoc, SearchMode as IndexMode, SearchOrder, SearchRequest};
 use calimero_search::index::{doc_digest, ContextIndex, SchemaOptions};
+use calimero_search::records::{self, doc_id, document, table_schema, GENERATION_PREFIX};
 use ring::digest::{digest, SHA256};
 use tantivy::Searcher;
 use tracing::{debug, warn};
@@ -38,10 +37,8 @@ use crate::app::AppMachine;
 use crate::component::Kv;
 use crate::types::AppId;
 
-/// Bytes of the generation prefix on a stored key (D39).
-const GENERATION_PREFIX: usize = 8;
 /// Bytes of text one document field is indexed from at most; the rest is cut.
-pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;
+pub use calimero_search::records::MAX_FIELD_TEXT_BYTES;
 /// Most tantivy writers kept open between refreshes, across every app's tables: those
 /// of the apps refreshed last. Each holds three threads (indexing, segment updater,
 /// merges) and an arena of up to `calimero_search::index::WRITER_MEMORY` while it
@@ -49,77 +46,7 @@ pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;
 /// waits for the merges its last commit started.
 pub const MAX_OPEN_WRITERS: usize = 16;
 
-/// The table a stored key is a record of: its first key part, when the second is `"r"`
-/// (`(table, "r", key..)`, the SDK's record layout). `None` for any other key.
-#[must_use]
-pub fn record_table(stored: &[u8]) -> Option<String> {
-    let key = stored.get(GENERATION_PREFIX..)?;
-    let (table, rest) = string_part(key)?;
-    let (kind, _) = string_part(rest)?;
-    (kind == "r").then_some(table)
-}
-
-/// One string part (`0x30`, bytes with `0x00` escaped as `0x00 0xFF`, then `0x00 0x00`) and
-/// what follows it.
-fn string_part(key: &[u8]) -> Option<(String, &[u8])> {
-    let mut rest = key.strip_prefix(&[0x30])?;
-    let mut out = Vec::new();
-    loop {
-        match rest {
-            [0x00, 0x00, tail @ ..] => return Some((String::from_utf8(out).ok()?, tail)),
-            [0x00, 0xFF, tail @ ..] => {
-                out.push(0x00);
-                rest = tail;
-            }
-            [b, tail @ ..] if *b != 0x00 => {
-                out.push(*b);
-                rest = tail;
-            }
-            _ => return None,
-        }
-    }
-}
-
-/// The document of a record: the declared fields that hold text.
-fn document(stored: &[u8], value: &[u8], fields: &[String]) -> Option<SearchDoc> {
-    let ciborium::Value::Map(entries) = ciborium::from_reader(value).ok()? else {
-        return None;
-    };
-    let mut doc = Vec::new();
-    for (name, v) in &entries {
-        let Some(name) = name.as_text().filter(|n| fields.iter().any(|f| f == n)) else {
-            continue;
-        };
-        let mut text = match v {
-            ciborium::Value::Text(t) => t.clone(),
-            ciborium::Value::Array(items) => items
-                .iter()
-                .filter_map(ciborium::Value::as_text)
-                .collect::<Vec<_>>()
-                .join(" "),
-            _ => continue,
-        };
-        if text.len() > MAX_FIELD_TEXT_BYTES {
-            let mut cut = MAX_FIELD_TEXT_BYTES;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            text.truncate(cut);
-        }
-        doc.push((name.to_owned(), SearchValue::Str(text)));
-    }
-    Some(SearchDoc {
-        id: doc_id(stored),
-        fields: doc,
-    })
-}
-
-fn doc_id(stored: &[u8]) -> [u8; 32] {
-    let mut out = [0; 32];
-    out.copy_from_slice(digest(&SHA256, stored).as_ref());
-    out
-}
-
+pub use calimero_search::records::record_table;
 /// Records to index: stored key, and the value (`None`: gone).
 type Records = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
@@ -138,20 +65,7 @@ impl TableIndex {
     /// `table`'s index: in memory, or kept in `dir`, opened as it was left there, or made
     /// anew when there is none or it was made under another schema or format.
     fn open(dir: Option<&Path>, table: &str, fields: &[String]) -> Result<Self, String> {
-        let def = SearchIndexSchema {
-            name: table.to_owned(),
-            version: 1,
-            fields: fields
-                .iter()
-                .map(|f| SearchFieldSchema {
-                    name: f.clone(),
-                    kind: SearchFieldKind::Text {
-                        weight: 100,
-                        infix: true,
-                    },
-                })
-                .collect(),
-        };
+        let def = table_schema(table, fields);
         let open = |dir: Box<dyn tantivy::Directory>| {
             ContextIndex::open(dir, &def, SchemaOptions::default())
                 .map(|(index, _state)| index)
@@ -776,13 +690,7 @@ fn refresh(ix: &mut AppIndexes, p: &Pending, dir: Option<&Path>) -> Result<(), S
 /// The stored-key prefix of `table`'s records: `generation ‖ (table, "r", ..)`.
 fn record_prefix(table: &str) -> Vec<u8> {
     let mut prefix = GENERATION.to_be_bytes().to_vec();
-    prefix.push(0x30);
-    prefix.extend(
-        table
-            .bytes()
-            .flat_map(|b| if b == 0 { vec![0x00, 0xFF] } else { vec![b] }),
-    );
-    prefix.extend_from_slice(&[0x00, 0x00, 0x30, b'r', 0x00, 0x00]);
+    prefix.extend(records::record_prefix(table));
     prefix
 }
 

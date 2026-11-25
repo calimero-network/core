@@ -530,7 +530,9 @@ is its command line.
   through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
-  in the gate; each only for a name the release declares. The deployment's
+  in the gate; each only for a name the release declares, and attached by the gate
+  where its binding says (`PackageVersion::secrets`, one host and one header or body
+  field each; the shape since 1.0.0-rc.37, a hard cutover). The deployment's
   only for a run of a release of a package it offers or an offered release
   references (`SystemState::deployment_covers`, over `used_releases`; any
   version: its signer is pinned): its
@@ -2528,7 +2530,7 @@ API and system group:
   D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
   the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
   (the signed release's prefixes, the owner's approval, the operator's hosts,
-  `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
+  the credentials the release binds, attached by the gate, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
   timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
   trap or removed method fails at once; a failure sends `ActionFailed { actionId,
   method, reason }` to the starter (an event with an `Accounts` audience) and runs

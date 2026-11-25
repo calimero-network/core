@@ -4,7 +4,8 @@
 //! Every request a run hands its [`crate::OutboundHost`] is recorded here, sent or
 //! refused, as one [`AuditEntry`]: when, the method, the host, the path as sent
 //! (no query string, at most [`MAX_AUDIT_PATH_BYTES`]), the status or why it
-//! failed ([`AuditFailure`]), the names of the secrets it asked for, and the
+//! failed ([`AuditFailure`]), the names of the credential bindings the node
+//! attached to it (or the one it refused), and the
 //! request's and the response's sizes. Never a secret's value, a body, a query
 //! string, a header (name or value) or the whole URL.
 //!
@@ -15,13 +16,11 @@
 //! rings of the instance's replicas when its owner reads it. It is never logged
 //! and never a metric.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use calimero_primitives::outbound::{
-    OutboundMethod, OutboundRefusal, OutboundRequest, MAX_URL, SECRET_PREFIX, SECRET_SUFFIX,
-};
+use calimero_primitives::outbound::{OutboundMethod, OutboundRefusal, OutboundRequest, MAX_URL};
 use serde::{Deserialize, Serialize};
 
 /// The most entries one node keeps for one instance; the oldest goes first.
@@ -38,7 +37,7 @@ pub const MAX_AUDIT_INSTANCES: usize = 1024;
 /// boundary and marked `pathTruncated`.
 pub const MAX_AUDIT_PATH_BYTES: usize = 128;
 
-/// The most secret names one entry keeps (a request names at most a few).
+/// The most secret names one entry keeps (a release binds at most `MAX_SECRETS`).
 pub const MAX_AUDIT_SECRET_NAMES: usize = 16;
 
 /// Why a request was not answered by its host.
@@ -58,8 +57,10 @@ pub enum AuditFailure {
     /// The instance's organization, or the instance, turned egress off
     /// ([`OutboundRefusal::EgressOff`]): refused before any other gate.
     EgressOff,
-    /// A secret it named could not be filled in: not declared, not bound to the
-    /// host, or no value.
+    /// A credential could not be attached: a required binding with no value, the
+    /// request setting a bound header or field itself, an operator's value bound to
+    /// other hosts, a value that does not fit its place, or a retired
+    /// `{{secret:NAME}}` placeholder.
     Secret,
     /// It was sent, and the connection, the timeout or the response's size failed it.
     Failed,
@@ -86,9 +87,10 @@ pub struct AuditEntry {
     /// Why it was not answered, when it was not (absent otherwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<AuditFailure>,
-    /// The names of the secrets the request asked for (`{{secret:NAME}}`), sorted.
+    /// The names of the credential bindings the node attached to it, sorted; for a
+    /// `secret` refusal, the binding refused (when one was).
     pub secrets: Vec<String>,
-    /// The request body's size as the run gave it, before any secret was filled in.
+    /// The request body's size as the run gave it, before any credential was attached.
     pub request_bytes: u64,
     /// The response body's size as the run got it, after redaction; 0 when none.
     pub response_bytes: u64,
@@ -107,7 +109,7 @@ impl AuditEntry {
             path_truncated,
             status: None,
             failure: None,
-            secrets: secret_names(request),
+            secrets: Vec::new(),
             request_bytes: request.body.len() as u64,
             response_bytes: 0,
         }
@@ -131,36 +133,15 @@ impl AuditEntry {
     }
 }
 
-/// The names of the secrets `request` asks for: every well-formed
-/// `{{secret:NAME}}` in its header values and body, sorted, each once, at most
-/// [`MAX_AUDIT_SECRET_NAMES`]. Never a value: the request holds only the
-/// placeholders, which the node fills in after this reads them.
-///
-/// The one place the audit learns which secrets a request used, so a change to
-/// how a request names its secrets changes only this.
+/// What an entry keeps of the binding names the node attached: sorted, each once,
+/// at most [`MAX_AUDIT_SECRET_NAMES`]. Never a value: the names are the manifest's.
 #[must_use]
-pub fn secret_names(request: &OutboundRequest) -> Vec<String> {
-    let mut names = BTreeSet::new();
-    let parts = request
-        .headers
-        .iter()
-        .map(|(_, value)| value.as_bytes())
-        .chain(core::iter::once(request.body.as_slice()));
-    for mut rest in parts {
-        while let Some(start) = crate::find(rest, SECRET_PREFIX.as_bytes()) {
-            let after = &rest[start + SECRET_PREFIX.len()..];
-            let Some(end) = crate::find(after, SECRET_SUFFIX.as_bytes()) else {
-                break;
-            };
-            if let Ok(name) = core::str::from_utf8(&after[..end]) {
-                if crate::is_secret_name(name) {
-                    let _new = names.insert(name.to_owned());
-                }
-            }
-            rest = &after[end + SECRET_SUFFIX.len()..];
-        }
-    }
-    names.into_iter().take(MAX_AUDIT_SECRET_NAMES).collect()
+pub fn secret_names(attached: &[String]) -> Vec<String> {
+    let mut names = attached.to_vec();
+    names.sort();
+    names.dedup();
+    names.truncate(MAX_AUDIT_SECRET_NAMES);
+    names
 }
 
 /// The host and path of `url`, with no query string, fragment or credentials, the
@@ -197,6 +178,15 @@ const fn method_name(method: OutboundMethod) -> &'static str {
         OutboundMethod::Patch => "PATCH",
         OutboundMethod::Delete => "DELETE",
     }
+}
+
+/// The binding a refusal `prepare` returned names, if it refused one.
+pub(crate) fn refused_binding(reason: &eyre::Report) -> Vec<String> {
+    reason
+        .downcast_ref::<crate::SecretRefused>()
+        .and_then(|r| r.binding.clone())
+        .into_iter()
+        .collect()
 }
 
 /// The failure kind of a refusal `prepare` returned.
@@ -316,25 +306,21 @@ mod tests {
     }
 
     #[test]
-    fn secret_names_are_read_from_headers_and_body_never_a_value() {
-        let request = OutboundRequest {
-            method: OutboundMethod::Post,
-            url: "https://api.example.com/v1/charges".to_owned(),
-            headers: vec![
-                (
-                    "Authorization".to_owned(),
-                    "Bearer {{secret:STRIPE_KEY}}".to_owned(),
-                ),
-                (
-                    "X-Other".to_owned(),
-                    "{{secret:bad name}} {{secret:".to_owned(),
-                ),
-            ],
-            body: b"a={{secret:WEBHOOK_SECRET}}&b={{secret:STRIPE_KEY}}".to_vec(),
-        };
-        let e = AuditEntry::of(&request, 1);
-        assert_eq!(e.secrets, ["STRIPE_KEY", "WEBHOOK_SECRET"]);
-        assert_eq!(e.request_bytes, request.body.len() as u64);
+    fn secret_names_are_sorted_once_and_bounded() {
+        let attached: Vec<String> = ["STRIPE_KEY", "A_KEY", "STRIPE_KEY"]
+            .iter()
+            .map(|n| (*n).to_owned())
+            .chain((0..40).map(|i| format!("K{i:02}")))
+            .collect();
+        let names = secret_names(&attached);
+        assert_eq!(names.len(), MAX_AUDIT_SECRET_NAMES);
+        assert_eq!(names[..2], ["A_KEY", "K00"]);
+        assert_eq!(
+            names.iter().filter(|n| *n == "STRIPE_KEY").count(),
+            0,
+            "cut past the bound"
+        );
+        assert_eq!(secret_names(&attached[..3]), ["A_KEY", "STRIPE_KEY"]);
     }
 
     #[test]

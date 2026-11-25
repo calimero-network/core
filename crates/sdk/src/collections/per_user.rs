@@ -134,7 +134,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
     pub fn set(&mut self, v: &T) -> Result<String, AppError> {
         let account = caller_account()?;
         let key = self.storage_key(&account)?;
-        self.store.put(&key, &value::to_vec(v)?);
+        self.store.put(&key, &value::to_vec(v)?)?;
         Ok(account)
     }
 }

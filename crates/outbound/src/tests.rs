@@ -1,6 +1,8 @@
 //! Every gate of an outbound request, against a fake transport.
 
 use std::collections::BTreeSet;
+
+use calimero_bundle::BundleSecret;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
@@ -12,11 +14,16 @@ const VERIFY: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 const HOST: &str = "challenges.cloudflare.com";
 const SECRET: &str = "0x4AAA-very-secret";
 
+/// mero-forms, whose manifest binds `TURNSTILE_SECRET` to Turnstile's `secret` body field,
+/// for paths under `/turnstile/`.
 fn forms() -> AppIdentity {
     AppIdentity {
         package: "com.calimero.mero-forms".to_owned(),
         signer: "did:key:zForms".to_owned(),
-        secrets: None,
+        secrets: BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            BundleSecret::body_field(HOST, &["/turnstile/"], "secret"),
+        )]),
         own: OwnSecrets::default(),
     }
 }
@@ -116,14 +123,15 @@ fn a_declared_request_reaches_the_host_with_its_secret_and_comes_back_redacted()
             "ctx".to_owned(),
         )
         .expect("the app declares a URL");
-    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}&response=tok");
+    let request = post(VERIFY, "response=tok");
     let answer = run.send(&borsh::to_vec(&request).unwrap()).expect("sent");
 
+    // The node attached the bound field; the app never wrote it.
     let sent = fake.0.lock().unwrap();
     assert_eq!(sent[0].0, VERIFY);
     assert_eq!(
         sent[0].1,
-        format!("secret={SECRET}&response=tok").into_bytes()
+        format!("response=tok&secret={SECRET}").into_bytes()
     );
 
     let response = OutboundResponse::try_from_slice(&answer).unwrap();
@@ -215,20 +223,17 @@ fn any_method_and_a_star_allows_every_host_an_app_declares() {
             )
             .is_ok());
     }
-    // The secret is still bound to its own host.
-    let leaked = s
+    // The secret is still bound to its own host: nothing is attached here.
+    let p = s
         .prepare(
             &forms(),
             &BTreeSet::from([api.to_owned()]),
             Some(&approving(&BTreeSet::from([api.to_owned()]))),
-            post(
-                "https://api.example.com/v1/x",
-                "{{secret:TURNSTILE_SECRET}}",
-            ),
+            post("https://api.example.com/v1/x", "a=1"),
         )
-        .unwrap_err()
-        .to_string();
-    assert!(leaked.contains("may not be sent"), "{leaked}");
+        .unwrap();
+    assert_eq!(&*p.body, b"a=1");
+    assert!(p.secrets.is_empty());
 }
 
 #[test]
@@ -255,30 +260,57 @@ fn only_hosts_the_operator_lists_by_name_over_https_on_443() {
 }
 
 #[test]
-fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
+fn a_secret_goes_only_to_its_bound_host_and_only_for_its_own_app() {
     let fake = Arc::new(Fake::default());
-    // The operator allows a second host, but the secret is not bound to it.
+    // The operator allows a second host, but the release binds the secret to Cloudflare
+    // only, and the operator's binding names Cloudflare only.
     let s =
         OutboundService::with_parts(&[HOST, "api.example.com"], Some(Arc::new(OneSecret)), fake);
     let url = "https://api.example.com/hook";
-    let leaked = s
+    let p = s
         .prepare(
             &forms(),
             &BTreeSet::from([url.to_owned()]),
             Some(&approving(&BTreeSet::from([url.to_owned()]))),
-            post(url, "{{secret:TURNSTILE_SECRET}}"),
+            post(url, "x=1"),
+        )
+        .unwrap();
+    assert!(p.secrets.is_empty() && &*p.body == b"x=1");
+
+    // A release that binds it to the other host: the operator's binding refuses it.
+    let rebound = AppIdentity {
+        secrets: BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            BundleSecret::body_field("api.example.com", &["/"], "secret"),
+        )]),
+        ..forms()
+    };
+    let leaked = s
+        .prepare(
+            &rebound,
+            &BTreeSet::from([url.to_owned()]),
+            Some(&approving(&BTreeSet::from([url.to_owned()]))),
+            post(url, "x=1"),
         )
         .unwrap_err()
         .to_string();
     assert!(
-        leaked.contains("may not be sent to api.example.com"),
+        leaked.contains("other hosts than api.example.com"),
         "{leaked}"
     );
 
+    // Another app binding the same name gets no value from the operator's binding, and
+    // a required secret with no value is refused.
     let other = AppIdentity {
         package: "com.example.other".to_owned(),
         signer: "did:key:zOther".to_owned(),
-        secrets: None,
+        secrets: BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            BundleSecret {
+                required: true,
+                ..BundleSecret::body_field(HOST, &["/turnstile/"], "secret")
+            },
+        )]),
         own: OwnSecrets::default(),
     };
     let stolen = s
@@ -286,14 +318,11 @@ fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
             &other,
             &declared(),
             Some(&approving(&declared())),
-            post(VERIFY, "{{secret:TURNSTILE_SECRET}}"),
+            post(VERIFY, "response=t"),
         )
         .unwrap_err()
         .to_string();
-    assert!(
-        stolen.contains("no secret TURNSTILE_SECRET for com.example.other"),
-        "{stolen}"
-    );
+    assert!(stolen.contains("TURNSTILE_SECRET has no value"), "{stolen}");
 }
 
 #[test]
@@ -315,25 +344,41 @@ fn headers_and_bodies_are_bounded() {
     let mut r = post(VERIFY, "body");
     r.method = OutboundMethod::Get;
     assert!(refusal(&s, r).contains("a GET has no body"));
-
-    assert!(refusal(&s, post(VERIFY, "{{secret:TURNSTILE_SECRET")).contains("unterminated"));
-    assert!(refusal(&s, post(VERIFY, "{{secret:lower}}")).contains("must be A-Z"));
 }
 
 #[test]
-fn without_a_secret_provider_a_request_naming_one_is_refused() {
+fn without_a_value_an_optional_secret_is_left_off_and_a_required_one_refused() {
     let fake = Arc::new(Fake::default());
     let s = OutboundService::with_parts(&[HOST], None, fake);
-    assert!(refusal(&s, post(VERIFY, "{{secret:TURNSTILE_SECRET}}")).contains("no secrets"));
-    // A request with no secret still goes.
-    assert!(s
+    let p = s
         .prepare(
             &forms(),
             &declared(),
             Some(&approving(&declared())),
-            post(VERIFY, "ok")
+            post(VERIFY, "ok"),
         )
-        .is_ok());
+        .unwrap();
+    assert!(p.secrets.is_empty() && &*p.body == b"ok");
+    let required = AppIdentity {
+        secrets: BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            BundleSecret {
+                required: true,
+                ..BundleSecret::body_field(HOST, &["/turnstile/"], "secret")
+            },
+        )]),
+        ..forms()
+    };
+    let err = s
+        .prepare(
+            &required,
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "ok"),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has no value"), "{err}");
 }
 
 #[test]
@@ -489,7 +534,7 @@ fn no_debug_output_carries_a_secret() {
             &forms(),
             &declared(),
             Some(&approving(&declared())),
-            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+            post(VERIFY, ""),
         )
         .unwrap();
     assert_eq!(
@@ -736,115 +781,270 @@ mod merge {
     }
 }
 
-/// A release that declares its secrets (`AppIdentity::secrets`) gets only those, each only
-/// into a request to one of its declared hosts, even where the operator bound more; a
-/// release that declares none is filled from the operator's bindings alone, as before.
-#[test]
-fn a_release_that_declares_secrets_gets_only_those_and_only_to_their_hosts() {
-    let fake = Arc::new(Fake::default());
-    let s = service(&fake);
-    let with = |secrets: &[(&str, &[&str])]| AppIdentity {
-        secrets: Some(
-            secrets
-                .iter()
-                .map(|(n, h)| ((*n).to_owned(), h.iter().map(|h| (*h).to_owned()).collect()))
-                .collect(),
-        ),
+fn openai() -> AppIdentity {
+    AppIdentity {
+        secrets: BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            BundleSecret::header(HOST, &["/turnstile/"], "authorization", Some("Bearer {}")),
+        )]),
         ..forms()
-    };
-    let prepare = |app: &AppIdentity| {
-        s.prepare(
-            app,
-            &declared(),
-            Some(&approving(&declared())),
-            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
-        )
-    };
-
-    // Declared for its host: filled, as the operator bound it.
-    assert!(prepare(&with(&[("TURNSTILE_SECRET", &[HOST])])).is_ok());
-    // Not declared: refused, though the operator bound it to the package.
-    let undeclared = prepare(&with(&[("OTHER_KEY", &[HOST])]))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        undeclared.contains("declares no secret TURNSTILE_SECRET"),
-        "{undeclared}"
-    );
-    // Declared for another host only: refused here.
-    let elsewhere = prepare(&with(&[("TURNSTILE_SECRET", &["api.example.com"])]))
-        .unwrap_err()
-        .to_string();
-    assert!(elsewhere.contains("for other hosts"), "{elsewhere}");
-    // Declaring nothing: the operator's bindings alone, as before.
-    assert!(prepare(&forms()).is_ok());
+    }
 }
 
-/// An instance's own value for a declared name wins over the operator's and goes only to
-/// that name's declared hosts; a release that declares nothing never uses one.
+/// A header binding: the node sets the header in its format, on every request to the
+/// host, and the app may neither set that header (in any case) nor name the secret.
 #[test]
-fn an_instances_own_value_wins_for_its_declared_name_only() {
+fn a_header_binding_is_attached_by_the_node_and_never_by_the_app() {
+    let s = service(&Arc::new(Fake::default()));
+    let prepare = |request| {
+        s.prepare(
+            &openai(),
+            &declared(),
+            Some(&approving(&declared())),
+            request,
+        )
+    };
+    let p = prepare(post(VERIFY, "{\"prompt\":\"hi\"}")).unwrap();
+    assert_eq!(
+        p.headers.last().map(|(n, v)| (n.as_str(), v.as_str())),
+        Some(("authorization", format!("Bearer {SECRET}").as_str()))
+    );
+    assert_eq!(&*p.body, b"{\"prompt\":\"hi\"}");
+
+    let mut own_header = post(VERIFY, "");
+    own_header
+        .headers
+        .push(("AUTHORIZATION".to_owned(), "Bearer mine".to_owned()));
+    let err = prepare(own_header).unwrap_err().to_string();
+    assert!(
+        err.contains("header AUTHORIZATION carries secret TURNSTILE_SECRET"),
+        "{err}"
+    );
+}
+
+/// A binding is attached only under its path prefixes, matched on whole segments: a
+/// request to another path of the bound host carries no secret (and goes out as an
+/// ordinary request), so the app cannot send the key to an endpoint it was not bound to.
+#[test]
+fn a_secret_is_attached_only_under_its_bound_paths_on_whole_segments() {
+    let fake = Arc::new(Fake::default());
+    let s = service(&fake);
+    let stripe = AppIdentity {
+        secrets: BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            BundleSecret::header(HOST, &["/v1/charges"], "authorization", Some("Bearer {}")),
+        )]),
+        ..forms()
+    };
+    let host_wide = BTreeSet::from([format!("https://{HOST}/")]);
+    let send = |path: &str| {
+        s.prepare(
+            &stripe,
+            &host_wide,
+            Some(&approving(&host_wide)),
+            post(&format!("https://{HOST}{path}"), ""),
+        )
+        .unwrap()
+    };
+    let attached = |p: &Prepared| p.headers.iter().any(|(n, _)| n == "authorization");
+    for under in [
+        "/v1/charges",
+        "/v1/charges/ch_1",
+        "/v1/charges/ch_1/refunds?x=1",
+    ] {
+        let p = send(under);
+        assert!(attached(&p) && p.secrets.len() == 1, "{under}");
+    }
+    for elsewhere in [
+        "/v1/chargesX",
+        "/v1/charge",
+        "/v1/customers",
+        "/",
+        "/v1/charges/../customers",
+        "/v1/charges/%2e%2e/customers",
+        "/v1/charges%2Fx",
+    ] {
+        let p = send(elsewhere);
+        assert!(!attached(&p) && p.secrets.is_empty(), "{elsewhere}");
+    }
+    // Off its paths the bound header is the app's own: nothing of the secret rides on it.
+    let mut own = post(&format!("https://{HOST}/v1/customers"), "");
+    own.headers
+        .push(("Authorization".to_owned(), "Bearer mine".to_owned()));
+    let p = s
+        .prepare(&stripe, &host_wide, Some(&approving(&host_wide)), own)
+        .unwrap();
+    assert!(p.secrets.is_empty());
+}
+
+/// The retired placeholder is refused wherever it appears, never filled in, and the
+/// refusal points at the guide.
+#[test]
+fn a_request_naming_a_secret_by_placeholder_is_refused_anywhere() {
+    let s = service(&Arc::new(Fake::default()));
+    let mut in_header = post(VERIFY, "");
+    in_header
+        .headers
+        .push(("X-Key".to_owned(), "{{secret:TURNSTILE_SECRET}}".to_owned()));
+    for request in [
+        post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+        post(VERIFY, "{{secret:"),
+        post(&format!("{VERIFY}?k={{{{secret:TURNSTILE_SECRET}}}}"), ""),
+        post(
+            &format!("{VERIFY}?k=%7B%7Bsecret:TURNSTILE_SECRET%7D%7D"),
+            "",
+        ),
+        in_header,
+    ] {
+        let err = refusal(&s, request);
+        assert!(err.starts_with(PLACEHOLDER_REFUSED), "{err}");
+        assert!(err.contains(SECRETS_DOCS), "{err}");
+    }
+}
+
+/// A body-field binding fills a form-urlencoded or JSON body's top-level field, and only
+/// such a body; the app may not set the field itself, however it spells it.
+#[test]
+fn a_body_field_binding_fills_a_form_or_json_body_and_only_the_node_sets_it() {
+    let s = service(&Arc::new(Fake::default()));
+    let with_type = |content_type: &str, body: &str| OutboundRequest {
+        headers: vec![("Content-Type".to_owned(), content_type.to_owned())],
+        ..post(VERIFY, body)
+    };
+    let body_of = |request| {
+        s.prepare(
+            &forms(),
+            &declared(),
+            Some(&approving(&declared())),
+            request,
+        )
+        .map(|p| String::from_utf8(p.body.to_vec()).unwrap())
+        .map_err(|e| e.to_string())
+    };
+    let form = "application/x-www-form-urlencoded";
+    assert_eq!(
+        body_of(with_type(form, "response=t")).unwrap(),
+        format!("response=t&secret={SECRET}")
+    );
+    assert_eq!(
+        body_of(with_type(form, "")).unwrap(),
+        format!("secret={SECRET}")
+    );
+    assert_eq!(
+        body_of(with_type(
+            "application/json; charset=utf-8",
+            r#" {"response":"t"}"#
+        ))
+        .unwrap(),
+        format!(r#" {{"secret":"{SECRET}","response":"t"}}"#)
+    );
+    assert_eq!(
+        body_of(with_type("application/json", "")).unwrap(),
+        format!(r#"{{"secret":"{SECRET}"}}"#)
+    );
+    for (content_type, body) in [
+        (form, "secret=mine&response=t"),
+        (form, "s%65cret=mine"),
+        ("application/json", r#"{"secret":"mine"}"#),
+        ("application/json", r#"{"secr\u0065t":"mine"}"#),
+    ] {
+        let err = body_of(with_type(content_type, body)).unwrap_err();
+        assert!(err.contains("may not"), "{body}: {err}");
+    }
+    for (content_type, body) in [
+        ("text/plain", "secret"),
+        ("application/json", "[1]"),
+        ("application/json", "{"),
+    ] {
+        assert!(body_of(with_type(content_type, body)).is_err(), "{body}");
+    }
+    let mut get = with_type(form, "");
+    get.method = OutboundMethod::Get;
+    assert!(body_of(get).unwrap_err().contains("GET has no body"));
+}
+
+/// An instance's own value for a bound name wins over the operator's and goes only where
+/// its binding says; a release that binds nothing never uses one.
+#[test]
+fn an_instances_own_value_wins_for_its_bound_name_only() {
     let fake = Arc::new(Fake::default());
     let s = service(&fake);
     let own = OwnSecrets(BTreeMap::from([(
         "TURNSTILE_SECRET".to_owned(),
         Zeroizing::new("owners-own".to_owned()),
     )]));
-    let declared_for = |host: &str| AppIdentity {
-        secrets: Some(BTreeMap::from([(
-            "TURNSTILE_SECRET".to_owned(),
-            vec![host.to_owned()],
-        )])),
-        own: own.clone(),
-        ..forms()
-    };
     let prepare = |app: &AppIdentity| {
         s.prepare(
             app,
             &declared(),
             Some(&approving(&declared())),
-            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+            post(VERIFY, ""),
         )
     };
-    let p = prepare(&declared_for(HOST)).unwrap();
-    assert_eq!(&*p.body, b"secret=owners-own");
-    // Its declared hosts are elsewhere: refused, though the value is the instance's.
-    assert!(prepare(&declared_for("api.example.com")).is_err());
-    // A release declaring nothing ignores it: the operator's value.
-    let p = prepare(&AppIdentity {
+    let owned = AppIdentity {
         own: own.clone(),
+        ..forms()
+    };
+    let p = prepare(&owned).unwrap();
+    assert_eq!(&*p.body, b"secret=owners-own");
+    // Without the instance's value: the operator's.
+    let p = prepare(&forms()).unwrap();
+    assert_eq!(&*p.body, format!("secret={SECRET}").as_bytes());
+    // A release binding nothing attaches nothing.
+    let p = prepare(&AppIdentity {
+        secrets: BTreeMap::new(),
+        own,
         ..forms()
     })
     .unwrap();
-    assert_eq!(&*p.body, format!("secret={SECRET}").as_bytes());
+    assert!(p.body.is_empty() && p.secrets.is_empty());
     // Never in a debug print.
-    assert!(!format!("{:?}", declared_for(HOST)).contains("owners-own"));
+    assert!(!format!("{owned:?}").contains("owners-own"));
 }
 
 /// Every request a run hands the node lands in its instance's audit, sent or refused,
-/// with the host, the path without its query, the secret's name and the sizes: never
-/// the secret's value, a body, a query string or a header.
+/// with the host, the path without its query, the name of the credential binding the
+/// node attached (or refused) and the sizes: never the secret's value, a body, a query
+/// string or a header.
 #[test]
 fn the_audit_records_sent_and_refused_requests_without_values() {
     let fake = Arc::new(Fake::default());
     let audit = Arc::new(OutboundAudit::default());
-    let run = service(&fake)
-        .for_run_counted(
-            forms(),
-            vec![VERIFY.to_owned()],
-            Some(approving(&declared())),
-            "instance-1".to_owned(),
-            Arc::default(),
-            Arc::clone(&audit),
-        )
-        .expect("the app declares a URL");
-    let body = "secret={{secret:TURNSTILE_SECRET}}&response=tok-private";
+    let run_of = |app: AppIdentity, provider: Option<Arc<dyn SecretProvider>>| {
+        OutboundService::with_parts(&[HOST], provider, fake.clone())
+            .for_run_counted(
+                app,
+                vec![VERIFY.to_owned()],
+                Some(approving(&declared())),
+                "instance-1".to_owned(),
+                Arc::default(),
+                Arc::clone(&audit),
+            )
+            .expect("the app declares a URL")
+    };
+    let run = run_of(forms(), Some(Arc::new(OneSecret)));
+    // Sent: the node attaches the bound body field.
+    let body = "response=tok-private";
     let request = post(&format!("{VERIFY}?remoteip=10.1.2.3"), body);
     let _answer = run.send(&borsh::to_vec(&request).unwrap()).expect("sent");
-    let unknown = post(VERIFY, "secret={{secret:NOT_BOUND}}");
+    // Refused: the app sets the bound field itself.
+    let own_field = post(VERIFY, "secret=guessed&response=tok-private");
     let _e = run
-        .send(&borsh::to_vec(&unknown).unwrap())
-        .expect_err("no such secret");
+        .send(&borsh::to_vec(&own_field).unwrap())
+        .expect_err("the node sets the bound field");
+    // Refused: a required binding with no value on this node.
+    let mut required = forms();
+    for binding in required.secrets.values_mut() {
+        binding.required = true;
+    }
+    let _e = run_of(required, None)
+        .send(&borsh::to_vec(&post(VERIFY, body)).unwrap())
+        .expect_err("no value for a required binding");
+    // Refused: the retired placeholder, which names no binding.
+    let named = post(VERIFY, "secret={{secret:NOT_BOUND}}");
+    let _e = run
+        .send(&borsh::to_vec(&named).unwrap())
+        .expect_err("a placeholder");
     let elsewhere = post("https://challenges.cloudflare.com/other", "");
     let _e = run
         .send(&borsh::to_vec(&elsewhere).unwrap())
@@ -852,7 +1052,7 @@ fn the_audit_records_sent_and_refused_requests_without_values() {
     let _e = run.send(b"\xff").expect_err("malformed");
 
     let entries = audit.entries("instance-1");
-    assert_eq!(entries.len(), 4, "{entries:?}");
+    assert_eq!(entries.len(), 6, "{entries:?}");
     let sent = &entries[0];
     assert_eq!(sent.method, "POST");
     assert_eq!(sent.host, HOST);
@@ -862,18 +1062,26 @@ fn the_audit_records_sent_and_refused_requests_without_values() {
     assert_eq!(sent.secrets, ["TURNSTILE_SECRET"]);
     assert_eq!(sent.request_bytes, body.len() as u64);
     assert!(sent.response_bytes > 0);
-    assert_eq!(entries[1].failure, Some(AuditFailure::Secret));
-    assert_eq!(entries[1].secrets, ["NOT_BOUND"]);
-    assert_eq!(entries[2].failure, Some(AuditFailure::Refused));
-    assert_eq!(entries[2].path, "/other");
-    assert_eq!(entries[3].failure, Some(AuditFailure::Malformed));
+    for refused in &entries[1..3] {
+        assert_eq!(refused.failure, Some(AuditFailure::Secret), "{refused:?}");
+        assert_eq!(refused.secrets, ["TURNSTILE_SECRET"], "{refused:?}");
+        assert_eq!(refused.status, None);
+    }
+    assert_eq!(entries[3].failure, Some(AuditFailure::Secret));
+    assert!(entries[3].secrets.is_empty(), "{:?}", entries[3]);
+    assert_eq!(entries[4].failure, Some(AuditFailure::Refused));
+    assert_eq!(entries[4].path, "/other");
+    assert!(entries[4].secrets.is_empty());
+    assert_eq!(entries[5].failure, Some(AuditFailure::Malformed));
 
     let json = serde_json::to_string(&entries).unwrap();
     for leak in [
         SECRET,
+        "guessed",
         "remoteip",
         "10.1.2.3",
         "tok-private",
+        "NOT_BOUND",
         "Content-Type",
     ] {
         assert!(!json.contains(leak), "{leak} in {json}");
@@ -1017,7 +1225,7 @@ fn leaked(text: &str) -> Vec<&'static str> {
 
 #[test]
 fn a_secret_echoed_in_a_common_encoding_is_redacted_from_the_response() {
-    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let request = post(VERIFY, "");
     let answer = awkward_run(false)
         .send(&borsh::to_vec(&request).unwrap())
         .expect("sent");
@@ -1039,7 +1247,7 @@ fn a_failure_names_only_its_kind_never_the_transports_words() {
     // The transport's words can quote what it was sent; they reach neither the
     // guest nor the node's `outbound request failed` log line, which ships to
     // the operator.
-    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let request = post(VERIFY, "");
     let reason = awkward_run(true)
         .send(&borsh::to_vec(&request).unwrap())
         .expect_err("the transport failed");
@@ -1050,7 +1258,7 @@ fn a_failure_names_only_its_kind_never_the_transports_words() {
 fn a_secret_echoed_in_a_common_encoding_is_redacted_from_a_failure() {
     // The same reason goes to the guest and into the node's `outbound request
     // failed` log line.
-    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let request = post(VERIFY, "");
     let reason = awkward_run(true)
         .send(&borsh::to_vec(&request).unwrap())
         .expect_err("the transport failed");
@@ -1080,7 +1288,7 @@ fn the_audit_records_a_transport_failure_by_kind_never_its_words() {
         Arc::clone(&audit),
     )
     .expect("the app declares a URL");
-    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let request = post(VERIFY, "response=tok");
     let _e = run
         .send(&borsh::to_vec(&request).unwrap())
         .expect_err("the transport failed");
@@ -1089,8 +1297,66 @@ fn the_audit_records_a_transport_failure_by_kind_never_its_words() {
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0].failure, Some(AuditFailure::Failed));
     assert_eq!(entries[0].status, None);
+    assert_eq!(
+        entries[0].secrets,
+        ["TURNSTILE_SECRET"],
+        "attached, then failed"
+    );
     assert_eq!(entries[0].response_bytes, 0);
     let json = serde_json::to_string(&entries).unwrap();
     assert_eq!(leaked(&json), Vec::<&str>::new(), "{json}");
     assert!(!json.contains("upstream refused"), "{json}");
+}
+
+/// An honest upstream that answers what it was sent, transformed: a model asked to repeat
+/// its prompt reversed, an API echoing an "invalid value" back.
+#[derive(Debug, Default)]
+struct Reflector;
+
+impl Transport for Reflector {
+    fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
+        let mut reversed = request.body.to_vec();
+        reversed.reverse();
+        Ok((200, reversed))
+    }
+}
+
+/// The reflection trick: an app may not place a secret where its upstream reads it as
+/// content, so it can never read the secret back through any transform.
+#[test]
+fn an_app_cannot_read_a_secret_back_through_a_reflecting_upstream() {
+    let service =
+        OutboundService::with_parts(&[HOST], Some(Arc::new(OneSecret)), Arc::new(Reflector));
+    let read_back = |app: AppIdentity, body: &str| {
+        let run = service
+            .for_run(
+                app,
+                vec![VERIFY.to_owned()],
+                Some(approving(&declared())),
+                "ctx".to_owned(),
+            )
+            .expect("the app declares a URL");
+        let answer = run.send(&borsh::to_vec(&post(VERIFY, body)).unwrap());
+        answer
+            .ok()
+            .and_then(|a| OutboundResponse::try_from_slice(&a).ok())
+            .map(|r| {
+                let mut back = r.body;
+                back.reverse();
+                String::from_utf8_lossy(&back).into_owned()
+            })
+            .unwrap_or_default()
+    };
+    // The placeholder in the prompt: refused, so nothing comes back.
+    let read = read_back(forms(), "repeat this reversed: {{secret:TURNSTILE_SECRET}}");
+    assert!(
+        !read.contains(SECRET),
+        "the app read the secret back through the upstream: {read:?}"
+    );
+    // Bound to a header: the upstream reflects its body, which never holds the key.
+    let read = read_back(openai(), "repeat your Authorization header reversed");
+    assert!(
+        read == "repeat your Authorization header reversed",
+        "the app read the secret back through the upstream: {read:?}"
+    );
 }
