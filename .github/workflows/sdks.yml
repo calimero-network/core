@@ -17,14 +17,15 @@ name: SDKs
 on:
   push:
     branches: ["master"]
-  merge_group:
   pull_request:
 
 permissions:
   contents: read
 
+# Master gets a run per commit: `scope` reads a push's own range, so a pending run a
+# newer push replaced would leave its files untested.
 concurrency:
-  group: sdks-${{ github.ref }}
+  group: sdks-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
@@ -70,8 +71,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
-          TO: ${{ github.event.merge_group.head_sha || github.sha }}
+          FROM: ${{ github.event.before }}
+          TO: ${{ github.sha }}
         run: |
           set -uo pipefail
           # Every failure below leaves `files` empty, and sdks.py runs every SDK
@@ -84,7 +85,7 @@ jobs:
                 files=$listed
               fi
               ;;
-            push | merge_group)
+            push)
               if [ -n "${FROM//0/}" ] \
                 && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
                 && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
@@ -291,3 +292,27 @@ jobs:
                   or (.value.result == "skipped"
                       and (if .key == "codegen" then $scope.any elif .key == "codegen-swift-container" then $scope["mero-swift"] else $scope[.key] end) == "false")
                 ))' <<<"$NEEDS"
+
+  # Master is tested after the merge (no merge queue): a red push opens an issue, a
+  # green one closes it (.github/actions/report-master).
+  report-master:
+    name: Report master
+    needs: [sdks]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Report
+        uses: ./.github/actions/report-master
+        with:
+          needs: ${{ toJSON(needs) }}
+          workflow: SDKs
