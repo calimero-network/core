@@ -12,6 +12,10 @@
 //!
 //! The node reaches the store's writes only through [`Disk`]: `crates/node/clippy.toml`
 //! disallows calling them on [`Engine`] anywhere else.
+//!
+//! Other disk work runs off the workers where it is done: recovery and backup file reads and
+//! the system state's seeding in `restore.rs` (`off_workers`), a view's run and
+//! `sweep_segments` (`spawn_blocking`). Store reads stay inline, as the log's do.
 #![allow(clippy::disallowed_methods)]
 
 use calimero_log::Engine;

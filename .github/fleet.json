@@ -79,8 +79,6 @@
 
   "consumers": [
     { "repo": "apps", "surfaces": ["cargo", "npm", "mobile"] },
-    { "repo": "mero-ar", "surfaces": ["cargo", "mobile"] },
-    { "repo": "mero-tag", "surfaces": ["cargo", "mobile"] },
     { "repo": "app-registry", "surfaces": ["npm"] },
     { "repo": "calimero-studio", "surfaces": ["cargo"] },
     { "repo": "mero-tee", "surfaces": ["tee"] }
@@ -108,6 +106,7 @@
 
   "_migrated": {
     "battleships": "apps/battleships",
+    "mero-ar": "apps/mero-ar",
     "mero-blocks": "apps/mero-blocks",
     "mero-calendar": "apps/mero-calendar",
     "mero-chat-pwa": "apps/mero-chat",
@@ -117,6 +116,7 @@
     "mero-meet": "apps/mero-meet",
     "mero-pixart": "apps/meropixart",
     "mero-stream": "apps/mero-stream",
+    "mero-tag": "apps/mero-tag",
     "meropass": "apps/meropass",
     "merraria": "apps/merraria",
     "MeroSign": "apps/mero-sign",

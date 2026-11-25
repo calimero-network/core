@@ -7,7 +7,7 @@
 //! cannot read, which only a state version bump (and its migration) may do.
 //!
 //! The app types those name are compared by their shapes in `types`, with the same rule in
-//! the direction each one travels ([`shapes`]).
+//! the direction each one travels (`shapes`).
 
 use std::collections::BTreeMap;
 use std::fmt;

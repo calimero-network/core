@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fails while any retired bytecode/hash identifier survives in tracked sources.
+# Fails while any retired bytecode/hash identifier survives in tracked sources,
+# or a module is a `mod.rs` the module rule does not allow.
 # One name per concept: ApplicationId, BytecodeId, ContentHash.
 set -euo pipefail
 
@@ -46,6 +47,16 @@ done
 if hits=$(git grep -nIEi -e 'app[-_ ]?key' -- '*.md' '*.mdx' '*.yml' "$NOT_SDKS" \
           | grep -vE "$DELIBERATE"); then
   report "app key in docs" "$hits"
+fi
+
+# CODING_STANDARDS.md, "Modules": a module is `foo.rs` with its children in
+# `foo/`. The one exception is a helper module that several integration-test
+# binaries share, `tests/common/mod.rs`: a `tests/common.rs` would be a test
+# binary of its own.
+if hits=$(git ls-files -- ':(glob)**/mod.rs' | grep -vE '(^|/)tests/common/mod\.rs$'); then
+  echo "a module is foo.rs, not foo/mod.rs (CODING_STANDARDS.md, \"Modules\"):"
+  echo "$hits"
+  status=1
 fi
 
 exit $status

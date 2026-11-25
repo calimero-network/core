@@ -30,7 +30,7 @@ class Run:
     attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null`
     unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not
     active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list
-    files only.
+    files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers.
 
         Attributes:
             run (str):
@@ -44,6 +44,7 @@ class Run:
             final (Union['RunFinalType0', None]):
             progress (Union['RunProgressType0', None]):
             queue (Union[Unset, RunQueue]):
+            logs (Union[Unset, list[Any]]):
     """
 
     run: str
@@ -57,6 +58,7 @@ class Run:
     final: Union["RunFinalType0", None]
     progress: Union["RunProgressType0", None]
     queue: Union[Unset, "RunQueue"] = UNSET
+    logs: Union[Unset, list[Any]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -105,6 +107,10 @@ class Run:
         if not isinstance(self.queue, Unset):
             queue = self.queue.to_dict()
 
+        logs: Union[Unset, list[Any]] = UNSET
+        if not isinstance(self.logs, Unset):
+            logs = self.logs
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -123,6 +129,8 @@ class Run:
         )
         if queue is not UNSET:
             field_dict["queue"] = queue
+        if logs is not UNSET:
+            field_dict["logs"] = logs
 
         return field_dict
 
@@ -199,6 +207,8 @@ class Run:
         else:
             queue = RunQueue.from_dict(_queue)
 
+        logs = cast(list[Any], d.pop("logs", UNSET))
+
         run = cls(
             run=run,
             method=method,
@@ -211,6 +221,7 @@ class Run:
             final=final,
             progress=progress,
             queue=queue,
+            logs=logs,
         )
 
         run.additional_properties = d

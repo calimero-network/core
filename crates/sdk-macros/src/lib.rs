@@ -2,6 +2,9 @@
 //! `Record` from the prelude). Generated code names only SDK paths, through the name the app
 //! depends on the SDK by (`calimero-sdk`, or the old `calimero-app-sdk`; see `sdk`), so
 //! an app depends on the SDK alone.
+//!
+//! Spec: [SDK macros](https://calimero-network.github.io/core/build/sdk-macros/).
+//! Crate guide: [`crates/sdk-macros/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/sdk-macros/AGENTS.md).
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput, Item, ItemImpl, ItemStruct};

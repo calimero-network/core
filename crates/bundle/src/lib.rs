@@ -1,3 +1,12 @@
+//! A signed app package (`.mpk`): the manifest and its schema, RFC 8785 (JCS)
+//! canonicalization, Ed25519 signatures and the `did:key` signer id, the archive and its
+//! verified contents, frontends and declared secrets. Every producer (`meroctl app sign`,
+//! `meroctl-sign`) and consumer (the node's install path) of a package reads it through here.
+//!
+//! Spec: [What a release carries](https://calimero-network.github.io/core/protocol/applications/#what-a-release-carries),
+//! [Packaging & signing](https://calimero-network.github.io/core/build/packaging-signing/).
+//! Crate guide: [`crates/bundle/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/bundle/AGENTS.md).
+
 pub mod archive;
 mod frontend;
 #[cfg(feature = "html")]

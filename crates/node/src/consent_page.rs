@@ -50,7 +50,7 @@
 //! # What the consent binds
 //!
 //! - **Release**: `{ version, policyDigest }`, the digest of the release's
-//!   Sigstore-verified `published-mrtds.json` ([`release_digest`]), so a
+//!   Sigstore-verified `published-mrtds.json` (`release_digest`), so a
 //!   re-published release with other measurements under the same tag is not
 //!   the one approved. A node that cannot fetch them refuses the approval
 //!   (`503`); on mock attestation, where no node checks measurements, the
@@ -3924,6 +3924,8 @@ mod tests {
         assert_eq!(e.status, 429);
     }
 
+    /// The consent page's verifier link has the shape mdma's verifier reads, on a base checked by
+    /// `verifier_base`.
     #[test]
     fn the_verifier_link_is_mdmas_shape_on_a_checked_base() {
         let base = verifier_base("https://verify.calimero.network/").unwrap();

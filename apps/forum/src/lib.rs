@@ -119,14 +119,14 @@ pub struct Moderator {
 }
 
 /// What the forum was founded with.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct Charter {
     pub name: String,
     pub rules: String,
 }
 
 /// A post as a client sees it.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct PostView {
     pub id: String,
@@ -146,7 +146,7 @@ pub struct PostView {
 }
 
 /// A comment as a client sees it.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct CommentView {
     pub key: String,
@@ -157,7 +157,7 @@ pub struct CommentView {
 }
 
 /// A chat message or an announcement as a client sees it.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageView {
     /// `"<board>/<id>"` for a message, the id for an announcement.
@@ -169,7 +169,7 @@ pub struct MessageView {
 }
 
 /// A board's size, read from maintained counts; no post is loaded.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct BoardStats {
     #[serde(with = "calimero_sdk::json::u64_str")]
     pub posts: u64,

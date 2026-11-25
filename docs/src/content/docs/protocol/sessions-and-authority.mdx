@@ -299,3 +299,61 @@ passkey sign another. The design gives the app no such page:
 The limits of the page itself (TLS outside the sealed channel, a forged page on
 the node's host, the one-undecided-request rule) are in
 [What it does not protect](/protocol/consent-page/#what-it-does-not-protect).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Ceremonies
+
+Code: `api::Pending`.
+
+A challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it
+from that node (`internal/challenge/take`), so it is used once.
+Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's
+finish) share `MAX_PENDING_CHALLENGES` and are never refused: one sealed session
+(`calimero_sealed::SealedSession`, set by `intercept`) holds at most `MAX_CEREMONIES_PER_SESSION`,
+its next begin displacing its own oldest, and a full pool displaces the oldest of the session
+holding the most, so a flood never locks other callers out (review finding D1).
+The store (`api::Ceremonies`) indexes ceremonies by expiry, by session and by each session's rank,
+so a begin, take, expiry or displacement is O(log n), never a scan of the pool.
+Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS front, where every
+client has the front's address, and `X-Forwarded-For` is written outside the TD.
+Those of a known account (step-ups, passkey add, a recovery's start) draw on
+`MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks
+a step-up.
+
+### Sessions are node-signed
+
+`api::session_token` mints `v2.<claims>.<sig>` with the node's receipt key (`Node::mint_session`); a
+node whose release may not serve the account answers `421 WRONG_NODE` instead; `api::signed_session`
+checks the token under the issuer's receipt key as this node attested it at the issuer's registered
+address (`Node::session_issuer`) and requires the attested release to serve the account
+(`SystemState::release_may_serve_account`); `Principal::issuer_release` then must be approved for
+each app it reaches (`Principal::within`).
+There is no shared session key.
+
+**Failover**: every node attests every registered peer's receipt key ahead of time
+(`Node::warm_issuers`, from a loop in `lib.rs` on each system change and every `ISSUER_WARM_EVERY`:
+at start, once the directory is learned, on registration; `MAX_CONCURRENT_ISSUER_ATTESTS` at once,
+each bounded by `ISSUER_ATTEST_WAIT`) and keeps `node → Issuer { key, release, at }`, so a token
+verifies with its issuer stopped or frozen.
+A token under another key attests the issuer again (at most every `ISSUER_RETRY_SECS`, bounded the
+same way); unreachable or another key: `401`, and the client refreshes on any node
+(`calimero-client` does once on its own).
+A removed node's entry is dropped and `session_issuer` refuses a node that is no longer a peer.
+The key survives a restart, so do the node's sessions.
+Wrapped under K_r rather than K_c: K_c is every release's, and a node on another release booted on
+the disk could sign as this one under the release the others attested.
+
+### Kept refresh tokens
+
+Code: `api::kept_refresh`, `Config::refresh_rotate_after`, production `api::REFRESH_ROTATE_AFTER`, 1
+h; the test harness 0.
+
+A refresh token younger than that mints a session from the system state at a read index
+(`sys_fresh`), live, its session not revoked, its passkey still the account's, and writes nothing;
+older, unkeyed, not caught up or not held fresh, it goes through `UseRefresh` as above.
+Every active session then writes once per rotation, not once per `SESSION_TTL`.

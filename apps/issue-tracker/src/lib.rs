@@ -58,7 +58,7 @@ pub struct Label {
 }
 
 /// An issue as a client sees it, labels included. (A list field cannot be a `Record`'s.)
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueView {
     pub id: String,
