@@ -102,7 +102,7 @@ pub(super) fn package_json(
     p: &crate::system::PackageRecord,
     who: &str,
     frontend: bool,
-) -> Option<Value> {
+) -> Option<PackageAnswer> {
     let mut versions: Vec<&crate::system::PackageVersion> = p
         .versions
         .values()
@@ -112,24 +112,54 @@ pub(super) fn package_json(
         return None;
     }
     versions.sort_by(|a, b| crate::system::compare_versions(&a.version, &b.version));
-    Some(json!({
-        "package": p.name,
-        "signerId": p.signer_id,
-        "owner": p.owner,
-        "latest": versions.last().map(|v| v.version.clone()),
-        "versions": versions.iter().map(|v| json!({
-            "version": v.version,
-            "mpk": v.mpk,
-            "size": v.mpk_size,
-            "source": v.source,
-            "services": v.services,
-            "components": v.components,
-            "metadata": v.metadata,
-            "outbound": v.outbound,
-            "installedBy": v.installed_by,
-            "installedAt": v.installed_at,
-        })).collect::<Vec<_>>(),
-    }))
+    Some(PackageAnswer {
+        package: p.name.clone(),
+        signer_id: p.signer_id.clone(),
+        owner: p.owner.clone(),
+        latest: versions.last()?.version.clone(),
+        versions: versions
+            .iter()
+            .map(|v| PackageVersionView {
+                version: v.version.clone(),
+                mpk: v.mpk.clone(),
+                size: v.mpk_size,
+                source: v.source,
+                services: v.services.clone(),
+                components: v.components,
+                metadata: v.metadata.clone(),
+                outbound: v.outbound.clone(),
+                installed_by: v.installed_by.clone(),
+                installed_at: v.installed_at,
+            })
+            .collect(),
+    })
+}
+
+/// A package as the API answers it (`#Package`): the releases the caller sees, oldest first.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PackageAnswer {
+    package: String,
+    signer_id: String,
+    owner: String,
+    latest: String,
+    versions: Vec<PackageVersionView>,
+}
+
+/// One release of a [`PackageAnswer`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PackageVersionView {
+    version: String,
+    mpk: String,
+    size: u64,
+    source: crate::system::BundleSource,
+    services: BTreeMap<String, String>,
+    components: crate::types::Components,
+    metadata: Value,
+    outbound: Vec<String>,
+    installed_by: String,
+    installed_at: u64,
 }
 
 /// The packages the caller may see (`package_json`): on a cluster several
@@ -138,7 +168,7 @@ async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiR
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     node.sys_fresh_from(principal.sys_index).await;
-    let packages: Vec<Value> = node.sys(|s| {
+    let packages: Vec<PackageAnswer> = node.sys(|s| {
         s.packages
             .values()
             .filter_map(|p| {
@@ -158,7 +188,7 @@ async fn package_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(package): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PackageAnswer>> {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     let frontend = principal.bound_app() == Some(package.as_str());
@@ -312,7 +342,7 @@ async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> 
     operator(&node, &headers)?;
     // An install committed through another node is listed (read index).
     node.sys_fresh().await;
-    let packages: Vec<Value> = node.sys(|s| {
+    let packages: Vec<PackageAnswer> = node.sys(|s| {
         s.packages
             .values()
             .filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))

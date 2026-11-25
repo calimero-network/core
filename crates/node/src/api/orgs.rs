@@ -712,55 +712,95 @@ pub(super) fn team_view(
     o: &crate::types::Org,
     team: &str,
     account: &str,
-) -> Option<Value> {
+) -> Option<TeamView> {
     if !o.sees_team(account, team) {
         return None;
     }
     let t = o.teams.get(team)?;
-    let members: Vec<Value> = t
+    // Each member's row: `team_role` answers for every account in `members`.
+    let members = t
         .members
         .keys()
-        .map(|a| {
-            json!({
-                "account": a,
-                "role": o.team_role(a, team),
-                "capabilities": o.team_caps(a, team),
+        .filter_map(|a| {
+            Some(TeamMemberView {
+                account: a.clone(),
+                role: o.team_role(a, team)?,
+                capabilities: o.team_caps(a, team),
             })
         })
         .collect();
-    let children: Vec<&String> = o
+    let children = o
         .teams
         .values()
         .filter(|c| c.parent.as_deref() == Some(team) && o.sees_team(account, &c.team_id))
-        .map(|c| &c.team_id)
+        .map(|c| c.team_id.clone())
         .collect();
-    let apps: Vec<Value> = s
+    let apps = s
         .apps
         .values()
         .filter(|a| a.org == o.org_id && a.access.teams().iter().any(|t| t.as_str() == team))
-        .map(|a| json!({ "appId": a.app_id, "name": a.name, "contextId": hex::encode(sha256(a.app_id.as_bytes())) }))
+        .map(|a| TeamAppView {
+            app_id: a.app_id.clone(),
+            name: a.name.clone(),
+            context_id: hex::encode(sha256(a.app_id.as_bytes())),
+        })
         .collect();
-    Some(json!({
-        "teamId": t.team_id,
-        "name": t.name,
-        "parent": t.parent,
-        "join": t.join,
-        "metadata": t.metadata,
-        "package": t.app_package(),
-        "defaultCapabilities": t.default_capabilities,
-        "members": members,
-        "children": children,
-        "apps": apps,
-        "myRole": o.team_role(account, team),
-        "member": o.in_team(account, team),
-    }))
+    Some(TeamView {
+        team_id: t.team_id.clone(),
+        name: t.name.clone(),
+        parent: t.parent.clone(),
+        join: t.join,
+        metadata: t.metadata.clone(),
+        package: t.app_package().map(str::to_owned),
+        default_capabilities: t.default_capabilities,
+        members,
+        children,
+        apps,
+        my_role: o.team_role(account, team),
+        member: o.in_team(account, team),
+    })
+}
+
+/// A team as `GET /orgs/{org}/teams/{team}` answers it (`#TeamView`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TeamView {
+    team_id: String,
+    name: String,
+    parent: Option<String>,
+    join: TeamJoin,
+    metadata: Value,
+    package: Option<String>,
+    default_capabilities: Option<u32>,
+    members: Vec<TeamMemberView>,
+    children: Vec<String>,
+    apps: Vec<TeamAppView>,
+    my_role: Option<crate::types::TeamRole>,
+    member: bool,
+}
+
+/// A member's row in a [`TeamView`].
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct TeamMemberView {
+    account: String,
+    role: crate::types::TeamRole,
+    capabilities: u32,
+}
+
+/// An app on the team, in a [`TeamView`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TeamAppView {
+    app_id: String,
+    name: String,
+    context_id: String,
 }
 
 async fn team_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<TeamView>> {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;

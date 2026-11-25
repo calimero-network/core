@@ -59,6 +59,9 @@ pub use component::{
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+/// The run view's types, which the API's OpenAPI registry names (`api::openapi`).
+#[cfg(test)]
+pub(crate) use component::{RunFileView, RunView};
 pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
