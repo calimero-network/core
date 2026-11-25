@@ -409,7 +409,9 @@ async fn org_metadata(
     Path(org): Path<String>,
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.unscoped()?;
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetOrgMetadata {
             org,
@@ -426,7 +428,9 @@ async fn member_metadata(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.unscoped()?;
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetMemberMetadata {
             org,

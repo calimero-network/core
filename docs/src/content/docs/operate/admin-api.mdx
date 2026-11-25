@@ -65,7 +65,7 @@ The **Who** column below uses these terms:
 | Who | Means |
 | --- | --- |
 | anyone | no credential needed |
-| signed in | a session or an API key |
+| signed in | a session or an API key; a key scoped to some apps reaches only those on every route that names an app (and `GET /apps` lists only those), a read-only or method-scoped key changes no settings (app metadata, aliases), and an organization's settings need an unscoped key |
 | session | a passkey session; an API key is refused (`403`) |
 | account holder | a passkey session not bound to an app's frontend |
 | installer | an account holder, or an API key scoped to no app and no method and not read-only |
