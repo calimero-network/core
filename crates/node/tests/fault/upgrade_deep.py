@@ -56,6 +56,11 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Packages", "A passkey sign-in completed from a registered origin (a session bound to the package and naming it)",
+     "the harness's passkeys are the dev passkey's, which holds a credential under the cluster's rp-id only, and an "
+     "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "
+     "(the rp-id each registered origin gets and the refusal of any other), and the finish on a frontend the node "
+     "serves is `Bound`'s (the packages' own frontends)"),
     ("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
      "`AppRecord::egress_off`, `SetEgress`)",
      "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
@@ -125,15 +130,6 @@ NOT_COVERED = [
      "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
      "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
      "(`cluster.rs`) covers retired nodes on one build"),
-    ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
-     "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
-     "writes one from components now, and the node's install of a named service is covered on one build "
-     "(`component_packages.rs`)"),
-    ("Packages", "Registered web origins of a package (`/package-origins`)",
-     "not seeded yet: an origin is added with its manager's passkey approval and is read only by the "
-     "served-frontend path above"),
-    ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
-     "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
