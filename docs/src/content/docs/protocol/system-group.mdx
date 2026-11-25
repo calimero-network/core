@@ -63,9 +63,12 @@ InstallPackage { package, signer_id, release }
 
 Because the log orders every command and every replica applies the same
 commands to the same state, there is one verdict. A refused command is still
-committed, as a no-op with its reason, and the node that proposed it turns the
-reason into the HTTP answer (`400 REJECTED`, or `429 QUOTA_EXCEEDED` for a
-reason that starts with "quota exceeded").
+committed, as a no-op with its reason: a kind and a message
+(`system::Rejection`), answered as `{"err": <message>, "code": <code>}`. The
+node that proposed it turns the kind into the HTTP answer (`400 REJECTED` by
+default, `429 QUOTA_EXCEEDED` for a quota, `403 SIGN_UP_REFUSED`, `409
+RELEASE_DEADLINE` and the other codes a refusal names); the message only
+explains it, so rewording one never changes the status a client sees.
 
 ## Decisions carry their proof
 

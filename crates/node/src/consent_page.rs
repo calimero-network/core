@@ -113,9 +113,9 @@ mod orgs;
 mod updates;
 
 pub use orgs::{
-    MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject, RevokeInviteSubject,
-    SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject, SetMemberTeamsSubject,
-    MAX_SUBJECT_ID_BYTES,
+    EgressSubject, MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject,
+    RevokeInviteSubject, SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject,
+    SetMemberTeamsSubject, MAX_SUBJECT_ID_BYTES,
 };
 
 pub use diff::{capability_sheet, Side};
@@ -281,6 +281,12 @@ pub enum CreateBody {
         subject: SetAllAppsSubject,
         return_to: String,
     },
+    /// Turn an organization's egress switch, or one instance's, off or back on: on again
+    /// is made only here (`POST /orgs/{org}/egress` refuses it elsewhere).
+    SetEgress {
+        subject: EgressSubject,
+        return_to: String,
+    },
     /// Create an instance from a deployment's offer or a release: the install sheet.
     Install {
         subject: Box<InstallSubject>,
@@ -319,6 +325,7 @@ impl CreateBody {
                 (A::SetCapabilities(subject), return_to)
             }
             Self::SetAllApps { subject, return_to } => (A::SetAllApps(subject), return_to),
+            Self::SetEgress { subject, return_to } => (A::SetEgress(subject), return_to),
             other => return Err(other),
         })
     }
@@ -807,7 +814,7 @@ async fn release_facts(
         return Ok(f);
     }
     let mpk = node.release_mpk(package, v).await?;
-    let (bundle, wasm) = crate::packages::verify(mpk)?;
+    let (bundle, wasm) = crate::packages::verify(mpk).await?;
     Ok(remember(node, &v.mpk, &bundle, &wasm))
 }
 
@@ -1235,7 +1242,8 @@ pub async fn create(
         | CreateBody::RenameOrg { .. }
         | CreateBody::DeleteOrg { .. }
         | CreateBody::SetCapabilities { .. }
-        | CreateBody::SetAllApps { .. } => {
+        | CreateBody::SetAllApps { .. }
+        | CreateBody::SetEgress { .. } => {
             return Err(ApiError::internal("an organization request went astray"));
         }
     };
@@ -1544,12 +1552,11 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             hosts(added.iter().map(String::as_str)),
         ));
     }
-    let mut secrets = strings(&sheet["secrets"]["added"]);
-    secrets.extend(strings(&sheet["secrets"]["hostsChanged"]));
+    let secrets = strings(&sheet["secrets"]["words"]);
     if !secrets.is_empty() {
         out.push(attention(
             "secrets",
-            "Asks for a new secret, or sends one to other addresses:".to_owned(),
+            "Asks for a new secret, or has one sent elsewhere or another way:".to_owned(),
             secrets,
         ));
     }
@@ -2141,8 +2148,18 @@ async fn upgrade_request(
         points.push(json!(destinations_point(c, !app.links.is_empty())));
         attention.extend(unit_attention(c, &sheet));
     }
-    let update = (!member_of_unit)
-        .then(|| updates::update_section(node, &app, unit.as_ref(), &step, (old, new), Vec::new()));
+    let members_move = node.sys(|s| s.members_stay(false) && s.moves_members(&app, &to_release));
+    let update = (!member_of_unit).then(|| {
+        updates::update_section(
+            node,
+            &app,
+            unit.as_ref(),
+            &step,
+            (old, new),
+            Vec::new(),
+            members_move,
+        )
+    });
     let model = json!({
         "kind": "upgrade",
         "update": update,
@@ -2316,6 +2333,7 @@ async fn unit_upgrade_request(
         &step,
         (&running.version, &version),
         moves,
+        node.sys(|s| s.members_stay(false) && s.moves_members(&plan.app, &to_release)),
     );
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {
@@ -2475,6 +2493,9 @@ async fn outbound_request(
         })
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     let (scope, scope_json) = scope_of(node, account, scope)?;
+    if let ReleaseScope::Org { org } = &scope {
+        crate::api::refuse_egress_off(node, org)?;
+    }
     let facts = release_facts(node, &package, &latest).await?;
     let declared: Vec<String> = latest.outbound.clone();
     let requested = match subject.prefixes {
@@ -2913,9 +2934,7 @@ fn app_invite_model(
         )));
     }
     if !allowed {
-        return Some(Err(ApiError::new(
-            409,
-            crate::api::apps::GUESTS_NOT_ALLOWED,
+        return Some(Err(crate::node::rejected(
             crate::system::GUESTS_NOT_ALLOWED,
         )));
     }

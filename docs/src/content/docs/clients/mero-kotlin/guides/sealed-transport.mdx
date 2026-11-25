@@ -22,8 +22,12 @@ Rust client (`attest::verify`, `Measurements::Release`):
   the cloud's mirror, `DEFAULT_COLLATERAL_MIRROR`, by default; `collateralSource =
   "intel"` asks Intel's PCS, a URL a PCCS of yours,
   `fetchCollateral` replaces the fetch; the mirror cannot forge anything, every item is
-  Intel-signed, and `maxCollateralAgeDays` bounds how old a replayed copy may be); the TD must not be a debug TD; and all five registers must be the
-  release's image for the trusted profile (`locked-read-only` unless `allowDebugProfile`).
+  Intel-signed, and `maxCollateralAgeDays` bounds how old a replayed copy may be); the TCB status must have been
+  computed against Intel TCB evaluation data of at least `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (20, core's floor;
+  `minTcbEvaluationDataNumber` raises it, never lowers it); the TD must not be a debug TD; and all five registers must be the
+  release's image for the trusted profile (`locked-read-only` unless `allowDebugProfile`; with
+  `profiles`, the one the node names when it is listed, as core's `allowed_profiles`).
+  `CloudPolicy.staging` (`CloudEnvironment.STAGING`) lists staging's three profiles: testing builds only.
 
 ```kotlin
 val policy = CloudPolicy(release = CloudReleasePolicy(minReleaseVersion = "2.3.109"))

@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::{
     Authority, Governance, OrgRole, PackageRef, Quotas, ReleaseScope, SystemCmd, SystemMachine,
-    SystemState, INVITE_GONE, OPERATOR, QUOTA_PREFIX, SHIPS_IN_OTHER_PACKAGE,
+    SystemState, INVITE_GONE, OPERATOR, SHIPS_IN_OTHER_PACKAGE,
 };
 use crate::types::RefreshRecord;
 
@@ -374,6 +374,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     for (app, actor, may) in [
@@ -486,6 +487,7 @@ fn check(g: &Governance) {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
@@ -723,7 +725,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
     let e = m
         .run_unproven(instance("bad", "alice", "j1", None))
         .unwrap_err();
-    assert!(e.contains("compute component"), "{e}");
+    assert!(e.message().contains("compute component"), "{e}");
     let with_compute = |id: &str, compute: &str| {
         SystemCmd::CreateApp {
         app: Box::new(
@@ -738,7 +740,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
     }
     };
     let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
-    assert!(e.contains("not shipped"), "{e}");
+    assert!(e.message().contains("not shipped"), "{e}");
     let _ok = m.run_unproven(with_compute("app", "j1")).unwrap();
     assert_eq!(m.state.apps["app"].compute_bundle.as_deref(), Some("j1"));
 
@@ -758,12 +760,13 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
-    assert!(e.contains("compute component"), "{e}");
+    assert!(e.message().contains("compute component"), "{e}");
     let e = m.run_unproven(upgrade("m2", Some("j1"))).unwrap_err();
-    assert!(e.contains("not shipped"), "{e}");
+    assert!(e.message().contains("not shipped"), "{e}");
     assert_eq!(m.state.apps["app"].bundle, "m1");
     let _ok = m.run_unproven(upgrade("m2", None)).unwrap();
     assert_eq!(m.state.apps["app"].compute_bundle, None);
@@ -819,7 +822,7 @@ fn a_compute_release_is_charged_each_parts_own_size() {
     assert_eq!(m.state.bundles["m1"].size, 30);
     assert_eq!(m.state.bundles["j1"].size, 7);
     let e = m.run_authorized(release("1.1.0", "m2", "j2")).unwrap_err();
-    assert!(e.contains("quota exceeded"), "{e}");
+    assert!(e.message().contains("quota exceeded"), "{e}");
 }
 
 /// An uninstall that would remove a compute component an app still runs is refused, like
@@ -880,7 +883,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
         actor: "alice".into(),
     };
     let e = m.run_unproven(uninstall("1.0.0")).unwrap_err();
-    assert!(e.contains("still runs"), "{e}");
+    assert!(e.message().contains("still runs"), "{e}");
     assert!(m.state.bundles.contains_key("j1"));
     let _ok = m.run_unproven(uninstall("1.1.0")).unwrap();
     assert!(m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j2"));
@@ -1042,6 +1045,7 @@ fn an_upgrade_names_its_consent_or_its_run() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
@@ -1167,6 +1171,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
 
@@ -1479,7 +1484,7 @@ fn credentials_need_the_accounts_own_passkey() {
         "methods": null, "readOnly": true, "allowConfirm": false, "expiresAt": 99,
     }))
     .unwrap();
-    let args = super::api_key_args("h1", &record);
+    let args = super::api_key_args("h1", &record, &[]);
     let mut wider = args.clone();
     wider["readOnly"] = json!(false);
     let create = |consent| SystemCmd::CreateApiKey {
@@ -1489,6 +1494,7 @@ fn credentials_need_the_accounts_own_passkey() {
         owner_in_org: true,
         owner_in_team: true,
         owner_approves: false,
+        then: Vec::new(),
     };
     // Another key's hash under the same consent: refused.
     let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
@@ -1500,6 +1506,7 @@ fn credentials_need_the_accounts_own_passkey() {
             owner_in_org: true,
             owner_in_team: true,
             owner_approves: false,
+            then: Vec::new(),
         })
         .is_err());
     needs_consent(
@@ -1511,6 +1518,106 @@ fn credentials_need_the_accounts_own_passkey() {
         create,
     );
     assert!(m.state.api_keys.contains_key("h1"));
+
+    // A key made with follow-up calls: its consent states them, and the entry
+    // must carry the same ones.
+    let then = vec![crate::types::SignedFollowUp {
+        app: "app".into(),
+        method: "setAccess".into(),
+        args_hash: "a1".into(),
+    }];
+    let record = crate::types::ApiKeyRecord {
+        key_id: "k2".into(),
+        ..record
+    };
+    let args = super::api_key_args("h2", &record, &then);
+    let with = |then: Vec<crate::types::SignedFollowUp>| {
+        let record = record.clone();
+        move |consent| SystemCmd::CreateApiKey {
+            hash: "h2".into(),
+            record: record.clone(),
+            consent,
+            owner_in_org: true,
+            owner_in_team: true,
+            owner_approves: false,
+            then: then.clone(),
+        }
+    };
+    let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
+    assert!(m.run(with(Vec::new())(c)).is_err(), "follow-ups dropped");
+    let mut other = args.clone();
+    other["then"][0]["argsHash"] = json!("a2");
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("account:alice", "__create_api_key"),
+        &args,
+        &other,
+        with(then),
+    );
+    assert!(m.state.api_keys.contains_key("h2"));
+}
+
+/// A key's consent, and so the system log every node holds, states each
+/// follow-up's arguments by a salted hash alone, never the app's data, and
+/// that hash tells apart any two arguments that differ.
+#[test]
+fn a_keys_statement_names_follow_up_arguments_by_a_salted_hash_only() {
+    let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+        "keyId": "k1", "account": "alice", "label": "ci", "expiresAt": 99,
+    }))
+    .unwrap();
+    let call = |args: serde_json::Value| crate::types::KeyFollowUp {
+        app: "app".into(),
+        method: "setAccess".into(),
+        args,
+    };
+    let hash = |args: serde_json::Value, salt: &[u8]| call(args).signed(salt).args_hash;
+    let secret = json!({ "role": "writer", "bucket": "payroll-secret", "at": { "b": 1, "a": 2 } });
+    let signed = call(secret.clone()).signed(b"salt-1");
+    let stated = super::api_key_args("h1", &record, std::slice::from_ref(&signed)).to_string();
+    assert!(!stated.contains("payroll-secret"), "{stated}");
+    assert_eq!(
+        stated,
+        json!({ "hash": "h1", "keyId": "k1", "label": "ci", "apps": null, "methods": null,
+            "readOnly": false, "allowConfirm": false, "expiresAt": 99,
+            "then": [{ "app": "app", "method": "setAccess", "argsHash": signed.args_hash }] })
+        .to_string()
+    );
+    // Key order, at any depth, does not matter.
+    let reordered =
+        json!({ "at": { "a": 2, "b": 1 }, "bucket": "payroll-secret", "role": "writer" });
+    assert_eq!(hash(reordered, b"salt-1"), signed.args_hash);
+    // Any difference does, past what a double holds and between 1 and 1.0.
+    assert_ne!(
+        hash(json!({ "role": "owner" }), b"salt-1"),
+        hash(json!({ "role": "writer" }), b"salt-1")
+    );
+    let big = |n: &str| {
+        serde_json::from_str::<serde_json::Value>(&format!(r#"{{"amount":{n}}}"#)).unwrap()
+    };
+    assert_ne!(
+        hash(big("9007199254740993"), b"s"),
+        hash(big("9007199254740992"), b"s")
+    );
+    assert_ne!(hash(big("1"), b"s"), hash(big("1.0"), b"s"));
+    // The same arguments of another key, under its own salt, state another hash.
+    assert_ne!(hash(secret, b"salt-2"), signed.args_hash);
+}
+
+/// A key without follow-ups states the bytes it did before they existed, so
+/// its consent verifies on every release.
+#[test]
+fn a_plain_keys_statement_is_unchanged() {
+    let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+        "keyId": "k1", "account": "alice", "label": "ci", "apps": ["app"],
+        "methods": null, "readOnly": true, "allowConfirm": false, "expiresAt": 99,
+    }))
+    .unwrap();
+    assert_eq!(
+        super::api_key_args("h1", &record, &[]).to_string(),
+        r#"{"hash":"h1","keyId":"k1","label":"ci","apps":["app"],"methods":null,"readOnly":true,"allowConfirm":false,"expiresAt":99}"#
+    );
 }
 
 /// A cluster begun before session proofs replays what it logged then as
@@ -2348,6 +2455,59 @@ fn a_create_org_entry_from_before_takes_any_name() {
     assert_eq!(m.state.orgs["o2"].name, "Fits");
 }
 
+/// The status a client sees for a refusal comes from what the log refused it
+/// for, never from its wording: a quota refusal worded otherwise is still
+/// `429 QUOTA_EXCEEDED`, and a refusal of another kind whose wording happens
+/// to start like a quota's is still `400 REJECTED` (review finding E4).
+#[test]
+fn a_refusals_status_comes_from_its_kind_not_its_wording() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let owned = m
+        .state
+        .orgs
+        .values()
+        .filter(|o| !o.personal && o.role("alice") == Some(OrgRole::Owner))
+        .count();
+    m.state.quotas.max_orgs_per_account = u32::try_from(owned + 1).unwrap();
+    let create = |id: &str| SystemCmd::CreateOrg {
+        org_id: id.into(),
+        name: "Team".into(),
+        actor: "alice".into(),
+        release: None,
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal: false,
+        app_team: None,
+        capabilities: None,
+    };
+    let _ok = m.run_unproven(create("team")).unwrap();
+    // What `apply` answers, its message reworded, as the API reads it.
+    let answer = |refused: &_, wording: &str| {
+        let mut out: Value = serde_json::from_slice(&super::err(refused)).unwrap();
+        out["err"] = wording.into();
+        let e = super::output(out.to_string().as_bytes()).unwrap_err();
+        let api = crate::node::rejected(&e);
+        (api.status, api.code)
+    };
+    let quota = m.run_unproven(create("team2")).unwrap_err();
+    assert_eq!(
+        answer(&quota, "too many organizations for this account"),
+        (429, "QUOTA_EXCEEDED".to_owned())
+    );
+    let other = m
+        .run_unproven(SystemCmd::DeleteOrg {
+            org: "no-such-org".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+        })
+        .unwrap_err();
+    assert_eq!(
+        answer(&other, "quota exceeded: none, this organization is unknown"),
+        (400, "REJECTED".to_owned())
+    );
+}
+
 /// Every account has its personal organization from sign-up
 /// (`CreateAccount { personal_org }`): it alone owns it, it is outside the
 /// organization quota, and a second one is refused. An ordinary
@@ -2395,7 +2555,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
     assert!(entry.get("personal").is_none(), "{entry}");
     let _ok = m.run_unproven(create("team", "alice", false)).unwrap();
     let refused = m.run_unproven(create("team2", "alice", false)).unwrap_err();
-    assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+    assert!(refused.is_quota(), "{refused}");
     assert!(!serde_json::to_value(&m.state.orgs["team"])
         .unwrap()
         .as_object()
@@ -2405,7 +2565,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
     // One per account.
     assert_eq!(
         m.run_unproven(create("mine2", "alice", true)),
-        Err(super::PERSONAL_ORG_EXISTS.to_owned())
+        Err(super::PERSONAL_ORG_EXISTS)
     );
 
     // An app there shared with listed accounts reaches them without making
@@ -2506,7 +2666,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
     };
     assert_eq!(
         m.run_unproven(create("erins", "erin", true)),
-        Err(super::NO_PERSONAL_ORGS.to_owned())
+        Err(super::NO_PERSONAL_ORGS)
     );
     assert!(!m.state.orgs.contains_key("erins"));
 
@@ -2519,7 +2679,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
         .count();
     m.state.quotas.max_orgs_per_account = u32::try_from(owned).unwrap();
     let refused = m.run_unproven(create("team", "alice", false)).unwrap_err();
-    assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+    assert!(refused.is_quota(), "{refused}");
     m.state.quotas.max_orgs_per_account = u32::try_from(owned + 1).unwrap();
     let _ok = m.run_unproven(create("team", "alice", false)).unwrap();
     // Erin's first organization is an ordinary one she creates.
@@ -2545,7 +2705,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
     };
     assert_eq!(
         m.run_unproven(transfer),
-        Err(super::NEW_OWNER_NOT_A_MEMBER.to_owned())
+        Err(super::NEW_OWNER_NOT_A_MEMBER.into())
     );
     let gift = &m.state.apps["gift"];
     assert_eq!(
@@ -2705,7 +2865,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     // named on it.
     assert_eq!(
         m.run(redeem_as(&closed_key, closed_token, "erin")),
-        Err(GUESTS_NOT_ALLOWED.to_owned())
+        Err(GUESTS_NOT_ALLOWED)
     );
     assert!(!reaches(&m, "closed", "erin"));
     let out = m.run(redeem_as(&closed_key, closed_token, "bob")).unwrap();
@@ -2751,7 +2911,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     assert!(m.run(redeem(signed)).is_err());
     assert_eq!(
         m.run_unproven(redeem(String::new())),
-        Err(APP_INVITE_GONE.to_owned())
+        Err(APP_INVITE_GONE.into())
     );
 
     // The organization's switch turned off after an invite was made: an outsider's
@@ -2767,7 +2927,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         .unwrap();
     assert_eq!(
         m.run(redeem_as(&off_key, off_token, "frank")),
-        Err(GUESTS_NOT_ALLOWED.to_owned())
+        Err(GUESTS_NOT_ALLOWED)
     );
     assert!(!reaches(&m, "open", "frank"));
     assert!(m.state.app_invites.contains_key(&off_key));
@@ -2881,6 +3041,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
         Err(
             "a public link is made with its own consent, not by setting the instance's access"
                 .to_owned()
+                .into()
         )
     );
     let _ok = m.run_unproven(set(json!([{ "kind": "org" }]))).unwrap();
@@ -2911,7 +3072,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
     assert!(m.state.public_link_admits(&key, 20).is_none());
     assert_eq!(
         m.run_unproven(create("other", "alice", Value::Null, None)),
-        Err(PUBLIC_LINKS_OFF.to_owned())
+        Err(PUBLIC_LINKS_OFF.into())
     );
     let _ok = m.run_unproven(settings(true)).unwrap();
     assert!(m.state.public_link_admits(&key, 20).is_some());
@@ -2941,7 +3102,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
     assert!(m.state.public_link_admits(&key, 20).is_none());
     assert_eq!(
         m.run_unproven(revoke(Value::Null)),
-        Err(PUBLIC_LINK_GONE.to_owned())
+        Err(PUBLIC_LINK_GONE.into())
     );
     // Dropped with its instance.
     m.state.remove_app("forms");
@@ -3117,7 +3278,7 @@ fn an_instances_access_is_a_list_of_grants() {
             "a grant's scope is at most 256 bytes of JSON",
         ),
     ] {
-        assert_eq!(m.run_unproven(set("y", bad)), Err(why.to_owned()));
+        assert_eq!(m.run_unproven(set("y", bad)), Err(why.into()));
     }
     assert!(
         serde_json::from_value::<Grant>(json!({ "kind": "team", "team": "t", "extra": 1 }))
@@ -4165,7 +4326,7 @@ fn an_older_app_team_gets_child_teams_when_an_admin_turns_them_on() {
     let _ok = m.run_authorized(scope(None)).unwrap();
     assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
     for who in ["bob", "carol"] {
-        assert_eq!(m.run_authorized(channel(who, who)), Err(refused));
+        assert_eq!(m.run_authorized(channel(who, who)), Err(refused.into()));
     }
 
     // Turned on, the step names Chat alone: both make one (Carol by her
@@ -4186,7 +4347,7 @@ fn an_older_app_team_gets_child_teams_when_an_admin_turns_them_on() {
     assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
     for who in ["bob", "carol"] {
         let id = format!("{who}2");
-        assert_eq!(m.run_authorized(channel(&id, who)), Err(refused));
+        assert_eq!(m.run_authorized(channel(&id, who)), Err(refused.into()));
     }
 
     // An earlier release's entry carries no `childTeams`, and one
@@ -4226,7 +4387,7 @@ fn every_app_added_later_is_an_admins_to_give() {
     assert!(m.state.orgs["org"].all_apps.contains("bob"));
     assert_eq!(
         m.run_unproven(set("bob", "bob", false, Value::Null)),
-        Err(super::ONLY_ADMINS_ALL_APPS.to_owned())
+        Err(super::ONLY_ADMINS_ALL_APPS.into())
     );
     assert!(m
         .run_unproven(set("alice", "carol", true, Value::Null))
@@ -4261,7 +4422,7 @@ fn every_app_added_later_is_an_admins_to_give() {
         .insert("bob".into(), crate::types::caps::INVITE_MEMBERS);
     assert_eq!(
         m.run_unproven(create("bob", "by-bob")),
-        Err(super::ONLY_ADMINS_ALL_APPS.to_owned())
+        Err(super::ONLY_ADMINS_ALL_APPS.into())
     );
     let _ok = m.run_unproven(create("alice", "all")).unwrap();
     // Bob, a member already, redeems it: a change, so a use is spent.
@@ -4494,16 +4655,16 @@ fn a_member_of_a_team_creates_a_private_team_below_it() {
     let refused = "not allowed to create this team";
     assert_eq!(
         m.run_authorized(create("old", "bob", TeamJoin::Invite, false)),
-        Err(refused),
+        Err(refused.into()),
         "as logged before"
     );
     assert_eq!(
         m.run_authorized(create("open", "bob", TeamJoin::Everyone, true)),
-        Err(refused)
+        Err(refused.into())
     );
     assert_eq!(
         m.run_authorized(create("c", "carol", TeamJoin::Invite, true)),
-        Err(refused),
+        Err(refused.into()),
         "not in the team"
     );
     let _ok = m
@@ -4525,7 +4686,7 @@ fn a_member_of_a_team_creates_a_private_team_below_it() {
     let _new = t.read_only.insert("bob".into());
     assert_eq!(
         m.run_authorized(create("ro", "bob", TeamJoin::Invite, true)),
-        Err(refused)
+        Err(refused.into())
     );
     let t = m
         .state
@@ -4539,7 +4700,7 @@ fn a_member_of_a_team_creates_a_private_team_below_it() {
     t.default_capabilities = Some(caps::INVITE_MEMBERS);
     assert_eq!(
         m.run_authorized(create("nocap", "bob", TeamJoin::Invite, true)),
-        Err(refused)
+        Err(refused.into())
     );
 
     // Removed from the parent, Bob is out of the team he made below it.
@@ -4686,7 +4847,7 @@ fn one_accounts_rows_in_several_teams_are_set_and_taken_at_once() {
     );
     assert_eq!(
         m.run_authorized(refused),
-        Err("not allowed to manage this team")
+        Err("not allowed to manage this team".into())
     );
     assert!(rows(&m).is_empty(), "nothing set");
     for (teams, why) in [
@@ -4703,7 +4864,7 @@ fn one_accounts_rows_in_several_teams_are_set_and_taken_at_once() {
         ),
         (vec![row("nope", None)], "no such team"),
     ] {
-        assert_eq!(m.run_authorized(set("alice", teams)), Err(why));
+        assert_eq!(m.run_authorized(set("alice", teams)), Err(why.into()));
     }
     // Not a member of the organization: no row anywhere.
     let mut outsider = set("alice", vec![row("chat", None)]);
@@ -4712,7 +4873,7 @@ fn one_accounts_rows_in_several_teams_are_set_and_taken_at_once() {
     }
     assert_eq!(
         m.run_authorized(outsider),
-        Err("only organization members join teams")
+        Err("only organization members join teams".into())
     );
 
     // With one passkey consent over exactly the rows: all three at once.
@@ -4749,7 +4910,7 @@ fn one_accounts_rows_in_several_teams_are_set_and_taken_at_once() {
         .unwrap();
     assert_eq!(
         m.run_authorized(remove("bob", &["chat", "t"])),
-        Err("not allowed to manage this team")
+        Err("not allowed to manage this team".into())
     );
     assert_eq!(rows(&m), ["t", "chat", "blocks", "dm"]);
     // Out of Chat and Blocks with one consent: the channel below Chat
@@ -5126,7 +5287,7 @@ fn a_move_past_the_targets_quota_is_refused() {
     let e = m
         .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
         .unwrap_err();
-    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    assert!(e.is_quota(), "{e}");
     m.state.set_app_file_bytes("na", 50);
 
     m.state.quotas.max_concurrent_runs_per_org = 1;
@@ -5135,7 +5296,7 @@ fn a_move_past_the_targets_quota_is_refused() {
     let e = m
         .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
         .unwrap_err();
-    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    assert!(e.is_quota(), "{e}");
     let s = &m.state;
     assert_eq!(s.apps["oa"].org.as_str(), "org");
     assert_eq!((s.file_bytes("org"), s.file_bytes("new")), (100, 50));
@@ -5195,7 +5356,7 @@ fn a_move_is_judged_by_the_targets_own_quota() {
         },
     );
     let e = m.run_unproven(cmd).unwrap_err();
-    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    assert!(e.is_quota(), "{e}");
     assert_eq!(m.state.apps["oa"].org.as_str(), "org");
 
     // An entry from before the flag replays judging the cluster's limits.
@@ -6607,7 +6768,7 @@ fn approving_releases_is_a_capability() {
 /// each command carries, so replicas and replays agree.
 #[test]
 fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
-    use super::{PackageVersion, DEADLINE_PREFIX, OPERATOR};
+    use super::{PackageVersion, OPERATOR};
     const T: u64 = 1_000;
     let mut m = SystemMachine::default();
     let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
@@ -6657,6 +6818,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
@@ -6695,9 +6857,9 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
     assert!(!m.state.retired("2.0.0", T - 1));
 
     // From it, the organization that has not approved 2.1.0 starts nothing.
-    let refused = |r: Result<serde_json::Value, String>| {
+    let refused = |r: Result<serde_json::Value, super::Rejection>| {
         let e = r.unwrap_err();
-        assert!(e.starts_with(DEADLINE_PREFIX) && e.contains("2.1.0"), "{e}");
+        assert!(e.is_deadline() && e.message().contains("2.1.0"), "{e}");
     };
     refused(m.run_unproven(app("late", "a", "alice", T)));
     refused(m.run_unproven(upgrade("old", "alice", T)));
@@ -6952,7 +7114,7 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
         offers_only: false,
     };
     let e = m.run_unproven(create("second", "b1")).unwrap_err();
-    assert!(e.starts_with(super::DEADLINE_PREFIX), "{e}");
+    assert!(e.is_deadline(), "{e}");
     let _ok = m.run_unproven(create("raw2", "raw")).unwrap();
     let _ok = m.run_unproven(approve("pub", "2.2.0", "pam")).unwrap();
     let _ok = m.run_unproven(create("second", "b1")).unwrap();
@@ -7121,15 +7283,16 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             owner_approves: false,
             class: None,
             auto: false,
+            members_stay: false,
             restore_point: None,
         }
     };
     let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
-    assert!(e.contains("not signed with the API key"), "{e}");
+    assert!(e.message().contains("not signed with the API key"), "{e}");
     let e = m.run(upgrade("raw", 10, secret)).unwrap_err();
-    assert!(e.contains("only to signed releases"), "{e}");
+    assert!(e.message().contains("only to signed releases"), "{e}");
     let e = m.run(upgrade("b2", 100, secret)).unwrap_err();
-    assert!(e.contains("expired"), "{e}");
+    assert!(e.message().contains("expired"), "{e}");
     let once = upgrade("b2", 10, secret);
     let _ok = m.run(once.clone()).unwrap();
     assert_eq!(m.state.apps["inst"].bundle, "b2");
@@ -7141,7 +7304,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
         Some("k1")
     );
     let e = m.run(once).unwrap_err();
-    assert!(e.contains("used already"), "{e}");
+    assert!(e.message().contains("used already"), "{e}");
 
     // Its maker loses the right to upgrade: so does the key.
     if let Some(o) = m.state.orgs.get_mut("cust") {
@@ -7160,7 +7323,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
         p.signer_id = other_signer;
     }
     let e = m.run(upgrade("b2", 12, secret)).unwrap_err();
-    assert!(e.contains("signer it names"), "{e}");
+    assert!(e.message().contains("signer it names"), "{e}");
     if let Some(p) = m.state.packages.get_mut("p") {
         p.signer_id = signer.clone();
     }
@@ -7172,7 +7335,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
         })
         .unwrap();
     let e = m.run(upgrade("b2", 13, secret)).unwrap_err();
-    assert!(e.contains("revoked"), "{e}");
+    assert!(e.message().contains("revoked"), "{e}");
 }
 
 /// A package's manifest says who upgrades its instances. `publisher`:
@@ -7226,6 +7389,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     assert!(
@@ -7302,6 +7466,7 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     }
 }
@@ -7376,11 +7541,14 @@ fn an_instance_is_upgraded_as_the_release_it_runs_says() {
     let e = m
         .run_unproven(upgrade_to("own", "pam", "b1", Some(("p", "2.0.0"))))
         .unwrap_err();
-    assert!(e.contains("needs its owner"), "{e}");
+    assert!(e.message().contains("needs its owner"), "{e}");
     let e = m
         .run_unproven(upgrade_to("own", "cora", "b2", Some(("p", "1.1.0"))))
         .unwrap_err();
-    assert!(e.contains("not moved"), "never to a publisher release: {e}");
+    assert!(
+        e.message().contains("not moved"),
+        "never to a publisher release: {e}"
+    );
 
     // Replayed before the mark, the bundle's first release judged it.
     let mut old = SystemMachine {
@@ -7601,7 +7769,7 @@ fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
     for (app, who) in [("mine", "dan"), ("onteam", "lee"), ("mine", "mia")] {
         assert_eq!(
             m.run_unproven(flagged(app, who)),
-            Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+            Err(NOT_AN_UPGRADE_APPROVER.into()),
             "{app} {who}"
         );
     }
@@ -7622,7 +7790,7 @@ fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
     new.state.cluster_version = Some(Feature::OwnerApprovedUpgrades.since().into());
     assert_eq!(
         new.run_unproven(upgrade_to("mine", "dan", "b2", Some(("p", "1.1.0")))),
-        Err(NOT_AN_UPGRADE_APPROVER.to_owned())
+        Err(NOT_AN_UPGRADE_APPROVER.into())
     );
     let _ok = m.run_unproven(flagged("onteam", "eve")).unwrap();
     let _ok = m.run_unproven(flagged("mine", "cora")).unwrap();
@@ -7642,7 +7810,7 @@ fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
     );
     assert_eq!(
         m.run_unproven(run("mia", "r1", true)),
-        Err(NOT_AN_UPGRADE_APPROVER.to_owned())
+        Err(NOT_AN_UPGRADE_APPROVER.into())
     );
     let _ok = m.run_unproven(run("mia", "r0", false)).unwrap();
     let _ok = m.run_unproven(run("eve", "r2", true)).unwrap();
@@ -7727,7 +7895,7 @@ fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
     };
     assert_eq!(
         sealed.run_unproven(sealed_up("bob")),
-        Err(NOT_AN_UPGRADE_APPROVER.to_owned())
+        Err(NOT_AN_UPGRADE_APPROVER.into())
     );
     let _ok = sealed.run_unproven(sealed_up("eve")).unwrap();
     assert_eq!(sealed.state.apps["inst"].bundle, "b2");
@@ -8318,7 +8486,7 @@ fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> Sy
 /// deleted once it offers nothing and no instance came from it.
 #[test]
 fn deployments_are_their_managers_and_keep_what_they_offer() {
-    use super::{Deployer, Deployments, MAX_DEPLOYMENTS_PER_OWNER, QUOTA_PREFIX};
+    use super::{Deployer, Deployments, MAX_DEPLOYMENTS_PER_OWNER};
     let mut m = deploying(Deployments::Open);
     let alice = || Deployer::Account("alice".into());
     let org = || Deployer::Org("org".into());
@@ -8439,7 +8607,7 @@ fn deployments_are_their_managers_and_keep_what_they_offer() {
     let e = m
         .run_unproven(create_deployment("one-more", org(), "carol"))
         .unwrap_err();
-    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    assert!(e.is_quota(), "{e}");
 }
 
 /// `kv@0.1.0`, a member's release (bundle `kv-0.1.0`), installed by `by`.
@@ -8525,11 +8693,11 @@ fn a_units_members_carry_its_deployment_and_go_with_it() {
     let e = m
         .run_unproven(kv_member("d2", Some("a"), json!({}), None))
         .unwrap_err();
-    assert!(e.contains("does not offer"), "{e}");
+    assert!(e.message().contains("does not offer"), "{e}");
     let e = m
         .run_unproven(kv_member("d2", Some("a"), json!({}), Some("9.9.9")))
         .unwrap_err();
-    assert!(e.contains("does not offer"), "{e}");
+    assert!(e.message().contains("does not offer"), "{e}");
     assert!(m
         .run_unproven(kv_member("d2", Some("zz"), json!({}), Some("1.0.0")))
         .is_err());
@@ -8813,7 +8981,7 @@ fn install_declaring(by: &str, version: &str) -> SystemCmd {
             "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
             "services": { "": format!("b-{version}") }, "installedBy": by, "installedAt": 5,
             "outbound": ["https://api.example.com/"],
-            "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+            "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
         }))
         .unwrap(),
     }
@@ -8873,8 +9041,7 @@ fn clear_secret(deployment: &str, name: &str, actor: &str) -> SystemCmd {
 #[test]
 fn a_deployments_managers_set_secrets_its_offers_declare() {
     use super::{
-        Deployer, Deployments, MAX_SECRETS_PER_DEPLOYMENT, NO_DEPLOYMENT_SECRET, QUOTA_PREFIX,
-        UNDECLARED_SECRET,
+        Deployer, Deployments, MAX_SECRETS_PER_DEPLOYMENT, NO_DEPLOYMENT_SECRET, UNDECLARED_SECRET,
     };
     let mut m = deploying(Deployments::Open);
     let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
@@ -8965,7 +9132,7 @@ fn a_deployments_managers_set_secrets_its_offers_declare() {
                 "version": "3.0.0", "mpk": "3.0.0", "mpkSize": 1, "source": "upload",
                 "services": { "": "b-3.0.0" }, "installedBy": "alice", "installedAt": 5,
                 "outbound": ["https://api.example.com/"],
-                "secrets": { "MORE": { "hosts": ["api.example.com"] } },
+                "secrets": { "MORE": { "host": "api.example.com", "paths": ["/"], "header": "x-more" } },
             }))
             .unwrap(),
         })
@@ -8976,7 +9143,7 @@ fn a_deployments_managers_set_secrets_its_offers_declare() {
     let e = m
         .run_unproven(set_secret("a", "MORE", "v", "alice"))
         .unwrap_err();
-    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    assert!(e.is_quota(), "{e}");
     let _ok = m
         .run_unproven(set_secret("a", "API_KEY", "again", "alice"))
         .unwrap();
@@ -9135,7 +9302,7 @@ fn a_deployment_secret_value_never_prints() {
     let refused = m
         .run_unproven(set_secret("a", "OTHER", VALUE, "alice"))
         .unwrap_err();
-    assert!(!refused.contains(VALUE));
+    assert!(!refused.message().contains(VALUE));
     assert!(!format!("{:?}", m.state).contains(VALUE));
     assert!(!format!("{:?}", m.state.deployment_secrets).contains(VALUE));
     // The snapshot does carry it: the system group's state is sealed at rest.
@@ -9169,12 +9336,17 @@ fn state_from_before_deployment_secrets_reads_with_none_and_writes_as_before() {
     assert!(m.state.deployments.is_empty());
 }
 
-/// `package@version` installed by alice, declaring `secrets` (each for
-/// `api.example.com`) and referencing `uses` (the manifest's JSON for them).
+/// `package@version` installed by alice, declaring `secrets` (each bound to an
+/// `x-<name>` header of `api.example.com`) and referencing `uses` (the manifest's JSON for them).
 fn install_release(package: &str, version: &str, secrets: &[&str], uses: Value) -> SystemCmd {
     let secrets: serde_json::Map<String, Value> = secrets
         .iter()
-        .map(|n| ((*n).to_owned(), json!({ "hosts": ["api.example.com"] })))
+        .map(|n| {
+            (
+                (*n).to_owned(),
+                json!({ "host": "api.example.com", "paths": ["/"], "header": format!("x-{}", n.to_ascii_lowercase()) }),
+            )
+        })
         .collect();
     let uses = if uses.is_null() { json!({}) } else { uses };
     SystemCmd::InstallPackage {
@@ -9444,7 +9616,7 @@ fn file_bytes_are_granted_up_to_the_quota_across_the_payers_apps() {
     assert_eq!(m.state.file_bytes("org"), 100);
 
     let refused = m.run_unproven(charge("a", 1)).unwrap_err();
-    assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+    assert!(refused.is_quota(), "{refused}");
     assert_eq!(m.state.file_bytes("org"), 100, "a refusal changes nothing");
 
     // Another payer has its own quota.
@@ -9599,7 +9771,7 @@ fn a_personal_app_moves_only_to_an_owner_whose_quota_holds_its_files() {
         owner_in_team: true,
     };
     let refused = m.run_unproven(transfer.clone()).unwrap_err();
-    assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+    assert!(refused.is_quota(), "{refused}");
     assert_eq!(m.state.apps["a"].owner, "alice");
     let _ok = m.run_unproven(charge("b", -50)).unwrap();
     let _ok = m.run_unproven(transfer).unwrap();
@@ -9668,6 +9840,7 @@ fn package_origins_carry_their_managers_consent() {
     assert!(
         m.run(add_origin("bob", "p", NOTES, "notes.example.com", by_bob))
             .unwrap_err()
+            .message()
             .contains("manager"),
         "not the package's manager"
     );
@@ -9705,6 +9878,7 @@ fn package_origins_carry_their_managers_consent() {
     assert!(
         m.run(add_origin("alice", "p", NOTES, "notes.example.com", c))
             .unwrap_err()
+            .message()
             .contains("used already"),
         "a consent is spent once"
     );
@@ -9782,6 +9956,7 @@ fn package_origins_are_unique_bounded_and_go_with_their_package() {
     assert!(
         add(&mut m, "bob", "q", NOTES, "notes.example.com")
             .unwrap_err()
+            .message()
             .contains("another package"),
         "first come"
     );
@@ -9814,7 +9989,7 @@ fn package_origins_are_unique_bounded_and_go_with_their_package() {
         "example.com"
     )
     .unwrap_err()
-    .starts_with(QUOTA_PREFIX));
+    .is_quota());
     let _ok = add(&mut m, "bob", "q", "https://q.example.org", "q.example.org").unwrap();
 
     let _ok = m
@@ -9859,6 +10034,7 @@ fn served_origins_carry_their_own_consent_and_limit() {
     assert!(m
         .run(add_served("bob", KV, "kv.example.com", by_bob))
         .unwrap_err()
+        .message()
         .contains("manager"));
     assert!(m.state.package_origins.is_empty());
     let c = consent(&mut alice, "package:p", "__add_origin", &args);
@@ -9891,7 +10067,7 @@ fn served_origins_carry_their_own_consent_and_limit() {
     }
     assert!(add(&mut m, "https://more.example.com", true)
         .unwrap_err()
-        .starts_with(QUOTA_PREFIX));
+        .is_quota());
     let _ok = add(&mut m, "https://plain.example.com", false).unwrap();
     assert!(m.state.served_origin("https://plain.example.com").is_none());
 
@@ -10318,8 +10494,8 @@ mod sign_up {
     use serde_json::json;
 
     use super::super::{
-        Governance, SignUp, SignUpInvite, SignUpRedemption, SystemCmd, SystemMachine, SystemState,
-        OPERATOR, SIGN_UP_PREFIX,
+        Governance, Rejection, RejectionKind, SignUp, SignUpInvite, SignUpRedemption, SystemCmd,
+        SystemMachine, SystemState, OPERATOR, SIGN_UP_PREFIX,
     };
     use super::{account_with, operator_signed};
 
@@ -10471,9 +10647,10 @@ mod sign_up {
         );
     }
 
-    fn refused(r: Result<serde_json::Value, String>) -> String {
+    fn refused(r: Result<serde_json::Value, Rejection>) -> Rejection {
         let e = r.unwrap_err();
-        assert!(e.starts_with(SIGN_UP_PREFIX), "{e}");
+        assert_eq!(e.kind(), RejectionKind::SignUpRefused, "{e}");
+        assert!(e.message().starts_with(SIGN_UP_PREFIX), "{e}");
         e
     }
 
@@ -10498,7 +10675,7 @@ mod sign_up {
     fn an_invite_cluster_takes_only_invited_people() {
         let mut m = machine(SignUp::Invite);
         let e = refused(m.run(signing_up("a", None, 10)));
-        assert!(e.contains("invite only"), "{e}");
+        assert!(e.message().contains("invite only"), "{e}");
         let _e = refused(m.run(signing_up("a", Some("inv_unknown"), 10)));
 
         org_invite(&mut m, "inv_org");
@@ -10555,7 +10732,7 @@ mod sign_up {
     fn a_closed_cluster_takes_only_preauthorized_people() {
         let mut m = machine(SignUp::Closed);
         let e = refused(m.run(signing_up("a", None, 10)));
-        assert!(e.contains("pre-authorized"), "{e}");
+        assert!(e.message().contains("pre-authorized"), "{e}");
         org_invite(&mut m, "inv_org");
         let _e = refused(m.run(signing_up("a", Some("inv_org"), 10)));
         assert_eq!(m.state.invites.len(), 1, "a refusal spends nothing");
@@ -10652,7 +10829,7 @@ mod sign_up {
                 Some(operator_signed("cluster", "__sign_up", &open)),
             ))
             .unwrap_err();
-        assert!(e.contains("owner"), "{e}");
+        assert!(e.message().contains("owner"), "{e}");
         assert!(m.state.runs_sign_up("owner").is_ok());
         assert!(m.state.runs_sign_up(OPERATOR).is_err());
     }
@@ -10693,7 +10870,7 @@ mod sign_up {
 
 use super::{BackupHolder, BAD_BACKUP_KEY, NOT_BACKUP_HOLDER};
 
-fn refused(m: &mut SystemMachine, cmd: SystemCmd) -> String {
+fn refused(m: &mut SystemMachine, cmd: SystemCmd) -> super::Rejection {
     m.run(cmd).unwrap_err()
 }
 
@@ -11116,7 +11293,7 @@ fn mint_with_capabilities(
     actor: &str,
     token: &str,
     capabilities: Option<u32>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, super::Rejection> {
     let key = crate::proof::invite_key(token);
     let mut invite: crate::types::Invite = serde_json::from_value(json!({
         "org": "org", "role": "member", "expiresAt": 100, "usesLeft": 2,
@@ -11686,7 +11863,7 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
                 "version": "1.0.0", "mpk": "q-1.0.0", "mpkSize": 1, "source": "upload",
                 "services": { "": "b-q" }, "installedBy": "bob", "installedAt": 5,
                 "outbound": ["https://attacker.example/"],
-                "secrets": { "API_KEY": { "hosts": ["attacker.example"] } },
+                "secrets": { "API_KEY": { "host": "attacker.example", "paths": ["/"], "header": "x-api-key" } },
             }))
             .unwrap(),
         })
@@ -11965,7 +12142,7 @@ fn an_updates_class_is_judged_against_the_log_and_recorded() {
     ] {
         assert_eq!(
             m.run_unproven(classified_upgrade("cora", "1.1.0", Some(wrong.clone()), 10)),
-            Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+            Err(UPGRADE_CLASS_MISMATCH),
             "{wrong:?}"
         );
     }
@@ -12066,7 +12243,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
     );
     assert_eq!(
         m.run_unproven(set(None, Some(strict), "bob", Value::Null)),
-        Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+        Err(NOT_AN_UPGRADE_APPROVER.into()),
         "a member"
     );
     needs_consent(
@@ -12088,7 +12265,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
         };
         assert_eq!(
             m.run_unproven(set(Some("oa"), Some(bad), "alice", Value::Null)),
-            Err(BAD_UPGRADE_POLICY.to_owned()),
+            Err(BAD_UPGRADE_POLICY),
             "{hours}"
         );
     }
@@ -12152,7 +12329,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     // Without the policy, one approval, and a first approval has nothing to wait for.
     assert_eq!(
         m.run_unproven(approve("cora", "1.1.0", red(&telemetry), 5)),
-        Err(ONE_APPROVAL.to_owned())
+        Err(ONE_APPROVAL)
     );
     let _ok = m
         .run_unproven(SystemCmd::SetUpgradePolicy {
@@ -12176,24 +12353,24 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
         .unwrap();
     assert_eq!(
         m.run_unproven(approve("cora", "1.0.1", green(), 5)),
-        Err(ONE_APPROVAL.to_owned()),
+        Err(ONE_APPROVAL),
         "a green update needs no second"
     );
     // A red one, or one without a class, waits for a first approval by someone else.
     for class in [Some(red(&telemetry)), None] {
         assert_eq!(
             m.run_unproven(classified_upgrade("cora", "1.1.0", class, 10)),
-            Err(SECOND_APPROVAL_REQUIRED.to_owned())
+            Err(SECOND_APPROVAL_REQUIRED)
         );
     }
     assert_eq!(
         m.run_unproven(approve("dan", "1.1.0", red(&telemetry), 5)),
-        Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+        Err(NOT_AN_UPGRADE_APPROVER.into()),
         "a member"
     );
     assert_eq!(
         m.run_unproven(approve("cora", "1.1.0", green(), 5)),
-        Err(ONE_APPROVAL.to_owned()),
+        Err(ONE_APPROVAL),
         "approved as green"
     );
     assert!(
@@ -12206,7 +12383,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     assert_eq!(pending["by"], "cora", "{pending}");
     assert_eq!(
         m.run_unproven(approve("eve", "1.1.0", red(&telemetry), 6)),
-        Err(APPROVAL_PENDING.to_owned()),
+        Err(APPROVAL_PENDING),
         "the second approver applies it instead"
     );
     // Not the same person twice, nor a week and a second later.
@@ -12217,7 +12394,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             Some(red(&telemetry)),
             10
         )),
-        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+        Err(SECOND_APPROVAL_REQUIRED)
     );
     let late = 5 + MAX_APPROVAL_AGE_SECS + 1;
     assert_eq!(
@@ -12231,7 +12408,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             Some(red(&telemetry)),
             late
         )),
-        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+        Err(SECOND_APPROVAL_REQUIRED)
     );
     // Not once the first approver is no longer an admin.
     let mut demoted = SystemMachine {
@@ -12251,7 +12428,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             Some(red(&telemetry)),
             10
         )),
-        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+        Err(SECOND_APPROVAL_REQUIRED)
     );
     // The second applies it; the record names the first, and the approval is spent.
     let _ok = m
@@ -12416,7 +12593,7 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
         ]
     );
     // No policy: never on its own.
-    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED));
     assert!(m.state.auto_update_candidates(hold_over).is_empty());
     automatic(&mut m, 24);
     // Not before the hold, judged on the logged times.
@@ -12428,14 +12605,14 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
             hold_over - 1,
             Some(taken_on(1, 7))
         )),
-        Err(HOLD_NOT_OVER.to_owned())
+        Err(HOLD_NOT_OVER)
     );
     assert!(m.state.auto_update_candidates(hold_over - 1).is_empty());
     // Not without a restore point of the group it runs on.
     for taken in [None, Some(crate::types::TakenRestorePoint::default())] {
         assert_eq!(
             m.run(auto_upgrade("1.0.1", "b3", Some(green()), hold_over, taken)),
-            Err(RESTORE_POINT_REQUIRED.to_owned())
+            Err(RESTORE_POINT_REQUIRED)
         );
     }
     // Not red or unclassified, not with a destination, not back to an older release.
@@ -12462,7 +12639,7 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
     if let SystemCmd::UpgradeApp { actor, .. } = &mut as_cora {
         *actor = "cora".into();
     }
-    assert_eq!(m.run(as_cora), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    assert_eq!(m.run(as_cora), Err(AUTO_UPDATE_REFUSED));
     let mut unmarked = cmd.clone();
     if let SystemCmd::UpgradeApp { auto, .. } = &mut unmarked {
         *auto = false;
@@ -12517,7 +12694,7 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
             hold_over,
             Some(crate::types::TakenRestorePoint::default())
         )),
-        Err(AUTO_UPDATE_REFUSED.to_owned())
+        Err(AUTO_UPDATE_REFUSED)
     );
 }
 
@@ -12552,6 +12729,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         actor: actor.into(),
         at,
         consent: Value::Null,
+        release_installed: false,
     };
     let within = hold_over + UNDO_WINDOW_SECS;
     assert_eq!(
@@ -12560,7 +12738,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     );
     assert_eq!(
         m.run_unproven(undo("dan", json!({ "inst": [2, 1] }), within)),
-        Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+        Err(NOT_AN_UPGRADE_APPROVER.into()),
         "a member"
     );
     for (apps, why) in [
@@ -12576,13 +12754,13 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     ] {
         assert_eq!(
             m.run_unproven(undo("cora", apps, within)),
-            Err(UNDO_NOT_AS_NAMED.to_owned()),
+            Err(UNDO_NOT_AS_NAMED),
             "{why}"
         );
     }
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [2, 1] }), within + 1)),
-        Err(UNDO_WINDOW_PASSED.to_owned())
+        Err(UNDO_WINDOW_PASSED)
     );
     assert!(
         m.run(undo("cora", json!({ "inst": [2, 1] }), within))
@@ -12635,7 +12813,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     assert!(m.state.apps["inst"].restore_point.is_none(), "spent");
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [2, 1] }), within)),
-        Err(NO_RESTORE_POINT.to_owned())
+        Err(NO_RESTORE_POINT)
     );
     // The release it undid never applies on its own again; a newer one may.
     let later = hold_over + 10;
@@ -12672,7 +12850,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         .unwrap();
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [1] }), 60)),
-        Err(UNDO_NOT_AS_NAMED.to_owned())
+        Err(UNDO_NOT_AS_NAMED)
     );
     let group = m.state.apps["inst"].group;
     let _ok = m
@@ -12694,7 +12872,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     }
     assert_eq!(
         m.run_unproven(undo("cora", json!({ "inst": [1] }), 60)),
-        Err(UNDO_STALE.to_owned())
+        Err(UNDO_STALE)
     );
     if let Some(a) = m.state.apps.get_mut("inst") {
         a.bundle = "b3".into();
@@ -12704,6 +12882,134 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     // A state from before restore points reads with none and writes as it did.
     let shown = serde_json::to_value(&m.state.apps["rawapp"]).unwrap();
     assert!(shown.get("restorePoint").is_none(), "{shown}");
+}
+
+/// An undo goes back only to a release that is still installed: a developer who
+/// uninstalls a release it no longer offers takes it from the customers' undo too, even
+/// where another release ships the same WASM and the bundle stays. An entry logged
+/// before the rule replays as it applied.
+#[test]
+fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
+    use super::cluster_version::Feature;
+    use super::UNDO_RELEASE_GONE;
+    let moved_to_the_shared_wasm = || {
+        let mut m = auto_fixture();
+        let manual = |version: &str, taken| {
+            let mut cmd = classified_upgrade("cora", version, Some(green()), 50);
+            if let SystemCmd::UpgradeApp {
+                bundle,
+                restore_point,
+                ..
+            } = &mut cmd
+            {
+                *bundle = "b3".into();
+                *restore_point = taken;
+            }
+            cmd
+        };
+        let _ok = m
+            .run_unproven(manual("1.0.1", Some(taken_on(1, 3))))
+            .unwrap();
+        let _ok = m
+            .run_unproven(manual(
+                "1.0.2",
+                Some(crate::types::TakenRestorePoint::default()),
+            ))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::UninstallPackage {
+                package: "p".into(),
+                version: Some("1.0.1".into()),
+                actor: "pam".into(),
+            })
+            .unwrap();
+        assert!(m.state.bundles.contains_key("b3"), "1.0.2 still ships it");
+        m
+    };
+    let undo = |release_installed: bool| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    assert_eq!(
+        undo(true).features(),
+        [Feature::RestorePoints, Feature::UndoToInstalledRelease]
+    );
+    assert_eq!(undo(false).features(), [Feature::RestorePoints]);
+
+    let mut m = moved_to_the_shared_wasm();
+    assert_eq!(m.run_unproven(undo(true)), Err(UNDO_RELEASE_GONE));
+    let a = &m.state.apps["inst"];
+    assert_eq!(
+        a.release.as_ref().unwrap().version,
+        "1.0.2",
+        "nothing moved"
+    );
+    assert!(a.restore_point.is_some(), "the restore point is kept");
+    // The logged cluster version brings the rule to an entry without the flag.
+    m.state.cluster_version = Some(Feature::UndoToInstalledRelease.since().to_owned());
+    assert_eq!(m.run_unproven(undo(false)), Err(UNDO_RELEASE_GONE));
+    // An entry logged before it, with no flag, applied.
+    let mut m = moved_to_the_shared_wasm();
+    let _ok = m.run_unproven(undo(false)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.1"
+    );
+    // A seed sent again after the undo moved the app is not refused for a release uninstalled
+    // since: the app already runs it and waits for its restore.
+    let mut m = auto_fixture();
+    for (version, taken) in [("1.0.1", taken_on(1, 3)), ("1.0.2", taken_on(2, 7))] {
+        let mut up = classified_upgrade("cora", version, Some(green()), 50);
+        if let SystemCmd::UpgradeApp {
+            bundle,
+            restore_point,
+            ..
+        } = &mut up
+        {
+            *bundle = "b3".into();
+            *restore_point = Some(taken);
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    let seeded = |release_installed| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [2, 1] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.0.1".into()),
+            actor: "pam".into(),
+        })
+        .unwrap();
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    // Installed, the release is undone to as ever, flagged or not.
+    let mut m = auto_fixture();
+    let mut up = classified_upgrade("cora", "1.0.1", Some(green()), 50);
+    if let SystemCmd::UpgradeApp {
+        bundle,
+        restore_point,
+        ..
+    } = &mut up
+    {
+        *bundle = "b3".into();
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(undo(true)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.0"
+    );
 }
 
 /// An instance of a deployment applies its offer on its own once its hold has passed
@@ -12740,7 +13046,7 @@ fn a_deployment_instances_hold_runs_from_its_offer() {
     };
     // A day after the install, but not after the offer: it waits.
     assert!(m.state.auto_update_candidates(1000 + day).is_empty());
-    assert_eq!(m.run(up(1000 + day)), Err(HOLD_NOT_OVER.to_owned()));
+    assert_eq!(m.run(up(1000 + day)), Err(HOLD_NOT_OVER));
     // A day after the offer: found, with the offered release alone, and applied.
     let found = m.state.auto_update_candidates(2000 + day);
     let versions: Vec<&str> = found[0].1.iter().map(|r| r.version.as_str()).collect();
@@ -12769,7 +13075,7 @@ fn a_move_the_log_cannot_rebuild_is_never_applied_as_green() {
         .and_then(|p| p.versions.remove("1.0.0"));
     assert_eq!(
         m.run_unproven(classified_upgrade("cora", "1.1.0", Some(green()), 10)),
-        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a destination added, logged as green"
     );
     assert_eq!(m.state.apps["inst"].bundle, "b1", "a refusal moves nothing");
@@ -12799,7 +13105,7 @@ fn a_move_the_log_cannot_rebuild_is_never_applied_as_green() {
         .and_then(|p| p.versions.remove("1.0.1"));
     assert_eq!(
         m.run_unproven(classified_upgrade("cora", "1.1.0", Some(green()), 10)),
-        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a member the log cannot rebuild"
     );
 }
@@ -12851,7 +13157,7 @@ fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
     assert_eq!(m.state.unclassified(&inst, ("p", "1.1.0"), &empty), None);
     assert_eq!(
         m.run_unproven(approve("cora", unclassified("1.0.0"), 5)),
-        Err(UPGRADE_CLASS_MISMATCH.to_owned())
+        Err(UPGRADE_CLASS_MISMATCH)
     );
     // `inst` runs p@1.0.0, uninstalled while p@1.0.1 still ships b1.
     let _gone = m
@@ -12865,7 +13171,7 @@ fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
     );
     assert_eq!(
         m.run_unproven(approve("cora", unclassified("1.0.1"), 5)),
-        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a release the log holds"
     );
     let pending = m
@@ -12975,7 +13281,7 @@ fn a_units_run_is_judged_once_under_its_instances_policy() {
     // The instance is judged over the unit: green is refused, the unit's red applies.
     assert_eq!(
         m.run_unproven(in_run("inst", "b1", "1.0.1", Some(green()))),
-        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        Err(UPGRADE_CLASS_MISMATCH),
         "a unit red through its member, logged green"
     );
     let _ok = m
@@ -13013,10 +13319,7 @@ fn a_units_run_is_judged_once_under_its_instances_policy() {
         *class = Some(red(&telemetry));
         *owner_approves = true;
     }
-    assert_eq!(
-        alone.run_unproven(cmd),
-        Err(SECOND_APPROVAL_REQUIRED.to_owned())
-    );
+    assert_eq!(alone.run_unproven(cmd), Err(SECOND_APPROVAL_REQUIRED));
 }
 
 /// Units nest: a parent unit's first approval may cover a member that is itself the
@@ -13299,4 +13602,119 @@ fn an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one()
         .last_upgrade
         .as_ref()
         .is_some_and(|u| !u.ok));
+}
+
+/// `inst` with a member `kv` of package `q` on 0.1.0, under the automatic policy:
+/// `p` 1.0.1's lock pins `kv` at 0.1.1 (it would move the member), 1.0.2's at 0.1.0.
+fn auto_unit_fixture() -> SystemMachine {
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let mut q = m.state.packages["p"].clone();
+    q.name = "q".into();
+    q.versions.clear();
+    for version in ["0.1.0", "0.1.1"] {
+        let _prev = q.versions.insert(
+            version.into(),
+            serde_json::from_value(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+                "services": { "": "bq" }, "installedBy": "pam", "installedAt": 0
+            }))
+            .unwrap(),
+        );
+    }
+    let _prev = m.state.packages.insert("q".into(), q);
+    instance_of(
+        &mut m,
+        "kv",
+        "bq",
+        json!({ "package": "q", "version": "0.1.0" }),
+    );
+    let _prev = m
+        .state
+        .apps
+        .get_mut("inst")
+        .unwrap()
+        .links
+        .insert("kv".into(), "kv".into());
+    let p = m.state.packages.get_mut("p").unwrap();
+    for (version, kv) in [("1.0.1", "0.1.1"), ("1.0.2", "0.1.0")] {
+        let _prev = p.versions.get_mut(version).unwrap().uses.insert(
+            "kv".into(),
+            super::ReleaseUse {
+                package: "q".into(),
+                range: "^0.1".into(),
+                version: Some(kv.into()),
+            },
+        );
+    }
+    m
+}
+
+/// An update on its own moves the instance alone, so it is refused where its release
+/// would move the unit's members: by an entry that says so (`members_stay`), or once the
+/// logged cluster version brings the rule. An entry logged before either applies as it did.
+#[test]
+fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
+    use super::cluster_version::Feature;
+    use super::AUTO_UPDATE_REFUSED;
+    let hold_over = 1000 + 24 * 3600;
+    let moving = |members_stay: bool| {
+        let mut cmd = auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            hold_over,
+            Some(taken_on(1, 7)),
+        );
+        if let SystemCmd::UpgradeApp {
+            members_stay: m, ..
+        } = &mut cmd
+        {
+            *m = members_stay;
+        }
+        cmd
+    };
+    assert!(moving(true)
+        .features()
+        .contains(&Feature::AutoUpdateMembersStay));
+
+    let mut m = auto_unit_fixture();
+    assert_eq!(m.run(moving(true)), Err(AUTO_UPDATE_REFUSED));
+    // Logged before the rule: applies as it did, and the member stays behind.
+    let mut before = auto_unit_fixture();
+    let _ok = before.run(moving(false)).unwrap();
+    assert_eq!(before.state.apps["inst"].bundle, "b3");
+    assert_eq!(
+        before.state.apps["kv"].release.as_ref().unwrap().version,
+        "0.1.0"
+    );
+
+    // The rule in force: the leader leaves 1.0.1 out, and an unmarked entry is refused too.
+    let versions = |m: &SystemMachine| -> Vec<String> {
+        m.state.auto_update_candidates(hold_over)[0]
+            .1
+            .iter()
+            .map(|r| r.version.clone())
+            .collect()
+    };
+    assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
+    m.state.cluster_version = Some(Feature::AutoUpdateMembersStay.since().into());
+    assert_eq!(versions(&m), ["1.0.2"]);
+    assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED));
+    // A release whose lock keeps the member where it is still applies on its own.
+    let mut keeping = auto_upgrade(
+        "1.0.2",
+        "b3",
+        Some(green()),
+        hold_over,
+        Some(taken_on(1, 7)),
+    );
+    if let SystemCmd::UpgradeApp { members_stay, .. } = &mut keeping {
+        *members_stay = true;
+    }
+    let _ok = m.run(keeping).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.2"
+    );
 }

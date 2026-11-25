@@ -6,43 +6,72 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="ConsentPageCreateBodyType18SubjectNewOrg")
+from ..types import UNSET, Unset
+from typing import Union
+
+T = TypeVar("T", bound="FollowUpFailedError")
 
 
 @_attrs_define
-class ConsentPageCreateBodyType18SubjectNewOrg:
+class FollowUpFailedError:
     """
     Attributes:
-        name (str):
+        status (int):
+        error (str):
+        message (str):
+        details (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for
+            whose it is).
     """
 
-    name: str
+    status: int
+    error: str
+    message: str
+    details: Union[Unset, Any] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        name = self.name
+        status = self.status
+
+        error = self.error
+
+        message = self.message
+
+        details = self.details
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "name": name,
+                "status": status,
+                "error": error,
+                "message": message,
             }
         )
+        if details is not UNSET:
+            field_dict["details"] = details
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        name = d.pop("name")
+        status = d.pop("status")
 
-        consent_page_create_body_type_18_subject_new_org = cls(
-            name=name,
+        error = d.pop("error")
+
+        message = d.pop("message")
+
+        details = d.pop("details", UNSET)
+
+        follow_up_failed_error = cls(
+            status=status,
+            error=error,
+            message=message,
+            details=details,
         )
 
-        consent_page_create_body_type_18_subject_new_org.additional_properties = d
-        return consent_page_create_body_type_18_subject_new_org
+        follow_up_failed_error.additional_properties = d
+        return follow_up_failed_error
 
     @property
     def additional_keys(self) -> list[str]:

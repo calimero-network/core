@@ -98,7 +98,7 @@ pub fn emit(name: &str, data: Vec<u8>, audience: Audience) -> Result<()> {
         data,
         audience,
     })
-    .map_err(|message| AppError::with_fields("Emit", json!({ "message": message })))
+    .map_err(|message| AppError::host_soft("Emit", message))
 }
 
 fn no_org() -> Result<String> {

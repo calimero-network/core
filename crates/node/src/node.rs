@@ -20,7 +20,7 @@ use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
 use crate::system::cluster_version::{self as cv, Feature};
-use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemState};
+use crate::system::{normalize_addr, output, Rejection, SystemCmd, SystemMachine, SystemState};
 use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
@@ -42,6 +42,12 @@ mod runtime;
 mod segments;
 
 pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
+
+/// How often a node deletes the compiled components no app uses any more
+/// ([`Node::sweep_component_cache`]). The first sweep waits this long after start, so the
+/// system group has caught up and names every app's bundle.
+pub const COMPONENT_CACHE_SWEEP_EVERY: std::time::Duration =
+    std::time::Duration::from_secs(60 * 60);
 
 #[cfg(feature = "testing")]
 pub use component::ComputeLimits;
@@ -102,15 +108,6 @@ impl From<StatsWire> for crate::app::StorageStats {
 /// The timeout of the HTTP client a node shares for its peers, job nodes and attestation
 /// fetches. Transfers that may take longer (job transfers) bound themselves.
 pub const SHARED_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// [`SHARED_HTTP_TIMEOUT`], or the timeout a test set (`testing::shared_http_timeout`).
-fn shared_http_timeout() -> Duration {
-    #[cfg(feature = "testing")]
-    if let Some(timeout) = crate::testing::shared_http_timeout_override() {
-        return timeout;
-    }
-    SHARED_HTTP_TIMEOUT
-}
 
 /// Node configuration.
 #[derive(Clone, Debug)]
@@ -440,6 +437,28 @@ pub struct MoveGuard {
     app: String,
 }
 
+/// An account's turn to make an API key here ([`Node::api_key_turn`]).
+pub struct KeyTurn {
+    node: Arc<Node>,
+    account: String,
+    turn: Arc<tokio::sync::Mutex<()>>,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for KeyTurn {
+    fn drop(&mut self) {
+        let mut turns = self
+            .node
+            .api_key_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The map's, this turn's and the held guard's: nobody else waits.
+        if Arc::strong_count(&self.turn) == 3 {
+            let _gone = turns.remove(&self.account);
+        }
+    }
+}
+
 impl Drop for MoveGuard {
     fn drop(&mut self) {
         let _was = self
@@ -546,6 +565,8 @@ pub struct Node {
     pub(crate) export_limits: crate::api::ExportLimits,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
+    /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
+    pub(crate) unknown_api_keys: crate::api::UnknownApiKeys,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -592,7 +613,7 @@ pub struct Node {
     cluster_key: [u8; 32],
     /// Bounds the cluster-key releases this node answers at once.
     pub(crate) key_releases: tokio::sync::Semaphore,
-    pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
+    pub challenges: Mutex<crate::api::Ceremonies>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
     /// The runtime each peer named, by node, and when (`Self::runtime_of_node`).
@@ -644,6 +665,8 @@ pub struct Node {
     unattested: Mutex<HashSet<NodeId>>,
     /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
     moving: Mutex<HashSet<String>>,
+    /// Per account, the turn to make an API key on this node ([`Node::api_key_turn`]).
+    api_key_turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// A promotion of learners to system voters is under way.
     promoting: std::sync::atomic::AtomicBool,
     /// The system leader's bookkeeping for the cluster version
@@ -768,6 +791,56 @@ impl Transport for PeerTransport {
             serde_json::from_value(resp).map_err(|e| e.to_string())
         })
     }
+
+    /// Heartbeats of several groups in one message (`internal/raft-batch`,
+    /// B6). A peer on a release before it has no such route: the batcher then
+    /// sends each heartbeat on its own (`calimero_log::network::Batcher`).
+    /// A group whose data the peer may not hold is answered here, as `send`
+    /// refuses it, and never sent.
+    fn send_batch(
+        &self,
+        target: NodeId,
+        _addr: String,
+        items: Vec<(GroupId, RpcRequest)>,
+    ) -> BoxFuture<Result<Vec<Result<RpcResponse, String>>, String>> {
+        let node = self.node.lock().ok().and_then(|n| n.upgrade());
+        Box::pin(async move {
+            let node = node.ok_or("node is shutting down")?;
+            let addr = node
+                .replica_addr(target)
+                .ok_or_else(|| format!("node {target} is not a node of this cluster"))?;
+            let mut answers = Vec::with_capacity(items.len());
+            let mut sent = Vec::new();
+            for (group, rpc) in items {
+                if node.may_send(&addr, group).await {
+                    sent.push(json!({ "group": group, "rpc": rpc }));
+                    answers.push(None);
+                } else {
+                    answers.push(Some(Err(format!(
+                        "{addr} runs a release not approved for the app; it gets none of the app's data"
+                    ))));
+                }
+            }
+            let body = json!({ "target": target, "items": sent });
+            let resp = node
+                .peer_post(&addr, "internal/raft-batch", &body)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut replies: std::collections::VecDeque<RpcResponse> =
+                serde_json::from_value(resp).map_err(|e| e.to_string())?;
+            if replies.len() != sent.len() {
+                return Err(format!(
+                    "{} answers to {} heartbeats",
+                    replies.len(),
+                    sent.len()
+                ));
+            }
+            Ok(answers
+                .into_iter()
+                .map(|a| a.unwrap_or_else(|| replies.pop_front().ok_or_else(String::new)))
+                .collect())
+        })
+    }
 }
 
 /// What the node answers a component app's call that reaches its own commands
@@ -874,7 +947,7 @@ pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
 
 /// An install refused for want of a deployer grant: `403 DEPLOY_NOT_GRANTED`.
 pub fn not_a_deployer() -> ApiError {
-    ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
+    rejected(crate::system::NOT_A_DEPLOYER)
 }
 
 pub(crate) fn file_too_large() -> ApiError {
@@ -926,24 +999,20 @@ pub const UNKNOWN_CAPABILITIES: &str = "UNKNOWN_CAPABILITIES";
 /// The refusal of an invite granting capabilities its creator lacks.
 #[must_use]
 pub fn cannot_grant_unheld() -> ApiError {
-    ApiError::new(403, CANNOT_GRANT_UNHELD, crate::system::CANNOT_GRANT_UNHELD)
+    rejected(crate::system::CANNOT_GRANT_UNHELD)
 }
 
 /// The refusal of capability bits no capability has.
 #[must_use]
 pub fn unknown_capabilities() -> ApiError {
-    ApiError::new(
-        400,
-        UNKNOWN_CAPABILITIES,
-        crate::system::UNKNOWN_CAPABILITIES,
-    )
+    rejected(crate::system::UNKNOWN_CAPABILITIES)
 }
 
 /// `404 UNDECLARED_SECRET`: no release the deployment offers, nor one they reference (`uses`),
 /// declares the secret.
 #[must_use]
 pub fn undeclared_secret() -> ApiError {
-    ApiError::new(404, "UNDECLARED_SECRET", crate::system::UNDECLARED_SECRET)
+    rejected(crate::system::UNDECLARED_SECRET)
 }
 
 /// `409 OUTSIDE_DEPLOYMENT`: an upgrade of an instance from a deployment to a
@@ -951,68 +1020,15 @@ pub fn undeclared_secret() -> ApiError {
 /// (`SystemState::within_deployment`).
 #[must_use]
 pub fn outside_deployment() -> ApiError {
-    ApiError::new(409, "OUTSIDE_DEPLOYMENT", crate::system::OUTSIDE_DEPLOYMENT)
+    rejected(crate::system::OUTSIDE_DEPLOYMENT)
 }
 
-pub fn rejected(reason: &str) -> ApiError {
-    if reason.starts_with(crate::system::QUOTA_PREFIX) {
-        ApiError::new(429, QUOTA_EXCEEDED, reason)
-    } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
-        ApiError::new(409, RELEASE_DEADLINE, reason)
-    } else if reason.starts_with(crate::system::SIGN_UP_PREFIX) {
-        ApiError::new(403, "SIGN_UP_REFUSED", reason)
-    } else if reason == crate::system::NOT_A_DEPLOYER {
-        not_a_deployer()
-    } else if reason == crate::system::PERSONAL_ORG_EXISTS {
-        ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
-    } else if reason == crate::system::GUESTS_NOT_ALLOWED {
-        ApiError::new(409, "GUESTS_NOT_ALLOWED", reason)
-    } else if reason == crate::system::NO_PERSONAL_ORGS {
-        ApiError::new(409, "PERSONAL_ORGS_ENDED", reason)
-    } else if reason == crate::system::CANNOT_GRANT_UNHELD {
-        cannot_grant_unheld()
-    } else if reason == crate::system::UNKNOWN_CAPABILITIES {
-        unknown_capabilities()
-    } else if reason == crate::system::UNDECLARED_SECRET {
-        undeclared_secret()
-    } else if reason == crate::system::OUTSIDE_DEPLOYMENT {
-        outside_deployment()
-    } else if reason == crate::system::NO_DEPLOYMENT_SECRET {
-        ApiError::not_found(reason)
-    } else if reason == crate::system::MODULE_IN_USE {
-        ApiError::new(409, "MODULE_IN_USE", reason)
-    } else if let Some(code) = recovery_code(reason) {
-        ApiError::new(409, code, reason)
-    } else if let Some((code, status)) = update_code(reason) {
-        ApiError::new(status, code, reason)
-    } else {
-        ApiError::bad_request(REJECTED, reason)
-    }
-}
-
-/// The code and status of an update policy's or class's refusal
-/// (`system::UPDATE_REFUSALS`, each `CODE: why`).
-fn update_code(reason: &str) -> Option<(&'static str, u16)> {
-    crate::system::UPDATE_REFUSALS
-        .iter()
-        .find(|(r, _)| *r == reason)
-        .and_then(|(r, status)| Some((r.split_once(':')?.0, *status)))
-}
-
-/// The code of a recovery refusal that is a conflict with the organization's
-/// or the account's state, not a malformed request.
-fn recovery_code(reason: &str) -> Option<&'static str> {
-    use crate::system::{
-        ACCOUNT_RECOVERY_PENDING, NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING,
-    };
-    [
-        (NO_RECOVERY_KEY, "NO_RECOVERY_KEY"),
-        (RECOVERY_PENDING, "RECOVERY_PENDING"),
-        (ACCOUNT_RECOVERY_PENDING, "RECOVERY_PENDING"),
-        (RECOVERY_NOT_READY, "RECOVERY_NOT_READY"),
-    ]
-    .into_iter()
-    .find_map(|(r, code)| (r == reason).then_some(code))
+/// The answer to a system command's refusal: the status and code of its kind
+/// ([`crate::system::RejectionKind`]), whatever its wording.
+#[must_use]
+pub fn rejected(refused: impl Into<Rejection>) -> ApiError {
+    let refused = refused.into();
+    ApiError::new(refused.status(), refused.code(), refused.message())
 }
 
 fn status_of(e: &WriteError) -> ApiError {
@@ -1082,8 +1098,13 @@ impl Node {
         let compute_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?);
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
+        let http_timeout = SHARED_HTTP_TIMEOUT;
+        // A test may give this node a shorter one (`testing::shared_http_timeout`).
+        #[cfg(feature = "testing")]
+        let http_timeout =
+            crate::testing::shared_http_timeout_override(&config.data_dir).unwrap_or(http_timeout);
         let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
-            .timeout(shared_http_timeout())
+            .timeout(http_timeout)
             .build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
@@ -1115,6 +1136,7 @@ impl Node {
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
             visitor_limits: crate::api::VisitorLimits::default(),
+            unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -1134,7 +1156,7 @@ impl Node {
             compiler,
             peers: Mutex::new(HashMap::new()),
             http,
-            challenges: Mutex::new(HashMap::new()),
+            challenges: Mutex::new(crate::api::Ceremonies::default()),
             event_streams: std::sync::Arc::default(),
             pipeline_subscribers: Mutex::new(HashMap::new()),
             presence: crate::presence::Presence::default(),
@@ -1143,6 +1165,7 @@ impl Node {
             joining: Mutex::default(),
             unattested: Mutex::default(),
             moving: Mutex::default(),
+            api_key_turns: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             cluster_version: Mutex::default(),
             auto_update_due: Mutex::default(),
@@ -2191,6 +2214,25 @@ impl Node {
         Ok(g)
     }
 
+    /// Wait for `account`'s turn to make an API key on this node, so its quota
+    /// check, follow-ups and `CreateApiKey` never interleave with another's.
+    pub async fn api_key_turn(self: &Arc<Self>, account: &str) -> KeyTurn {
+        let turn = Arc::clone(
+            self.api_key_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(account.to_owned())
+                .or_default(),
+        );
+        let held = Arc::clone(&turn).lock_owned().await;
+        KeyTurn {
+            node: Arc::clone(self),
+            account: account.to_owned(),
+            turn,
+            _held: held,
+        }
+    }
+
     /// Claim `app` for a replica move: `None` while another move of it runs
     /// here. The claim ends when the guard drops.
     #[must_use]
@@ -2545,7 +2587,9 @@ impl Node {
         let held = 1 + results.iter().filter(|r| r.is_ok()).count();
         for (addr, r) in peers.iter().zip(&results) {
             if let Err(e) = r {
-                warn!(%addr, error = %e, "bundle not stored on peer");
+                // The peer's error by its code: its message is the peer's words.
+                let named = crate::log_safe::kind(e.as_ref());
+                warn!(%addr, error_kind = %named, "bundle not stored on peer");
             }
         }
         if held * 2 <= peers.len() + 1 {
@@ -2602,7 +2646,8 @@ impl Node {
     /// when the operator turned outbound off, or the bundle is no signed
     /// release declaring a prefix. A declared prefix not approved for the app
     /// still gets a client, whose refusal (`AWAITING_APPROVAL`, `NOT_APPROVED`)
-    /// the app can show.
+    /// the app can show. Every client asks the egress switch before each request
+    /// (`SystemState::egress_off`) and refuses with `EGRESS_OFF` while it is off.
     fn outbound_for(
         &self,
         app_id: &str,
@@ -2632,18 +2677,12 @@ impl Node {
                 calimero_outbound::AppIdentity {
                     package: release.at.package.clone(),
                     signer,
-                    // A release that declares secrets gets only those, to their hosts.
-                    secrets: (!release.version.secrets.is_empty()).then(|| {
-                        release
-                            .version
-                            .secrets
-                            .iter()
-                            .map(|(name, s)| (name.clone(), s.hosts.clone()))
-                            .collect()
-                    }),
+                    // The credentials the release binds: the outbound gate attaches each
+                    // to its host's requests itself; a release binding none sends none.
+                    secrets: release.version.secrets.clone(),
                     // The owner's own values, then the deployment's (read from this
                     // node's system state at run time), for names the release still
-                    // declares; the deployment's only for a release of a package it
+                    // binds; the deployment's only for a release of a package it
                     // offers, whatever the record says the instance runs.
                     own: crate::component::run_secrets(
                         own,
@@ -2654,13 +2693,29 @@ impl Node {
                 approval,
             ))
         })?;
-        service.for_run_counted(
+        let gate = service.for_run_counted(
             identity,
             release.version.outbound.clone(),
             approval,
             app_id.to_owned(),
             sent,
-        )
+        )?;
+        // The egress switch, asked before each request on this node's system state, so one
+        // turned off refuses the next request of a run already going, over every approval.
+        let system = Arc::clone(&self.system);
+        let app = app_id.to_owned();
+        Some(calimero_outbound::egress_gated(
+            gate,
+            Arc::new(move || {
+                system.read_local(|m, _| {
+                    let s = &m.state;
+                    s.apps
+                        .get(&app)
+                        .and_then(|a| s.egress_off(a))
+                        .map(crate::system::EgressOff::who)
+                })
+            }),
+        ))
     }
 
     /// This node as the `Arc` it lives in, for work that outlives a borrowed request.

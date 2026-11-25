@@ -499,7 +499,10 @@ class RestorePoints(DeepCase):
         rec = until("the undo restores the app", lambda: _undone(rolf, app, s["v1"]), 90)
         check(rec.get("restorePoint") is None and (rec.get("lastUpgrade") or {}).get("undo") is True,
               f"the undone app's record: {rec}")
-        eq(rolf.result(app, "get", {"id": "n"}), "before", "the undone app's note")
+        # The record moves in the system group; the app group applies the undo's restore on
+        # its own, so a read right after may still see it before (`null`): wait for it.
+        until("the undone app's note", lambda: eq(rolf.result(app, "get", {"id": "n"}), "before",
+                                                   "the undone app's note"), 30)
 
     def check(self, w, s):
         rolf = person(w, "rolf")

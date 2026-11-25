@@ -48,6 +48,22 @@ pub(super) fn component_failure(
     }
 }
 
+/// The refusal a component call's outcome answers, if it did not apply.
+fn applied_refusal(a: &crate::component::Applied) -> Option<ApiError> {
+    if a.conflict {
+        return Some(ApiError::unavailable(
+            "the call raced a leader change; retry with the same idempotency key",
+        ));
+    }
+    if a.error.as_str() == Some(crate::node::NOT_REACHED) {
+        return Some(ApiError::not_found(crate::node::NOT_REACHED));
+    }
+    if a.error.as_str() == Some(crate::node::READ_ONLY) {
+        return Some(ApiError::forbidden(crate::node::READ_ONLY));
+    }
+    component_failure(a.index, &a.status, &a.error, a.timeout)
+}
+
 /// A component call's answer. Its events are the ones the caller is in the
 /// audience of (R9).
 fn component_answer(
@@ -56,19 +72,7 @@ fn component_answer(
     caller: &Caller,
     a: crate::component::Applied,
 ) -> Response {
-    if a.conflict {
-        return ApiError::unavailable(
-            "the call raced a leader change; retry with the same idempotency key",
-        )
-        .into_response();
-    }
-    if a.error.as_str() == Some(crate::node::NOT_REACHED) {
-        return ApiError::not_found(crate::node::NOT_REACHED).into_response();
-    }
-    if a.error.as_str() == Some(crate::node::READ_ONLY) {
-        return ApiError::forbidden(crate::node::READ_ONLY).into_response();
-    }
-    if let Some(e) = component_failure(a.index, &a.status, &a.error, a.timeout) {
+    if let Some(e) = applied_refusal(&a) {
         return e.into_response();
     }
     let account = caller.account();
@@ -168,6 +172,31 @@ async fn component_intents(
     Ok(component_answer(node, &app_id, &caller, applied))
 }
 
+/// A confirm method's call under a consent already verified (an API key's
+/// follow-ups): the call [`component_intents`] makes after its step-up.
+pub(super) async fn call_consented(
+    node: &Node,
+    p: &Principal,
+    follow_up: &crate::types::KeyFollowUp,
+    idempotency_key: String,
+    consent: Value,
+) -> Result<(u64, Value), ApiError> {
+    let a = node
+        .call_component(&CallRequest {
+            idempotency_key: Some(idempotency_key),
+            consent: Some(consent),
+            sys_index: p.sys_index,
+            ..CallRequest::new(
+                follow_up.app.clone(),
+                follow_up.method.clone(),
+                follow_up.args.clone(),
+                p.caller.clone(),
+            )
+        })
+        .await?;
+    applied_refusal(&a).map_or(Ok((a.index, a.result)), Err)
+}
+
 async fn intents(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -175,6 +204,16 @@ async fn intents(
     Json(body): Json<IntentBody>,
 ) -> Result<Response, ApiError> {
     not_reserved(&body.method)?;
+    if body
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|k| k.starts_with(crate::idempotency::FOLLOW_UP_KEY_PREFIX))
+    {
+        return Err(ApiError::bad_request(
+            "RESERVED_IDEMPOTENCY_KEY",
+            "this idempotency key is the node's own",
+        ));
+    }
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
@@ -187,7 +226,7 @@ async fn intents(
 /// The node's commands and the runtime's exports are not an app's methods
 /// (`node::reserved_method`): a client naming one would otherwise reach
 /// `__upgrade` or `__blob` past the API's authority checks.
-fn not_reserved(method: &str) -> Result<(), ApiError> {
+pub(super) fn not_reserved(method: &str) -> Result<(), ApiError> {
     if crate::node::reserved_method(method) {
         return Err(ApiError::bad_request(
             "RESERVED_METHOD",
@@ -287,7 +326,8 @@ async fn events(
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
-    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
+    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone(), Some(p.clone()))
+    {
         let stream = stream.map(move |e| {
             let _held = &slot;
             e
@@ -314,7 +354,17 @@ async fn events(
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
-    let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
+    // The replica judges each event for the subscriber's account; this node judges the
+    // credential that opened the stream before passing on what it sends.
+    let judged = resp
+        .bytes_stream()
+        .then(move |b| {
+            let (node, p, app_id) = (Arc::clone(&node), p.clone(), app_id.clone());
+            async move { still_admitted(&node, &p, &app_id).await.then_some(b) }
+        })
+        .take_while(|b| std::future::ready(b.is_some()))
+        .filter_map(std::future::ready);
+    let body = axum::body::Body::from_stream(judged.map(move |b| {
         let _held = &slot;
         b
     }));
@@ -385,7 +435,9 @@ async fn presence_get(
 }
 
 /// Presence as a stream: a `snapshot` event, then a `presence` event per change
-/// (`state: null` when someone left).
+/// (`state: null` when someone left). Each batch of changes that arrived together (at most
+/// [`MAX_EVENT_BATCH`]) is judged again on fresh state ([`still_admitted`]): a member
+/// removed, or a key revoked, since the stream opened ends it.
 async fn presence_stream(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -393,7 +445,7 @@ async fn presence_stream(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
     let slot = StreamSlot::take(&node)?;
     let (now, rx) = node.presence.subscribe(&app_id);
     let first = futures_util::stream::once(async move {
@@ -405,6 +457,13 @@ async fn presence_stream(
     });
     let live = tokio_stream::wrappers::BroadcastStream::new(rx)
         .filter_map(|r| async move { r.ok() })
+        .ready_chunks(MAX_EVENT_BATCH)
+        .then(move |batch| {
+            let (node, p, app_id) = (Arc::clone(&node), p.clone(), app_id.clone());
+            async move { still_admitted(&node, &p, &app_id).await.then_some(batch) }
+        })
+        .take_while(|batch| std::future::ready(batch.is_some()))
+        .flat_map(|batch| futures_util::stream::iter(batch.unwrap_or_default()))
         .map(move |d| {
             let _held = &slot;
             Ok(Event::default()

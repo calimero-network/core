@@ -19,8 +19,9 @@
 //! once (D22). Each `call` is its own log entry under a key derived from the action's key,
 //! the method, the arguments and how many identical calls came before (D27), so a retried
 //! action's calls replay instead of applying twice. `fetch` reaches only hosts the app's
-//! signed manifest declares and its owner approved (S9); `{{secret:NAME}}` in a header or
-//! the body is filled in by the node (R14). Only the leader runs actions: they are
+//! signed manifest declares and its owner approved (S9); a credential the manifest binds to
+//! the host (`secrets`: a header or a body field) is attached by the node, and the app never
+//! names or reads it (R14). Only the leader runs actions: they are
 //! at-least-once, so send `ctx.key()` as the remote side's idempotency key.
 
 use serde::de::DeserializeOwned;

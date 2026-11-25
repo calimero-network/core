@@ -22,9 +22,12 @@ sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 # Only what the engine uses: no `cache`, `gc`, `wat`, `threads`, `component-model-async`,
 # profiling or debug support (Ruling 21).
 wasmtime = { workspace = true, features = [
+    # Host calls are charged to fuel as they return (C7, `charge_host_fuel`).
+    "call-hook",
     "component-model",
     "cranelift",
     "parallel-compilation",
@@ -35,6 +38,13 @@ wasmtime = { workspace = true, features = [
 wasmparser.workspace = true
 wasmtime-wasi = { workspace = true, features = ["p2"] }
 
+[lib]
+bench = false
+
+[[bench]]
+name = "guest_memory"
+harness = false
+
 [features]
 # Exposes `WasmtimeEngine::with_pool_size` to integration tests.
 testing = []
@@ -42,6 +52,7 @@ testing = []
 [dev-dependencies]
 calimero-app-host = { workspace = true, features = ["testing"] }
 calimero-app-engine-wasmtime = { path = ".", features = ["testing"] }
+criterion.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 wat.workspace = true

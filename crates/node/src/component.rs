@@ -1761,10 +1761,14 @@ impl AppMachine {
                 // every entry within what each replica applies, so one this replica cannot
                 // decode was written by a later release. Skipped, it would leave this replica
                 // on a state the others no longer have: the group stops on it instead.
+                // The log names the error, never its words: serde_json quotes the entry
+                // (a call's arguments), and this line, and the group's stop reason built
+                // from `fail`, reach the operator.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
-                error!(index, error = %e, undecodable = n,
+                let named = crate::log_safe::serde(&e);
+                error!(index, error_kind = %named, undecodable = n,
                     "an app entry this node cannot decode: the group stops here; run a release that reads it");
-                tx.fail(format_args!("app entry {index} does not decode: {e}"));
+                tx.fail(format_args!("app entry {index} does not decode: {named}"));
                 return crate::app::applied_bytes(
                     index,
                     &Applied {
@@ -1809,7 +1813,8 @@ fn decode_in<T: serde::de::DeserializeOwned>(
         Ok(v) => Some(v),
         Err(e) => {
             tx.fail(format_args!(
-                "a row of family {family} does not decode: {e}"
+                "a row of family {family} does not decode: {}",
+                crate::log_safe::serde(&e)
             ));
             None
         }
@@ -1911,10 +1916,10 @@ pub struct InstanceSecret {
 /// The instance's own secrets, by name.
 pub type InstanceSecrets = BTreeMap<String, InstanceSecret>;
 
-/// The values that fill `{{secret:NAME}}` for a run, ahead of the operator's: for each
-/// name the release declares, the instance's own value, else the one its deployment's
-/// managers set (`SystemState::deployment_secrets_of`). A name the release does not
-/// declare gets neither; the outbound gate still sends each only to its declared hosts.
+/// The values of the secrets a run's release binds, ahead of the operator's: for each name
+/// the release declares, the instance's own value, else the one its deployment's managers
+/// set (`SystemState::deployment_secrets_of`). A name the release does not declare gets
+/// neither; the outbound gate attaches each only where its binding says.
 #[must_use]
 pub fn run_secrets(
     own: &InstanceSecrets,
@@ -2113,6 +2118,217 @@ mod tests {
     mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
 
+    /// C10: the test harness, which has no log, refuses a run whose entry would be over the
+    /// log's cap by measuring it with `calimero_app_host::entry_bytes`. That must be the
+    /// length of the entry this node writes for the same run, for every status and every
+    /// part a harness run can produce (keys and values in base64, events with each audience,
+    /// xcalls, actions, outbound records, usage), for calls and ticks.
+    #[test]
+    fn the_host_cores_entry_size_is_the_logs() {
+        use calimero_app_host::{EntryIds, EntryOf};
+        let exchange = |ok: bool| {
+            let request = host::HttpRequest {
+                method: "POST".into(),
+                url: "https://api.example.com/x?y=1".into(),
+                headers: vec![("a".into(), "b".into())],
+                body: vec![7; 300],
+            };
+            let response = if ok {
+                Ok(host::HttpResponse {
+                    status: 201,
+                    headers: vec![("c".into(), "d\"e".into())],
+                    body: b"{\"ok\":true}".to_vec(),
+                })
+            } else {
+                Err("refused".to_owned())
+            };
+            host::HttpExchange::record(&request, &response)
+        };
+        let ok = host::Outcome {
+            status: host::Status::Ok,
+            result: br#"{"id":"7","n":[1,2.5,"\u00e9"]}"#.to_vec(),
+            diff: vec![
+                host::Write {
+                    key: vec![0, 0, 0, 0, 0, 0, 0, 1, 0x30, b'k', 0, 0],
+                    value: Some(vec![0xA1, 0x61, b'a', 0x18, 200]),
+                },
+                host::Write {
+                    key: vec![0, 0, 0, 0, 0, 0, 0, 1, 0x30, b'g', 0, 0],
+                    value: None,
+                },
+            ],
+            events: [
+                host::Audience::All,
+                host::Audience::Caller,
+                host::Audience::Accounts(vec!["acct-1".into(), "acct-2".into()]),
+                host::Audience::Team("t".into()),
+                host::Audience::OrgMembers("o".into()),
+                host::Audience::OrgAdmins("o".into()),
+            ]
+            .into_iter()
+            .map(|audience| host::Event {
+                name: "Moved".into(),
+                data: br#"{"to":"x","by":"\"q\""}"#.to_vec(),
+                audience,
+            })
+            .collect(),
+            xcalls: vec![
+                host::Xcall {
+                    app: "other".into(),
+                    method: "take".into(),
+                    args: br#"{"n":"1"}"#.to_vec(),
+                },
+                host::Xcall {
+                    app: "other".into(),
+                    method: "ping".into(),
+                    args: Vec::new(),
+                },
+            ],
+            actions: vec![host::ActionStart {
+                id: "a.1.2.0".into(),
+                method: "fetch".into(),
+                args: br#"{"u":"v"}"#.to_vec(),
+            }],
+            logs: Vec::new(),
+            http: vec![exchange(true), exchange(false)],
+            new_files: Vec::new(),
+            published: Vec::new(),
+            compute_starts: Vec::new(),
+            compute_cancels: Vec::new(),
+            usage: host::Usage {
+                fuel: 123_456,
+                cpu: std::time::Duration::from_millis(17),
+                writes: 2,
+                peak_memory: 0,
+            },
+        };
+        let failed = |status| host::Outcome {
+            status,
+            http: vec![exchange(true)],
+            ..ok.clone()
+        };
+        let outcomes = [
+            ok.clone(),
+            failed(host::Status::AppError {
+                code: "Taken".into(),
+                message: r#"{"start":"7"}"#.into(),
+            }),
+            failed(host::Status::AppError {
+                code: "Odd".into(),
+                message: "not json".into(),
+            }),
+            failed(host::Status::Trap {
+                kind: host::TrapKind::HostDenied,
+                detail: "entry too large".into(),
+            }),
+        ];
+        let callers = [
+            (
+                host::Caller::Account("acct-1".into()),
+                Caller::Account {
+                    account: "acct-1".into(),
+                },
+            ),
+            (
+                host::Caller::ApiKey {
+                    key_id: "k1".into(),
+                    account: "acct-1".into(),
+                },
+                Caller::ApiKey {
+                    key: "k1".into(),
+                    account: "acct-1".into(),
+                },
+            ),
+            (host::Caller::System, Caller::System),
+            (
+                host::Caller::App("other".into()),
+                Caller::App {
+                    app: "other".into(),
+                },
+            ),
+            (
+                host::Caller::Visitor {
+                    link: "l".into(),
+                    key: "ab".into(),
+                },
+                Caller::Visitor {
+                    link: "l".into(),
+                    key: "ab".into(),
+                },
+            ),
+        ];
+        let ids = EntryIds {
+            ts_ms: 1_700_000_000_123,
+            base_index: 41,
+            id_term: 3,
+            id_seq: 9,
+        };
+        let args = br#"{"title":"hi","n":"18446744073709551615"}"#;
+        for out in &outcomes {
+            for (host_caller, caller) in &callers {
+                let cmd = ComponentCmd::Call(Box::new(CallEntry {
+                    method: "addNote".into(),
+                    args: serde_json::from_slice(args).expect("json"),
+                    caller: caller.clone(),
+                    idempotency_key: None,
+                    consent: None,
+                    ts_ms: ids.ts_ms,
+                    base_index: ids.base_index,
+                    id_term: ids.id_term,
+                    id_seq: ids.id_seq,
+                    outcome: Outcome::from_host(out.clone()),
+                    xcall: None,
+                }));
+                let of = EntryOf::Call {
+                    method: "addNote",
+                    args,
+                    caller: host_caller,
+                };
+                assert_eq!(
+                    calimero_app_host::entry_bytes(of, ids, out),
+                    entry_json(&cmd).len(),
+                    "{:?} by {caller:?}",
+                    out.status
+                );
+            }
+            let bundle = "ab".repeat(32);
+            let cmd = ComponentCmd::Init {
+                bundle: bundle.clone(),
+                compute_bundle: None,
+                base_index: ids.base_index,
+                ts_ms: ids.ts_ms,
+                id_term: ids.id_term,
+                id_seq: ids.id_seq,
+                outcome: Box::new(Outcome::from_host(out.clone())),
+            };
+            assert_eq!(
+                calimero_app_host::entry_bytes(EntryOf::Init { bundle: &bundle }, ids, out),
+                entry_json(&cmd).len()
+            );
+            for previous_ms in [None, Some(1_000)] {
+                let cmd = ComponentCmd::Tick(Box::new(TickEntry {
+                    timer: "sweep".into(),
+                    scheduled_ms: 2_000,
+                    previous_ms,
+                    ts_ms: ids.ts_ms,
+                    base_index: ids.base_index,
+                    id_term: ids.id_term,
+                    id_seq: ids.id_seq,
+                    outcome: Outcome::from_host(out.clone()),
+                }));
+                let of = EntryOf::Tick {
+                    timer: "sweep",
+                    scheduled_ms: 2_000,
+                    previous_ms,
+                };
+                assert_eq!(
+                    calimero_app_host::entry_bytes(of, ids, out),
+                    entry_json(&cmd).len()
+                );
+            }
+        }
+    }
+
     /// A run's secrets: the instance's own value first, then its deployment's, each only
     /// for a name the release declares; none for a name it does not.
     #[test]
@@ -2128,11 +2344,12 @@ mod tests {
             .map(|n| {
                 (
                     n.to_owned(),
-                    calimero_bundle::BundleSecret {
-                        hosts: vec!["api.example.com".into()],
-                        description: String::new(),
-                        required: false,
-                    },
+                    calimero_bundle::BundleSecret::header(
+                        "api.example.com",
+                        &["/"],
+                        &format!("x-{}", n.to_ascii_lowercase()),
+                        None,
+                    ),
                 )
             })
             .collect();
@@ -2184,7 +2401,7 @@ mod tests {
             method: "POST".into(),
             url: "https://challenges.cloudflare.com/turnstile/v0/siteverify".into(),
             headers: vec![("Content-Type".into(), "x".into())],
-            body: b"secret={{secret:TURNSTILE_SECRET}}&response=t".to_vec(),
+            body: b"response=t".to_vec(),
         };
         let response = Ok(host::HttpResponse {
             status: 200,
@@ -2214,8 +2431,8 @@ mod tests {
         let x = &entry.http[0];
         assert_eq!(x.status, Some(200));
         assert_eq!(x.response_body.0, br#"{"success":true}"#);
-        // The request as the app made it: the placeholder, never the secret.
-        assert!(String::from_utf8_lossy(&x.body.0).contains("{{secret:TURNSTILE_SECRET}}"));
+        // The request as the app made it: never the secret the node attached.
+        assert_eq!(x.body.0, b"response=t");
         // An outcome without one keeps its old bytes (no `http` key).
         let plain = serde_json::to_value(Outcome::default()).unwrap();
         assert!(plain.get("http").is_none());
@@ -2688,6 +2905,39 @@ mod tests {
         assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
         let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
         assert!(!r.apply(2, &ok).conflict);
+    }
+
+    /// Reproduction (F6): the error that stops the group quoted the entry it could not
+    /// decode (serde_json's `invalid type: string "…"`), and the node logged it at ERROR
+    /// and again as the group's stop reason, which ship to the operator's log.
+    #[test]
+    fn an_entry_that_does_not_decode_is_logged_without_its_contents() {
+        const USER: &str = "alice@example.com";
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let mut entry: Value = serde_json::from_slice(&init(1)).unwrap();
+        entry["base_index"] = json!(USER);
+        let entry = serde_json::to_vec(&entry).unwrap();
+        let (committed, log) = crate::log_safe::tests::logged(|| {
+            let state = r.engine.group_state(5);
+            let mut tx = StateTx::new(&state);
+            let _out = calimero_log::Machine::apply(&mut r.machine, 2, &entry, &mut tx);
+            tx.commit().map_err(|e| format!("{e:#}"))
+        });
+        let stop = committed.expect_err("the group goes on past an entry it cannot decode");
+        assert!(
+            log.contains("an app entry this node cannot decode"),
+            "{log}"
+        );
+        assert!(log.contains("a JSON data error"), "{log}");
+        assert!(
+            !log.contains(USER),
+            "the operator's log carries the entry:\n{log}"
+        );
+        assert!(
+            !stop.contains(USER),
+            "the stop reason carries the entry: {stop}"
+        );
     }
 
     #[test]

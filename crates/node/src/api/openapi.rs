@@ -383,7 +383,7 @@ impl Op {
                 add(403, "FORBIDDEN");
             }
         }
-        // A session this node's release may not serve (`verify_token`).
+        // A session this node's release may not serve (`session_issuer_serves`).
         if !matches!(self.who, Who::Anyone | Who::Ops) {
             add(421, "WRONG_NODE");
         }
@@ -474,6 +474,7 @@ const ERROR_DETAILS: &[(&str, &str)] = &[
     ("COMPUTE_ABI_MISMATCH", "ServiceRefused"),
     ("CONFIRM_REQUIRED", "ConfirmRequired"),
     ("FEATURE_NOT_ACTIVE", "FeatureNotActive"),
+    ("FOLLOW_UP_FAILED", "FollowUpFailed"),
     ("FILES_UNAVAILABLE", "RetryAfter"),
     ("INIT_FAILED", "InitFailed"),
     ("NOT_LEADER", "NotLeader"),
@@ -608,8 +609,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "ConfirmRequired",
-            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.",
-            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[] }",
+            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.",
+            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[], then?: { app: string, method: string, args: any }[] }",
         ),
         component(
             "OperatorProof",
@@ -650,6 +651,11 @@ fn components() -> Vec<Component> {
             "NotLeader",
             "`details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.",
             "{ leaderUrl: string, leader?: uint }",
+        ),
+        component(
+            "FollowUpFailed",
+            "`details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered, the follow-ups before it, which applied (`applied`, their indexes), and the failed one again in `unknown` when its answer (a 5xx, after it was sent again under its own key) could not say whether it applied; no key was made.",
+            "{ index: uint, app: string, method: string, error: { status: uint, error: string, message: string, details?: any }, applied: uint[], unknown: uint[] }",
         ),
         component(
             "FeatureNotActive",
@@ -826,7 +832,7 @@ fn components() -> Vec<Component> {
         .of::<QuotaSettings>(),
         component(
             "UpgradePolicy",
-            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.",
+            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method and moves none of the apps it created, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.",
             r#"{ autoApply: "never" | "noDestinations", holdHours: uint, secondApprover: bool }"#,
         )
         .of::<crate::types::UpgradePolicy>(),
@@ -847,8 +853,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "UpdateReason",
-            "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.",
-            r#"{ code: "signerChanged", member: string | null, from: string, to: string } | { code: "egressAdded", destinations: string[] } | { code: "stateVersionChanged", member: string | null, from: uint | null, to: uint | null } | { code: "memberAdded", member: string, package: string, egress: string[] } | { code: "memberRemoved", member: string, package: string, egress: string[] } | { code: "delegatedMethodsAdded", member: string | null, package: string, methods: string[] } | { code: "unclassified", member: string | null, package: string, version: string }"#,
+            "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.",
+            r#"{ code: "signerChanged", member: string | null, from: string, to: string } | { code: "egressAdded", destinations: string[] } | { code: "stateVersionChanged", member: string | null, from: uint | null, to: uint | null } | { code: "memberAdded", member: string, package: string, egress: string[] } | { code: "memberRemoved", member: string, package: string, egress: string[] } | { code: "delegatedMethodsAdded", member: string | null, package: string, methods: string[] } | { code: "secretBindingChanged", member: string | null, name: string, before: string | null, after: string } | { code: "unclassified", member: string | null, package: string, version: string }"#,
         ),
         component(
             "RestorePoint",
@@ -936,8 +942,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::UpgradeRun>(),
         component(
             "App",
-            "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint }"#,
+            "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.",
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint, egressOff?: bool }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -970,8 +976,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::ApiKeyRecord>(),
         component(
             "Org",
-            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, upgradePolicy?: #UpgradePolicy, appUpgradePolicies?: { [string]: #UpgradePolicy }, pendingUpgrades?: { [string]: { package: string, version: string, targets?: { [string]: { package: string, version: string } }, by: string, at: uint, class: { class: "green" | "red", reasons?: #UpdateReason[] } } }, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).",
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, egressOff?: bool, upgradePolicy?: #UpgradePolicy, appUpgradePolicies?: { [string]: #UpgradePolicy }, pendingUpgrades?: { [string]: { package: string, version: string, targets?: { [string]: { package: string, version: string } }, by: string, at: uint, class: { class: "green" | "red", reasons?: #UpdateReason[] } } }, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -1126,6 +1132,8 @@ fn operations() -> Vec<Op> {
     const APPROVAL: &str = "{ version: string, approved?: bool, confirm?: #Confirm }";
     const OUTBOUND: &str =
         "{ package: string, prefixes?: #OutboundSelection, replace?: bool, confirm?: #Confirm }";
+    const EGRESS: &str = "{ egress: bool, confirm?: #Confirm }";
+    const EGRESS_SET: &str = "{ org: string, app?: string, egress: bool, orgEgressOff: bool }";
     vec![
         // ---------------------------------------------------------------- public
         get("/health", "health", Anyone, "Node health")
@@ -1269,11 +1277,11 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         delete("/auth/aliases/{alias}", "alias_delete", SignedIn, "Remove an alias").ok("{}"),
         post("/auth/apikeys", "apikey_create", AccountHolder, "Make an API key")
-            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.")
-            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, confirm?: #Confirm }")
-            .ok("{ keyId: string, key: string }")
+            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.")
+            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, then?: { app: string, method: string, args?: any }[], confirm?: #Confirm }")
+            .ok("{ keyId: string, key: string, then?: { index: uint, result: any, receipt: #Receipt }[] }")
             .step_up()
-            .errors(&[(400, "BAD_UPGRADE_KEY"), (400, "WRONG_CHALLENGE"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_FOLLOW_UP"), (400, "BAD_UPGRADE_KEY"), (400, "RESERVED_METHOD"), (400, "WRONG_CHALLENGE"), (409, "FEATURE_NOT_ACTIVE"), (413, "ARGS_TOO_LARGE"), (422, "FOLLOW_UP_FAILED"), (429, "QUOTA_EXCEEDED")]),
         get("/auth/apikeys", "apikey_list", AccountHolder, "The account's API keys").ok("{ keys: #ApiKey[] }"),
         delete("/auth/apikeys/{key}", "apikey_revoke", AccountHolder, "Revoke an API key")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1382,10 +1390,10 @@ fn operations() -> Vec<Op> {
         get("/apps/{app}/presence/stream", "presence_stream", AppAccess, "Presence as server-sent events")
             .events("a `snapshot`, then `presence` diffs"),
         post("/apps/{app}/intents", "intents", AppAccess, "Call a method")
-            .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
+            .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.")
             .json::<super::IntentBody>("{ method: string, args?: any, idempotencyKey?: string, confirm?: #Confirm }")
             .ok("{ index: uint, result: any, events: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_IDEMPOTENCY_KEY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
@@ -1402,7 +1410,7 @@ fn operations() -> Vec<Op> {
             .about("The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
             .json::<super::MethodBody>(r#"{ args?: any, idempotencyKey?: string, confirm?: #Confirm, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, events?: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_IDEMPOTENCY_KEY"), (400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/events", "events", AppAccess, "An app's events as server-sent events")
@@ -1421,8 +1429,8 @@ fn operations() -> Vec<Op> {
             .ok("{ app: string, running: { package: string, version: string } | null, available: { package: string, version: string, source: \"deployment\" | \"release\", class?: \"green\" | \"red\", reasons?: #UpdateReason[], egress?: { before: string[], after: string[], added: string[], removed: string[] } | null, stateVersionChanged?: bool | null, newMethods?: string[] | null, removedMethods?: string[] | null, signerChanged?: bool | null, summary?: string, approvalsNeeded: uint, approvedBy?: string } | null, unit: bool, mayApprove: bool, approvers: \"owner-and-admins\" | \"operator\" | \"managers\", policy: { autoApply: \"never\" | \"noDestinations\", holdHours: uint, secondApprover: bool, source: \"app\" | \"org\" | \"default\" }, pendingApprovals: #PendingApproval[] }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/egress", "app_egress", AppAccess, "Where an app's unit may send data")
-            .about("For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.")
-            .ok("{ app: string, destinations: string[], members: { [string]: #UnitMember } }")
+            .about("For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.")
+            .ok(r#"{ app: string, destinations: string[], members: { [string]: #UnitMember }, egress: "on" | "off", offBy?: "organization" | "instance", summary?: string }"#)
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/upgrade-policy", "app_policy", AppAccess, "The update policy an app follows")
             .about("For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.")
@@ -1445,11 +1453,11 @@ fn operations() -> Vec<Op> {
             .ok("{ app: string, available: bool, reason: { code: string, message: string } | null, undoUntil?: uint | null, apps: #UndoPart[] }")
             .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/undo", "app_undo", AccountHolder, "Undo an app's last upgrade")
-            .about("An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
+            .about("An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
             .json::<super::undo::UndoBody>("{ confirm?: #Confirm }")
             .ok("{ app: string, groups: { [string]: uint | null }, restored: bool, apps: #UndoPart[] }")
             .step_up()
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "NO_RESTORE_POINT"), (409, "UNDO_WINDOW_PASSED"), (409, "UNDO_STALE"), (409, "UNDO_NOT_AS_NAMED"), (409, "RESTORE_POINT_UNAVAILABLE"), (409, "FEATURE_NOT_ACTIVE"), (409, "UPGRADE_PENDING")]),
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "NO_RESTORE_POINT"), (409, "UNDO_WINDOW_PASSED"), (409, "UNDO_STALE"), (409, "UNDO_RELEASE_GONE"), (409, "UNDO_NOT_AS_NAMED"), (409, "RESTORE_POINT_UNAVAILABLE"), (409, "FEATURE_NOT_ACTIVE"), (409, "UPGRADE_PENDING")]),
         post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
             .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.")
             .json::<super::upgrades::UnitUpgradeBody>("{ version: string, confirm?: #Confirm }")
@@ -1457,11 +1465,11 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "NOT_A_UNIT"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "FEATURE_NOT_ACTIVE"), (409, "USES_NOT_INSTALLED")]),
         get("/apps/{app}/secrets", "app_secrets", SignedIn, "The secrets an app's release declares")
-            .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
-            .ok("{ secrets: { [string]: { hosts: string[], description: string, required: bool, source: \"app\" | \"deployment\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")
+            .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line (\"sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/\"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
+            .ok("{ secrets: { [string]: { host: string, paths: string[], header?: string, format?: string, bodyField?: string, binding: string, description: string, required: bool, source: \"app\" | \"deployment\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         put("/apps/{app}/secrets/{name}", "app_secret_set", AccountHolder, "Set an app's own value of a declared secret")
-            .about("Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.")
+            .about("Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.")
             .json::<super::apps::SecretBody>("{ value: string, confirm?: #Confirm }")
             .ok("{ name: string, fingerprint: string, index: uint }")
             .step_up()
@@ -1622,7 +1630,7 @@ fn operations() -> Vec<Op> {
         get("/packages/{package}/{version}/capabilities", "package_capabilities", SignedIn, "A release's capabilities")
             .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")
             .query::<super::packages::CapabilitiesQuery>("{ service?: string }")
-            .ok("{ package: string, version: string, service: string | null, bundle: string, mpk: string, manifestHash: string, signer: string, name: string | null, author: string | null, outbound: string[], secrets: any, uses: any, abi: any, destinations: string[] | null, members: { [string]: #UnitMember } | null }")
+            .ok("{ package: string, version: string, service: string | null, bundle: string, mpk: string, manifestHash: string, signer: string, name: string | null, author: string | null, outbound: string[], secrets: any, secretBindings: string[], uses: any, abi: any, destinations: string[] | null, members: { [string]: #UnitMember } | null }")
             .errors(&[(400, "BAD_REQUEST"), (400, "NO_SUCH_SERVICE"), (404, "NOT_FOUND")]),
         post("/apps/{app}/pipelines/{name}/estimate", "pipelines::estimate_run", SignedIn, "Estimate a pipeline run")
             .about("The owner and the organization's members. Runs, fuel and cost of a run of a pipeline the app's release registers, for `inputs` (file ids, only counted) or `counts`, not both; numbers as decimal strings.")
@@ -1781,10 +1789,22 @@ fn operations() -> Vec<Op> {
             .ok("{ scope: #AppScope, governance: #Governance, approvedReleases: string[] | null, clusterReleases: #ClusterRelease[], apps: #ReportApp[], next: string | null }")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/outbound", "org_outbound_approval", AccountHolder, "Approve outbound prefixes for the organization's apps")
-            .about("The owner; `412` first.")
+            .about("The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.")
             .json::<super::OutboundApprovalBody>(OUTBOUND)
             .ok("#OutboundApproved")
             .step_up(),
+        post("/orgs/{org}/egress", "org_egress", AccountHolder, "Turn the organization's egress off or on")
+            .about("`egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.")
+            .json::<super::EgressBody>(EGRESS)
+            .ok(EGRESS_SET)
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (403, "CONSENT_PAGE_REQUIRED"), (404, "NOT_FOUND")]),
+        post("/apps/{app}/egress", "app_set_egress", AccountHolder, "Turn one app's egress off or on")
+            .about("As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.")
+            .json::<super::EgressBody>(EGRESS)
+            .ok(EGRESS_SET)
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (403, "CONSENT_PAGE_REQUIRED"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}/members", "team_set_member", Session, "Add or change a team member")
             .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .json::<super::TeamMemberBody>("{ account: string, lead?: bool, role?: #TeamRole, capabilities?: uint, confirm?: #Confirm }")
@@ -1893,12 +1913,12 @@ fn operations() -> Vec<Op> {
         // ---------------------------------------------------------------- consent
         post("/consent/requests", "crate::consent_page::create", Session, "Ask the account's owner to approve")
             .about("From an app's frontend: an instance of a release or a deployment's offer (`install`: the install sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.")
-            .bytes_json::<crate::consent_page::CreateBody>(r#"{ kind: "release", scope: "account" | { org: string }, subject: { version: string, withdraw?: bool }, returnTo: string } | { kind: "upgrade", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "upgradeUnit", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "delegate", subject: { app: string, target: string }, returnTo: string } | { kind: "outbound", scope: "account" | { org: string }, subject: { package?: string, prefixes?: string[] }, returnTo: string } | { kind: "createOrg", subject: { name: string, capabilities?: uint }, returnTo: string } | { kind: "createInvite", subject: { org: string, role: "guest" | "member" | "admin", teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool, capabilities?: uint }, returnTo: string } | { kind: "acceptInvite", subject: { token: string }, returnTo: string } | { kind: "leaveOrg", subject: { org: string }, returnTo: string } | { kind: "removeMember", subject: { org: string, account: string }, returnTo: string } | { kind: "setMemberRole", subject: { org: string, account: string, role: "guest" | "member" | "admin" | "owner" }, returnTo: string } | { kind: "setMemberTeams", subject: { org: string, account: string, teams: { team: string, role?: "lead" | "member" | "readOnly", capabilities?: uint }[] }, returnTo: string } | { kind: "removeMemberTeams", subject: { org: string, account: string, teams: string[] }, returnTo: string } | { kind: "revokeInvite", subject: { org: string, inviteKey: string }, returnTo: string } | { kind: "renameOrg", subject: { org: string, name: string }, returnTo: string } | { kind: "deleteOrg", subject: { org: string }, returnTo: string } | { kind: "setCapabilities", subject: { org: string, account?: string, team?: string, capabilities: uint }, returnTo: string } | { kind: "setAllApps", subject: { org: string, account: string, allApps: bool }, returnTo: string } | { kind: "install", subject: { package: string, version?: string, deployment?: string, name: string, org?: string, newOrg?: { name: string }, initArgs?: any }, returnTo: string } | { kind: "updatePolicy", subject: { org?: string, app?: string, policy?: { autoApply?: "never" | "noDestinations", holdHours?: uint, secondApprover?: bool } | null }, returnTo: string } | { kind: "updates", subject?: { org?: string }, returnTo: string }"#)
+            .bytes_json::<crate::consent_page::CreateBody>(r#"{ kind: "release", scope: "account" | { org: string }, subject: { version: string, withdraw?: bool }, returnTo: string } | { kind: "upgrade", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "upgradeUnit", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "delegate", subject: { app: string, target: string }, returnTo: string } | { kind: "outbound", scope: "account" | { org: string }, subject: { package?: string, prefixes?: string[] }, returnTo: string } | { kind: "createOrg", subject: { name: string, capabilities?: uint }, returnTo: string } | { kind: "createInvite", subject: { org: string, role: "guest" | "member" | "admin", teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool, capabilities?: uint }, returnTo: string } | { kind: "acceptInvite", subject: { token: string }, returnTo: string } | { kind: "leaveOrg", subject: { org: string }, returnTo: string } | { kind: "removeMember", subject: { org: string, account: string }, returnTo: string } | { kind: "setMemberRole", subject: { org: string, account: string, role: "guest" | "member" | "admin" | "owner" }, returnTo: string } | { kind: "setMemberTeams", subject: { org: string, account: string, teams: { team: string, role?: "lead" | "member" | "readOnly", capabilities?: uint }[] }, returnTo: string } | { kind: "removeMemberTeams", subject: { org: string, account: string, teams: string[] }, returnTo: string } | { kind: "revokeInvite", subject: { org: string, inviteKey: string }, returnTo: string } | { kind: "renameOrg", subject: { org: string, name: string }, returnTo: string } | { kind: "deleteOrg", subject: { org: string }, returnTo: string } | { kind: "setCapabilities", subject: { org: string, account?: string, team?: string, capabilities: uint }, returnTo: string } | { kind: "setAllApps", subject: { org: string, account: string, allApps: bool }, returnTo: string } | { kind: "setEgress", subject: { org: string, app?: string, egress: bool }, returnTo: string } | { kind: "install", subject: { package: string, version?: string, deployment?: string, name: string, org?: string, newOrg?: { name: string }, initArgs?: any }, returnTo: string } | { kind: "updatePolicy", subject: { org?: string, app?: string, policy?: { autoApply?: "never" | "noDestinations", holdHours?: uint, secondApprover?: bool } | null }, returnTo: string } | { kind: "updates", subject?: { org?: string }, returnTo: string }"#)
             .ok("{ requestId: string, url: string, code: string, expiresAt: uint }")
             .errors(&[(400, "BAD_REQUEST"), (400, "UNKNOWN_CAPABILITIES"), (403, "CANNOT_GRANT_UNHELD"), (409, "FEATURE_NOT_ACTIVE"), (413, "TOO_LARGE")]),
         get("/consent/{request}/result", "crate::consent_page::result", Session, "What became of a consent request")
             .about("`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg` (with `teamId`, the asking app's own team the organization starts with, when an app's frontend asked on a cluster that makes it), `{ token }` for `createInvite`, `{ org }` for `acceptInvite`, `{ orgId, name }` for `renameOrg`, `{ apps }` (the apps deleted) for `deleteOrg`; absent for the other kinds.")
-            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "upgradeUnit" | "delegate" | "outbound" | "createOrg" | "createInvite" | "acceptInvite" | "leaveOrg" | "removeMember" | "setMemberRole" | "setMemberTeams" | "removeMemberTeams" | "revokeInvite" | "renameOrg" | "deleteOrg" | "setCapabilities" | "setAllApps" | "install" | "updatePolicy" | "updates", status: "pending" | "approved" | "declined", decidedAt: uint | null, outcome?: { orgId?: string, teamId?: string, token?: string, org?: string, name?: string, apps?: string[], appId?: string, links?: { [string]: string } } }"#)
+            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "upgradeUnit" | "delegate" | "outbound" | "createOrg" | "createInvite" | "acceptInvite" | "leaveOrg" | "removeMember" | "setMemberRole" | "setMemberTeams" | "removeMemberTeams" | "revokeInvite" | "renameOrg" | "deleteOrg" | "setCapabilities" | "setAllApps" | "setEgress" | "install" | "updatePolicy" | "updates", status: "pending" | "approved" | "declined", decidedAt: uint | null, outcome?: { orgId?: string, teamId?: string, token?: string, org?: string, name?: string, apps?: string[], appId?: string, links?: { [string]: string } } }"#)
             .errors(&[(404, "NOT_FOUND"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- ops
         get("/ops/status", "ops_status", Ops, "The node and the cluster")
@@ -2165,7 +2185,7 @@ fn operations() -> Vec<Op> {
             .ok("{ deployment: string, secrets: { [string]: { apps: string[], declaredBy: { package: string, version: string }[], set: bool, fingerprint?: string, setBy?: string, setAt?: uint } } }")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         put("/deployments/{id}/secrets/{name}", "deployment_secret_set", AccountHolder, "Set a deployment's value of a secret")
-            .about("Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.")
+            .about("Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.")
             .json::<super::DeploymentSecretBody>("{ value: string, confirm?: #Confirm }")
             .ok("{ deployment: string, name: string, fingerprint: string, setBy: string, setAt: uint }")
             .step_up()
@@ -3314,6 +3334,20 @@ mod tests {
         vec![
             confirm(),
             super::super::orgs::with_detail(confirm(), "apps", json!(["app"])),
+            super::super::orgs::with_detail(
+                confirm(),
+                "then",
+                json!([{ "app": "a", "method": "m", "args": { "principal": "key:k" } }]),
+            ),
+            super::super::auth::follow_up_failed(
+                1,
+                &crate::types::KeyFollowUp {
+                    app: "a".to_owned(),
+                    method: "m".to_owned(),
+                    args: Value::Null,
+                },
+                &failure(&Status::AppError, &app_error, false),
+            ),
             super::super::operator_signature_required(
                 &crate::proof::Statement::new("cluster", "__set_quotas", &json!({ "a": 1 })),
                 "c1",

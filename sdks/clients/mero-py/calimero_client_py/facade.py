@@ -75,6 +75,7 @@ from .openapi.api.apps import app_runs as _app_runs
 from .openapi.api.apps import app_secret_clear as _app_secret_clear
 from .openapi.api.apps import app_secret_set as _app_secret_set
 from .openapi.api.apps import app_secrets as _app_secrets
+from .openapi.api.apps import app_set_egress as _app_set_egress
 from .openapi.api.apps import app_storage as _app_storage
 from .openapi.api.apps import app_transfer as _app_transfer
 from .openapi.api.apps import app_undelegate as _app_undelegate
@@ -185,6 +186,7 @@ from .openapi.api.organizations import org_backup_key as _org_backup_key
 from .openapi.api.organizations import org_capabilities as _org_capabilities
 from .openapi.api.organizations import org_create as _org_create
 from .openapi.api.organizations import org_delete as _org_delete
+from .openapi.api.organizations import org_egress as _org_egress
 from .openapi.api.organizations import org_get as _org_get
 from .openapi.api.organizations import org_members as _org_members
 from .openapi.api.organizations import org_metadata as _org_metadata
@@ -283,6 +285,7 @@ from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
 from .openapi.models import AppPolicySetBody
 from .openapi.models import AppSecretSetBody
+from .openapi.models import AppSetEgressBody
 from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
 from .openapi.models import AppUndoBody
@@ -305,6 +308,7 @@ from .openapi.models import ConsentPageCreateBodyType18
 from .openapi.models import ConsentPageCreateBodyType19
 from .openapi.models import ConsentPageCreateBodyType2
 from .openapi.models import ConsentPageCreateBodyType20
+from .openapi.models import ConsentPageCreateBodyType21
 from .openapi.models import ConsentPageCreateBodyType3
 from .openapi.models import ConsentPageCreateBodyType4
 from .openapi.models import ConsentPageCreateBodyType5
@@ -344,6 +348,7 @@ from .openapi.models import OpsUpgradeBody
 from .openapi.models import OrgAllAppsBody
 from .openapi.models import OrgCapabilitiesBody
 from .openapi.models import OrgCreateBody
+from .openapi.models import OrgEgressBody
 from .openapi.models import OrgMembersDetail
 from .openapi.models import OrgMetadataBody
 from .openapi.models import OrgOutboundApprovalBody
@@ -703,6 +708,13 @@ _APP_SECRETS = Operation(
     body="none",
     answer="json",
 )
+_APP_SET_EGRESS = Operation(
+    _app_set_egress,
+    "app_set_egress",
+    body=AppSetEgressBody,
+    answer="json",
+    confirm=True,
+)
 _APP_STORAGE = Operation(
     _app_storage,
     "app_storage",
@@ -990,7 +1002,7 @@ class Apps(Group):
     def call(self, *, app, method, args=UNSET, idempotency_key=UNSET, confirm=None):
         """Call a method (`POST /apps/{app}/intents`, `intents`).
 
-        A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+        A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1122,7 +1134,7 @@ class Apps(Group):
     def egress(self, *, app):
         """Where an app's unit may send data (`GET /apps/{app}/egress`, `app_egress`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+        For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -1864,7 +1876,7 @@ class Apps(Group):
     def secret_set(self, *, app, name, value, confirm=None):
         """Set an app's own value of a declared secret (`PUT /apps/{app}/secrets/{name}`, `app_secret_set`).
 
-        Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+        Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1890,7 +1902,7 @@ class Apps(Group):
     def secrets(self, *, app):
         """The secrets an app's release declares (`GET /apps/{app}/secrets`, `app_secrets`).
 
-        For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+        For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
 
         **Who:** signed in (a session or an API key).
 
@@ -1900,6 +1912,24 @@ class Apps(Group):
         Returns: AppSecretsResponse200
         """
         return self._run(_APP_SECRETS, (app,), {}, None)
+
+    def set_egress(self, *, app, egress, confirm=None):
+        """Turn one app's egress off or on (`POST /apps/{app}/egress`, `app_set_egress`).
+
+        As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            egress: body `egress`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppSetEgressResponse200
+        """
+        return self._run(
+            _APP_SET_EGRESS, (app,), {}, {"egress": egress}, confirm=confirm
+        )
 
     def storage(self, *, app):
         """What an app stores (`GET /apps/{app}/storage`, `app_storage`).
@@ -1957,7 +1987,7 @@ class Apps(Group):
     def undo(self, *, app, confirm=None):
         """Undo an app's last upgrade (`POST /apps/{app}/undo`, `app_undo`).
 
-        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -2629,11 +2659,12 @@ class Auth(Group):
         allow_confirm=UNSET,
         ttl_secs=UNSET,
         upgrades=UNSET,
+        then=UNSET,
         confirm=None,
     ):
         """Make an API key (`POST /auth/apikeys`, `apikey_create`).
 
-        Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
+        Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -2645,6 +2676,7 @@ class Auth(Group):
             allow_confirm: body `allowConfirm`
             ttl_secs: body `ttlSecs`
             upgrades: body `upgrades`
+            then: body `then`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
         Returns: ApikeyCreateResponse200
@@ -2661,6 +2693,7 @@ class Auth(Group):
                 "allowConfirm": allow_confirm,
                 "ttlSecs": ttl_secs,
                 "upgrades": upgrades,
+                "then": then,
             },
             confirm=confirm,
         )
@@ -2950,6 +2983,7 @@ _CONSENT_PAGE_CREATE = Operation(
         ConsentPageCreateBodyType19,
         ConsentPageCreateBodyType2,
         ConsentPageCreateBodyType20,
+        ConsentPageCreateBodyType21,
         ConsentPageCreateBodyType3,
         ConsentPageCreateBodyType4,
         ConsentPageCreateBodyType5,
@@ -2979,7 +3013,7 @@ class Consent(Group):
         **Who:** a passkey session (an API key is refused).
 
         Args:
-            body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType16, ConsentPageCreateBodyType17, ConsentPageCreateBodyType18, ConsentPageCreateBodyType19, ConsentPageCreateBodyType2, ConsentPageCreateBodyType20, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
+            body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType16, ConsentPageCreateBodyType17, ConsentPageCreateBodyType18, ConsentPageCreateBodyType19, ConsentPageCreateBodyType2, ConsentPageCreateBodyType20, ConsentPageCreateBodyType21, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
 
         Returns: ConsentPageCreateResponse200
         """
@@ -3282,7 +3316,7 @@ class Deployments(Group):
     def secret_set(self, *, id, name, value, confirm=None):
         """Set a deployment's value of a secret (`PUT /deployments/{id}/secrets/{name}`, `deployment_secret_set`).
 
-        Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -4550,6 +4584,9 @@ _ORG_CREATE = Operation(
 _ORG_DELETE = Operation(
     _org_delete, "org_delete", body=ConfirmOnly, answer="json", confirm=True
 )
+_ORG_EGRESS = Operation(
+    _org_egress, "org_egress", body=OrgEgressBody, answer="json", confirm=True
+)
 _ORG_GET = Operation(
     _org_get,
     "org_get",
@@ -4906,6 +4943,22 @@ class Orgs(Group):
         """
         return self._run(_ORG_DELETE, (org,), {}, {}, confirm=confirm)
 
+    def egress(self, *, org, egress, confirm=None):
+        """Turn the organization's egress off or on (`POST /orgs/{org}/egress`, `org_egress`).
+
+        `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            org: path
+            egress: body `egress`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: OrgEgressResponse200
+        """
+        return self._run(_ORG_EGRESS, (org,), {}, {"egress": egress}, confirm=confirm)
+
     def get(self, *, org):
         """One organization (`GET /orgs/{org}`, `org_get`).
 
@@ -5132,7 +5185,7 @@ class Orgs(Group):
     ):
         """Approve outbound prefixes for the organization's apps (`POST /orgs/{org}/outbound`, `org_outbound_approval`).
 
-        The owner; `412` first.
+        The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 

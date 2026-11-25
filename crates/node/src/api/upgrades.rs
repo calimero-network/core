@@ -124,7 +124,7 @@ async fn verdict_of(
         }
         Ok(c) => c,
         Err(e) => {
-            warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
+            warn!(app = %app_id, status = e.status, code = %e.code, "the upgrade was not classified");
             None
         }
     }
@@ -539,13 +539,20 @@ async fn run_upgrade(
     let begun = crate::types::update_now();
     let has_compute = compute_bundle.is_some();
     let class = run_class(node, &app_id, release.as_ref(), who.run.as_deref()).await;
+    let members_stay = who.auto && members_stay_rule(node).await;
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
     let refusal = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
         if who.auto {
-            if let Err(why) = s.auto_update_allows(a, release.as_ref(), class.as_ref(), begun) {
+            if let Err(why) = s.auto_update_allows(
+                a,
+                release.as_ref(),
+                class.as_ref(),
+                begun,
+                s.members_stay(members_stay),
+            ) {
                 return Some(crate::node::rejected(why));
             }
         } else if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
@@ -626,7 +633,7 @@ async fn run_upgrade(
         // is a passing failure, retried by the leader, not noted on the app.
         Err(e) if who.auto => return Err(e),
         Err(e) => {
-            warn!(app = %app_id, error = %e.message, "no restore point was taken; this upgrade cannot be undone");
+            warn!(app = %app_id, status = e.status, code = %e.code, "no restore point was taken; this upgrade cannot be undone");
             None
         }
     };
@@ -704,6 +711,7 @@ async fn run_upgrade(
             owner_approves: who.owner_approves,
             class,
             auto: who.auto,
+            members_stay,
             restore_point,
         })
         .await?;
@@ -756,6 +764,14 @@ pub(crate) async fn auto_upgrade(
         },
     )
     .await
+}
+
+/// Whether an update on its own carries `members_stay` (every node reads it,
+/// [`Feature::AutoUpdateMembersStay`]).
+async fn members_stay_rule(node: &Node) -> bool {
+    node.require_features(&[Feature::AutoUpdateMembersStay])
+        .await
+        .is_ok()
 }
 
 /// Whether upgrades take restore points ([`Feature::RestorePoints`]): once every node
@@ -1060,6 +1076,7 @@ async fn start_run_with(
                             owner_approves: who.owner_approves,
                             class,
                             auto: false,
+                            members_stay: false,
                             restore_point: restore_points_rule(&node)
                                 .await
                                 .then(crate::types::TakenRestorePoint::default),
@@ -1883,7 +1900,7 @@ pub(crate) async fn update_view(
             }
             Ok(None) => {}
             Err(e) => {
-                warn!(app = %app.app_id, error = %e.message, "the available update was not classified")
+                warn!(app = %app.app_id, status = e.status, code = %e.code, "the available update was not classified")
             }
         }
     }
@@ -2011,6 +2028,13 @@ async fn app_egress(
         crate::egress::describe,
     );
     out["app"] = json!(app.app_id);
+    // The egress switch, over the destinations: off, none of them is reached.
+    let off = node.sys(|s| s.egress_off(&app));
+    out["egress"] = json!(if off.is_some() { "off" } else { "on" });
+    if let Some(by) = off {
+        out["offBy"] = json!(by.wire());
+        out["summary"] = json!(crate::egress::NO_EGRESS);
+    }
     Ok(Json(out))
 }
 
@@ -2018,7 +2042,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/update", get(app_update))
-        .route("/apps/{app}/egress", get(app_egress))
+        .route("/apps/{app}/egress", get(app_egress).post(app_set_egress))
         .route("/apps/{app}/upgrade-unit", post(app_upgrade_unit))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))

@@ -15,7 +15,7 @@
 //! share) uses `policy_valid`. Two sites implement equivalent enforcement
 //! inline and keep it by design (they emit richer, mode-specific errors this
 //! crate cannot):
-//! - `calimero-kms-client`'s `kms/mod.rs` — `enforce_attestation_policy`
+//! - `calimero-kms-client`'s `kms.rs` — `enforce_attestation_policy`
 //!   (ReleaseStrict/Config split), over `is_valid`;
 //! - the mero-tee KMS `get_key.rs` — key-release side (external consumer).
 //!
@@ -47,6 +47,32 @@ pub const TCB_STATUS_REVOKED: &str = "Revoked";
 /// and never calls into the gated mock code, so the check must stay available
 /// to production builds to reject mock quotes.
 pub const TCB_STATUS_MOCK: &str = "Mock";
+
+/// The oldest Intel TCB evaluation data (`tcbEvaluationDataNumber`) a verdict
+/// may be computed against, enforced by [`VerificationResult::policy_valid`]
+/// whatever [`VerifierPolicy::min_tcb_evaluation_data_number`] says.
+///
+/// `tcb_status` is only as current as the baseline that produced it, and the
+/// collateral source is configurable (`CALIMERO_TEE_COLLATERAL_URL` may name
+/// any PCCS). Intel signs every baseline it ever published, so a source serving
+/// an older one passes signature checks and makes a platform that has since
+/// fallen behind read `UpToDate`. This floor refuses such a baseline.
+///
+/// 20 is the `update=standard` baseline Intel PCS was serving on 2026-08-11,
+/// when `update=early` had moved on to 22 (see `verify.rs`'s tests); this
+/// crate asks for the standard one, so 20 refuses only baselines Intel had
+/// already replaced. 17, in the 2025 fixture collateral, is below it.
+///
+/// # Bumping it
+/// Intel announces each new number with a TCB Recovery and serves it at
+/// `update=standard` once the recovery's grace period ends. Raise this to the
+/// standard number once every collateral source the fleet uses
+/// (`CALIMERO_TEE_COLLATERAL_URL`, Intel PCS when unset) serves it — check the
+/// `tcb_evaluation_data_number` nodes log with each verdict — in a `fix:` PR.
+/// `calimero-kms-client` holds the KMS's quote to this same constant; the SDK
+/// verifiers (mero-js, swift-sdk, kotlin-sdk) keep their own copy, raised in
+/// step.
+pub const DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER: u32 = 20;
 
 /// Measurement register named by [`PolicyRejection::MeasurementMismatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +135,10 @@ pub enum PolicyRejection {
     /// [`VerifierPolicy::require_app_hash`] is set but the quote's app-hash
     /// binding did not verify.
     AppHashNotBound,
+    /// The TCB status was computed against Intel TCB evaluation data older
+    /// than the floor (or of unknown age, `number: None`), so it may call a
+    /// platform current that a newer baseline calls out of date.
+    TcbEvaluationDataTooOld { number: Option<u32>, floor: u32 },
 }
 
 impl std::fmt::Display for PolicyRejection {
@@ -141,6 +171,20 @@ impl std::fmt::Display for PolicyRejection {
             Self::AppHashNotBound => f.write_str(
                 "attestation rejected: policy requires an app-hash binding but it did not verify",
             ),
+            Self::TcbEvaluationDataTooOld {
+                number: Some(number),
+                floor,
+            } => write!(
+                f,
+                "attestation rejected: the TCB status was computed against Intel TCB evaluation data {number}, older than the minimum {floor}; point the collateral source at current collateral"
+            ),
+            Self::TcbEvaluationDataTooOld {
+                number: None,
+                floor,
+            } => write!(
+                f,
+                "attestation rejected: the TCB evaluation data the TCB status was computed against is unknown (minimum {floor})"
+            ),
         }
     }
 }
@@ -160,7 +204,10 @@ impl std::error::Error for PolicyRejection {}
 /// - so is an empty `allowed_rtmr1`, `allowed_rtmr2` or `allowed_rtmr3`: the
 ///   MRTD measures the TD firmware, which images share, and the image is in
 ///   RTMR1-3 (see [`PolicyRejection::EmptyImageAllowlist`]);
-/// - `accept_mock` defaults to `false` and `require_app_hash` to `true`.
+/// - `accept_mock` defaults to `false` and `require_app_hash` to `true`;
+/// - `min_tcb_evaluation_data_number` can raise the floor on Intel's TCB
+///   evaluation data, never lower it below
+///   [`DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`].
 ///
 /// `allowed_rtmr0` is the one exception: an empty one skips that register. It
 /// measures the firmware's configuration (the virtual hardware), not the image.
@@ -197,6 +244,12 @@ pub struct VerifierPolicy {
     /// versus the blunter [`PolicyRejection::NotCryptoValid`] when `false`. See
     /// the `unbound_app_hash_is_rejected_even_when_not_required` test.
     pub require_app_hash: bool,
+    /// The oldest Intel TCB evaluation data a real quote's `tcb_status` may be
+    /// computed against. The floor enforced is the higher of this and
+    /// [`DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`]: a policy can demand newer
+    /// collateral, never accept older. Not consulted for a mock quote, which
+    /// has no collateral.
+    pub min_tcb_evaluation_data_number: u32,
 }
 
 impl Default for VerifierPolicy {
@@ -214,6 +267,7 @@ impl Default for VerifierPolicy {
             allowed_rtmr3: Vec::new(),
             accept_mock: false,
             require_app_hash: true,
+            min_tcb_evaluation_data_number: DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
         }
     }
 }
@@ -241,6 +295,13 @@ impl VerifierPolicy {
                 .any(|allowed| allowed == status)
         }
     }
+
+    /// The evaluation data floor actually enforced: the configured one, never
+    /// below the compiled-in default.
+    fn tcb_evaluation_data_floor(&self) -> u32 {
+        self.min_tcb_evaluation_data_number
+            .max(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER)
+    }
 }
 
 impl VerificationResult {
@@ -262,6 +323,11 @@ impl VerificationResult {
     ///    passes the status check only under `accept_mock`; an empty
     ///    `allowed_tcb_statuses` enforces [`DEFAULT_ALLOWED_TCB_STATUS`] rather
     ///    than skipping; otherwise the status must be in the allowlist.
+    ///    A real quote's status must also have been computed against TCB
+    ///    evaluation data at or above the floor
+    ///    ([`VerifierPolicy::min_tcb_evaluation_data_number`], never below
+    ///    [`DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`]); an unknown number is
+    ///    [`PolicyRejection::TcbEvaluationDataTooOld`] too.
     /// 3. **Measurements** — MRTD must match a non-empty `allowed_mrtd` (an
     ///    empty one is [`PolicyRejection::EmptyMrtdAllowlist`]), and RTMR1-3
     ///    each a non-empty allowlist (an empty one is
@@ -311,6 +377,13 @@ impl VerificationResult {
             return Err(PolicyRejection::TcbNotAllowed {
                 status: status.to_owned(),
             });
+        } else {
+            // A status is only as current as the baseline that produced it.
+            let floor = policy.tcb_evaluation_data_floor();
+            let number = self.tcb_evaluation_data_number;
+            if number.is_none_or(|number| number < floor) {
+                return Err(PolicyRejection::TcbEvaluationDataTooOld { number, floor });
+            }
         }
 
         if policy.allowed_mrtd.is_empty() {
@@ -439,7 +512,7 @@ mod tests {
             application_hash_verified: true,
             tcb_status: Some(tcb_status.to_owned()),
             advisory_ids: Vec::new(),
-            tcb_evaluation_data_number: None,
+            tcb_evaluation_data_number: Some(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER),
             quote,
         }
     }
@@ -730,6 +803,109 @@ mod tests {
             result.policy_valid(&policy),
             Err(PolicyRejection::NotCryptoValid)
         );
+    }
+
+    /// D3: a collateral source (`CALIMERO_TEE_COLLATERAL_URL` can name any
+    /// PCCS) serving an older, still Intel-signed TCB baseline makes an
+    /// out-of-date platform read `UpToDate`. The verdict is only as good as the
+    /// baseline it was computed against, so one below the floor admits nothing.
+    #[test]
+    fn up_to_date_against_a_baseline_below_the_floor_is_refused() {
+        let mut result = result_with("UpToDate");
+        result.tcb_evaluation_data_number = Some(17);
+        let verdict = result.policy_valid(&policy());
+        assert!(
+            verdict.is_err(),
+            "UpToDate measured against evaluation data 17 must not admit: {verdict:?}"
+        );
+    }
+
+    /// The fixture collateral (fetched from Intel PCS in June 2025) is a real,
+    /// Intel-signed baseline that is now below the floor: a source serving it
+    /// today is refused with the number and the floor named.
+    #[test]
+    fn a_verdict_from_the_2025_fixture_collateral_is_refused() {
+        let collateral: dcap_qvl::QuoteCollateralV3 = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/tdx_quote_collateral.json"
+        ))
+        .expect("fixture collateral parses");
+        let number = crate::verify::tcb_evaluation_data_number_of(&collateral.tcb_info);
+        assert_eq!(number, Some(17));
+
+        let mut result = result_with("UpToDate");
+        result.tcb_evaluation_data_number = number;
+        assert_eq!(
+            result.policy_valid(&policy()),
+            Err(PolicyRejection::TcbEvaluationDataTooOld {
+                number: Some(17),
+                floor: DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
+            })
+        );
+    }
+
+    #[test]
+    fn a_baseline_at_or_above_the_floor_is_accepted() {
+        for number in [
+            DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
+            DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER + 2,
+        ] {
+            let mut result = result_with("UpToDate");
+            result.tcb_evaluation_data_number = Some(number);
+            assert_eq!(result.policy_valid(&policy()), Ok(()), "number {number}");
+        }
+    }
+
+    /// The floor is a gate, not a diagnostic: a real verdict whose baseline is
+    /// unknown is refused rather than waved through.
+    #[test]
+    fn an_unknown_baseline_is_refused() {
+        let mut result = result_with("UpToDate");
+        result.tcb_evaluation_data_number = None;
+        assert_eq!(
+            result.policy_valid(&policy()),
+            Err(PolicyRejection::TcbEvaluationDataTooOld {
+                number: None,
+                floor: DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
+            })
+        );
+    }
+
+    /// A policy can demand newer collateral than the default, never older.
+    #[test]
+    fn a_policy_raises_the_floor_but_cannot_lower_it() {
+        let mut raised = policy();
+        raised.min_tcb_evaluation_data_number = 22;
+        let mut result = result_with("UpToDate");
+        result.tcb_evaluation_data_number = Some(21);
+        assert_eq!(
+            result.policy_valid(&raised),
+            Err(PolicyRejection::TcbEvaluationDataTooOld {
+                number: Some(21),
+                floor: 22,
+            })
+        );
+
+        let mut lowered = policy();
+        lowered.min_tcb_evaluation_data_number = 0;
+        result.tcb_evaluation_data_number = Some(17);
+        assert_eq!(
+            result.policy_valid(&lowered),
+            Err(PolicyRejection::TcbEvaluationDataTooOld {
+                number: Some(17),
+                floor: DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
+            })
+        );
+    }
+
+    /// A mock quote fetched no collateral, so it has no baseline; it stays
+    /// governed by `accept_mock` alone.
+    #[test]
+    fn a_mock_quote_has_no_baseline_to_judge() {
+        let mut result = result_with(TCB_STATUS_MOCK);
+        result.tcb_evaluation_data_number = None;
+        let mut policy = policy();
+        policy.accept_mock = true;
+        assert_eq!(result.policy_valid(&policy), Ok(()));
     }
 
     #[test]

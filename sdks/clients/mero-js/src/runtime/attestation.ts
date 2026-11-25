@@ -12,7 +12,8 @@
  * release must be at least `minReleaseVersion`; its `published-mrtds.json` is
  * fetched and its Sigstore signature checked against the node release workflow;
  * the quote's signature chain and TCB status are checked against Intel's
- * collateral (fetched here: the node sends none, and cannot forge it); the TD
+ * collateral (fetched here: the node sends none, and cannot forge it), whose
+ * TCB evaluation data must be at least core's floor; the TD
  * must not be a debug TD; and its registers must be the release's image for the
  * trusted profile, `locked-read-only` unless a debug profile is explicitly
  * allowed. Nothing here reads the environment: mock quotes pass only with
@@ -45,8 +46,17 @@ export interface NodeReleasePolicy {
    * name an old release with a flaw since fixed.
    */
   minReleaseVersion: string;
-  /** The image profile trusted; defaults to `locked-read-only`. */
+  /** The image profile trusted; defaults to `locked-read-only`. Not with `profiles`. */
   profile?: string;
+  /**
+   * Trust any of these image profiles, as core's `Measurements::Release`
+   * `allowed_profiles` does: the one the node names is used when it is listed,
+   * and the quote must still be that profile's signed image, so naming another
+   * profile only gets a node refused. For a cluster whose profile the client
+   * does not know, e.g. staging's `['debug', 'debug-read-only']`. A debug
+   * profile listed here still needs `allowDebugProfile`. Not with `profile`.
+   */
+  profiles?: string[];
   /** Trust a debug profile. Its image is readable by the operator: testing only. */
   allowDebugProfile?: boolean;
   /**
@@ -79,6 +89,12 @@ export interface NodeReleasePolicy {
    * refuses every node if Intel is slow to re-sign.
    */
   maxCollateralAgeDays?: number;
+  /**
+   * Refuse collateral whose TCB info names Intel TCB evaluation data older
+   * than this. Raises `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (core's floor),
+   * never lowers it; see `QuoteVerifierOptions.minTcbEvaluationDataNumber`.
+   */
+  minTcbEvaluationDataNumber?: number;
   /** Override the release signer (defaults to the mero-tee node release workflow). */
   identity?: string;
   issuer?: string;
@@ -170,6 +186,29 @@ export function claimedRelease(doc: Pick<AttestationDoc, 'release'>, minReleaseV
     throw new Error(`mero-tee release ${version} is older than the minimum ${floor}`);
   }
   return version;
+}
+
+/**
+ * The profile a real quote is judged against: `policy.profile`, or, with
+ * `policy.profiles`, the one the node names when it is listed. Every listed
+ * debug profile needs `allowDebugProfile`, so the list never trusts one silently.
+ */
+function trustedProfile(doc: Pick<AttestationDoc, 'release'>, policy: Pick<NodeReleasePolicy, 'profile' | 'profiles' | 'allowDebugProfile'>): string {
+  if (policy.profiles === undefined) return policy.profile ?? PRODUCTION_PROFILE;
+  if (policy.profile !== undefined) throw new Error('give policy.release.profile or profiles, not both');
+  if (policy.profiles.length === 0) throw new Error('policy.release.profiles is empty, so no image would be trusted');
+  const debug = policy.profiles.filter((p) => p !== PRODUCTION_PROFILE);
+  if (debug.length > 0 && !policy.allowDebugProfile) {
+    throw new Error(
+      `policy.release.profiles lists ${debug.map((p) => JSON.stringify(p)).join(', ')}, which an operator can read: ` +
+        'pass allowDebugProfile to trust them',
+    );
+  }
+  const named = String(doc.release?.profile ?? '');
+  if (!policy.profiles.includes(named)) {
+    throw new Error(`The node runs profile ${JSON.stringify(named)}, which is not one of ${policy.profiles.join(', ')}`);
+  }
+  return named;
 }
 
 /** `host` gave no answer: its fetch rejected (`cause`) or it answered a 5xx `status`. Says nothing about the quote. */
@@ -269,7 +308,7 @@ async function verifyRelease(
 ): Promise<Pick<NodeVerification, 'release' | 'profile'> | undefined> {
   // Refuse what no release could admit before reaching for the network.
   const version = claimedRelease(doc, policy.minReleaseVersion);
-  const profile = policy.profile ?? PRODUCTION_PROFILE;
+  const profile = trustedProfile(doc, policy);
   const release = await releaseFor(version, policy, fetchImpl);
   if (release.version !== version) {
     throw new Error(`The node names mero-tee release ${version}, but the release served is ${release.version}`);
@@ -287,6 +326,7 @@ async function verifyRelease(
     dcapVerify: policy.dcapVerify ?? (await dcap<DcapVerify>('verify')),
     fetchCollateral,
     now: policy.now,
+    minTcbEvaluationDataNumber: policy.minTcbEvaluationDataNumber,
     ...trusted,
   });
   return (await verifier(args)) ? { release: version, profile } : undefined;
