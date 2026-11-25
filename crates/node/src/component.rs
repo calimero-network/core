@@ -1899,7 +1899,7 @@ impl SecretValue {
     }
 }
 
-/// An instance's own value of a declared secret ([`rows::CSECRET`]): the value, and what
+/// An instance's own value of a declared secret (`rows::CSECRET`): the value, and what
 /// the routes answer of it (never the value).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1955,7 +1955,7 @@ fn put_instance_secrets(tx: &mut StateTx<'_>, all: &InstanceSecrets) {
 }
 
 impl AppMachine {
-    /// The instance's own secrets ([`rows::CSECRET`]), as applied here.
+    /// The instance's own secrets (`rows::CSECRET`), as applied here.
     #[must_use]
     pub fn instance_secrets(&self) -> InstanceSecrets {
         self.state

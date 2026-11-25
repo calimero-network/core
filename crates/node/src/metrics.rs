@@ -829,7 +829,7 @@ type DiskSamples = BTreeMap<std::path::PathBuf, (Instant, (u64, u64))>;
 static DISK: Mutex<DiskSamples> = Mutex::new(BTreeMap::new());
 
 /// `(datastore, snapshots)` disk use under `data_dir`, walked on a blocking
-/// thread at most once per [`DISK_SAMPLE_EVERY`], never on an async worker.
+/// thread at most once per `DISK_SAMPLE_EVERY`, never on an async worker.
 pub async fn disk_sample(data_dir: &std::path::Path) -> (u64, u64) {
     let cached = DISK
         .lock()

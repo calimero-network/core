@@ -796,6 +796,9 @@ shard caches its apps' target dir and the cargo registry, saved from master.
 copy did not need (`scripts/check-app-lockfiles.py`).
 `Rust lint` keeps a cache group of its own (`ci-lint`; clippy's check-mode
 build is not the test build), saved by the push to master, which lints too.
+`Rust docs` runs `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS="-D warnings"`,
+so a broken intra-doc link (a renamed or removed item, a public doc linking a
+private one) fails the PR; it restores `ci-lint` and saves nothing.
 Release builds without fat LTO (the upgrade path, e2e's process suite) share
 `release`, saved by the upgrade path; `release.yml`, which builds only on a
 release cut, restores and saves `release-lto` for its fat-LTO build.
