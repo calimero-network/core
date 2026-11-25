@@ -16,12 +16,12 @@ class UsageDay:
 
         Attributes:
             date (str):
-            runs (str): an unsigned 64-bit integer as a decimal string (D20)
-            fuel (str): an unsigned 64-bit integer as a decimal string (D20)
-            wall_ms (str): an unsigned 64-bit integer as a decimal string (D20)
-            writes (str): an unsigned 64-bit integer as a decimal string (D20)
-            bytes_written (str): an unsigned 64-bit integer as a decimal string (D20)
-            events (str): an unsigned 64-bit integer as a decimal string (D20)
+            runs (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            fuel (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            wall_ms (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            writes (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            bytes_written (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            events (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
     """
 
     date: str

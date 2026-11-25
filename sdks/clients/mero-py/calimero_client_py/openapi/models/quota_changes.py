@@ -38,9 +38,10 @@ class QuotaChanges:
             max_file_bytes_per_org (Union[Unset, int]):
             max_concurrent_runs_per_org (Union[Unset, int]):
             compute_fuel_per_org (Union[Unset, int]):
-            max_fuel_per_developer_per_day (Union[Unset, str]): an unsigned 64-bit integer as a decimal string (D20)
+            max_fuel_per_developer_per_day (Union[Unset, str]): an unsigned 64-bit integer as a decimal string, exact past
+                2^53
             max_concurrent_runs (Union[None, Unset, int]):
-            compute_fuel (Union[None, Unset, str]): an unsigned 64-bit integer as a decimal string (D20)
+            compute_fuel (Union[None, Unset, str]): an unsigned 64-bit integer as a decimal string, exact past 2^53
             max_file_bytes (Union[None, Unset, int]):
     """
 

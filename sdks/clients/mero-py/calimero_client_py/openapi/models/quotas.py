@@ -23,7 +23,7 @@ class Quotas:
             max_file_bytes_per_org (int):
             max_concurrent_runs_per_org (int):
             compute_fuel_per_org (int):
-            max_fuel_per_developer_per_day (str): an unsigned 64-bit integer as a decimal string (D20)
+            max_fuel_per_developer_per_day (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
     """
 
     max_apps_per_account: int

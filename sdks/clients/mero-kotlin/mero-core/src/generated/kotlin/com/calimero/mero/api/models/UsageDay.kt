@@ -32,12 +32,12 @@ import kotlinx.serialization.Contextual
  * What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
  *
  * @param date 
- * @param runs an unsigned 64-bit integer as a decimal string (D20)
- * @param fuel an unsigned 64-bit integer as a decimal string (D20)
- * @param wallMs an unsigned 64-bit integer as a decimal string (D20)
- * @param writes an unsigned 64-bit integer as a decimal string (D20)
- * @param bytesWritten an unsigned 64-bit integer as a decimal string (D20)
- * @param events an unsigned 64-bit integer as a decimal string (D20)
+ * @param runs an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param fuel an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param wallMs an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param writes an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param bytesWritten an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param events an unsigned 64-bit integer as a decimal string, exact past 2^53
  */
 @Serializable
 
@@ -46,27 +46,27 @@ data class UsageDay (
     @SerialName(value = "date")
     val date: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "runs")
     val runs: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "fuel")
     val fuel: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "wallMs")
     val wallMs: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "writes")
     val writes: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "bytesWritten")
     val bytesWritten: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "events")
     val events: kotlin.String
 
