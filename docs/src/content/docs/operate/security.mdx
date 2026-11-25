@@ -259,6 +259,16 @@ filled in by the node and are redacted from what the app sees. Keep `hosts`
 as narrow as the apps need; `"*"` means any host an installed manifest
 declares.
 
+An instance's owner and its organization's admins read its outbound requests
+(`meroctl instance outbound-log`, `GET /apps/{app}/outbound-log`): host, path
+without its query, method, status or failure, the names of the credential
+bindings the node attached and
+the sizes, never a value, a body, a query string or a header. The audit lives
+in each node's memory, behind the same access check as the app's other
+management routes, and is served by that route alone: it is not written to the
+node's log or `/ops/metrics`. See
+[What the owner sees](/build/guides/outbound/#what-the-owner-sees).
+
 ## Files on the host
 
 | File | Holds | Protect |
