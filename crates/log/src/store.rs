@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use openraft::storage::{LogFlushed, RaftLogStorage};
-use openraft::{AnyError, LogState, OptionalSend, RaftLogReader, StorageIOError};
+use openraft::{AnyError, EntryPayload, LogState, OptionalSend, RaftLogReader, StorageIOError};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -782,6 +782,18 @@ impl Db {
             Ok(true)
         })?;
         Ok(out)
+    }
+
+    /// The commands a group's log holds, oldest first (blank and membership entries left out).
+    pub fn commands(&self, group: GroupId) -> eyre::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .range(group, 0, u64::MAX)?
+            .into_iter()
+            .filter_map(|e| match e.payload {
+                EntryPayload::Normal(cmd) => Some(cmd.0),
+                _ => None,
+            })
+            .collect())
     }
 
     fn last(&self, group: GroupId) -> eyre::Result<Option<Entry>> {

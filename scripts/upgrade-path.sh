@@ -10,11 +10,13 @@
 # Steps: read the pinned release (a `hard-cutover:` line reports the cutover and stops);
 # fetch its merod, meroctl (and mero-sign, for a release that shipped it) and kv fixture (scripts/fetch-release.sh) and build
 # its compute fixture from its tag (scripts/build-release-fixtures.sh); build this tree's
-# merod and meroctl, and kv with that meroctl (signed as kv 2.0.0, the app upgrade); run the test.
+# merod and meroctl, and kv with that meroctl (signed as kv 2.0.0, the app upgrade); run the test;
+# then record the release's own data directory and answers (upgrade_fixture.py) and replay them
+# on this tree (upgrade_replay.rs), which commits nothing.
 # A pinned tag that does not exist yet is reported and not run; a tag whose release
 # lacks an artifact fails.
 #
-# Work: $CARGO_TARGET_DIR (default target)/upgrade-from and /upgrade-path; results in
+# Work: $CARGO_TARGET_DIR (default target)/upgrade-from, /upgrade-path and /upgrade-replay; results in
 # target/upgrade-path.json. WORKFLOW_PORT_OFFSET moves its ports (7671-7680).
 set -euo pipefail
 
@@ -86,6 +88,16 @@ python3 -I crates/node/tests/fault/upgrade_path.py --governance "${GOVERNANCE:-o
   --to-merod "$TARGET/release/merod" --to-meroctl "$TARGET/release/meroctl" \
   --kv-next "$TARGET/upgrade-path-fixtures/kv-next.mpk" --pipelines-mpk "$TARGET/upgrade-path-fixtures/pipelines.mpk" \
   --workdir "$TARGET/upgrade-path" --json "$TARGET/upgrade-path.json" || status=$?
+
+# The release's data directory and answers, recorded now and opened by this tree's node.
+REPLAY="$TARGET/upgrade-replay"
+rm -rf "$REPLAY"
+replay=0
+{
+  python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir "$FROM_DIR" --out "$REPLAY/$FROM" &&
+    UPGRADE_REPLAY_DIR="$REPLAY" cargo test --release -p calimero-node --test upgrade_replay
+} || replay=$?
+[ "$status" != 0 ] || status=$replay
 
 python3 -I - "$TARGET/upgrade-path.json" "$FROM" >>"$SUMMARY" <<'EOF' || true
 import json, sys

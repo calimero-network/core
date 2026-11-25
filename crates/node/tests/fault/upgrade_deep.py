@@ -43,8 +43,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.modules.setdefault("upgrade_deep", sys.modules[__name__])
-import upgrade_path  # noqa: E402
 import ed25519_sign  # noqa: E402
+import upgrade_path  # noqa: E402
 from rollout import OPERATOR_SEED  # noqa: E402
 from rv2 import ORIGIN, CliError, HttpError  # noqa: E402
 from upgrade_path import Case, Failed  # noqa: E402
@@ -104,6 +104,10 @@ NOT_COVERED = [
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
      "recovery code (`account-recovery-code`) is covered"),
+    ("Accounts", "A consent proof spent once (`SystemState::used_proofs`, `ExpireProofs`): a passkey assertion presented again is refused",
+     "a replay needs the assertion of an earlier request, which meroctl makes afresh each time and the suite's "
+     "standard-library Python cannot make (P-256); every consent a case logs is spent and carried across the roll, "
+     "and `forged_decisions_are_refused_where_they_apply_on_every_node` and `system::tests` cover the replay on one build"),
     ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
      "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
      "the policy and the invite list are read back (`ops-state`)"),
@@ -124,18 +128,55 @@ NOT_COVERED = [
      "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
      "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
      "`app_frontends_are_served_and_their_sessions_are_bound` covers serving"),
+    ("Organizations", "The all-apps flag of a member (`POST /orgs/{org}/all-apps`, `Org::all_apps`)",
+     "the flag is stored and no route reads it: its effect is the row an app team made later gives the member, "
+     "which an open app team (`join: everyone`, what `POST /orgs/{org}/app-teams` makes) gives every member anyway. "
+     "`org-rename-defaults` sets it and compares the app team's rows; `system::tests` cover the flag's own rows"),
+    ("Governance", "Owner-held release approvals",
+     "the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as "
+     "Calimero Cloud does; the operator's approval of the new release is the rollout's first step"),
+    ("Governance", "The operator's app upgrades (`POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade`) "
+     "and outbound approvals (`POST /ops/outbound`)",
+     "governance is fixed at genesis and the suite's cluster is deployed with each app's owner deciding both "
+     "(`--app-upgrades owner`, `--outbound-approvals owner`, as `GET /releases` shows), so these routes answer "
+     "`403 FORBIDDEN` on every phase; the owners' decisions are the `kv-package` and `outbound-approvals` "
+     "cases'. `an_operator_upgrade_is_reported_as_the_operators` and the operator-governed tests in "
+     "`cluster.rs` cover the operator's on one build"),
+    ("Deployments", "A granted cluster's installs (`--deployments granted`: `403 DEPLOY_NOT_GRANTED`, "
+     "`NOT_A_DEPLOYER` at apply), the one-way switch to it (`SetDeploymentsGranted`, `POST "
+     "/ops/deployments/granted`) and an owner who grants deployers (`--deployers owner`, `SetClusterOwner`, "
+     "`POST /deployers`)",
+     "governance is fixed at genesis and the suite runs one cluster, started open with `--deployers operator`, for "
+     "every case; the switch is one-way and cluster-wide, and from it every install, bundle upload, deployment and "
+     "offer needs a grant, which the cases that write those on the new release do not hold (`kv-package`, "
+     "`packages`, `deployment-offer-upgrades`, `units`, every case seeded after the roll), so switching in any "
+     "phase would turn their steps red; a granted or owner-granting cluster needs a rollout of its own. The "
+     "grants themselves, which an open cluster keeps, are `deployer-grants`'; "
+     "`only_granted_accounts_install_on_a_granted_cluster`, "
+     "`an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and "
+     "`the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one "
+     "build"),
     ("Governance", "A release deadline that passes while a cluster rolls (`SystemState::retired`: the old nodes are "
      "placed no new app mid-roll)",
      "a deadline is judged at the command's own time, so the granted run sets a passed one on the old nodes' own "
      "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
      "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
      "(`cluster.rs`) covers retired nodes on one build"),
+    ("Pipelines", "A compute run's logs (`GET /apps/{app}/runs/{run}/logs`, `meroctl cloud compute pipeline logs`)",
+     "the route is deprecated (`api-deprecations.toml`) and answers `{ logs: [] }`: a run keeps no log, as an app's "
+     "log lines may hold user data, and no fixture method writes one, so there is no stored log to carry across a roll"),
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
     ("Ops", "Restoring a backup onto the new release",
      "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
      "not a rollout"),
+    ("Ops", "The recovery disk (`--recovery-dir`, `GET /ops/recovery-files`, `POST /recover/holder`, `ImportHolder`, "
+     "`POST /ops/recover`, `merod run --recover-from`)",
+     "a node writes the disk every `RECOVERY_EVERY` (300 s) from a task of its own, no route starts a pass, and the "
+     "suite's nodes run without `--recovery-dir`; a pass would need the harness to wait five minutes on each release "
+     "and a key pair held outside every node. `recovery_disk.rs` covers the pass, the holder's import and founding "
+     "from the disk on one build"),
     ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
      "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
      "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),

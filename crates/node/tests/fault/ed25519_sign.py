@@ -65,6 +65,24 @@ def _expand(seed: bytes):
     return a, h[32:]
 
 
+def _decode(b: bytes):
+    y = int.from_bytes(b, "little")
+    odd, y = y >> 255, y & ((1 << 255) - 1)
+    x = _xrecover(y)
+    if x & 1 != odd:
+        x = P - x
+    return (x, y, 1, x * y % P)
+
+
+def verify(public: bytes, msg: bytes, sig: bytes) -> bool:
+    """Whether `sig` is `public`'s signature of `msg`."""
+    if len(sig) != 64 or len(public) != 32:
+        return False
+    k = int.from_bytes(hashlib.sha512(sig[:32] + public + msg).digest(), "little") % L
+    s = int.from_bytes(sig[32:], "little")
+    return s < L and _encode(_mul(s, _B)) == _encode(_add(_decode(sig[:32]), _mul(k, _decode(public))))
+
+
 def public_key(seed: bytes) -> bytes:
     a, _ = _expand(seed)
     return _encode(_mul(a, _B))

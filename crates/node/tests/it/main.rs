@@ -6,9 +6,11 @@
 //! runs one module, `cargo nextest run -p calimero-node -E 'binary(it) & test(/^cluster::/)'`
 //! the same under nextest.
 //!
-//! Two stay binaries of their own. `auto_updates.rs` sets hooks that are the whole
+//! Three stay binaries of their own. `auto_updates.rs` sets hooks that are the whole
 //! process's (`testing::shift_update_clock`, `fail_restore_points` and the count of
-//! automatic-update passes), and `scenarios.rs` has a main of its own (`harness = false`).
+//! automatic-update passes), `scenarios.rs` has a main of its own (`harness = false`), and
+//! `upgrade_replay.rs` is the one test the `Upgrade path` job builds alone (all of this binary
+//! took 15 minutes to compile there).
 //!
 //! Tests here share one process under `cargo test` (nextest runs each in its own), so
 //! a hook a test sets is keyed to its own nodes (a data directory or a public URL),
@@ -71,4 +73,3 @@ mod slow_backup;
 mod slow_compile;
 mod slow_disk;
 mod upgrade_keys;
-mod upgrade_replay;

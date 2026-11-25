@@ -162,7 +162,7 @@ one, in the same PR:
   marker), and write the new format only once every replica of the group
   reads it;
 - a test opens data in the old shape: a data directory, a row or an entry
-  written as the previous release wrote it (`crates/node/tests/it/upgrade_replay.rs`).
+  written as the previous release wrote it (`crates/node/tests/upgrade_replay.rs`).
 
 The PR body says `Door: one-way` and `Reader: <the step or decoder, and its
 test>`. A shape with no reader is a hard cutover.
