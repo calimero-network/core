@@ -7,6 +7,10 @@
 //! node runs WASM on the leader) use [`Group::propose`], which serializes
 //! proposals per group; the machine refuses, at apply, a command built on
 //! stale state, so an append needs no leadership round first.
+//!
+//! Spec: [Replication](https://calimero-network.github.io/core/protocol/replication/),
+//! [Storage](https://calimero-network.github.io/core/protocol/storage/).
+//! Crate guide: [`crates/log/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/log/AGENTS.md).
 
 #![allow(
     clippy::result_large_err,
@@ -512,7 +516,7 @@ impl<M: Machine> Group<M> {
     /// admitted the proposal found, with no leadership round of its own: the
     /// term comes from the same check `propose` makes. Before its first
     /// proposal in a term this node has applied its whole log
-    /// ([`Self::catch_up`]), so the builder sees every entry this node
+    /// (`Self::catch_up`), so the builder sees every entry this node
     /// appended in that term, whatever commit index it had saved.
     pub async fn propose_led<F>(&self, mut build: F) -> Result<Proposed, WriteError>
     where
@@ -621,7 +625,7 @@ impl<M: Machine> Group<M> {
     }
 
     /// Read this node's applied state. While an apply commits (its batch may wait
-    /// for the disk), this waits off the async workers ([`machine::read_applied`]).
+    /// for the disk), this waits off the async workers (`machine::read_applied`).
     pub fn read_local<R>(&self, f: impl FnOnce(&M, u64) -> R) -> R {
         let st =
             machine::read_applied(&self.shared).unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -775,7 +779,7 @@ impl<M: Machine> Group<M> {
 
     /// Replace this group's state with a backup: the snapshot file `path`
     /// this cluster wrote for group `from` as snapshot `snapshot_id`
-    /// ([`machine::replace_state`]). Refused unless this node is the group's
+    /// (`machine::replace_state`). Refused unless this node is the group's
     /// only voter and leads it, since every other replica would keep the state
     /// before: the caller then appends an entry, builds a snapshot
     /// ([`Self::snapshot_through`]) and purges the log up to it
@@ -1074,7 +1078,7 @@ impl Drop for Removal {
 impl Engine {
     /// Open the node's database under `dir`, sealed under `key`.
     ///
-    /// The store's format is settled first ([`format`]): a store in any format
+    /// The store's format is settled first ([`mod@format`]): a store in any format
     /// but [`STORE_FORMAT`] is refused.
     pub fn open(
         node: NodeId,

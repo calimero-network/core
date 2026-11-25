@@ -23,7 +23,15 @@ pub struct Confirm {
     pub assertion: Assertion,
 }
 
-/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConfirmRequiredThenItem {
+    pub app: String,
+    pub method: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub args: Value,
+}
+
+/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfirmRequired {
     #[serde(rename = "challengeId")]
@@ -36,6 +44,8 @@ pub struct ConfirmRequired {
     pub allow_credentials: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apps: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Vec<ConfirmRequiredThenItem>>,
 }
 
 /// The operator key's Ed25519 signature (hex) over the statement a `428 OPERATOR_SIGNATURE_REQUIRED` named, with that statement's nonce.
@@ -62,56 +72,15 @@ pub use calimero_identity::Registration;
 
 pub use crate::Session;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum BackupKeyAnswerHolderKind {
-    /// `operator`.
-    Operator,
-    /// `org`.
-    Org,
-    /// `account`.
-    Account,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl BackupKeyAnswerHolderKind {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Operator => "operator",
-            Self::Org => "org",
-            Self::Account => "account",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for BackupKeyAnswerHolderKind {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for BackupKeyAnswerHolderKind {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "operator" => Self::Operator,
-            "org" => Self::Org,
-            "account" => Self::Account,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BackupKeyAnswerHolder {
-    pub kind: BackupKeyAnswerHolderKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
+#[serde(tag = "kind")]
+pub enum BackupKeyAnswerHolder {
+    #[serde(rename = "org")]
+    Org { id: String },
+    #[serde(rename = "account")]
+    Account { id: String },
+    #[serde(rename = "operator")]
+    Operator,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -196,6 +165,31 @@ pub struct NotLeader {
     pub leader_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpFailedError {
+    pub status: u64,
+    pub error: String,
+    pub message: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub details: Option<Value>,
+}
+
+/// `details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered, the follow-ups before it, which applied (`applied`, their indexes), and the failed one again in `unknown` when its answer (a 5xx, after it was sent again under its own key) could not say whether it applied; no key was made.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpFailed {
+    pub index: u64,
+    pub app: String,
+    pub method: String,
+    pub error: FollowUpFailedError,
+    pub applied: Vec<u64>,
+    pub unknown: Vec<u64>,
 }
 
 /// `details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say).
@@ -1493,7 +1487,7 @@ pub struct RunQueue {
     pub extra: Map<String, Value>,
 }
 
-/// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only.
+/// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Run {
     pub run: String,
@@ -1510,6 +1504,8 @@ pub struct Run {
     pub progress: Option<RunProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<RunQueue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs: Option<Vec<Value>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1977,6 +1973,44 @@ impl<'de> Deserialize<'de> for PackageVersionsItemSource {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PackageVersionsItemComponents {
+    /// `app`.
+    App,
+    /// `computeOnly`.
+    ComputeOnly,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl PackageVersionsItemComponents {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::App => "app",
+            Self::ComputeOnly => "computeOnly",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for PackageVersionsItemComponents {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageVersionsItemComponents {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "app" => Self::App,
+            "computeOnly" => Self::ComputeOnly,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PackageVersionsItem {
     pub version: String,
@@ -1984,6 +2018,7 @@ pub struct PackageVersionsItem {
     pub size: u64,
     pub source: PackageVersionsItemSource,
     pub services: BTreeMap<String, String>,
+    pub components: PackageVersionsItemComponents,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     pub outbound: Vec<String>,
@@ -2300,7 +2335,7 @@ pub struct TeamViewAppsItem {
     pub extra: Map<String, Value>,
 }
 
-/// A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).
+/// A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TeamView {
     #[serde(rename = "teamId")]
@@ -2310,19 +2345,9 @@ pub struct TeamView {
     pub join: TeamJoin,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "crate::route::present"
-    )]
-    pub package: Option<Option<String>>,
+    pub package: Option<String>,
     #[serde(rename = "defaultCapabilities")]
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "crate::route::present"
-    )]
-    pub default_capabilities: Option<Option<u64>>,
+    pub default_capabilities: Option<u64>,
     pub members: Vec<TeamViewMembersItem>,
     pub children: Vec<String>,
     pub apps: Vec<TeamViewAppsItem>,
@@ -4427,6 +4452,19 @@ pub struct ApikeyCreateRequestUpgrades {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ApikeyCreateRequestThenItem {
+    pub app: String,
+    pub method: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub args: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ApikeyCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -4445,6 +4483,19 @@ pub struct ApikeyCreateRequest {
     pub ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrades: Option<ApikeyCreateRequestUpgrades>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Vec<ApikeyCreateRequestThenItem>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ApikeyCreateResponseThenItem {
+    pub index: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub result: Value,
+    pub receipt: Receipt,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -4452,6 +4503,8 @@ pub struct ApikeyCreateResponse {
     #[serde(rename = "keyId")]
     pub key_id: String,
     pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Vec<ApikeyCreateResponseThenItem>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

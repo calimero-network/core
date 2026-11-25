@@ -6,56 +6,72 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.backup_key_answer_holder_kind import BackupKeyAnswerHolderKind
 from ..types import UNSET, Unset
 from typing import Union
 
-T = TypeVar("T", bound="BackupKeyAnswerHolder")
+T = TypeVar("T", bound="FollowUpFailedError")
 
 
 @_attrs_define
-class BackupKeyAnswerHolder:
+class FollowUpFailedError:
     """
     Attributes:
-        kind (BackupKeyAnswerHolderKind):
-        id (Union[Unset, str]):
+        status (int):
+        error (str):
+        message (str):
+        details (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for
+            whose it is).
     """
 
-    kind: BackupKeyAnswerHolderKind
-    id: Union[Unset, str] = UNSET
+    status: int
+    error: str
+    message: str
+    details: Union[Unset, Any] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        kind = self.kind.value
+        status = self.status
 
-        id = self.id
+        error = self.error
+
+        message = self.message
+
+        details = self.details
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "kind": kind,
+                "status": status,
+                "error": error,
+                "message": message,
             }
         )
-        if id is not UNSET:
-            field_dict["id"] = id
+        if details is not UNSET:
+            field_dict["details"] = details
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = BackupKeyAnswerHolderKind(d.pop("kind"))
+        status = d.pop("status")
 
-        id = d.pop("id", UNSET)
+        error = d.pop("error")
 
-        backup_key_answer_holder = cls(
-            kind=kind,
-            id=id,
+        message = d.pop("message")
+
+        details = d.pop("details", UNSET)
+
+        follow_up_failed_error = cls(
+            status=status,
+            error=error,
+            message=message,
+            details=details,
         )
 
-        backup_key_answer_holder.additional_properties = d
-        return backup_key_answer_holder
+        follow_up_failed_error.additional_properties = d
+        return follow_up_failed_error
 
     @property
     def additional_keys(self) -> list[str]:

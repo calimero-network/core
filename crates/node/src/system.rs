@@ -36,8 +36,11 @@ mod routing;
 mod sign_up;
 mod updates;
 
-pub use approvals::egress_args;
+pub use approvals::{egress_args, ApprovedReleases, Deadlines, OutboundApproved, ReleaseDeadline};
+pub use packages::Uninstalled;
 pub use rejection::{Rejection, RejectionKind};
+pub use sign_up::InviteKeyAnswer;
+pub use updates::PolicyView;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1941,7 +1944,7 @@ impl SystemState {
     }
 
     /// The releases approved to hold `app`'s data: its organization's (or its
-    /// publisher's, [`Self::approved_for_bundle`]). Empty means none was ever
+    /// publisher's, [`Self::approved_for_release`]). Empty means none was ever
     /// recorded, which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
@@ -4527,11 +4530,15 @@ impl SystemState {
 
     /// The deadlines as the read APIs show them, oldest release first.
     #[must_use]
-    pub fn deadlines_json(&self) -> Vec<Value> {
+    pub fn deadlines_json(&self) -> Vec<ReleaseDeadline> {
         let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
         out.sort_by(|a, b| compare_versions(a.0, b.0));
         out.into_iter()
-            .map(|(r, after)| json!({ "version": r, "after": rfc3339(*after), "afterSecs": after }))
+            .map(|(r, after)| ReleaseDeadline {
+                version: r.clone(),
+                after: rfc3339(*after),
+                after_secs: *after,
+            })
             .collect()
     }
 
@@ -4651,7 +4658,7 @@ impl SystemState {
     }
 
     /// Whether `account` may reach `app` at all: through one of its grants
-    /// ([`Self::grants_reach`]). Nobody without an account does.
+    /// (`Self::grants_reach`). Nobody without an account does.
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
         account.is_some_and(|a| self.grants_reach(app, a))
@@ -4821,6 +4828,26 @@ impl SystemState {
             })
             .map(|a| a.app_id.clone())
             .collect()
+    }
+
+    /// Whether `account` may make another API key: it exists and is below
+    /// `maxApiKeysPerAccount`.
+    ///
+    /// # Errors
+    /// Why not, as `CreateApiKey` refuses it.
+    pub fn api_key_room(&self, account: &str) -> Result<(), Rejection> {
+        if !self.accounts.contains_key(account) {
+            return Err("unknown account".into());
+        }
+        let keys = self
+            .api_keys
+            .values()
+            .filter(|k| k.account == account)
+            .count();
+        if keys >= self.quotas.max_api_keys_per_account as usize {
+            return Err(Rejection::quota("API keys"));
+        }
+        Ok(())
     }
 
     /// Records `entry` in `account`'s activity ([`Self::activity`]); none
@@ -5116,7 +5143,11 @@ impl SystemCmd {
 /// record but the account (the statement's subject), and the hash of the
 /// key, so the log cannot record another key under the same consent.
 #[must_use]
-pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
+pub fn api_key_args(
+    hash: &str,
+    record: &ApiKeyRecord,
+    then: &[crate::types::SignedFollowUp],
+) -> Value {
     let mut args = json!({
         "hash": hash,
         "keyId": record.key_id,
@@ -5131,6 +5162,10 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
     // the bytes it did before upgrade keys.
     if let (Some(scope), Some(obj)) = (&record.upgrades, args.as_object_mut()) {
         let _prev = obj.insert("upgrades".to_owned(), json!(scope));
+    }
+    // Likewise `then`, stated only by a key made with follow-up calls.
+    if let Some(obj) = args.as_object_mut().filter(|_| !then.is_empty()) {
+        let _prev = obj.insert("then".to_owned(), json!(then));
     }
     args
 }
@@ -5755,7 +5790,7 @@ pub enum SystemCmd {
     /// files, compute runs and quotas go to the target's payer; its access to
     /// the target's app team of its package (organization access in a legacy
     /// target); `bring_members` adds the people of its organization who
-    /// reach it to the target too. [`SystemState::move_app`] has the rules.
+    /// reach it to the target too. `SystemState::move_app` has the rules.
     MoveApp {
         app_id: AppId,
         to_org: OrgId,
@@ -5768,7 +5803,7 @@ pub enum SystemCmd {
         #[serde(default)]
         bring_members: bool,
         /// Random, from the API: a new app team's id derives from it
-        /// ([`app_team_id`]), so every replica makes the same one.
+        /// (`app_team_id`), so every replica makes the same one.
         #[serde(default)]
         nonce: String,
         /// An app team made in the target gives a row to each of its members
@@ -5990,6 +6025,10 @@ pub enum SystemCmd {
         /// cluster version brings the rule ([`SystemState::cluster_brings`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         owner_approves: bool,
+        /// The confirm calls the consent approved with the key, run before it
+        /// ([`api_key_args`]'s `then`; [`cluster_version::Feature::KeyFollowUps`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        then: Vec<crate::types::SignedFollowUp>,
     },
     RevokeApiKey {
         key_id: String,
@@ -6165,7 +6204,7 @@ pub enum SystemCmd {
         /// `maxOrgsPerAccount`, and it starts with the release and outbound
         /// approvals the account holds for apps outside an organization, so
         /// an instance created there runs where one outside would.
-        /// Left out when false ([`cluster_version::Feature::PersonalOrg`]).
+        /// Left out when false.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         personal: bool,
         /// A package whose app team the new organization starts with, made
@@ -6732,7 +6771,7 @@ pub enum SystemCmd {
         team: TeamId,
         actor: AccountId,
         /// The actor's passkey consent, over the apps that go with the team
-        /// (`org:<org> / __delete_team / { team, apps }`, [`team_apps`]).
+        /// (`org:<org> / __delete_team / { team, apps }`, [`SystemState::team_apps`]).
         #[serde(default)]
         consent: Value,
         /// A team whose subtree holds apps needs `consent`. The API always
@@ -6939,7 +6978,7 @@ pub enum SystemCmd {
         #[serde(default)]
         shared: Option<bool>,
         /// Random, from the API: new teams' ids derive from it
-        /// ([`app_team_id`]), so every replica makes the same ones.
+        /// (`app_team_id`), so every replica makes the same ones.
         nonce: String,
         actor: AccountId,
         consent: Value,
@@ -7026,12 +7065,13 @@ fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
 /// it, the method and subject it states, at the time it carries. None for an
 /// operator's or an API key's proof, and for a consent with no time (a
 /// sign-in's, whose entry comes from its session, or one an earlier release
-/// logged), so replaying an earlier release's log adds nothing.
+/// logged), so replaying an earlier release's log adds nothing. A key's
+/// follow-ups add one entry each, the call it approved.
 fn approval_of(
     s: &SystemState,
     cmd: &SystemCmd,
     used: &str,
-) -> Option<(AccountId, crate::types::ActivityEntry)> {
+) -> Option<(AccountId, Vec<crate::types::ActivityEntry>)> {
     let Ok(Value::Object(fields)) = serde_json::to_value(cmd) else {
         return None;
     };
@@ -7042,18 +7082,23 @@ fn approval_of(
     })?;
     let passkey = consent.assertion.credential_id;
     let account = s.credentials.get(&passkey)?.clone();
-    let text = |t: String| t.chars().take(crate::types::ACTIVITY_TEXT_CHARS).collect();
-    Some((
-        account,
-        crate::types::ActivityEntry {
-            at: consent.at,
-            passkey,
-            what: crate::types::Activity::Approval {
-                method: text(consent.statement.method),
-                subject: text(consent.statement.subject),
-            },
+    let text = |t: &str| t.chars().take(crate::types::ACTIVITY_TEXT_CHARS).collect();
+    let entry = |method: &str, subject: &str| crate::types::ActivityEntry {
+        at: consent.at,
+        passkey: passkey.clone(),
+        what: crate::types::Activity::Approval {
+            method: text(method),
+            subject: text(subject),
         },
-    ))
+    };
+    let follow_ups = match cmd {
+        SystemCmd::CreateApiKey { then, .. } => then.as_slice(),
+        _ => &[],
+    };
+    let entries = std::iter::once(entry(&consent.statement.method, &consent.statement.subject))
+        .chain(follow_ups.iter().map(|f| entry(&f.method, &f.app)))
+        .collect();
+    Some((account, entries))
 }
 
 /// The activity entry of a sign-in that opened `record`'s session, at its
@@ -7202,8 +7247,10 @@ impl SystemMachine {
             }
             let _new = self.state.used_proofs.insert(used);
         }
-        if let Some((account, entry)) = approval {
-            self.state.record_activity(&account, entry);
+        if let Some((account, entries)) = approval {
+            for entry in entries {
+                self.state.record_activity(&account, entry);
+            }
         }
         Ok(out)
     }

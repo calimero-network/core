@@ -513,7 +513,7 @@ async fn start_launch(
             if let Some(of) = retry_of {
                 answer["retryOf"] = json!(of);
             }
-            Ok((StatusCode::ACCEPTED, Json(answer)))
+            Ok((StatusCode::OK, Json(answer)))
         }
         (_, Some(TOO_MANY_PIPELINE_RUNS)) => Err(ApiError::new(
             429,

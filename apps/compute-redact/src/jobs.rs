@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_sdk::compute::{ComputeOutcome, ComputeStatus};
 use calimero_sdk::prelude::app;
-use calimero_sdk::BlobRef;
+use calimero_sdk::{AbiType, BlobRef};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,7 +18,7 @@ pub const MAX_PARTS: u64 = 256;
 /// Publishes a run's output as a plain blob.
 pub type Publisher<'a> = dyn FnMut(&BlobRef) -> app::Result<BlobRef> + 'a;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, AbiType)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Previewing,
@@ -55,22 +55,25 @@ pub struct Job {
 }
 
 /// What `job` answers: the job without its policy, which holds the salt.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct JobView {
     pub id: String,
     pub submitter: String,
     pub status: Status,
     pub policy_hash: String,
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub total_rows: u64,
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub rows_done: u64,
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub cells_redacted: u64,
     pub parts: Vec<PartView>,
     pub preview: Option<Preview>,
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 pub struct PartView {
     pub status: Status,
     pub rows: u32,
@@ -382,17 +385,20 @@ mod tests {
 
     #[test]
     fn decode_reads_a_done_runs_result_and_names_a_failure() {
-        let body = STANDARD.encode(r#"{"rows":3,"cells":2}"#);
-        #[derive(Deserialize)]
-        struct R {
-            rows: u64,
-            cells: u64,
-        }
-        let r: R = decode(&outcome(serde_json::json!({ "result": body }))).unwrap();
+        // A redact run's result: its counts are decimal strings (D20).
+        let body = STANDARD.encode(r#"{"rows":"3","cells":"2"}"#);
+        let r: crate::Redacted = decode(&outcome(serde_json::json!({ "result": body }))).unwrap();
         assert_eq!((r.rows, r.cells), (3, 2));
+        let numbers = STANDARD.encode(r#"{"rows":3,"cells":2}"#);
+        assert!(
+            decode::<crate::Redacted>(&outcome(serde_json::json!({ "result": numbers }))).is_err()
+        );
         let failed = outcome(serde_json::json!({ "status": "failed", "reason": "fuel" }));
-        assert_eq!(decode::<R>(&failed).err().as_deref(), Some("fuel"));
+        assert_eq!(
+            decode::<crate::Redacted>(&failed).err().as_deref(),
+            Some("fuel")
+        );
         let none = outcome(serde_json::json!({}));
-        assert!(decode::<R>(&none).is_err());
+        assert!(decode::<crate::Redacted>(&none).is_err());
     }
 }

@@ -30,6 +30,7 @@ use serde::de::{self, DeserializeOwned, Deserializer, Visitor};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
+pub(super) mod generated;
 mod shape;
 mod trace;
 
@@ -474,6 +475,7 @@ const ERROR_DETAILS: &[(&str, &str)] = &[
     ("COMPUTE_ABI_MISMATCH", "ServiceRefused"),
     ("CONFIRM_REQUIRED", "ConfirmRequired"),
     ("FEATURE_NOT_ACTIVE", "FeatureNotActive"),
+    ("FOLLOW_UP_FAILED", "FollowUpFailed"),
     ("FILES_UNAVAILABLE", "RetryAfter"),
     ("INIT_FAILED", "InitFailed"),
     ("NOT_LEADER", "NotLeader"),
@@ -608,8 +610,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "ConfirmRequired",
-            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.",
-            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[] }",
+            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.",
+            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[], then?: { app: string, method: string, args: any }[] }",
         ),
         component(
             "OperatorProof",
@@ -635,12 +637,14 @@ fn components() -> Vec<Component> {
             "Session",
             "A session: its token (15 minutes, by the issuing node) and the refresh token for `/auth/refresh`.",
             "{ accountId: string, sessionToken: string, expiresAt: uint, refreshToken: string }",
-        ),
+        )
+        .of::<super::SessionAnswer>(),
         component(
             "BackupKeyAnswer",
             "A holder's backup key: who holds it (`{ kind: \"operator\" }`, `{ kind: \"org\", id }` or `{ kind: \"account\", id }`), the X25519 public key the recovery disk seals their apps' backups to (`null` while none is set), and how many apps that covers.",
-            "{ holder: { kind: \"operator\" | \"org\" | \"account\", id?: string }, key: { publicKey: string, setAt: uint, setBy: string } | null, apps: uint }",
-        ),
+            "{ holder: { kind: \"org\", id: string } | { kind: \"account\", id: string } | { kind: \"operator\" }, key: { publicKey: string, setAt: uint, setBy: string } | null, apps: uint }",
+        )
+        .of::<super::backup_keys::BackupKeyAnswer>(),
         component(
             "Applied",
             "An entry an app's log applied: its index, how it ended and the app's error (`null` when it ended `ok`; the app's own error value otherwise, free-form). `details` of a `422 UPGRADE_FAILED`.",
@@ -650,6 +654,11 @@ fn components() -> Vec<Component> {
             "NotLeader",
             "`details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.",
             "{ leaderUrl: string, leader?: uint }",
+        ),
+        component(
+            "FollowUpFailed",
+            "`details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered, the follow-ups before it, which applied (`applied`, their indexes), and the failed one again in `unknown` when its answer (a 5xx, after it was sent again under its own key) could not say whether it applied; no key was made.",
+            "{ index: uint, app: string, method: string, error: { status: uint, error: string, message: string, details?: any }, applied: uint[], unknown: uint[] }",
         ),
         component(
             "FeatureNotActive",
@@ -834,7 +843,8 @@ fn components() -> Vec<Component> {
             "PolicyView",
             "An update policy at one scope: the organization's (`app` absent) or an app's. `policy` is the one in force; `source` where it comes from (the app's own, its organization's, or the defaults); `own` the one set at this scope, `null` for none.",
             r#"{ org: string, app?: string, policy: #UpgradePolicy, source: "app" | "org" | "default", own: #UpgradePolicy | null }"#,
-        ),
+        )
+        .of::<crate::system::PolicyView>(),
         component(
             "PendingApproval",
             "A first approval of a red update waiting for its second (`POST /apps/{app}/upgrade-approvals`): the app approved (`app`), its target, a unit's members' (`targets`, by app), who approved and when, when it lapses (`expiresAt`, a week on), and the class its approver was shown.",
@@ -870,12 +880,14 @@ fn components() -> Vec<Component> {
             "RunFile",
             "A file a run reads or wrote: its id, and its plaintext size and SHA-256 (hex) only for a caller who may list the app's files.",
             "{ id: string, size?: uint, sha256?: string }",
-        ),
+        )
+        .of::<crate::node::RunFileView>(),
         component(
             "Run",
-            "A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only.",
-            r#"{ run: string, method: string, state: "queued" | "running" | "done" | "failed" | "cancelled", cancelRequested: bool, startTsMs: uint, caps: { fuel: uint, memoryMib: uint, wallSecs: uint }, inputs: #RunFile[], attempts: { attempt: uint, node: uint, tsMs: uint }[], final: { attempt: uint, outcome: { kind: "done" } | { kind: "failed", reason: "fuel" | "memory" | "trap" | "app-error" | "integrity" | "cancelled" | "lost" | "refused" | "timeout" | "quota" | "not-granted" | "too-large" } | { kind: "cancelled" }, outputs: #RunFile[], usage: { cpuMicros: uint, gibMicros: uint, fuel: uint }, tsMs: uint, message: string | null } | null, progress: { percent: uint, step: string } | null, queue?: { state: "unplaced" | "waiting" | "granted", capacity: uint, pool: string, reason?: "NO_CAPACITY" | "POOL_FULL" | "PAYER_AT_RUN_QUOTA" | "PAYER_AT_FUEL_QUOTA" } }"#,
-        ),
+            "A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers.",
+            r#"{ run: string, method: string, state: "queued" | "running" | "done" | "failed" | "cancelled", cancelRequested: bool, startTsMs: uint, caps: { fuel: uint, memoryMib: uint, wallSecs: uint }, inputs: #RunFile[], attempts: { attempt: uint, node: uint, tsMs: uint }[], final: { attempt: uint, outcome: { kind: "done" } | { kind: "failed", reason: "fuel" | "memory" | "trap" | "app-error" | "integrity" | "cancelled" | "lost" | "refused" | "timeout" | "quota" | "not-granted" | "too-large" } | { kind: "cancelled" }, outputs: #RunFile[], usage: { cpuMicros: uint, gibMicros: uint, fuel: uint }, tsMs: uint, message: string | null } | null, progress: { percent: uint, step: string } | null, queue?: { state: "unplaced" | "waiting" | "granted", capacity: uint, pool: string, reason?: "NO_CAPACITY" | "POOL_FULL" | "PAYER_AT_RUN_QUOTA" | "PAYER_AT_FUEL_QUOTA" }, logs?: any[] }"#,
+        )
+        .of::<crate::node::RunView>(),
         component(
             "AccountProof",
             "A statement, signed with the answering node's receipt key (hex, Ed25519 over the statement's canonical JSON after its domain), that the account asked to bind `nonce` for `audience`, valid from `issuedAt` to `expiresAt` (Unix seconds).",
@@ -892,42 +904,50 @@ fn components() -> Vec<Component> {
             "PackageOrigin",
             "A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.",
             "{ package: string, origin: string, rpId: string, addedBy: string, addedAt: string, served: bool }",
-        ),
+        )
+        .of::<crate::origins::OriginView>(),
         component(
             "SignUpState",
             "The sign-up policy and what it implies: whether organization invites and cluster sign-up invites admit a new account, and whether one is required.",
             "{ policy: #SignUp, orgInvites: bool, signUpInvites: bool, inviteRequired: bool }",
-        ),
+        )
+        .of::<super::sign_up::SignUpState>(),
         component(
             "ApprovedReleases",
             "The mero-tee releases the scope approves now, after the change.",
             "{ approvedReleases: string[] }",
-        ),
+        )
+        .of::<crate::system::ApprovedReleases>(),
         component(
             "OutboundApproved",
             "The outbound approval the scope holds now for the package's publisher (`signer`), after the change.",
             "{ signer: string, approval: #OutboundApproval }",
-        ),
+        )
+        .of::<crate::system::OutboundApproved>(),
         component(
             "Uninstalled",
             "The versions an uninstall removed.",
             "{ removed: string[] }",
-        ),
+        )
+        .of::<crate::system::Uninstalled>(),
         component(
             "Deadlines",
             "Every release deadline after the change, oldest release first (`after` RFC 3339, `afterSecs` Unix seconds).",
             "{ deadlines: { version: string, after: string, afterSecs: uint }[] }",
-        ),
+        )
+        .of::<crate::system::Deadlines>(),
         component(
             "SignUpSet",
             "The cluster's governance and sign-up policy after the change.",
             "{ governance: #Governance, signUp: #SignUpState }",
-        ),
+        )
+        .of::<super::sign_up::SignUpSet>(),
         component(
             "InviteKey",
             "The key of the cluster sign-up invite withdrawn.",
             "{ inviteKey: string }",
-        ),
+        )
+        .of::<crate::system::InviteKeyAnswer>(),
         component(
             "UpgradeRun",
             "An organization-wide upgrade run: the apps it targets, those done, and why each failed one failed.",
@@ -960,8 +980,9 @@ fn components() -> Vec<Component> {
         component(
             "Package",
             "A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.",
-            r#"{ package: string, signerId: string, owner: string, latest: string, versions: { version: string, mpk: string, size: uint, source: "registry" | "upload", services: { [string]: string }, metadata: any, outbound: string[], installedBy: string, installedAt: uint }[] }"#,
-        ),
+            r#"{ package: string, signerId: string, owner: string, latest: string, versions: { version: string, mpk: string, size: uint, source: "registry" | "upload", services: { [string]: string }, components: "app" | "computeOnly", metadata: any, outbound: string[], installedBy: string, installedAt: uint }[] }"#,
+        )
+        .of::<super::packages::PackageAnswer>(),
         component(
             "ApiKey",
             "An API key as the account's list shows it (never its secret): `apps` and `methods` are `null` for every one; `upgrades` makes it an upgrade key.",
@@ -982,9 +1003,10 @@ fn components() -> Vec<Component> {
         .of::<crate::types::Team>(),
         component(
             "TeamView",
-            "A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).",
-            "{ teamId: string, name: string, parent: string | null, join: #TeamJoin, metadata: any, package?: string | null, defaultCapabilities?: uint | null, members: { account: string, role: #TeamRole, capabilities: uint }[], children: string[], apps: { appId: string, name: string, contextId: string }[], myRole: #TeamRole | null, member: bool }",
-        ),
+            "A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's).",
+            "{ teamId: string, name: string, parent: string | null, join: #TeamJoin, metadata: any, package: string | null, defaultCapabilities: uint | null, members: { account: string, role: #TeamRole, capabilities: uint }[], children: string[], apps: { appId: string, name: string, contextId: string }[], myRole: #TeamRole | null, member: bool }",
+        )
+        .of::<super::orgs::TeamView>(),
         component(
             "Deployment",
             "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.",
@@ -1049,7 +1071,8 @@ fn components() -> Vec<Component> {
             "SignUpInvite",
             "A cluster sign-up invite, never its token: uses left, when it expires (`expiresAt` RFC 3339, `expiresAtSecs` Unix seconds), who made it and when (RFC 3339).",
             "{ inviteKey: string, uses: uint, expiresAt: string, expiresAtSecs: uint, createdBy: string, createdAt: string }",
-        ),
+        )
+        .of::<super::sign_up::SignUpInviteView>(),
         component(
             "ProofOnly",
             "What an operator decision that names nothing in its body may carry: none at first, the operator's proof after the `428`.",
@@ -1271,11 +1294,11 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         delete("/auth/aliases/{alias}", "alias_delete", SignedIn, "Remove an alias").ok("{}"),
         post("/auth/apikeys", "apikey_create", AccountHolder, "Make an API key")
-            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.")
-            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, confirm?: #Confirm }")
-            .ok("{ keyId: string, key: string }")
+            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.")
+            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, then?: { app: string, method: string, args?: any }[], confirm?: #Confirm }")
+            .ok("{ keyId: string, key: string, then?: { index: uint, result: any, receipt: #Receipt }[] }")
             .step_up()
-            .errors(&[(400, "BAD_UPGRADE_KEY"), (400, "WRONG_CHALLENGE"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_FOLLOW_UP"), (400, "BAD_UPGRADE_KEY"), (400, "RESERVED_METHOD"), (400, "WRONG_CHALLENGE"), (409, "FEATURE_NOT_ACTIVE"), (413, "ARGS_TOO_LARGE"), (422, "FOLLOW_UP_FAILED"), (429, "QUOTA_EXCEEDED")]),
         get("/auth/apikeys", "apikey_list", AccountHolder, "The account's API keys").ok("{ keys: #ApiKey[] }"),
         delete("/auth/apikeys/{key}", "apikey_revoke", AccountHolder, "Revoke an API key")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1384,10 +1407,10 @@ fn operations() -> Vec<Op> {
         get("/apps/{app}/presence/stream", "presence_stream", AppAccess, "Presence as server-sent events")
             .events("a `snapshot`, then `presence` diffs"),
         post("/apps/{app}/intents", "intents", AppAccess, "Call a method")
-            .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
+            .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.")
             .json::<super::IntentBody>("{ method: string, args?: any, idempotencyKey?: string, confirm?: #Confirm }")
             .ok("{ index: uint, result: any, events: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_IDEMPOTENCY_KEY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
@@ -1404,7 +1427,7 @@ fn operations() -> Vec<Op> {
             .about("The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
             .json::<super::MethodBody>(r#"{ args?: any, idempotencyKey?: string, confirm?: #Confirm, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, events?: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_IDEMPOTENCY_KEY"), (400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/events", "events", AppAccess, "An app's events as server-sent events")
@@ -1632,7 +1655,7 @@ fn operations() -> Vec<Op> {
             .ok("{ steps: { [string]: { runs: string, fuel: string, cost?: string } }, fuel: string, cost?: string, priceVersion?: uint }")
             .errors(&[(400, "BAD_INPUTS"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE")]),
         post("/apps/{app}/pipelines/{name}/runs", "pipelines::start", SignedIn, "Start a pipeline run")
-            .about("The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.")
+            .about("The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.")
             .json::<super::pipelines::StartBody>("{ inputs?: { [string]: string[] }, params?: { [string]: any }, maxCost?: string }")
             .ok("{ run: string, worstCase?: string }")
             .errors(&[(400, "BAD_INPUTS"), (400, "BAD_MAX_COST"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (410, "OUTPUT_EXPIRED"), (422, "PIPELINES_NEED_ONE_SERVICE"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
@@ -1659,7 +1682,7 @@ fn operations() -> Vec<Op> {
             .ok("{ run: string }")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/apps/{app}/pipeline-runs/{run}/retry", "pipelines::retry", SignedIn, "Retry a pipeline run")
-            .about("The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.")
+            .about("The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.")
             .json::<super::pipelines::RetryBody>("{ limits?: { [string]: { fuel?: uint, memoryMib?: uint, wallSecs?: uint } }, maxCost?: string }")
             .ok("{ run: string, retryOf: string, worstCase?: string }")
             .errors(&[(400, "BAD_LIMITS"), (400, "BAD_MAX_COST"), (400, "LIMIT_EXCEEDS_CAP"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (409, "STILL_RUNNING"), (410, "OUTPUT_EXPIRED"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
@@ -2621,7 +2644,7 @@ mod tests {
     use super::shape::{parse, Shape};
     use super::trace::{self, Step};
     use super::{
-        components, document, fields_of, operations, shapes, Body, Input, Op, ERROR_DETAILS,
+        components, document, fields_of, operations, shapes, Body, Input, Op, Reply, ERROR_DETAILS,
     };
     use crate::error::ApiError;
 
@@ -3199,6 +3222,32 @@ mod tests {
         );
     }
 
+    /// A component an operation answers as its whole success body names the Rust type the
+    /// handler serializes (`Component::of`), so `response_shapes_match_their_types` holds the two
+    /// together and a field added to one and not the other turns red (review finding E7).
+    #[test]
+    fn every_component_answered_whole_is_a_types() {
+        let comps = components();
+        let mut untyped = BTreeSet::new();
+        for op in operations() {
+            let Reply::Json(shape) = op.reply else {
+                continue;
+            };
+            let Shape::Ref(name) = parse(shape) else {
+                continue;
+            };
+            let c = comps.iter().find(|c| c.name == name).expect("a component");
+            if c.ty.is_none() {
+                let _new = untyped.insert(format!("#{name} ({} {})", op.method, op.path));
+            }
+        }
+        assert!(
+            untyped.is_empty(),
+            "answered whole but bound to no type (`.of::<T>()`):\n{}",
+            untyped.into_iter().collect::<Vec<_>>().join("\n")
+        );
+    }
+
     /// `(status, code)` of every `ApiError` the body makes with a literal code.
     fn literal_codes(body: &str) -> Vec<(u16, String)> {
         let mut out = Vec::new();
@@ -3328,6 +3377,20 @@ mod tests {
         vec![
             confirm(),
             super::super::orgs::with_detail(confirm(), "apps", json!(["app"])),
+            super::super::orgs::with_detail(
+                confirm(),
+                "then",
+                json!([{ "app": "a", "method": "m", "args": { "principal": "key:k" } }]),
+            ),
+            super::super::auth::follow_up_failed(
+                1,
+                &crate::types::KeyFollowUp {
+                    app: "a".to_owned(),
+                    method: "m".to_owned(),
+                    args: Value::Null,
+                },
+                &failure(&Status::AppError, &app_error, false),
+            ),
             super::super::operator_signature_required(
                 &crate::proof::Statement::new("cluster", "__set_quotas", &json!({ "a": 1 })),
                 "c1",

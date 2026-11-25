@@ -36,6 +36,7 @@ import kotlinx.serialization.Contextual
  * @param propertySize 
  * @param source 
  * @param services 
+ * @param components 
  * @param metadata Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param outbound 
  * @param installedBy 
@@ -59,6 +60,9 @@ data class PackageVersionsInner (
 
     @SerialName(value = "services")
     val services: kotlin.collections.Map<kotlin.String, kotlin.String>,
+
+    @SerialName(value = "components")
+    val components: PackageVersionsInner.Components,
 
     /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
     @Contextual @SerialName(value = "metadata")
@@ -84,6 +88,16 @@ data class PackageVersionsInner (
     enum class Source(val value: kotlin.String) {
         @SerialName(value = "registry") REGISTRY("registry"),
         @SerialName(value = "upload") UPLOAD("upload");
+    }
+    /**
+     * 
+     *
+     * Values: APP,COMPUTE_ONLY
+     */
+    @Serializable
+    enum class Components(val value: kotlin.String) {
+        @SerialName(value = "app") APP("app"),
+        @SerialName(value = "computeOnly") COMPUTE_ONLY("computeOnly");
     }
 
 }

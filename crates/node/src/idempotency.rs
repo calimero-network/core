@@ -1,13 +1,15 @@
 //! Idempotency retention (D74), one rule for both executors.
 //!
-//! Records are kept by time class: a key containing `node:` (one the node gives a
+//! Records are kept by time class: a key starting `node:` (one the node gives a
 //! call that came without a key, or one a client created for its own retries,
-//! `node:c-…`) for [`NODE_KEY_TTL_MS`] (10 minutes), a caller's own key for
-//! [`IDEMPOTENCY_TTL_MS`] (24 hours). A record expires once the newest applied
-//! entry's timestamp (D16) is past its own by that time, never by a node's local
-//! clock, so every replica drops the same records: retention runs inside `apply`,
-//! on what the log carries. At most [`IDEMPOTENCY_MAX_RECORDS`] (100,000) records
-//! per app, oldest (by the entry that wrote them) dropped first.
+//! `node:c-…`; [`class_of`]) for [`NODE_KEY_TTL_MS`] (10 minutes), a caller's own
+//! key for [`IDEMPOTENCY_TTL_MS`] (24 hours). A record expires once the earlier of
+//! the newest applied entry's timestamp (D16) and the applying entry's own
+//! ([`expiry_now`]) is past its own by that time, never by a node's local clock,
+//! so every replica drops the same records: retention runs inside `apply`, on what
+//! the log carries. At most [`IDEMPOTENCY_MAX_RECORDS`] (100,000) records per app:
+//! past it `node:` records go first, then the oldest caller record ([`expire`]),
+//! each entry dropping at most [`EXPIRY_STEP`].
 //!
 //! The newest [`IDEMPOTENCY_MIN_KEEP`] caller keys and [`NODE_KEY_MIN_KEEP`] node keys
 //! of an app are kept whatever their age (Xil's review,
@@ -29,6 +31,10 @@ pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 /// creates for its own retries (`node:c-…`, D70). They only need to outlive the
 /// retries, so they are kept briefly.
 pub const NODE_KEY_PREFIX: &str = "node:";
+
+/// The keys an API key's follow-ups run under (`node:apikey:<keyId>:<index>:<hash>`);
+/// a client's own key never starts with it.
+pub const FOLLOW_UP_KEY_PREFIX: &str = "node:apikey:";
 
 /// How long a `node:` key is remembered (D74).
 pub const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;

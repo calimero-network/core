@@ -36,7 +36,7 @@ error the guest's host call returns.
 | Connector calls | input 64 KiB; 64 values in one limit (metadata keys, models); each call counts as an outbound request | `MAX_CONNECTOR_INPUT`, `MAX_LIMIT_VALUES` |
 | Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
 | Declared secrets (credential bindings) | 16 per release; name 64 bytes; description 256 bytes; one host, 1 to 8 path prefixes of 256 bytes each, and one place each (a header, or a body field); header name or body field 64 bytes; header `format` 64 bytes with `{}` once; no two on one host's same place on a shared path | `MAX_SECRETS`, `MAX_SECRET_NAME_BYTES`, `MAX_SECRET_DESCRIPTION_BYTES`, `MAX_SECRET_PATHS`, `MAX_SECRET_PATH_BYTES`, `MAX_SECRET_FIELD_BYTES`, `MAX_SECRET_FORMAT_BYTES` |
-| Search | 100 hits at most; query 256 bytes; 32 searches per run (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
+| Search | 100 hits at most; query 256 bytes; 32 searches per request, its sync xcall views included (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
 | Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
@@ -45,25 +45,28 @@ error the guest's host call returns.
 ### What host work costs
 
 A run's fuel pays for the guest's own instructions and for the work its host
-calls make the node do (`crates/app-host/src/fuel.rs`). One fuel is about one
-nanosecond of host time; the search figures are the least-squares fit of a
-query's host time in `crates/search/bench`.
+calls make the node do (`crates/app-host/src/fuel.rs`), on every call, view,
+timer, delivery, action and compute run. One fuel is about one nanosecond of
+host time; the search figures are the least-squares fit of a query's host time
+in `crates/search/bench`.
 
 | Host call | Fuel | Constants |
 | --- | --- | --- |
-| `storage.get`, `put`, `delete`, `add`, opening a range | 2000, plus 1 per byte of key and value | `FUEL_STATE_ACCESS`, `FUEL_PER_BYTE` |
-| Each `range.next` batch | 2000, plus 200 per entry and 1 per byte | `FUEL_STATE_ACCESS`, `FUEL_PER_RANGE_ENTRY`, `FUEL_PER_BYTE` |
-| `search.query` | 5000, plus 14 per matched document, 10 500 per hit, 70 per byte of the hits and 1 per byte of the query | `FUEL_SEARCH_QUERY`, `FUEL_PER_SEARCH_MATCH`, `FUEL_PER_SEARCH_HIT`, `FUEL_PER_SEARCH_BYTE` |
-| Context and directory reads (`app-owner`, `org`, `org-role`, `orgs-of`, `in-team`, `linked`, `unit-of`, `grant-scope`), `blobs.*`, `files.create`, `open`, `info`, `finish`, `runs.uploader`, `runs.publish` | 1000 | `FUEL_HOST_CALL` |
-| `emit`, `xcall.send`, synchronous xcalls, an action's `view` and `call`, outbound HTTP, file reads and writes, random bytes, a published file | 1000, plus 1 per byte sent, read, written or answered | `FUEL_HOST_CALL`, `FUEL_PER_BYTE` |
+| Every `calimero:app` call, `wasi:random`, a stream write or read, `wasi:http`'s `handle`, and dropping a cursor, file reader or writer | 1000 | `FUEL_HOST_CALL` |
+| The bytes a call is handed (keys, values, query text, event name, data and audience, xcall and action targets and arguments, HTTP URL, headers and body, compute run arguments and inputs, file and blob ids), paid before any check | 1 per byte | `FUEL_PER_BYTE` |
+| The bytes a call hands back or moves (values read, range batches, xcall, action and HTTP answers, file reads and writes, random bytes, a published file, stream writes and reads, also to stdout once the log is full) | 1 per byte | `FUEL_PER_BYTE` |
+| `storage.get`, `put`, `delete`, `add`, opening a range, each `range.next` batch | 1000 more; a batch also 200 per entry | `FUEL_STATE_ACCESS`, `FUEL_PER_RANGE_ENTRY` |
+| A `search.query` that runs | 4000 more, plus 14 per matched document, 10 500 per hit and 70 per byte of the hits | `FUEL_SEARCH_QUERY`, `FUEL_PER_SEARCH_MATCH`, `FUEL_PER_SEARCH_HIT`, `FUEL_PER_SEARCH_BYTE` |
 
-The charge is taken when the call returns; a run whose fuel cannot pay it ends
-out of fuel (`422 TRAP`, kind `OutOfFuel`) as if the guest had run out, and a run
-that finishes owing more than its budget ends the same way. A synchronous
-xcall's target runs on its own budget. The charges apply once the cluster
-version is 1.0.0-rc.36 (`Feature::HostFuel`); below it a node charges no host
-work, as earlier releases did, so a call answers alike on every node through a
-rolling upgrade. Job nodes charge compute runs from that release on.
+The engine takes the base out of the run's fuel as a call starts and the rest
+as it returns, so the guest never runs on fuel its host calls already owe, and
+a refused or denied call still pays for what it was handed. A run whose fuel
+cannot pay ends out of fuel (`422 TRAP`, kind `OutOfFuel`) at that call, as if
+the guest had run out; a denied call that could pay is `HostDenied`. A
+synchronous xcall's target runs on its own fuel budget, but shares its caller's
+search budget: one request makes at most `MAX_SEARCHES_PER_RUN` (32) searches
+across its run and every view its xcalls reach (a view forwarded to another
+node takes the request's remaining searches with it).
 
 A run's result also has to fit the log: its whole entry — arguments, diff,
 events — must stay under **1 MiB** (`calimero_log::MAX_ENTRY_BYTES`); a run
@@ -181,3 +184,51 @@ its release or newer (`409 UPGRADE_PENDING`).
 Organization roles (`guest < member < admin < owner`), team row roles (`lead`,
 `member`, `read-only`) and the capability bits are on
 [Organizations, teams & access](/protocol/organizations/).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Quotas
+
+Code: `system::Quotas`, set with `POST /ops/quotas`.
+
+Live in the system state and are checked at apply, so every node enforces the same limits; refusals
+are `429 QUOTA_EXCEEDED`.
+`maxFileBytesPerOrg` counts the plaintext bytes of a component's files.
+`SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer
+(`usage::payer`), kept in step by `set_app_file_bytes`.
+`SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release
+at 0.
+`DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
+`TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that
+organization's quota would not hold its files.
+The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default, is no limit; a
+decimal string in JSON, a number refused, `system::decimal_u64`).
+It is charged to the app's developer, `usage::developer` (#4839), the same identity usage is billed
+to: the owner of the deployment an app was created from, else the app's organization or owner.
+So two payers' instances of one developer's deployment share one cap.
+The fuel lives in the app groups' usage books, so it is checked where a client's call, a delivered
+xcall or a synchronous xcall runs (`Node::fuel_quota_refusal`, from `call_local_component`, after
+the idempotent replay and the delivered-xcall check, before the run); an action's own calls are not
+refused, as its start was.
+The check asks no peer (`Node::developer_fuel_cached`): apps this node replicates are read from the
+replica, the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s) while a cap is set
+asks all peers at once (`internal/usage/today`) and keeps a silent peer's last figures; so the cap
+is approximate by one interval and an app no peer ever reported counts as nothing (fails open).
+A refused delivered xcall is the target's final answer (D29, `deliver_one`), not a dead letter.
+The refusal is not logged, so the key is not spent; `init`, timer ticks and event handlers are never
+refused, and they still count toward the developer's day.
+The quota is fuel; wall time is information only (D76).
+A non-zero cap is written only once every registered node's attested release is this node's or newer
+(`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
+(`api::UPGRADE_PENDING`, one code for every such release gate), judged before the operator is asked
+to sign (`__set_quotas`, #4791): an older node would drop the field and its snapshots would reset
+the cap.
+Accepted gap (#4809): an older node added after the cap is set, then sent a quota change itself,
+writes the quotas without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
+and the W19 minimum-release gate closes it.
+Usage reads (`app_usage`, `internal/usage`, `replicas_usage_on`) use `replica_group`, never a group
+the node keeps after the app moved away.

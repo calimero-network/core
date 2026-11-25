@@ -4131,7 +4131,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/intents
      * Call a method
-     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them. An &#x60;idempotencyKey&#x60; starting &#x60;node:apikey:&#x60; is the node&#39;s own (an API key&#39;s follow-ups): &#x60;400 RESERVED_IDEMPOTENCY_KEY&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param intentsRequest 
      * @return Intents200Response
@@ -4164,7 +4164,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/intents
      * Call a method
-     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them. An &#x60;idempotencyKey&#x60; starting &#x60;node:apikey:&#x60; is the node&#39;s own (an API key&#39;s follow-ups): &#x60;400 RESERVED_IDEMPOTENCY_KEY&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param intentsRequest 
      * @return ApiResponse<Intents200Response?>
@@ -4681,7 +4681,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
@@ -4715,7 +4715,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
@@ -4761,7 +4761,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
@@ -4795,7 +4795,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 

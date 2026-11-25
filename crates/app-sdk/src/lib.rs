@@ -7,5 +7,8 @@
 //!
 //! Depend on `calimero-sdk` instead (`calimero-sdk = { .. }`, `use calimero_sdk::prelude::*;`):
 //! this crate is deleted once no app uses it.
+//!
+//! Spec: [Build Calimero apps](https://calimero-network.github.io/core/build/).
+//! Crate guide: [`crates/app-sdk/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-sdk/AGENTS.md).
 
 pub use calimero_sdk::*;

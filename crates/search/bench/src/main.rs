@@ -11,6 +11,8 @@
 //! ```text
 //! cargo run --release -p calimero-search-bench -- [--sizes 10000,100000] [--only size|memory|cross|gas] [--docs] [--iters N] [--out FILE]
 //! ```
+//!
+//! Spec: [Search your app's data](https://calimero-network.github.io/core/build/guides/search/).
 
 mod alloc;
 mod corpus;

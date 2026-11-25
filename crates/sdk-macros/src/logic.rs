@@ -309,7 +309,9 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
                         "app method parameters are owned values, decoded from JSON",
                     ));
                 }
-                check_wire(&pt.ty)?;
+                check_wire(&pt.ty).map_err(|e| {
+                    syn::Error::new(e.span(), format!("parameter `{}`: {e}", pi.ident))
+                })?;
                 params.push((pi.ident.clone(), (*pt.ty).clone()));
             }
         }
@@ -382,7 +384,7 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
     };
 
     if kind != Kind::Init {
-        check_wire(&ok)?;
+        check_wire(&ok).map_err(|e| syn::Error::new(e.span(), format!("result: {e}")))?;
     }
 
     Ok(Some(Method {

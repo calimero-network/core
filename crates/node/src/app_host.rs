@@ -31,7 +31,7 @@
 //!
 //! Every redirect keeps the request's query, after the `deployment` it adds
 //! (an invite link, `/?invite=...`, reaches the page with its token); a query
-//! past [`MAX_REDIRECT_QUERY_BYTES`] is refused `414`. The fragment never
+//! past `MAX_REDIRECT_QUERY_BYTES` is refused `414`. The fragment never
 //! reaches the node: the browser keeps it across the redirect itself.
 //!
 //! On a cluster, a package's frontend is also at
@@ -196,7 +196,7 @@ type LoadingFrontends = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
 
 /// Frontends opened from their `.mpk`, newest use last, and the releases known
 /// to ship none. One load runs per release at a time, and at most
-/// [`FRONTEND_LOADS`] across releases.
+/// `FRONTEND_LOADS` across releases.
 pub struct FrontendCache {
     open: Mutex<OpenFrontends>,
     clock: std::sync::atomic::AtomicU64,
