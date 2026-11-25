@@ -55,7 +55,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   Drop the `bound_app() == Some(package)` grant from `package_json`, the pipelines and capabilities routes, `resolve_release_parts` (`frontend`), `bundle_named`, the consent page's `requested_release` and `app_update`'s `sees`.
 - **C2. An install names its organization.**
   `POST /packages/install { package, version, org }` and `POST /apps { package }` (which installs first, into the instance's org) record `PackageVersion::orgs`, added to on each install for another org.
-  The caller is a member of `org` (judged again at apply); `org` is required when the caller belongs to more than one.
+  The caller is a member of `org` (judged again at apply); `org` is required when the caller belongs to more than one. Below the logged cluster version that brings `Feature::PrivateReleases` no organization is asked for or recorded, so a rolling upgrade breaks no multi-org install.
   A caller in no organization installs for none: the release is recorded private with no `orgs` and is its installing accounts' alone, so development flows (`meroctl local dev`, pushes) keep working; an install for an organization later adds it, and the organization rule then holds.
   A member of the package's Cloud org may install it for any cluster org they belong to: nothing maps Cloud orgs to cluster orgs, and that is the member's own deliberate share.
 - **C3. Kind and the two rights.**

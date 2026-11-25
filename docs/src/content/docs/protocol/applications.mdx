@@ -359,6 +359,7 @@ Signed `.mpk` releases.
 file, only with `Config::allow_package_uploads` (`--dev`; else `403 UPLOADS_DISABLED`: a production
 release comes from the registry, which any node can fetch it from again).
 An account installs for an organization (`Node::install_org`): `org`, which it must be a member of (else `404`), else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`).
+Below the logged cluster version that brings `Feature::PrivateReleases` an install names no organization at all (`record_release` drops it), so a multi-org account is never asked for `org`.
 Public or private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.38; `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out first, and a release served so is public (a `401` or `403` to that fetch, `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the operator) and is private.
 An upload is private.
 An account in no organization installs for none (`orgs` empty): such a private release is its installing accounts' alone (`sees_release`, `installed_by_any`) until an install for an organization adds one, and then the organization rule holds (regressions `a_private_release_for_no_organization_is_its_installers_alone`, `system::tests` and `tests/cluster.rs`).

@@ -8099,3 +8099,50 @@ async fn a_strangers_frontend_session_creates_from_a_public_release_another_org_
         .unwrap();
     assert!(made["appId"].is_string(), "{made}");
 }
+
+/// An account in several organizations names one for an install only once the logged cluster
+/// version brings `Feature::PrivateReleases`; below it the org is dropped anyway, so an
+/// upload without `org` goes through and, once it is on, answers `ORG_REQUIRED`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_install_names_its_organization_only_once_private_releases_are_on() {
+    let c = Cluster::start_with(3, |cfg| {
+        if cfg.node_id == 3 {
+            calimero_node::testing::advertise_cluster_version(&cfg.public_url, Some("1.0.0-rc.37"));
+        }
+    })
+    .await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    join((&bob, &mut b), &alice, &bobco, "member").await;
+    let tool = |v: &str| mpk("com.bob.tool", v, &variant(&kv_wasm(), v), &publisher);
+
+    let feature = calimero_node::system::cluster_version::Feature::PrivateReleases;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    assert!(!node.sys(|s| s.cluster_brings(feature)), "held below rc.38");
+    let _ok = alice
+        .packages()
+        .upload(tool("1.0.0"), None)
+        .await
+        .unwrap_or_else(|e| panic!("below the feature: {e}"));
+
+    calimero_node::testing::advertise_cluster_version(&c.urls[2], None);
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while !node.sys(|s| s.cluster_brings(feature)) {
+        assert!(tokio::time::Instant::now() < deadline, "never raised");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let e = alice
+        .packages()
+        .upload(tool("2.0.0"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("ORG_REQUIRED"), "{e}");
+    let _ok = alice
+        .packages()
+        .upload(tool("2.0.0"), Some(&bobco))
+        .await
+        .unwrap();
+}
