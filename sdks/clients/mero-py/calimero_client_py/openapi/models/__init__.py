@@ -274,6 +274,9 @@ from .deployment_secret_set import DeploymentSecretSet
 from .deployment_secret_view import DeploymentSecretView
 from .deployment_secrets import DeploymentSecrets
 from .deployment_secrets_secrets import DeploymentSecretsSecrets
+from .deployment_shown import DeploymentShown
+from .deployment_shown_owner import DeploymentShownOwner
+from .deployment_shown_owner_kind import DeploymentShownOwnerKind
 from .egress_set import EgressSet
 from .egress_view import EgressView
 from .egress_view_egress import EgressViewEgress
@@ -970,6 +973,9 @@ __all__ = (
     "DeploymentSecretSet",
     "DeploymentSecretsSecrets",
     "DeploymentSecretView",
+    "DeploymentShown",
+    "DeploymentShownOwner",
+    "DeploymentShownOwnerKind",
     "EgressSet",
     "EgressView",
     "EgressViewEgress",

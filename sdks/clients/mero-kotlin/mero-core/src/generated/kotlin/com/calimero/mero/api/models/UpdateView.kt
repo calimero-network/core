@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.DeploymentShown
 import com.calimero.mero.api.models.PendingApproval
 import com.calimero.mero.api.models.UpdateViewAvailable
 import com.calimero.mero.api.models.UpdateViewPolicy
@@ -43,6 +44,7 @@ import kotlinx.serialization.Contextual
  * @param approvers 
  * @param policy 
  * @param pendingApprovals 
+ * @param deployment 
  */
 @Serializable
 
@@ -70,7 +72,10 @@ data class UpdateView (
     val policy: UpdateViewPolicy,
 
     @SerialName(value = "pendingApprovals")
-    val pendingApprovals: kotlin.collections.List<PendingApproval>
+    val pendingApprovals: kotlin.collections.List<PendingApproval>,
+
+    @SerialName(value = "deployment")
+    val deployment: DeploymentShown?
 
 ) {
 
