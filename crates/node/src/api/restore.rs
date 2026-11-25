@@ -96,7 +96,7 @@ pub(super) async fn recover_holder(
     Json(b): Json<RecoverHolderBody>,
 ) -> ApiResult {
     use crate::recovery_disk::{self as disk, Kind};
-    use crate::system::{import_holder_args, BackupHolder, HolderSlice, ImportedApp};
+    use crate::system::{import_holder_args, HolderSlice, ImportedApp};
     let bad = |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
     if b.apps.len() + b.code.len() > MAX_RECOVERY_CODE_FILES {
         return Err(ApiError::bad_request(
@@ -284,7 +284,6 @@ pub(super) async fn ops_recovery_files(
     Query(q): Query<RecoveryFilesQuery>,
 ) -> ApiResult {
     use crate::recovery_disk as disk;
-    use crate::system::BackupHolder;
     operator(&node, &headers)?;
     let holder = parse_holder(q.holder.as_deref().unwrap_or("operator"), true)?;
     let Some(dir) = node
