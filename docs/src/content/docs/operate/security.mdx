@@ -107,8 +107,9 @@ mero-kms: that is what lets them outlive every key service. Who that is
 follows `--app-upgrades`:
 
 - **`owner` (the default):** each organization's files open with the key its
-  org-wide `MANAGE_APPLICATION` holders set (`POST /orgs/{org}/backup-key`,
-  with a passkey). The operator holds the disk but reads nothing on it.
+  owner and admins, who approve its upgrades, set (`POST /orgs/{org}/backup-key`,
+  with a passkey; org-wide `MANAGE_APPLICATION` holders below cluster version
+  1.0.0-rc.38). The operator holds the disk but reads nothing on it.
 - **`operator`:** every app's files open with the operator's key (`POST
   /ops/backup-key`, signed with the operator key). The operator can then read
   every app's state from the disk. That is no new power (an operator that

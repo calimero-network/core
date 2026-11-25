@@ -1610,6 +1610,18 @@ fn actions_send_http_and_calls_record_what_they_send() {
         action.action_view("company", b"{}"),
         Ok(Ok(b"\"company\"".to_vec()))
     );
+    // The node's reserved views and commands are never an action's, and reach no host.
+    for reserved in ["__secrets", "__run", "__pipeline_run"] {
+        assert_eq!(
+            action.action_view(reserved, b"{}"),
+            Ok(Err(calimero_app_host::ACTION_RESERVED_METHOD.to_owned()))
+        );
+    }
+    assert_eq!(
+        action.action_call("__upgrade", b"{}"),
+        Ok(Err(calimero_app_host::ACTION_RESERVED_METHOD.to_owned()))
+    );
+    assert!(runner.calls.lock().unwrap().is_empty());
     // The same call twice gets two keys; a retry would get the same two.
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{}").unwrap().unwrap();
