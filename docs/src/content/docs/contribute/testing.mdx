@@ -383,6 +383,36 @@ release build on a shared runner) are for comparing runs of the same job; the
 release image's runs measure the binary that ships. The pass rate (99 %)
 gates; latency gates nothing.
 
+## The consent page in a browser
+
+`consent_page.rs` approves every kind of request with a software authenticator over plain HTTP, so it never sees the page itself: its script, its copy, a passkey prompt, a redirect back to the app.
+`crates/node/tests/consent-page/` drives the page in Chromium (Playwright) against three real `merod run --dev` processes, and CI runs it.
+
+What it does:
+
+- starts three `merod` processes whose public URL is `http://localhost:PORT`, because the passkey's RP id is `localhost` and the node judges the page's origin against its public URL (`merod local` hands out `127.0.0.1` URLs, which a browser cannot approve on);
+- seeds state with `meroctl` as a person whose dev passkey file it then imports into Chromium's virtual authenticator (CDP `WebAuthn.addVirtualAuthenticator` and `addCredential`), so the browser approves as the same account;
+- serves the app's own page itself at `http://<label>.localhost:PORT/1.0.0/` (the package's real origin) with mero-js bundled from this tree, signs in there and asks for a consent page as a frontend does;
+- opens the page, checks the model the node sent and the text a person reads, saves a screenshot of each sheet (`test-results/screens`), clicks approve and checks what the cluster did.
+- `shoot` saves a sheet's state in both themes (`<name>-light.png`, `<name>-dark.png`); `CONSENT_SCREENSHOTS` names another folder.
+
+The app's page signs in with a software passkey for the same account, because Chromium refuses the RP id `localhost` from a `<label>.localhost` origin; the consent page, on the node's own origin, uses the real authenticator.
+One counter is kept for every authenticator of a run (`support/counter.mjs`), because the node refuses a passkey counter that does not move forward.
+Flows with no sheet (undo, public links, the organization's guest switch) go through meroctl or a mero-js client on the cluster's registered origin, with the same virtual passkey.
+A test for a known bug is marked `test.fail` with the reason on one line; it turns red when the bug is fixed, which is the cue to drop the mark.
+
+```bash
+cargo build -p merod -p meroctl
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
+pnpm --dir sdks install --frozen-lockfile     # mero-js's dependencies, bundled into the page
+cd crates/node/tests/consent-page
+npm ci && npx playwright install chromium
+npm test                                       # about a minute on a laptop
+```
+
+It uses the debug `merod` and `meroctl` under `target/debug` and `target/app-components/kv.wasm`; `MEROD_BINARY`, `MEROCTL` and `KV_STORE_WASM` name others, as the clients' cluster tests take them.
+Safari cannot be driven with a virtual authenticator, so it is not covered.
+
 ## Proving a pipeline on a cluster
 
 `scripts/pipeline-e2e.py` proves a pipeline end to end on a real cluster in one command.
