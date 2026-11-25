@@ -1304,7 +1304,7 @@ is its command line.
   them at the latest index both recorded (`Node::compare_digests`). A difference logs an
   error once per (group, peer) and sets `calimero_group_diverged{group,peer}` (the index)
   until a comparison agrees (`metrics::digest_compared`); `calimero_group_divergences_total`
-  counts them. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
+  counts them, and `calimero_group_digest_comparisons_total{group}` every comparison that agreed or differed. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
   not compared. The system group is not (in-memory machine). Regression:
   `a_replica_whose_state_differs_from_its_leaders_is_reported`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
