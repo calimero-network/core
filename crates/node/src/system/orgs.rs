@@ -969,13 +969,22 @@ fn set_team_member(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rej
         // SAFETY: `apply` sends only a `SetTeamMember` here.
         unreachable!("set_team_member applies a SetTeamMember")
     };
+    let held = state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
     let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
     let role = role.unwrap_or(if lead {
         TeamRole::Lead
     } else {
         TeamRole::Member
     });
-    set_team_row(organization, &team, &account, role, capabilities, &actor)?;
+    set_team_row(
+        organization,
+        &team,
+        &account,
+        role,
+        capabilities,
+        &actor,
+        held,
+    )?;
     Ok(Value::Null)
 }
 
@@ -990,11 +999,20 @@ fn set_team_members(
     actor: &str,
 ) -> Result<Value, Rejection> {
     check_team_batch(teams.iter().map(|row| row.team.as_str()))?;
+    let held = state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
     let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     let mut next = organization.clone();
     for row in teams {
         let role = row.role.unwrap_or(TeamRole::Member);
-        set_team_row(&mut next, &row.team, account, role, row.capabilities, actor)?;
+        set_team_row(
+            &mut next,
+            &row.team,
+            account,
+            role,
+            row.capabilities,
+            actor,
+            held,
+        )?;
     }
     *organization = next;
     Ok(Value::Null)
@@ -1251,6 +1269,7 @@ fn set_capabilities(
     capabilities: u32,
     actor: &str,
 ) -> Result<Value, Rejection> {
+    let held = state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
     let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     if organization.role(&account).is_none() {
         return Err(NOT_A_MEMBER);
@@ -1261,6 +1280,7 @@ fn set_capabilities(
         return Ok(Value::Null);
     };
     check_manages_members(organization, actor, &team)?;
+    team_grant_refusal(organization, &team, actor, Some(capabilities), held)?;
     let record = organization.teams.get_mut(&team).ok_or(NO_SUCH_TEAM)?;
     if !record.members.contains_key(&account) {
         return Err(NOT_IN_THIS_TEAM);
@@ -1325,6 +1345,7 @@ fn set_default_capabilities(
     capabilities: u32,
     actor: &str,
 ) -> Result<Value, Rejection> {
+    let held = state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
     let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     let Some(team) = team else {
         check_admin(organization, actor)?;
@@ -1332,6 +1353,7 @@ fn set_default_capabilities(
         return Ok(Value::Null);
     };
     check_manages_members(organization, actor, &team)?;
+    team_grant_refusal(organization, &team, actor, Some(capabilities), held)?;
     let record = organization.teams.get_mut(&team).ok_or(NO_SUCH_TEAM)?;
     record.default_capabilities = Some(capabilities);
     Ok(Value::Null)

@@ -882,9 +882,14 @@ async fn app_list(
         .as_ref()
         .and_then(|p| p.caller.account().map(str::to_owned));
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
+    let key = p.as_ref().and_then(|p| p.api_key.clone());
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
+            .filter(|a| {
+                key.as_ref()
+                    .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
+            })
             .map(|a| (a, s.running_release(a)))
             .filter(|(_, r)| {
                 bound
@@ -1415,6 +1420,7 @@ async fn app_metadata(
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
     p.within(&node, &node.app(&app_id).await?)?;
+    p.settings_write()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
@@ -1557,6 +1563,28 @@ async fn app_usage(
         "today": day(today),
         "days": (first..today).map(day).collect::<Vec<_>>(),
     })))
+}
+
+/// The outbound requests the instance's runs made (#5347), newest first, for its
+/// owner and the admins of its organization only: when, the method, host and path
+/// (no query), the status or why it failed, the secret names asked for, and the
+/// sizes; never a value, a body, a query string or a header. Each replica keeps
+/// what its own runs sent, in memory ([`calimero_outbound::OutboundAudit`]).
+async fn app_outbound_log(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its outbound log",
+        ));
+    }
+    Ok(Json(node.outbound_log(&app).await))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -2152,6 +2180,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/usage", get(app_usage))
+        .route("/apps/{app}/outbound-log", get(app_outbound_log))
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))

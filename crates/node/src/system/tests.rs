@@ -14110,3 +14110,342 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
         "1.0.2"
     );
 }
+
+// ------------------------------------- held grants, invite creators, backup keys (rc.38)
+
+use super::{INVITE_CREATOR_LACKS, TEAM_NOT_SEEN};
+
+/// [`proven_cluster`] where the logged cluster version is `version` (none: a
+/// cluster that has not logged one, whose entries apply as an earlier release's).
+fn cluster_at(version: Option<&str>) -> (SystemMachine, Soft, Soft, Soft) {
+    let (mut m, alice, bob, carol) = proven_cluster();
+    m.state.cluster_version = version.map(str::to_owned);
+    (m, alice, bob, carol)
+}
+
+/// `actor`'s `SetTeamMember` writing `account`'s row in `team` with
+/// `capabilities`, with `pk`'s consent over exactly that.
+fn team_row(
+    pk: &mut Soft,
+    team: &str,
+    account: &str,
+    capabilities: Option<u32>,
+    actor: &str,
+) -> SystemCmd {
+    let c = consent(
+        pk,
+        "org:org",
+        "__set_team_member",
+        &json!({ "team": team, "account": account, "lead": false, "role": null,
+                 "capabilities": capabilities }),
+    );
+    SystemCmd::SetTeamMember {
+        org: "org".into(),
+        team: team.into(),
+        account: account.into(),
+        lead: false,
+        role: None,
+        capabilities,
+        actor: actor.into(),
+        consent: c,
+    }
+}
+
+/// `actor`'s `SetCapabilities` of `account`'s row in `team`.
+fn team_caps(
+    pk: &mut Soft,
+    team: &str,
+    account: &str,
+    capabilities: u32,
+    actor: &str,
+) -> SystemCmd {
+    let c = consent(
+        pk,
+        "org:org",
+        "__set_capabilities",
+        &json!({ "team": team, "account": account, "capabilities": capabilities }),
+    );
+    SystemCmd::SetCapabilities {
+        org: "org".into(),
+        team: Some(team.into()),
+        account: account.into(),
+        capabilities,
+        actor: actor.into(),
+        consent: c,
+    }
+}
+
+/// `actor`'s `SetDefaultCapabilities` of `team`.
+fn team_default(pk: &mut Soft, team: &str, capabilities: u32, actor: &str) -> SystemCmd {
+    let c = consent(
+        pk,
+        "org:org",
+        "__set_default_capabilities",
+        &json!({ "team": team, "capabilities": capabilities }),
+    );
+    SystemCmd::SetDefaultCapabilities {
+        org: "org".into(),
+        team: Some(team.into()),
+        capabilities,
+        actor: actor.into(),
+        consent: c,
+    }
+}
+
+/// Review finding: a member holding `MANAGE_MEMBERS` (org-wide, which
+/// `Org::may` falls back to on a team without a row) wrote their own row into
+/// a restricted team they could not see, with `MANAGE_APPLICATION` there, and
+/// so managed its apps and could open them to `anyone`. From the logged
+/// version that brings `heldTeamGrants`, below admin a row, a row's
+/// capabilities and a team's default are set only on a team the actor sees
+/// and grant only bits the actor holds organization-wide, as an invite's; an
+/// entry logged before replays as it applied.
+#[test]
+fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
+    use super::cluster_version::Feature;
+    use crate::types::caps;
+
+    let escalate = caps::MANAGE_MEMBERS | caps::MANAGE_APPLICATION;
+    // Bob, a member, holds MANAGE_MEMBERS organization-wide; team `t` is closed
+    // (`join: invite`) and he is not in it.
+    let with_manage_members = |m: &mut SystemMachine| {
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.capabilities.insert("bob".into(), caps::MANAGE_MEMBERS);
+        assert!(!o.sees_team("bob", "t"));
+    };
+
+    // Before the version: the escalation applies, as an earlier release logged it.
+    let (mut m, _alice, mut bob, _carol) = cluster_at(None);
+    with_manage_members(&mut m);
+    let _ok = m
+        .run(team_row(&mut bob, "t", "bob", Some(escalate), "bob"))
+        .unwrap();
+    assert!(m.state.orgs["org"].in_team("bob", "t"));
+    assert!(
+        m.state.manages_apps("org", "bob", Some("t")),
+        "the old rule"
+    );
+
+    // From it: a team he does not see is refused, and nothing is written.
+    let (mut m, mut alice, mut bob, _carol) = cluster_at(Some(Feature::HeldTeamGrants.since()));
+    with_manage_members(&mut m);
+    assert_eq!(
+        refused(
+            &mut m,
+            team_row(&mut bob, "t", "bob", Some(escalate), "bob")
+        ),
+        TEAM_NOT_SEEN
+    );
+    assert_eq!(
+        refused(&mut m, team_row(&mut bob, "t", "bob", None, "bob")),
+        TEAM_NOT_SEEN,
+        "no row in a restricted team either"
+    );
+    assert!(!m.state.orgs["org"].in_team("bob", "t"));
+    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+
+    // Once the owner puts him in `t` holding MANAGE_MEMBERS there, he still
+    // grants no bit he lacks organization-wide: not to his own row, not
+    // through the team's default, not to someone else.
+    let _ok = m
+        .run(team_row(
+            &mut alice,
+            "t",
+            "bob",
+            Some(caps::MANAGE_MEMBERS),
+            "alice",
+        ))
+        .unwrap();
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("carol".into(), OrgRole::Member);
+    assert_eq!(
+        refused(&mut m, team_caps(&mut bob, "t", "bob", escalate, "bob")),
+        super::CANNOT_GRANT_UNHELD
+    );
+    assert_eq!(
+        refused(
+            &mut m,
+            team_default(&mut bob, "t", caps::MANAGE_APPLICATION, "bob")
+        ),
+        super::CANNOT_GRANT_UNHELD
+    );
+    assert_eq!(
+        refused(
+            &mut m,
+            team_row(&mut bob, "t", "carol", Some(escalate), "bob")
+        ),
+        super::CANNOT_GRANT_UNHELD
+    );
+    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+    assert!(!m.state.orgs["org"].in_team("carol", "t"));
+    // What he holds he hands on, and an unknown bit is refused to anyone.
+    let _ok = m
+        .run(team_row(
+            &mut bob,
+            "t",
+            "carol",
+            Some(caps::MANAGE_MEMBERS),
+            "bob",
+        ))
+        .unwrap();
+    assert!(m.state.orgs["org"].in_team("carol", "t"));
+    assert_eq!(
+        refused(
+            &mut m,
+            team_caps(&mut alice, "t", "carol", 1 << 31, "alice")
+        ),
+        super::UNKNOWN_CAPABILITIES
+    );
+    // The owner grants any defined bit.
+    let _ok = m
+        .run(team_caps(&mut alice, "t", "carol", escalate, "alice"))
+        .unwrap();
+    assert!(m.state.manages_apps("org", "carol", Some("t")));
+}
+
+/// `bob`'s invite of `org` under `token`: `role`, `teams`, five uses.
+fn bobs_invite(m: &mut SystemMachine, token: &str, role: &str, teams: &[&str]) {
+    keep_invite(m, token, role, teams, 5);
+    m.state
+        .invites
+        .get_mut(&crate::proof::invite_key(token))
+        .unwrap()
+        .created_by = "bob".into();
+}
+
+/// Review finding: an organization invite clamped its capabilities to what
+/// its creator holds at redemption, but not its role or teams, and removing
+/// a member left their invites, so an admin about to be removed minted an
+/// admin invite and came back as admin with it. From the logged version that
+/// brings `inviteCreatorStanding`, a creator removed, demoted below the
+/// invite's role, or no longer seeing a team it names gives nothing; an
+/// entry logged before replays as it applied.
+#[test]
+fn a_removed_or_demoted_creators_invite_gives_nothing() {
+    use super::cluster_version::Feature;
+
+    let since = Feature::InviteCreatorStanding.since();
+    // Bob was an admin, minted an admin invite naming the closed team `t`,
+    // then was removed.
+    let removed = |m: &mut SystemMachine| {
+        bobs_invite(m, "inv_back", "admin", &["t"]);
+        let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    };
+
+    // Before the version he is back as admin, as an earlier release applied it.
+    let (mut m, ..) = cluster_at(None);
+    removed(&mut m);
+    let _ok = m.run(redemption("inv_back", "bob", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Admin);
+
+    // From it, neither he nor anyone else redeems it, and no use is spent.
+    let (mut m, ..) = cluster_at(Some(since));
+    removed(&mut m);
+    let key = crate::proof::invite_key("inv_back");
+    assert_eq!(
+        refused(&mut m, redemption("inv_back", "bob", 10)),
+        INVITE_CREATOR_LACKS
+    );
+    assert_eq!(
+        refused(&mut m, redemption("inv_back", "carol", 11)),
+        INVITE_CREATOR_LACKS
+    );
+    assert!(!m.state.orgs["org"].members.contains_key("bob"));
+    assert!(!m.state.orgs["org"].members.contains_key("carol"));
+    assert_eq!(m.state.invites[&key].uses_left, 5);
+
+    // Demoted to member: his admin invite gives nothing, nor one naming a
+    // team he does not see; a member invite naming none still works.
+    let (mut m, ..) = cluster_at(Some(since));
+    bobs_invite(&mut m, "inv_admin", "admin", &[]);
+    bobs_invite(&mut m, "inv_team", "member", &["t"]);
+    bobs_invite(&mut m, "inv_member", "member", &[]);
+    assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Member);
+    assert_eq!(
+        refused(&mut m, redemption("inv_admin", "carol", 10)),
+        INVITE_CREATOR_LACKS
+    );
+    assert_eq!(
+        refused(&mut m, redemption("inv_team", "carol", 11)),
+        INVITE_CREATOR_LACKS
+    );
+    let _ok = m.run(redemption("inv_member", "carol", 12)).unwrap();
+    assert_eq!(m.state.orgs["org"].members["carol"], OrgRole::Member);
+
+    // An admin who still is one gives what the invite says.
+    let (mut m, ..) = cluster_at(Some(since));
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Admin);
+    bobs_invite(&mut m, "inv_ok", "admin", &["t"]);
+    let _ok = m.run(redemption("inv_ok", "carol", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].members["carol"], OrgRole::Admin);
+    assert!(m.state.orgs["org"].in_team("carol", "t"));
+}
+
+/// Review finding: an organization's backup key, which every app of it is
+/// backed up to in full, was set by any member holding `MANAGE_APPLICATION`
+/// organization-wide, though only its owner and admins upgrade its apps. From
+/// the logged version that brings `backupKeyApprovers`, it is set only by
+/// those who approve its upgrades; an entry logged before replays as it
+/// applied.
+#[test]
+fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
+    use super::cluster_version::Feature;
+    use crate::types::caps;
+
+    let key = "ab".repeat(32);
+    let args = json!({ "publicKey": key });
+    let set = |m: &mut SystemMachine, pk: &mut Soft, actor: &str| {
+        let c = consent(pk, "org:org", "__set_backup_key", &args);
+        m.run(set_backup_key(
+            BackupHolder::Org("org".into()),
+            &key,
+            actor,
+            c,
+        ))
+    };
+    let manages_apps = |m: &mut SystemMachine| {
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .capabilities
+            .insert("bob".into(), caps::MANAGE_APPLICATION);
+        assert!(m.state.manages_apps("org", "bob", None));
+        assert!(!m.state.approves_upgrades("org", "bob"));
+    };
+
+    // Before the version, as an earlier release applied it.
+    let (mut m, _alice, mut bob, _carol) = cluster_at(None);
+    manages_apps(&mut m);
+    let _ok = set(&mut m, &mut bob, "bob").unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+
+    // From it, refused for him; the owner, and an admin, set it.
+    let (mut m, mut alice, mut bob, _carol) = cluster_at(Some(Feature::BackupKeyApprovers.since()));
+    manages_apps(&mut m);
+    assert_eq!(set(&mut m, &mut bob, "bob").unwrap_err(), NOT_BACKUP_HOLDER);
+    assert!(!m.state.backup_keys.contains_key("org:org"));
+    let _ok = set(&mut m, &mut alice, "alice").unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "alice");
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Admin);
+    let _ok = set(&mut m, &mut bob, "bob").unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+}

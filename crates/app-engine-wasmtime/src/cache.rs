@@ -37,7 +37,7 @@ use wasmtime::Engine;
 
 /// The wasmtime release line the artifacts were made by. The config hash below also
 /// covers the exact wasmtime version, so a patch release recompiles too.
-const WASMTIME_TAG: &str = "wasmtime50";
+const WASMTIME_TAG: &str = "wasmtime51";
 /// Domain separation of the artifact MAC.
 const MAC_DOMAIN: &[u8] = b"calimero.cwasm.v1\0";
 /// Hex characters of the config hash kept in a file name.

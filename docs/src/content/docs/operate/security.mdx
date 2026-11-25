@@ -107,8 +107,9 @@ mero-kms: that is what lets them outlive every key service. Who that is
 follows `--app-upgrades`:
 
 - **`owner` (the default):** each organization's files open with the key its
-  org-wide `MANAGE_APPLICATION` holders set (`POST /orgs/{org}/backup-key`,
-  with a passkey). The operator holds the disk but reads nothing on it.
+  owner and admins, who approve its upgrades, set (`POST /orgs/{org}/backup-key`,
+  with a passkey; org-wide `MANAGE_APPLICATION` holders below cluster version
+  1.0.0-rc.38). The operator holds the disk but reads nothing on it.
 - **`operator`:** every app's files open with the operator's key (`POST
   /ops/backup-key`, signed with the operator key). The operator can then read
   every app's state from the disk. That is no new power (an operator that
@@ -258,6 +259,16 @@ variables or a loopback sidecar, are bound to packages, signers and hosts, are
 filled in by the node and are redacted from what the app sees. Keep `hosts`
 as narrow as the apps need; `"*"` means any host an installed manifest
 declares.
+
+An instance's owner and its organization's admins read its outbound requests
+(`meroctl instance outbound-log`, `GET /apps/{app}/outbound-log`): host, path
+without its query, method, status or failure, the names of the credential
+bindings the node attached and
+the sizes, never a value, a body, a query string or a header. The audit lives
+in each node's memory, behind the same access check as the app's other
+management routes, and is served by that route alone: it is not written to the
+node's log or `/ops/metrics`. See
+[What the owner sees](/build/guides/outbound/#what-the-owner-sees).
 
 ## Files on the host
 

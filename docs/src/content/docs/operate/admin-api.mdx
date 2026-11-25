@@ -65,7 +65,7 @@ The **Who** column below uses these terms:
 | Who | Means |
 | --- | --- |
 | anyone | no credential needed |
-| signed in | a session or an API key |
+| signed in | a session or an API key; a key scoped to some apps reaches only those on every route that names an app (and `GET /apps` lists only those), a read-only or method-scoped key changes no settings (app metadata, aliases), and an organization's settings need an unscoped key |
 | session | a passkey session; an API key is refused (`403`) |
 | account holder | a passkey session not bound to an app's frontend |
 | installer | an account holder, or an API key scoped to no app and no method and not read-only |
@@ -200,6 +200,7 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `instance metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `instance storage` |
 | `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
+| `GET /apps/{app}/outbound-log` | owner or org admin | `{ entries, partial }`: the instance's outbound HTTPS requests, sent or refused, newest first (at most 100, none older than 7 days, kept in memory by the replica whose run made each): `{ atMs, method, host, path, pathTruncated, status?, failure?, secrets, requestBytes, responseBytes }` (`status` when the host answered, else `failure`); never a secret value, a body, a query string or a header ([What the owner sees](/build/guides/outbound/#what-the-owner-sees)) | `instance outbound-log` |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `instance abi` |
 | `POST /pipelines/validate` | a signed-in account | `{ source, package?, version? }`: `{ ok, errors: [{ path, code, message }], pipeline?, worstCaseFuel?, worstCaseCost? }`; with `package` and `version` (both, a release the caller sees, else `404`) the source is checked against that release's methods, modules and the cluster's pools. Writes nothing | `cloud compute pipeline validate` |
 | `POST /apps/{app}/pipelines/{name}/estimate` | the app's owner or its organization's members | `{ inputs?: { name: [fileId] } \| counts?: { name: n }, params? }`: `{ steps: { step: { runs, fuel, cost? } }, fuel, cost?, priceVersion? }`, numbers as decimal strings; ids are only counted. `400 BAD_INPUTS`, `404 NO_SUCH_PIPELINE` | `cloud compute pipeline estimate` |
@@ -280,7 +281,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `org outbound` |
 | `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run, by the organization's owner or an admin | `team upgrade trigger` |
 | `POST /orgs/{org}/packages/{package}/upgrade` | account holder | `{ version, migrate?, confirm? }`: a publisher's upgrade run, by an owner or admin of the publisher organization, over the package's instances in the organizations they are an owner or admin of; `412` first | |
-| `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; org-wide `MANAGE_APPLICATION`, where owners upgrade apps; `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
+| `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; the organization's owner and admins, where owners upgrade apps (org-wide `MANAGE_APPLICATION` below cluster version 1.0.0-rc.38); `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
 | `GET /orgs/{org}/upgrades/{run}` | signed in (a member) | A run's progress | `team upgrade status` |
 | `POST /orgs/{org}/upgrades/{run}/retry` | account holder, or ops for an operator's run | Retry the failed apps as a new run | `team upgrade retry` |
 

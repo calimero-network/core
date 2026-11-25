@@ -6240,6 +6240,185 @@ async fn a_release_gets_only_the_credentials_it_binds_attached_by_the_node() {
     );
 }
 
+/// An instance's outbound audit (#5347): its owner reads the requests its runs made, sent
+/// and refused, with the host, the path without its query, the secret's name and the
+/// sizes, never the secret's value, the query string or a header; a member of its
+/// organization who is no admin is refused (403), an outsider learns nothing (404).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instances_owner_reads_its_outbound_requests_without_values() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const PACKAGE: &str = "com.calimero.audited-echo";
+    const VALUE: &str = "s3cret-audited-value";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: VALUE.to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let (eve, _e) = signed_up(&c, 2, "eve").await;
+    let (dave, _d) = signed_up(&c, 2, "dave").await;
+    let org = home_org(&alice).await;
+    join_org(&alice, &mut pk, &carol, &org, "member").await;
+    join_org(&alice, &mut pk, &dave, &org, "admin").await;
+    let _ = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", HOST)]),
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &org,
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            Some(false),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "audited", "package": PACKAGE, "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // The app sends `GET .../v1/enrich?v=acme.com`; the node attaches ECHO_KEY in
+    // `Authorization: Bearer …` through the release's binding, so the audit lists it.
+    let mut round = 0;
+    let _sent = echoed_secret(&alice, &app, &mut round).await;
+
+    // The approval revoked (replaced by none): the next request is refused, and recorded as such.
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &org,
+            PACKAGE,
+            Some(typed(json!([]))),
+            Some(true),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "late", "value": "acme.com" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "startEnrich",
+            Some(json!({ "key": "late" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    assert!(
+        failures["enrich"].as_str().unwrap().contains("NotApproved"),
+        "{failures}"
+    );
+
+    let log = alice.apps().outbound_log(&app).await.map(wire).unwrap();
+    assert_eq!(log["partial"], json!(false), "{log}");
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(
+        entries[0]["failure"],
+        json!("notApproved"),
+        "newest first: {log}"
+    );
+    let sent = entries
+        .iter()
+        .find(|e| e["status"] == json!(200))
+        .unwrap_or_else(|| panic!("the sent request: {log}"));
+    assert_eq!(sent["method"], json!("GET"), "{log}");
+    assert_eq!(sent["host"], json!(HOST), "{log}");
+    assert_eq!(sent["path"], json!("/v1/enrich"), "{log}");
+    assert!(sent.get("failure").is_none(), "{log}");
+    assert_eq!(sent["secrets"], json!(["ECHO_KEY"]), "{log}");
+    assert_eq!(sent["requestBytes"], json!(0), "{log}");
+    assert!(sent["responseBytes"].as_u64().unwrap() > 0, "{log}");
+    let text = log.to_string();
+    for leak in [
+        VALUE,
+        "acme.com",
+        "v=",
+        "?",
+        "Bearer",
+        "Idempotency",
+        "redacted",
+    ] {
+        assert!(!text.contains(leak), "{leak:?} in {text}");
+    }
+
+    // An admin of its organization reads it, from another node; made a member, no
+    // longer (judged fresh). A member who is no admin is refused; someone who doesn't
+    // reach it learns nothing.
+    let theirs = dave.apps().outbound_log(&app).await.map(wire).unwrap();
+    assert_eq!(theirs["entries"], log["entries"], "{theirs}");
+    let dave_id = dave.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .orgs()
+        .set_member(&org, &dave_id, OrgRole::Member, Some(&mut pk))
+        .await
+        .unwrap();
+    for who in [&dave, &carol] {
+        let err = who.apps().outbound_log(&app).await.unwrap_err();
+        assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    }
+    let err = eve.apps().outbound_log(&app).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
 /// A release names the apps it calls in its signed manifest (`uses`): a node refuses one
 /// that breaks the rules before anything is recorded (`400 BAD_USES`), and the release's
 /// capability card lists the references of one it took, before any instance exists.
@@ -10026,4 +10205,111 @@ async fn an_owner_attaches_an_app_and_the_instance_reads_it_with_linked() {
     assert_eq!(linked("calendar").await, Value::Null);
     let record = alice.apps().get(&notes).await.map(wire).unwrap();
     assert!(record.get("attached").is_none(), "{record}");
+}
+
+/// Security review: an API key's scope (`apps`, `methods`, `readOnly`) was
+/// enforced only by `gate`, so on the routes that read an app's record or
+/// change settings a key scoped to one app reached every app its account
+/// reaches: it read another app's record and rewrote its metadata, and
+/// changed the organization's. Now `within` holds a key to its apps on every
+/// route that names one, settings writes refuse a read-only or method-scoped
+/// key, and an organization's settings need an unscoped key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_api_keys_scope_holds_on_every_route_not_only_calls() {
+    let c = Cluster::start(3).await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["kept", "other"] {
+        apps.push(
+            alice
+                .apps()
+                .create(typed(
+                    json!({ "name": name, "bundle": &bundle, "org": org }),
+                ))
+                .await
+                .map(|a| a.app_id)
+                .unwrap(),
+        );
+    }
+    let (kept, other) = (&apps[0], &apps[1]);
+
+    let scoped = alice
+        .auth()
+        .apikey_create(typed(json!({ "apps": [kept] })), Some(&mut apk))
+        .await
+        .map(|k| k.key)
+        .unwrap();
+    let agent = c.client(1);
+    agent.use_api_key(&scoped).await;
+
+    // Its own app as before.
+    let _ok = agent.apps().get(kept).await.unwrap();
+    let _ok = agent
+        .apps()
+        .metadata(kept, json!({ "label": "mine" }))
+        .await
+        .unwrap();
+    // Another app of the same account: neither its record nor its metadata.
+    let e = agent.apps().get(other).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let e = agent
+        .apps()
+        .metadata(other, json!({ "label": "taken" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let listed: Value = agent.apps().list(None, None).await.map(wire).unwrap();
+    let ids: Vec<&str> = listed["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["appId"].as_str())
+        .collect();
+    assert_eq!(ids, [kept.as_str()], "{listed}");
+    // Nor the organization's settings.
+    let e = agent
+        .orgs()
+        .metadata(&org, json!({ "label": "taken" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let o: Value = alice.orgs().get(&org).await.map(wire).unwrap();
+    assert_ne!(o["metadata"]["label"], json!("taken"), "{o}");
+    let a: Value = alice.apps().get(other).await.map(wire).unwrap();
+    assert_ne!(a["metadata"]["label"], json!("taken"), "{a}");
+
+    // A read-only key reads its app and changes none of its settings.
+    let read_only = alice
+        .auth()
+        .apikey_create(
+            typed(json!({ "readOnly": true, "apps": [kept] })),
+            Some(&mut apk),
+        )
+        .await
+        .map(|k| k.key)
+        .unwrap();
+    let reader = c.client(2);
+    reader.use_api_key(&read_only).await;
+    let _ok = reader.apps().get(kept).await.unwrap();
+    let e = reader
+        .apps()
+        .metadata(kept, json!({ "label": "changed" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 }

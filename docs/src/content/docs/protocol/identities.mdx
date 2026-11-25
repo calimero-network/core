@@ -218,7 +218,7 @@ On an `unknown` key, list the account's keys (`GET /auth/apikeys`) and revoke th
 Two retries of different approvals through two different nodes at the account's last free place can still both run their calls; the one the log refuses answers its `applied` calls.
 The account's activity (`GET /auth/activity`) lists the key's approval and one entry per call (`method`, `subject`: the app).
 The hosted consent page does not show `__create_api_key`: a client shows the `412`'s `then` itself.
-A node logs a key with follow-ups only from cluster version 1.0.0-rc.36 (`Feature::KeyFollowUps`).
+A node logs a key with follow-ups only from cluster version 1.0.0-rc.38 (`Feature::KeyFollowUps`; rc.37 was cut without it).
 A node before that release ignores `then` and makes a plain key, so a client checks that the `412` lists `then` and that the answer's `then` is as long as the one it sent.
 
 ## Upgrade keys

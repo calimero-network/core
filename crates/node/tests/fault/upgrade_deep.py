@@ -93,6 +93,11 @@ NOT_COVERED = [
      "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
      "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
      "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
+    ("Apps", "An instance's outbound audit (`GET /apps/{app}/outbound-log`, `meroctl instance outbound-log`)",
+     "it stores nothing: each node keeps its runs' requests in memory (`calimero_outbound::OutboundAudit`), which "
+     "a restart or a roll empties by design, so there is no data to carry across releases; the suite's clusters "
+     "also run with outbound off. `an_instances_owner_reads_its_outbound_requests_without_values` "
+     "(`component_cluster.rs`) and `calimero_outbound`'s audit tests cover it on one build"),
     ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per request (`calimero_app_host`'s fuel table)",
      "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
      "the log replays alike on either release, and a search cap answers a view, which is never logged. The "
@@ -104,7 +109,7 @@ NOT_COVERED = [
      "key's one passkey prompt",
      "it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its "
      "app with the key's consent; `CreateApiKey::then` is new in the log only behind cluster version "
-     "1.0.0-rc.36 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
+     "1.0.0-rc.38 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
      "`tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
@@ -146,9 +151,6 @@ NOT_COVERED = [
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
-    ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
-     "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
-     "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
     ("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
      "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
      "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
@@ -227,6 +229,15 @@ class DeepCase(Case):
             return
         if self._seeded():
             self.during_mix(w, self.s)
+
+    def old_job(self, w):
+        if self._retired(w):
+            return
+        if self._seeded():
+            self.with_old_job(w, self.s)
+
+    def with_old_job(self, w, s: dict):
+        pass
 
     def verify(self, w):
         if self._retired(w):

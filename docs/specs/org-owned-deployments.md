@@ -3,9 +3,9 @@
 Oct 31, 2026 · Status: **largely implemented**: deployments, offers, deployer grants, the cluster
 owner, `/d/{deployment}/` and per-deployment hosts, `AppRecord::deployment` and
 `GET /deployments/{id}/orgs` (phases 1 to 3; `crates/node/src/system/deployments.rs`,
-`crates/node/src/api/deployments.rs`). Not done: migrating old installs into deployments,
-transfer, the lockout guard and the consent page naming the deployment (`crates/node/AGENTS.md`,
-"Not done yet"); phase 5 is mdma's.
+`crates/node/src/api/deployments.rs`). Decided Nov 23, 2026 and not built yet: the consent
+page naming the deployment, the recovery-key guard and transfer (section 14). Dropped: migrating
+old installs into deployments (section 14). Phase 5 is mdma's.
 
 A developer deploys apps from Calimero Cloud: their releases are installed on a
 cluster, and instances of them are created later, mostly from the app's own
@@ -42,7 +42,7 @@ Short version:
    written on a deployment.
 7. **Rotation happens at each link** (device, person, right, owner), each a
    signed command. A guard keeps an organization from owning a deployment it
-   could lose: at least two members who can manage it.
+   could lose: it must hold a recovery key (section 9).
 8. **Only Cloud users deploy.** Creating a deployment needs a deployer grant
    signed with the cluster's operator key, which Calimero Cloud holds and gives
    only to its workspaces. On a cluster that requires deployments (fixed at
@@ -81,7 +81,8 @@ Goals:
 - Every right is proven at apply, on every node, from passkey signatures in the log.
 
 Non-goals:
-- Account or organization recovery after every passkey is lost (planned work, not here).
+- Account or organization recovery after every passkey is lost: shipped on its own
+  (`org-recovery.md`, `account-recovery.md`); section 9 relies on it.
 - Changing who upgrades an instance (owner or publisher, from the package's
   manifest). Section 11 asks whether the deployer should get it too.
 - Billing. The listing gives mdma what per-deployer billing would need; pricing is mdma's.
@@ -117,7 +118,13 @@ pub struct Deployment {
     pub apps: BTreeMap<String, Offer>,         // app name -> what it offers
     pub created_by: AccountId,
     pub created_at: u64,
-    pub transfer: Option<PendingTransfer>,
+    pub transfer: Option<PendingTransfer>,     // an offer to hand it over (section 8)
+}
+
+pub struct PendingTransfer {
+    pub to: Owner,
+    pub offered_by: AccountId,
+    pub offered_at: u64,                       // lapses TRANSFER_TTL_SECS (7 days) after
 }
 
 pub struct Offer {
@@ -135,7 +142,7 @@ pub struct Offer {
 - A release is **offered** while any deployment's entry names it, and **used**
   while any instance runs it. It is removed when it is neither.
 - `AppRecord` gains `deployment: Option<DeploymentId>`. An instance created before
-  this has none and appears in no deployment's listing.
+  this has none and appears in no deployment's listing; it stays so (section 14).
 - `PackageRecord::owner` and `installers` stop deciding who may remove a
   release; offers do.
 
@@ -148,12 +155,12 @@ for `Owner::Org`, a member holding `MANAGE_APPLICATION` org-wide there; for
 
 | Command | Effect | Authority, judged at apply |
 | --- | --- | --- |
-| `CreateDeployment { name, owner }` | An empty deployment | `Owner::Org`: the actor holds `MANAGE_APPLICATION` there and the org passes the lockout guard (section 9). `Owner::Account`: the actor is that account |
+| `CreateDeployment { name, owner }` | An empty deployment | `Owner::Org`: the actor holds `MANAGE_APPLICATION` there and the org holds a recovery key (section 9). `Owner::Account`: the actor is that account |
 | `OfferApp { deployment, app, package, version }` | Installs the release if absent (as `InstallPackage` does today, pinned signer and all), then adds or replaces the entry | A manager |
 | `WithdrawApp { deployment, app }` | Removes the entry. Refused while an instance created from this deployment runs that app's package. Removes the release when it is no longer offered or used | A manager |
-| `OfferDeployment { deployment, to }` | Records a pending transfer | A manager |
-| `AcceptDeployment { deployment }` | Moves ownership to `to` | `MANAGE_APPLICATION` in `to`, which passes the lockout guard |
-| `CancelDeploymentTransfer { deployment }` | Drops a pending transfer | Either side |
+| `OfferDeployment { deployment, to }` | Records a pending transfer | A manager; `to` exists and is not the owner; no live offer pending |
+| `AcceptDeployment { deployment, to }` | Moves ownership to `to` | A manager of `to`, before the offer lapses; `to` holds a live deployer grant where deployments are granted, an org `to` holds a recovery key (section 9), and `to` stays within `MAX_DEPLOYMENTS_PER_OWNER` |
+| `CancelDeploymentTransfer { deployment }` | Drops a pending transfer | A manager of either side |
 | `DeleteDeployment { deployment }` | Removes an empty deployment | A manager |
 | `CreateApp { app }` with `app.deployment` and `app.offer` | As today, plus: the deployment exists, offers that app, and the instance runs exactly the offered release; the creator's consent names the deployment | The creator, as today |
 
@@ -219,7 +226,10 @@ already signs operator decisions:
 
 - A customer org creates an instance of an app a deployment offers, usually from
   that app's frontend opened at `/d/{deployment}/`. The consent the creator signs
-  names the deployment ("You are starting notes from acme-labs").
+  names the deployment and its owner ("You are starting notes from acme-labs, run
+  by the organization Acme Labs"); names are not unique, so the owner and the
+  deployment's id are always shown beside its name. The update sheet of an
+  instance from a deployment names them the same way (section 8, "Transfer").
 - A customer org may use apps from several deployments; each instance records
   its own, and each deployer lists only the orgs with instances from it.
 - Only instances belong to a deployment, not the org. An org is a customer of a
@@ -273,26 +283,72 @@ so when a teammate first opens a deployment on a cluster.
 | A right | Grant or withdraw `MANAGE_APPLICATION` | An admin of the owning org |
 | The owner | `OfferDeployment`, then `AcceptDeployment` | A manager on each side |
 
+### Transfer
+
+The owner hands a deployment over in two steps; any owner to any owner (account
+or org on either side).
+
+- A manager of the current owner offers it to `to` (`OfferDeployment`). One offer
+  at a time: a second is refused while one is pending and has not lapsed; the
+  owner cancels first.
+- A manager of `to` accepts it (`AcceptDeployment`), naming `to` in their consent,
+  within `TRANSFER_TTL_SECS` (7 days) of the offer, judged at the commands' own
+  times. The receiver must hold a live deployer grant where deployments are granted
+  (`may_deploy`): otherwise a transfer would hand a deployment to an owner the
+  operator, or a dedicated cluster's owner, never granted. An org receiver must
+  hold a recovery key (section 9).
+- A manager of either side cancels a pending offer (`CancelDeploymentTransfer`).
+  Deleting the deployment drops it.
+- The id, name, offers, secrets and customers' instances stay; only the owner
+  changes. There is no rename.
+- The deployment records the last hand-over (`transferred: { from, at }`).
+  Customers are not asked and get no email; the next update sheet of each of
+  their instances, when the hand-over came after that instance's creation or last
+  upgrade, carries a line naming the new owner ("acme-labs is now run by the
+  organization Globex"), so they learn who now chooses their updates before they
+  approve one.
+
 One change at the organization covers its whole deployment; nothing is
 rewritten per app or per deployment.
 
 ## 9. The lockout guard
 
-If every manager loses every passkey, nobody can sign for the deployment again
-until recovery exists. So:
+If every manager loses every passkey, nobody can sign for the deployment again,
+and its customers stay on its last offer for good. Organization recovery
+(`org-recovery.md`) already hands an org back to its owner after that: a
+recovered owner holds every capability, so manages the deployment again. The
+guard makes that recovery available wherever an org owns a deployment:
 
-- `CreateDeployment` for an org and `AcceptDeployment` require the org to have
-  at least two members holding `MANAGE_APPLICATION` (`MIN_DEPLOYMENT_MANAGERS = 2`).
-  A developer on their own creates an `Owner::Account` deployment instead.
-- Removing a member or withdrawing the capability is refused when it would leave
-  an org that owns a deployment below the minimum.
-- The console warns when a manager has only one passkey on the cluster.
+- `CreateDeployment` for an org, and `AcceptDeployment` into an org, require the
+  org to hold a recovery key (`409 RECOVERY_KEY_REQUIRED`).
+- Removing an org's recovery key (`POST /orgs/{org}/recovery { publicKey: null }`)
+  is refused while the org owns a deployment; rotating it to a new key stays allowed.
+- Member removal and capability changes are never blocked: revoking a person is
+  never held hostage to a minimum headcount.
+- The seed is the deployment's root of trust, as it already is the org's; the
+  owner keeps it offline, as org recovery assumes.
+- Applied from the logged cluster version that brings it, so entries logged
+  before replay as they applied; an org that already owns a deployment without a
+  key is not refused anything until it creates or accepts another, or would remove
+  a key it later sets.
+- Account-owned deployments are not covered. A developer on their own gets a
+  one-member org from Calimero Cloud instead (section 10).
 
 ## 10. Calimero Cloud (mdma)
 
 - A workspace's team org and deployment on each cluster are created at its
   first deploy there, named after the workspace, and recorded on the workspace.
-  A personal workspace with one member gets an `Owner::Account` deployment.
+  A personal workspace with one member gets a one-member org too, so a growing
+  team is an invite, not a transfer. The org gets its recovery key before the
+  deployment (section 9): at `POST /orgs { name, recoveryKey }`, or with
+  `POST /orgs/{org}/recovery`; the seed is shown to the user once and never kept
+  by mdma.
+- Transfer (decided): the sender picks the receiver by pasting the receiver's
+  workspace ID (`org:<id>` or `account:<id>`), never by email or a name search.
+  Settings show a workspace's ID with a Copy button. Before the passkey prompt,
+  the console resolves a pasted ID to the receiver's name, and warns early when the
+  receiver lacks a deployer grant or a recovery key (which acceptance would refuse).
+  mdma emails the receiver's owners and admins about the offer.
 - Deploying an app is `OfferApp`; deploying a new version of it replaces the
   entry; deleting the app from the console is `WithdrawApp`.
 - Inviting a workspace member also mints the cluster invite with the right
@@ -316,7 +372,7 @@ until recovery exists. So:
 4. **Should a deployer upgrade the instances created from its deployment?**
    Today the manifest says owner or publisher. A third value, `deployer`, would
    fit customers who expect the provider to keep them current. Proposed: later.
-5. **Minimum managers**: two, enforced in core (proposed), or a console warning only.
+5. **Minimum managers**: decided: no minimum; a recovery key instead (section 9).
 6. **Customer org names in the listing**: shown (proposed, the customer consented
    to that deployer), or ids only.
 7. **Can a dedicated cluster's owner hold deployer grants without trusting
@@ -329,11 +385,12 @@ until recovery exists. So:
 | Phase | What | Needs |
 | --- | --- | --- |
 | 0 | #4791: memberships, invites, passkeys proven at apply | #4738 merged |
-| 1 | `Deployment`, `CreateDeployment`, `OfferApp`, `WithdrawApp`; records from before migrate to one `Owner::Account` deployment per installer, offering the releases it installed | Phase 0 |
+| 1 | `Deployment`, `CreateDeployment`, `OfferApp`, `WithdrawApp` (the migration of records from before is dropped, section 14) | Phase 0 |
 | 1b | `GrantDeployer`, `RevokeDeployer`, `SetDeploymentsGranted`, `SetClusterOwner`; `deployments` and `deployers` in governance; installs gated on `granted` clusters. Independent of phases 0 and 1: grants gate installs until deployments exist, then `CreateDeployment` and `OfferApp` | none |
 | 2 | `/app/{app}/` and `/d/{deployment}/`; `deployments` in `/.well-known/calimero.json`; `GET /deployments/{id}` | Phase 1 |
-| 3 | `AppRecord::deployment`, the consent text, `GET /deployments/{id}/orgs`; mero-js passes the deployment | Phase 1 |
-| 4 | Transfer and the lockout guard | Phase 1 |
+| 3 | `AppRecord::deployment`, `GET /deployments/{id}/orgs`; mero-js passes the deployment | Phase 1 |
+| 3b | The consent page and `GET /apps/{app}/update` name the deployment and its owner; read-only, no log change | Phase 3 |
+| 4 | The recovery-key guard (`Feature::DeploymentNeedsRecovery`), then transfer (`Feature::DeploymentTransfer`) | Phase 3b |
 | 5 | mdma: team orgs and deployments on clusters, invites mirrored, the customer list on the app page | Phases 1 to 4 |
 
 ## 13. Tests, red first
@@ -357,7 +414,32 @@ until recovery exists. So:
   no offer, are refused; creating an instance from an offer still works for a
   customer who only signed up.
 - A revoked owner's existing instances keep running; it can no longer offer.
-- A transfer needs both sides; an org below the minimum cannot own a deployment
-  or drop below it while it owns one.
-- Migration: a data directory from before (`a09547b2b`-style fixture) opens with
-  one account-owned deployment per installer, and its instances list nowhere.
+- The install and update sheets of an instance from a deployment, and
+  `GET /apps/{app}/update`, name the deployment and its owner; one from no
+  deployment names none.
+- An org without a recovery key cannot create a deployment; one that owns a
+  deployment cannot remove its key but can rotate it; a `CreateDeployment` logged
+  below the guard's cluster version replays as it applied.
+- A transfer needs both sides: an accept by a non-manager of `to`, by a receiver
+  without a deployer grant on a granted cluster, into an org without a recovery
+  key, after the offer lapsed or was cancelled, or without the passkey assertion,
+  is refused at apply on every node. After it, only the new owner's managers act,
+  and the customers' next update sheet names the new owner.
+
+## 14. Decisions (Nov 23, 2026)
+
+- **Migrating old installs: dropped.** Phase 1 planned one `Owner::Account`
+  deployment per installer for records from before. It would attach no instance,
+  so fixes none of what a deployer misses, and extended to instances it would
+  attach customers to a deployer they never consented to. An instance created
+  before deployments stays outside every deployment; a customer who wants a
+  deployer's offer creates an instance from it.
+- **The consent page names the deployment: built** read-only, with no log change:
+  the deployment's name, its id and its owner, never the name alone.
+  Deployment names stay non-unique.
+- **The lockout guard: a recovery key**, not two managers (section 9), required
+  for org-owned deployments at create and at accept. Account-owned deployments
+  are not covered; Calimero Cloud gives a solo developer a one-member org.
+- **Transfer: built** as two steps, offer and accept, with a deployer grant
+  required of the receiver, a 7-day lapse, any owner to any owner, no rename, and
+  customers told on their next update sheet, not by email (section 8, "Transfer").

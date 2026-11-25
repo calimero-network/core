@@ -167,6 +167,10 @@ pub const MAX_XCALL_NAME_BYTES: usize = 128;
 /// `xcall.send`'s soft errors (the WIT `result<_, string>`).
 pub const XCALL_TOO_MANY: &str = "too many xcalls";
 pub const XCALL_BAD_TARGET: &str = "malformed xcall target";
+/// An action's `view` or `call` of a reserved `__` method: the node's own views
+/// (`__secrets`, `__run`, `__pipeline_run`) and commands are its routes', never
+/// an app's (security review: an action read its app's secret fingerprints).
+pub const ACTION_RESERVED_METHOD: &str = "reserved method";
 const LOG_TRUNCATED: &str = "[log truncated]";
 
 /// Where a compute run's progress goes: percent (0-100) and a step label.
@@ -1363,6 +1367,9 @@ impl HostCore {
         self.burn_bytes(method.len().saturating_add(args.len()));
         self.count_subcall()?;
         let host = self.action_host()?;
+        if method.starts_with("__") {
+            return Ok(Err(ACTION_RESERVED_METHOD.to_owned()));
+        }
         let answer = self.blocking(|_| host.view(method, args))?;
         Ok(self.answered(answer))
     }
@@ -1377,6 +1384,9 @@ impl HostCore {
         self.burn_bytes(method.len().saturating_add(args.len()));
         self.count_subcall()?;
         let host = self.action_host()?;
+        if method.starts_with("__") {
+            return Ok(Err(ACTION_RESERVED_METHOD.to_owned()));
+        }
         let hash = sha_args(args);
         let n = self
             .occurrences

@@ -792,12 +792,22 @@ impl Principal {
     }
 
     /// Whether this principal may touch `app` at all: a package-bound
-    /// session only an app running a release of its package.
+    /// session only an app running a release of its package, and an API key
+    /// scoped to some apps only those (on every route that names an app, not
+    /// only [`gate`]'s: security review, a key's scope skipped on the record,
+    /// metadata, alias and delegation routes).
     pub(crate) fn within(
         &self,
         node: &Node,
         app: &crate::types::AppRecord,
     ) -> Result<(), ApiError> {
+        if self
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !key_scoped_to(k, &app.app_id))
+        {
+            return Err(key_not_scoped());
+        }
         // A session vouches for its account only where the node that signed
         // it may hold the data: a node on an unapproved release cannot mint
         // its way into an app (F1).
@@ -820,6 +830,44 @@ impl Principal {
             Some(_) => Err(ApiError::not_found("no such app")),
         }
     }
+}
+
+impl Principal {
+    /// Refuse an API key that may not change settings: a read-only key, or one
+    /// scoped to some methods (a setting is none of them). App metadata and
+    /// aliases are settings; calls go through [`gate`].
+    pub(crate) fn settings_write(&self) -> Result<(), ApiError> {
+        match &self.api_key {
+            Some(k) if k.read_only => Err(ApiError::forbidden("read-only API key")),
+            Some(k) if k.methods.is_some() => Err(ApiError::forbidden(
+                "this API key is scoped to methods; changing settings needs an unscoped key or a passkey session",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse a scoped API key (to apps, methods or reads): what reaches past
+    /// one app, such as an organization's settings, needs an unscoped key or
+    /// a passkey session, as installing does ([`installer`]).
+    pub(crate) fn unscoped(&self) -> Result<(), ApiError> {
+        match &self.api_key {
+            Some(k) if k.read_only || k.apps.is_some() || k.methods.is_some() => {
+                Err(ApiError::forbidden(
+                    "this API key is scoped; this needs an unscoped key or a passkey session",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether `key` reaches `app`: a key scoped to no app reaches every one.
+pub(crate) fn key_scoped_to(key: &ApiKeyRecord, app: &str) -> bool {
+    key.apps.as_ref().is_none_or(|a| a.iter().any(|x| x == app))
+}
+
+fn key_not_scoped() -> ApiError {
+    ApiError::forbidden("API key not scoped to this app")
 }
 
 /// Which of its own package's teams a package-bound session may change
@@ -1674,8 +1722,8 @@ async fn gate(
         if write && k.read_only {
             return Err(ApiError::forbidden("read-only API key"));
         }
-        if k.apps.as_ref().is_some_and(|a| !a.contains(&app.app_id)) {
-            return Err(ApiError::forbidden("API key not scoped to this app"));
+        if !key_scoped_to(k, &app.app_id) {
+            return Err(key_not_scoped());
         }
         if k.methods
             .as_ref()

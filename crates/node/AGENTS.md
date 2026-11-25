@@ -175,8 +175,9 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
 
 - Keys per app from mero-kms, and the rollback epoch in the attested KMS evidence (phase 1 of
   `docs/specs/rollback-protection.md`).
-- Deployments: migrating old installs into deployments, transfer, the lockout guard, the consent
-  page naming the deployment.
+- Deployments: decided, not built: the consent page naming the deployment, the recovery-key
+  guard, transfer (`docs/specs/org-owned-deployments.md`, section 14). Migrating old installs is
+  dropped.
 - An automatic update that moves a unit's members, and a restore point kept on more than one
   node.
 

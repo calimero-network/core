@@ -33,7 +33,8 @@
 //!    No app code runs there. The page reads the model
 //!    (`GET /consent/{id}/model`) and renders it: what is approved, for
 //!    whom, what changes and what stays as it is until the person approves.
-//! 3. **Passkey.** On *Approve*, the page posts `POST /consent/{id}/approve`.
+//! 3. **Passkey.** The page posts `POST /consent/{id}/approve` before the
+//!    click, so *Approve* asks the authenticator inside it.
 //!    The node runs the same route code a signed-in client would
 //!    (`api::set_release_approval`, `api::upgrade_app`,
 //!    `api::set_outbound_approval`) with the arguments frozen in the
@@ -144,8 +145,9 @@ const MAX_INVITE_TEAMS: usize = 64;
 /// How long an invite lives when a `createInvite` request names no
 /// `ttlSecs`, as `POST /orgs/{org}/invites`.
 const DEFAULT_INVITE_TTL: u64 = 7 * 24 * 3600;
-/// The longest life a `createInvite` request may ask for.
-const MAX_INVITE_TTL: u64 = 90 * 24 * 3600;
+/// The longest life an organization invite may ask for, here and at
+/// `POST /orgs/{org}/invites`.
+pub(crate) const MAX_INVITE_TTL: u64 = 90 * 24 * 3600;
 /// The longest mero-tee version a release request may name.
 const MAX_VERSION_BYTES: usize = 64;
 /// How many releases' manifest facts a node keeps.
