@@ -1997,6 +1997,7 @@ struct MetadataBody {
 #[cfg_attr(test, derive(utoipa::ToSchema), schema(as = ConfirmOnly))]
 struct ConfirmOnlyBody {
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     confirm: Option<ConfirmBody>,
 }
 

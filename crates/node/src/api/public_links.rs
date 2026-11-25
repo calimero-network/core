@@ -154,14 +154,18 @@ pub(super) async fn visitor_gate(
 pub(super) struct PublicLinkBody {
     /// A name its managers know it by.
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     label: Option<String>,
     /// When it stops admitting visitors (Unix seconds); none: until revoked.
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     expires_at: Option<u64>,
     /// Calls one visitor may make through it a minute (default 60, at most 600).
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     rate_per_minute: Option<u32>,
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     confirm: Option<ConfirmBody>,
 }
 
@@ -171,7 +175,9 @@ pub(super) struct PublicLinkBody {
 #[cfg_attr(test, derive(utoipa::ToSchema))]
 pub(super) struct LinkView {
     link: String,
+    #[cfg_attr(test, schema(required = true))]
     label: Option<String>,
+    #[cfg_attr(test, schema(required = true))]
     expires_at: Option<u64>,
     expired: bool,
     rate_per_minute: u32,

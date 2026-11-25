@@ -37,8 +37,12 @@ registry's:
   (`Confirm`, `ConfirmOnly`, `Assertion`), compared in a canonical form that
   keeps what a client reads (properties, required, nullable, closed objects,
   integer sign, item types, references by name) and drops prose and formats.
+  They agree except where the test's `KNOWN` list says (one item, below).
 - `what_the_registry_adds_is_what_no_handler_says`: the keys only the
   registry's entries carry, pinned as a list.
+- `the_typed_link_answers_write_what_they_wrote_before` (in
+  `api/public_links.rs`): the group's answers were typed first, and write the
+  bytes the `json!` they replaced wrote.
 
 ## What fit
 
@@ -60,10 +64,22 @@ registry's:
 
 ## What did not fit
 
+- **`Option` means two things.** The derive writes every `Option<T>` field as
+  nullable and not required. A request body's optional field is absent or `T`
+  to the registry (the handler never needs `null`), and an answer's
+  `Option<T>` field is always written, `null` when none, so it is required and
+  nullable. Matching the registry took an attribute on each such field
+  (`schema(nullable = false)` on the request's four, `schema(required = true)` on
+  the answer's two), and nothing checks a new field gets one. An optional body
+  (`Option<Json<T>>`) is written as `T | null` and could not be said otherwise:
+  the one difference the test keeps (`KNOWN`).
+
 - **Everything that is not in a signature.** Who may call a route (`security`,
   `x-calimero-who`), the step-up (`x-calimero-step-up`,
   `x-calimero-user-verification`), the sealed channel (`x-calimero-sealed`), the
-  group and tags the SDK generators split clients by, and every error answer
+  group the SDK generators split clients by (`x-calimero-group`; utoipa makes
+  its own `tags` and `summary` from the module and doc comment, which are not
+  the registry's), the prose, and every error answer
   with its codes and `details` (`x-calimero-codes`, `x-calimero-details`) come
   from the handler's body (`holder`, `consent`, `ApiError::new`), not its types.
   The registry derives them from `Who`, `.step_up()` and `.errors(..)` and its
@@ -87,12 +103,18 @@ registry's:
 
 ## Cost
 
-- **Compile time:** utoipa and utoipa-gen build in about 15 s on one core
-  (once, as dev-dependencies). The derives add little to the node's test build
-  next to its own size; a non-test build is unchanged.
-- **Source:** about 25 lines of attributes for three operations, against about
-  20 lines of registry entries, and the registry entries stay for everything the
-  attributes do not say.
+- **Compile time:** utoipa and utoipa-gen build in about 8 s on one core once
+  their dependencies are built (27 s from nothing), and only for the node's
+  tests: they are dev-dependencies. The derives add little to the node's test
+  build next to its own size; a non-test build is unchanged.
+- **Lockfile:** adding the dependency made `cargo` re-resolve unrelated entries
+  of `Cargo.lock` (itertools, windows-sys, base64), which `cargo deny check bans`
+  then refused as new duplicates; the committed lock adds only `utoipa` and
+  `utoipa-gen`, which passes.
+- **Source:** about 35 lines of attributes for three operations (the paths, the
+  derives and the per-field nullability), against about 20 lines of registry
+  entries, and the registry entries stay for everything the attributes do not
+  say.
 
 ## Recommendation
 
@@ -107,7 +129,7 @@ that no test checks, so the document would become less checked, not more.
 
 So the way to close E7 is to finish typing the answers: give each handler that
 answers `json!` a `Serialize` type and bind it to its schema, the registry's
-`every_component_answered_whole_is_a_types` test keeping named answers typed.
+`every_component_answered_whole_is_a_types` test (added with the typed answers, #5387) keeping named answers typed.
 The utoipa trial stays as a test while it costs nothing to keep, so a later
 version (one that reads `security` and errors from something the code states)
 can be judged against it.

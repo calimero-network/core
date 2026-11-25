@@ -137,35 +137,48 @@ fn contract(op: &Value, doc: &Value) -> Value {
     })
 }
 
+/// Where the generated document still says something else than the registry, and why: an
+/// optional body (`Option<Json<T>>`) is written as a nullable one (`T | null`), while the
+/// registry, as the handler, takes no body or `T`, never `null`; the derive has no way to say
+/// "optional, not nullable" of a request body.
+const KNOWN: &[&str] = &["delete /apps/{app}/public-links/{link}: body"];
+
 /// Each operation of the group says the same to a client in the generated document as in the
-/// registry, and so does each component both name.
+/// registry, and so does each component both name, but for [`KNOWN`].
 #[test]
 fn public_links_generated_from_their_handlers_match_the_registry() {
     let generated = generated();
     let registry = super::document();
     let mut wrong = Vec::new();
+    let mut shown = Vec::new();
     for &(path, method) in OPS {
         let g = &generated["paths"][path][method];
         let r = &registry["paths"][path][method];
         assert!(g.is_object(), "the generator documents {method} {path}");
         let (g, r) = (contract(g, &generated), contract(r, &registry));
-        if g != r {
-            wrong.push(format!(
-                "{method} {path}:\n  generated {g}\n  registry  {r}"
-            ));
+        for part in ["operationId", "parameters", "body", "ok"] {
+            if g[part] != r[part] {
+                wrong.push(format!("{method} {path}: {part}"));
+                shown.push(format!(
+                    "{method} {path}: {part}\n  generated {}\n  registry  {}",
+                    g[part], r[part]
+                ));
+            }
         }
     }
     for name in SHARED {
         let g = canon(&generated["components"]["schemas"][name], &generated);
         let r = canon(&registry["components"]["schemas"][name], &registry);
         if g != r {
-            wrong.push(format!("#{name}:\n  generated {g}\n  registry  {r}"));
+            wrong.push(format!("#{name}"));
+            shown.push(format!("#{name}:\n  generated {g}\n  registry  {r}"));
         }
     }
-    assert!(
-        wrong.is_empty(),
+    assert_eq!(
+        wrong,
+        KNOWN,
         "the generated public-links paths differ from the registry:\n{}",
-        wrong.join("\n")
+        shown.join("\n")
     );
 }
 
@@ -202,8 +215,6 @@ fn what_the_registry_adds_is_what_no_handler_says() {
         [
             "description",
             "security",
-            "summary",
-            "tags",
             "x-calimero-group",
             "x-calimero-sealed",
             "x-calimero-step-up",
