@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.Receipt
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -31,32 +32,26 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param kind 
- * @param id 
+ * @param index 
+ * @param result Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param receipt 
  */
 @Serializable
 
-data class BackupKeyAnswerHolder (
+data class ApikeyCreate200ResponseThenInner (
 
-    @SerialName(value = "kind")
-    val kind: BackupKeyAnswerHolder.Kind,
+    @SerialName(value = "index")
+    val index: kotlin.Long,
 
-    @SerialName(value = "id")
-    val id: kotlin.String? = null
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "result")
+    val result: kotlinx.serialization.json.JsonElement?,
+
+    @SerialName(value = "receipt")
+    val receipt: Receipt
 
 ) {
 
-    /**
-     * 
-     *
-     * Values: OPERATOR,ORG,ACCOUNT
-     */
-    @Serializable
-    enum class Kind(val value: kotlin.String) {
-        @SerialName(value = "operator") OPERATOR("operator"),
-        @SerialName(value = "org") ORG("org"),
-        @SerialName(value = "account") ACCOUNT("account");
-    }
 
 }
 

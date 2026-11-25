@@ -23,19 +23,21 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.ConfirmRequiredThenInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.
+ * `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.
  *
  * @param challengeId 
  * @param challenge base64url (RFC 4648 section 5) without padding
  * @param rpId 
  * @param allowCredentials 
  * @param apps 
+ * @param then 
  */
 @Serializable
 
@@ -55,7 +57,10 @@ data class ConfirmRequired (
     val allowCredentials: kotlin.collections.List<kotlin.String>,
 
     @SerialName(value = "apps")
-    val apps: kotlin.collections.List<kotlin.String>? = null
+    val apps: kotlin.collections.List<kotlin.String>? = null,
+
+    @SerialName(value = "then")
+    val then: kotlin.collections.List<ConfirmRequiredThenInner>? = null
 
 ) {
 

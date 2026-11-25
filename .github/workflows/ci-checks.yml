@@ -115,7 +115,7 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-quick, rust-lint, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-doc, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -124,7 +124,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
           # A push to master runs only the jobs that save caches (the merge queue ran
           # the rest on this tree), so there a gated job may be skipped.
@@ -224,6 +224,37 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
+  # Broken intra-doc links (a renamed or removed item, a public doc naming a
+  # private one) are rustdoc warnings that no other job builds. Dependencies are
+  # checked, not documented, which is the build `Rust lint` caches, so this
+  # restores `ci-lint` without saving it. RUSTDOCFLAGS is set on the step alone:
+  # rust-cache hashes RUST* variables into the group's key.
+  rust-doc:
+    name: Rust docs
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-lint
+          save-if: false
+
+      - name: Cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
   # The workspace tests in four shards. Each compiles the tests itself: rust-cache
   # restores the dependencies and the workspace's own crates as master last built
   # them, so a shard rebuilds only what the change reaches (setup-rust-ci's
@@ -261,7 +292,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.shard == 1 }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
@@ -568,7 +599,7 @@ jobs:
 
       # Pinned so an upstream release cannot break CI; cargo-deny needs >= 0.19 for CVSS 4.0 advisories.
       - name: Install cargo-deny and cargo-machete
-        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-deny@0.19.9,cargo-machete@0.9.2
 

@@ -14,7 +14,7 @@
 //!   anywhere, so a restart replaces it.
 //! * The node's `GET /attestation` returns its public half and commits to it in
 //!   the quote's report data
-//!   ([`calimero_tee_attestation::attest_transport_binding`]). A client that
+//!   (`calimero_tee_attestation::attest_transport_binding`). A client that
 //!   verifies the quote knows the key belongs to the attested TD.
 //! * The client opens a **session** with a Noise NK handshake to that key
 //!   ([`HANDSHAKE_PATH`]). The transport key only authenticates the node: the
@@ -201,7 +201,7 @@ impl std::error::Error for LowOrder {}
 /// Keeps a derived key apart from every Noise step that uses the same key and HKDF.
 const DERIVE_LABEL: &[u8] = b"calimero.sealed.derive.v1\0";
 
-/// HKDF-SHA256 of an X25519 shared secret, `info` under [`DERIVE_LABEL`]; the
+/// HKDF-SHA256 of an X25519 shared secret, `info` under `DERIVE_LABEL`; the
 /// one derivation both ends of a wrap use. Refuses the all-zero secret of a
 /// low-order point, in constant time.
 pub fn derive_shared(
@@ -421,7 +421,7 @@ pub struct SealedMetrics {
     pub sessions: AtomicU64,
 }
 
-/// Sweep expired sessions every [`EXPIRY_SWEEP`] until `shutdown`, so a
+/// Sweep expired sessions every `EXPIRY_SWEEP` until `shutdown`, so a
 /// session's keys are dropped when it expires, not whenever it is next named.
 /// Holds the transport weakly: it ends when the server does.
 pub async fn expire_sessions(transport: Weak<SealedTransport>, shutdown: CancellationToken) {

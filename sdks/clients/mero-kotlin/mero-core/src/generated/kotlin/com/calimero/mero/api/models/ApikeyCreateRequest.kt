@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.ApikeyCreateRequestThenInner
 import com.calimero.mero.api.models.ApikeyCreateRequestUpgrades
 import com.calimero.mero.api.models.Confirm
 
@@ -40,6 +41,7 @@ import kotlinx.serialization.Contextual
  * @param allowConfirm 
  * @param ttlSecs 
  * @param upgrades 
+ * @param then 
  * @param confirm 
  */
 @Serializable
@@ -66,6 +68,9 @@ data class ApikeyCreateRequest (
 
     @SerialName(value = "upgrades")
     val upgrades: ApikeyCreateRequestUpgrades? = null,
+
+    @SerialName(value = "then")
+    val then: kotlin.collections.List<ApikeyCreateRequestThenInner>? = null,
 
     @SerialName(value = "confirm")
     val confirm: Confirm? = null

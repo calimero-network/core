@@ -1,0 +1,5 @@
+error: field `views`: plain serde writes u64/i64 as a number that loses precision past 2^53 and Vec<u8> as an array, where the ABI says a string (D20): add `#[serde(with = "calimero_sdk::json::u64_str")]` (`i64_str`, `bytes_b64url`, `opt_..`), or make it a Record; or, if the JSON is meant to be a number or an array of numbers, mark the field `#[abi(plain)]`
+ --> tests/ui/abi_type_bare_u64.rs:6:5
+  |
+6 |     pub views: u64,
+  |     ^^^

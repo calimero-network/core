@@ -2205,6 +2205,8 @@ fn log_blob(w: &World) -> Option<crate::component::blobs::BlobRecord> {
     blobs.get(&FileMark::fixture_id(LOG)).cloned()
 }
 
+/// A final an earlier leader logged with a run log still replays: the log is kept as a sealed file
+/// marked `log`, never as an output (which could be published) nor as a run input.
 #[test]
 fn a_final_stores_its_log_as_a_sealed_file_that_is_not_an_output_or_an_input() {
     let k = job_key(1);

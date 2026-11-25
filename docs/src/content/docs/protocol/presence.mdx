@@ -63,3 +63,21 @@ Presence is best effort. It is not replicated by Raft, not sealed to disk, and
 not part of any receipt; a node that restarts starts with an empty table and
 fills up within one heartbeat. Anything that must survive belongs in the app's
 state, through a call.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Presence
+
+Code: `presence.rs`, the ephemeral awareness channel.
+
+In memory on every node, never in a log.
+`POST /apps/{app}/presence { seq, state }` (anyone who reaches the app; one entry per account and
+device) applies it here and passes it to every other node (`internal/presence`); `GET.../presence`
+and `GET.../presence/stream` (SSE: `snapshot`, then `presence` diffs).
+Rules: newest seq wins, a retract is a tombstone, a heartbeat (same seq and state) refreshes and is
+passed on too, `PRESENCE_TTL_MS` (7 s) sweep each second, `MAX_AUTHORS_PER_APP` (512, the stalest
+evicted), 4 KiB of state.
