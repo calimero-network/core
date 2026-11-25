@@ -13,7 +13,8 @@ use calimero_log::store::Db;
 use calimero_log::types::LogId;
 use calimero_log::{
     BoxFuture, Comparison, Config, Digests, Engine, Group, GroupId, GroupState, Machine, NodeId,
-    PortableRow, Proposal, RpcRequest, RpcResponse, StateDigest, StateTx, Transport, WriteError,
+    PortableRow, Proposal, RpcRequest, RpcResponse, Stage, Staged, StateDigest, StateTx, Transport,
+    WriteError,
 };
 
 /// A key-value machine: command `key=value` sets, output is the previous value.
@@ -354,6 +355,81 @@ async fn proposals_see_previous_writes() {
         .unwrap();
     assert!(!reply.appended);
     assert_eq!(reply.output, b"cached");
+}
+
+/// C2, the staged build's contract (`Group::propose_led_staged`): its run step holds the
+/// proposal lock but not the applied state's read lock. While a slow run step runs, an
+/// entry from elsewhere (`Group::write`, as the node's barriers) commits and applies, and
+/// the group's state is read, at once; the next proposal still waits for the slow one, and
+/// its read step sees that one's entry applied (proposals on a group run one at a time, from
+/// read step through commit). The run step's `P` is owned: it cannot borrow the machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_staged_build_runs_off_the_read_lock_and_the_next_proposal_sees_it_applied() {
+    const SLOW: Duration = Duration::from_millis(600);
+    const QUICK: Duration = Duration::from_millis(300);
+    let c = cluster(3).await;
+    let id = leader(&c).await;
+    let g = Arc::clone(&c.groups[&id]);
+    let started = std::time::Instant::now();
+    let first = {
+        let g = Arc::clone(&g);
+        tokio::spawn(async move {
+            g.propose_led_staged(|stage, _| match stage {
+                Stage::Read(m, _) => Staged::Run(m.map.get("a").cloned()),
+                Stage::Run(before) => {
+                    assert_eq!(before, None);
+                    // A slow guest: blocks its thread, as a run off the workers does.
+                    std::thread::sleep(SLOW);
+                    Staged::Done(Proposal::Append(b"a=1".to_vec()))
+                }
+            })
+            .await
+            .unwrap()
+        })
+    };
+    tokio::time::sleep(SLOW / 4).await;
+    // The second proposal queues on the proposal lock behind the first.
+    let second = {
+        let g = Arc::clone(&g);
+        tokio::spawn(async move {
+            let mut seen = None;
+            let p = g
+                .propose_led_staged(|stage, _| match stage {
+                    Stage::Read(m, _) => {
+                        seen = Some((m.map.get("a").cloned(), std::time::Instant::now()));
+                        Staged::Done(Proposal::Append(b"b=2".to_vec()))
+                    }
+                    Stage::Run(()) => unreachable!("done in the read step"),
+                })
+                .await
+                .unwrap();
+            (p, seen.unwrap())
+        })
+    };
+    tokio::time::sleep(SLOW / 8).await;
+    let at = std::time::Instant::now();
+    let (_index, _out) = g.write(b"c=3".to_vec()).await.unwrap();
+    let wrote = at.elapsed();
+    let at = std::time::Instant::now();
+    let c3 = get(&g, "c");
+    let read = at.elapsed();
+    let first = first.await.unwrap();
+    let (second, (a_seen, read_at)) = second.await.unwrap();
+    eprintln!("a {SLOW:?} run step: an entry applied after {wrote:?}, a read after {read:?}");
+    assert!(wrote < QUICK, "the entry waited {wrote:?} for the run step");
+    assert_eq!(c3.as_deref(), Some("3"));
+    assert!(read < QUICK, "the read waited {read:?} for the run step");
+    assert_eq!(
+        a_seen.as_deref(),
+        Some("1"),
+        "the next read step sees the first applied"
+    );
+    assert!(
+        read_at.duration_since(started) >= SLOW,
+        "the next waited for the first"
+    );
+    assert!(first.appended && second.appended && first.index < second.index);
+    assert_eq!(get(&g, "b").as_deref(), Some("2"));
 }
 
 /// A counter that refuses, at apply, a value built on other state than the
