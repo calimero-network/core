@@ -401,7 +401,7 @@ class AppsFacade internal constructor(
      */
     suspend fun outboundLog(
         app: kotlin.String,
-    ): AppOutboundLog200Response =
+    ): OutboundLog =
         api(null, null, emptySet()).apps.appOutboundLog(app = app)
 
     /**

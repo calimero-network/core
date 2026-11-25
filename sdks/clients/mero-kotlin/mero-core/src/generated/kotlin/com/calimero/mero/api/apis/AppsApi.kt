@@ -76,6 +76,7 @@ import com.calimero.mero.api.models.LinkRow
 import com.calimero.mero.api.models.Logged
 import com.calimero.mero.api.models.MetadataBody
 import com.calimero.mero.api.models.MethodResult
+import com.calimero.mero.api.models.OutboundLog
 import com.calimero.mero.api.models.PartTaken
 import com.calimero.mero.api.models.PipelineCancelled
 import com.calimero.mero.api.models.PipelineRunList
@@ -1658,6 +1659,79 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}/openapi.json".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/outbound-log
+     * An app&#39;s outbound requests
+     * The owner or an organization admin: the outbound HTTPS requests the instance&#39;s runs made, sent or refused, newest first, at most 100 (&#x60;MAX_AUDIT_ENTRIES&#x60;) and none older than 7 days (&#x60;AUDIT_RETENTION_MS&#x60;). Each replica keeps those its own runs made, in memory, until it restarts; &#x60;partial&#x60; says a replica did not answer. An entry holds no secret value, body, query string or header.  **Who:** signed in (a session or an API key).
+     * @param app 
+     * @return OutboundLog
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOutboundLog(app: kotlin.String) : OutboundLog = withContext(Dispatchers.IO) {
+        val localVarResponse = appOutboundLogWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OutboundLog
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/outbound-log
+     * An app&#39;s outbound requests
+     * The owner or an organization admin: the outbound HTTPS requests the instance&#39;s runs made, sent or refused, newest first, at most 100 (&#x60;MAX_AUDIT_ENTRIES&#x60;) and none older than 7 days (&#x60;AUDIT_RETENTION_MS&#x60;). Each replica keeps those its own runs made, in memory, until it restarts; &#x60;partial&#x60; says a replica did not answer. An entry holds no secret value, body, query string or header.  **Who:** signed in (a session or an API key).
+     * @param app 
+     * @return ApiResponse<OutboundLog?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOutboundLogWithHttpInfo(app: kotlin.String) : ApiResponse<OutboundLog?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOutboundLogRequestConfig(app = app)
+
+        return@withContext request<Unit, OutboundLog>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOutboundLog
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appOutboundLogRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/outbound-log".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

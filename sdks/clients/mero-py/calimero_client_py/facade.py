@@ -1485,7 +1485,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppOutboundLogResponse200
+        Returns: OutboundLog
         """
         return self._run(_APP_OUTBOUND_LOG, (app,), {}, None)
 

@@ -30,14 +30,14 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * 
+ * An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not answer, so its runs' requests may be missing.
  *
  * @param propertyEntries 
  * @param partial 
  */
 @Serializable
 
-data class AppOutboundLog200Response (
+data class OutboundLog (
 
     @SerialName(value = "entries")
     val propertyEntries: kotlin.collections.List<OutboundAuditEntry>,

@@ -12,15 +12,17 @@ if TYPE_CHECKING:
     from ..models.outbound_audit_entry import OutboundAuditEntry
 
 
-T = TypeVar("T", bound="AppOutboundLogResponse200")
+T = TypeVar("T", bound="OutboundLog")
 
 
 @_attrs_define
-class AppOutboundLogResponse200:
-    """
-    Attributes:
-        entries (list['OutboundAuditEntry']):
-        partial (bool):
+class OutboundLog:
+    """An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not
+    answer, so its runs' requests may be missing.
+
+        Attributes:
+            entries (list['OutboundAuditEntry']):
+            partial (bool):
     """
 
     entries: list["OutboundAuditEntry"]
@@ -62,13 +64,13 @@ class AppOutboundLogResponse200:
 
         partial = d.pop("partial")
 
-        app_outbound_log_response_200 = cls(
+        outbound_log = cls(
             entries=entries,
             partial=partial,
         )
 
-        app_outbound_log_response_200.additional_properties = d
-        return app_outbound_log_response_200
+        outbound_log.additional_properties = d
+        return outbound_log
 
     @property
     def additional_keys(self) -> list[str]:

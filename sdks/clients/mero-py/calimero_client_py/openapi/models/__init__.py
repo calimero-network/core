@@ -440,6 +440,9 @@ from .origins_add_body import OriginsAddBody
 from .origins_remove_body import OriginsRemoveBody
 from .outbound_approval import OutboundApproval
 from .outbound_approved import OutboundApproved
+from .outbound_audit_entry import OutboundAuditEntry
+from .outbound_audit_entry_failure import OutboundAuditEntryFailure
+from .outbound_log import OutboundLog
 from .outbound_selection_type_0 import OutboundSelectionType0
 from .package import Package
 from .package_install_body import PackageInstallBody
@@ -1119,6 +1122,9 @@ __all__ = (
     "OriginsRemoveBody",
     "OutboundApproval",
     "OutboundApproved",
+    "OutboundAuditEntry",
+    "OutboundAuditEntryFailure",
+    "OutboundLog",
     "OutboundSelectionType0",
     "Package",
     "PackageInstallBody",
