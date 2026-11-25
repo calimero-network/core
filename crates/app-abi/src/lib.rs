@@ -11,6 +11,10 @@
 //!   `meroctl app abi diff` prints and `meroctl app sign|pack --previous` checks before signing.
 //! - [`load`]: the ABI of a `.wasm` component, an `.mpk` bundle, a `manifest.json` or a JSON
 //!   file.
+//!
+//! Spec: [App interface (ABI)](https://calimero-network.github.io/core/build/app-abi/),
+//! [Typed clients](https://calimero-network.github.io/core/build/guides/typed-clients/).
+//! Crate guide: [`crates/app-abi/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-abi/AGENTS.md).
 
 pub mod abi;
 pub mod codegen;

@@ -1,13 +1,14 @@
 //! A record's fields that are not part of a key (the record key, a unique constraint, an
 //! index or a count) are only stored, so they may be any value: lists, floats, nested
-//! structs, maps, blob references. Only the keyed fields need `ToKeyPart`.
+//! structs, maps, blob references. Only the keyed fields need `ToKeyPart`; a nested struct
+//! needs `AbiType`, as a record's JSON is described in the ABI.
 
 use std::collections::BTreeMap;
 
 use calimero_sdk::prelude::*;
 use calimero_sdk::MemStore;
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, AbiType)]
 pub struct Location {
     pub lat: f64,
     pub lon: f64,

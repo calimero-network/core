@@ -1899,7 +1899,7 @@ impl SecretValue {
     }
 }
 
-/// An instance's own value of a declared secret ([`rows::CSECRET`]): the value, and what
+/// An instance's own value of a declared secret (`rows::CSECRET`): the value, and what
 /// the routes answer of it (never the value).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1955,7 +1955,7 @@ fn put_instance_secrets(tx: &mut StateTx<'_>, all: &InstanceSecrets) {
 }
 
 impl AppMachine {
-    /// The instance's own secrets ([`rows::CSECRET`]), as applied here.
+    /// The instance's own secrets (`rows::CSECRET`), as applied here.
     #[must_use]
     pub fn instance_secrets(&self) -> InstanceSecrets {
         self.state
@@ -4012,6 +4012,7 @@ mod tests {
         assert_eq!(pair(&rig), (Some("b4".into()), None));
     }
 
+    /// An SDK 0.12 (wasmer) entry in a component app's log stops the group instead of applying to it.
     #[test]
     fn a_wasmer_entry_never_applies_to_a_component_app() {
         let mut r = Rig::new();

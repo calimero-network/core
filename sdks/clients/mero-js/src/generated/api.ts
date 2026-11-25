@@ -517,7 +517,7 @@ export interface paths {
         put?: never;
         /**
          * Call a method
-         * @description A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+         * @description A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -837,7 +837,7 @@ export interface paths {
         put?: never;
         /**
          * Retry a pipeline run
-         * @description The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+         * @description The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -881,7 +881,7 @@ export interface paths {
         put?: never;
         /**
          * Start a pipeline run
-         * @description The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+         * @description The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -1489,7 +1489,7 @@ export interface paths {
         put?: never;
         /**
          * Make an API key
-         * @description Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
+         * @description Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -4388,7 +4388,7 @@ export interface components {
             challengeId: string;
             assertion: components["schemas"]["Assertion"];
         };
-        /** @description `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. */
+        /** @description `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in. */
         ConfirmRequired: {
             challengeId: string;
             /** @description base64url (RFC 4648 section 5) without padding */
@@ -4396,6 +4396,12 @@ export interface components {
             rpId: string;
             allowCredentials: string[];
             apps?: string[];
+            then?: {
+                app: string;
+                method: string;
+                /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                args: unknown;
+            }[];
         };
         /** @description The operator key's Ed25519 signature (hex) over the statement a `428 OPERATOR_SIGNATURE_REQUIRED` named, with that statement's nonce. */
         OperatorProof: {
@@ -4435,8 +4441,15 @@ export interface components {
         BackupKeyAnswer: {
             holder: {
                 /** @enum {string} */
-                kind: "operator" | "org" | "account";
-                id?: string;
+                kind: "org";
+                id: string;
+            } | {
+                /** @enum {string} */
+                kind: "account";
+                id: string;
+            } | {
+                /** @enum {string} */
+                kind: "operator";
             };
             key: {
                 publicKey: string;
@@ -4461,6 +4474,23 @@ export interface components {
             leaderUrl: string;
             /** Format: int64 */
             leader?: number;
+        };
+        /** @description `details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered, the follow-ups before it, which applied (`applied`, their indexes), and the failed one again in `unknown` when its answer (a 5xx, after it was sent again under its own key) could not say whether it applied; no key was made. */
+        FollowUpFailed: {
+            /** Format: int64 */
+            index: number;
+            app: string;
+            method: string;
+            error: {
+                /** Format: int64 */
+                status: number;
+                error: string;
+                message: string;
+                /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                details?: unknown;
+            };
+            applied: number[];
+            unknown: number[];
         };
         /** @description `details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say). */
         FeatureNotActive: {
@@ -4934,7 +4964,7 @@ export interface components {
             size?: number;
             sha256?: string;
         };
-        /** @description A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only. */
+        /** @description A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers. */
         Run: {
             run: string;
             method: string;
@@ -5002,6 +5032,7 @@ export interface components {
                 /** @enum {string} */
                 reason?: "NO_CAPACITY" | "POOL_FULL" | "PAYER_AT_RUN_QUOTA" | "PAYER_AT_FUEL_QUOTA";
             };
+            logs?: unknown[];
         };
         /** @description A statement, signed with the answering node's receipt key (hex, Ed25519 over the statement's canonical JSON after its domain), that the account asked to bind `nonce` for `audience`, valid from `issuedAt` to `expiresAt` (Unix seconds). */
         AccountProof: {
@@ -5194,6 +5225,8 @@ export interface components {
                 services: {
                     [key: string]: string;
                 };
+                /** @enum {string} */
+                components: "app" | "computeOnly";
                 /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                 metadata: unknown;
                 outbound: string[];
@@ -5316,7 +5349,7 @@ export interface components {
             /** Format: int64 */
             defaultCapabilities?: number;
         };
-        /** @description A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither). */
+        /** @description A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's). */
         TeamView: {
             teamId: string;
             name: string;
@@ -5324,9 +5357,9 @@ export interface components {
             join: components["schemas"]["TeamJoin"];
             /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
             metadata: unknown;
-            package?: string | null;
+            package: string | null;
             /** Format: int64 */
-            defaultCapabilities?: number | null;
+            defaultCapabilities: number | null;
             members: {
                 account: string;
                 role: components["schemas"]["TeamRole"];
@@ -7503,7 +7536,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            /** @description `EXPIRED_CHALLENGE`; `RESERVED_IDEMPOTENCY_KEY`; `UNKNOWN_CHALLENGE` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8202,7 +8235,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `EXPIRED_CHALLENGE`; `RESERVED_METHOD`; `UNKNOWN_CHALLENGE` */
+            /** @description `EXPIRED_CHALLENGE`; `RESERVED_IDEMPOTENCY_KEY`; `RESERVED_METHOD`; `UNKNOWN_CHALLENGE` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -11415,6 +11448,12 @@ export interface operations {
                         app: string;
                         package?: string;
                     };
+                    then?: {
+                        app: string;
+                        method: string;
+                        /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                        args?: unknown;
+                    }[];
                     confirm?: components["schemas"]["Confirm"];
                 };
             };
@@ -11429,10 +11468,17 @@ export interface operations {
                     "application/json": {
                         keyId: string;
                         key: string;
+                        then?: {
+                            /** Format: int64 */
+                            index: number;
+                            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                            result: unknown;
+                            receipt: components["schemas"]["Receipt"];
+                        }[];
                     };
                 };
             };
-            /** @description `BAD_UPGRADE_KEY`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
+            /** @description `BAD_FOLLOW_UP`; `BAD_UPGRADE_KEY`; `EXPIRED_CHALLENGE`; `RESERVED_METHOD`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -11459,6 +11505,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
             412: {
                 headers: {
@@ -11468,8 +11523,26 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `ARGS_TOO_LARGE` */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FOLLOW_UP_FAILED`. `details` of `FOLLOW_UP_FAILED`: a `FollowUpFailed`. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -58,6 +58,24 @@ pub struct Tally {
     pub note: Option<String>,
 }
 
+/// One reading, its 64-bit integers in their D20 form: decimal strings in JSON, exact past
+/// 2^53.
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+#[serde(rename_all = "camelCase")]
+pub struct Reading {
+    #[serde(with = "calimero_sdk::json::u64_str")]
+    pub total: u64,
+    #[serde(default, with = "calimero_sdk::json::opt_i64_str")]
+    pub delta: Option<i64>,
+}
+
+/// Readings nested in another plain serde type: each one's shape is checked through its
+/// `AbiType` (D20).
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+pub struct Meter {
+    pub readings: Vec<Reading>,
+}
+
 #[app::state(version = 3)]
 pub struct Rooms {
     bookings: Table<Booking>,
@@ -183,6 +201,12 @@ impl Rooms {
     #[app::view]
     pub fn echo_tally(&self, tally: Tally) -> app::Result<Tally> {
         Ok(tally)
+    }
+
+    /// `meter` back: its readings' integers as decimal strings.
+    #[app::view]
+    pub fn echo_meter(&self, meter: Meter) -> app::Result<Meter> {
+        Ok(meter)
     }
 
     /// Bookings per room, from the maintained count.

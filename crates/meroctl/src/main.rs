@@ -7,6 +7,9 @@
 //! (`instance`); a namespace is an organization (`org`); a group is one
 //! of its teams (`team`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
+//!
+//! Spec: [meroctl CLI reference](https://calimero-network.github.io/core/operate/meroctl/).
+//! Crate guide: [`crates/meroctl/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/meroctl/AGENTS.md).
 
 use std::path::PathBuf;
 

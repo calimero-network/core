@@ -24,7 +24,7 @@ pub mod sink {
     pub const VERSION: &str = "1.0.0";
 
     /// `Adjacent`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde", tag = "t", content = "c")]
     pub enum Adjacent {
         #[serde(rename = "Text")]
@@ -43,7 +43,7 @@ pub mod sink {
     }
 
     /// `Choice`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde", tag = "kind")]
     pub enum Choice<T> {
         #[serde(rename = "one")]
@@ -56,7 +56,7 @@ pub mod sink {
     }
 
     /// `Either`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde", untagged)]
     pub enum Either {
         #[serde(rename = "Num")]
@@ -73,7 +73,7 @@ pub mod sink {
     }
 
     /// `Expr`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub enum Expr {
         #[serde(rename = "Lit")]
@@ -85,12 +85,12 @@ pub mod sink {
     }
 
     /// `Id`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Id(pub String);
 
     /// `Item`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Item {
         #[serde(rename = "id", with = "::calimero_sdk::json::u64_str")]
@@ -106,12 +106,12 @@ pub mod sink {
     }
 
     /// `Marker`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Marker;
 
     /// `Page`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Page<T> {
         #[serde(rename = "items")]
@@ -121,20 +121,24 @@ pub mod sink {
     }
 
     /// `Point`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Point(pub f64, pub f64);
 
     /// `Stats`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Stats {
+        #[abi(plain)]
         #[serde(rename = "views")]
         pub views: u64,
+        #[abi(plain)]
         #[serde(rename = "delta")]
         pub delta: i64,
+        #[abi(plain)]
         #[serde(rename = "pixels")]
         pub pixels: Vec<u8>,
+        #[abi(plain)]
         #[serde(rename = "peak", default, skip_serializing_if = "Option::is_none")]
         pub peak: Option<u64>,
         #[serde(rename = "label", default, skip_serializing_if = "Option::is_none")]
@@ -142,7 +146,7 @@ pub mod sink {
     }
 
     /// `Status`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub enum Status {
         #[serde(rename = "Open")]
@@ -159,7 +163,7 @@ pub mod sink {
     }
 
     /// `Tagged`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde", tag = "type")]
     pub enum Tagged {
         #[serde(rename = "draft")]
@@ -174,7 +178,7 @@ pub mod sink {
     }
 
     /// `Tree`, as the app's JSON carries it.
-    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize)]
+    #[derive(Clone, Debug, PartialEq, ::calimero_sdk::__private::serde::Serialize, ::calimero_sdk::__private::serde::Deserialize, ::calimero_sdk::AbiType)]
     #[serde(crate = "::calimero_sdk::__private::serde")]
     pub struct Tree {
         #[serde(rename = "value")]

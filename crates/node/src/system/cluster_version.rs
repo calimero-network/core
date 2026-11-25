@@ -214,16 +214,13 @@ pub enum Feature {
     /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
     /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
-    /// Host work charged to fuel (C7, `calimero_app_host`'s fuel table): a run's host calls
-    /// pay a base and a per-byte or per-result cost out of its fuel. No entry changes shape:
-    /// only the leader runs and followers apply the diff, so the log replays alike either way.
-    /// It is gated so a call answers the same on every node through a rolling upgrade: below
-    /// it a node runs calls, views and actions without the charges, as an earlier release does.
-    HostFuel,
     /// `UpgradeApp { auto, members_stay }`: an update on its own moves the instance alone,
     /// so it is refused where its release would move the unit's members
     /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
     AutoUpdateMembersStay,
+    /// `CreateApiKey { then }`: a key whose consent also approved confirm calls. An earlier
+    /// release rebuilds the statement without them and refuses the key a later one makes.
+    KeyFollowUps,
     /// `CreateDeployment` and `SetRecoveryKey` with `deployment_needs_recovery`: an
     /// organization owns a deployment only with a recovery key, and keeps it while it does
     /// (`SystemState::keeps_recoverable`). An earlier release ignores the field. Apply also
@@ -284,8 +281,8 @@ pub const FEATURES: [Feature; 52] = [
     Feature::UnclassifiedUpdates,
     Feature::OffersOnly,
     Feature::UndoToInstalledRelease,
-    Feature::HostFuel,
     Feature::AutoUpdateMembersStay,
+    Feature::KeyFollowUps,
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
 ];
@@ -343,18 +340,11 @@ impl Feature {
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::OffersOnly => "offersOnly",
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
-            Self::HostFuel => "hostFuel",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
+            Self::KeyFollowUps => "keyFollowUps",
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
         }
-    }
-
-    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HostFuel` is a rule
-    /// the node reads from the logged version when it runs an app, and no entry names it.
-    #[must_use]
-    pub const fn names_an_entry(self) -> bool {
-        !matches!(self, Self::HostFuel)
     }
 
     /// The first core release that applies it. The features of a release
@@ -407,8 +397,8 @@ impl Feature {
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
             Self::OffersOnly
             | Self::UndoToInstalledRelease
-            | Self::HostFuel
-            | Self::AutoUpdateMembersStay => "1.0.0-rc.36",
+            | Self::AutoUpdateMembersStay
+            | Self::KeyFollowUps => "1.0.0-rc.36",
             Self::DeploymentNeedsRecovery | Self::DeploymentTransfer => "1.0.0-rc.37",
         }
     }
@@ -716,9 +706,19 @@ impl SystemCmd {
                 f
             }
             Self::CreateApiKey {
-                owner_approves: true,
+                owner_approves,
+                then,
                 ..
-            } => vec![Feature::OwnerApprovedUpgrades],
+            } if *owner_approves || !then.is_empty() => {
+                let mut f = Vec::new();
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
+                if !then.is_empty() {
+                    f.push(Feature::KeyFollowUps);
+                }
+                f
+            }
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -1272,6 +1272,9 @@ mod tests {
             Feature::AutoUpdateMembersStay => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true,
                 "members_stay": true })),
+            Feature::KeyFollowUps => entry(json!({ "op": "createApiKey", "hash": "h",
+                "record": { "keyId": "k", "account": "a", "label": "", "expiresAt": 1 },
+                "then": [{ "app": "app", "method": "setAccess", "argsHash": "h" }] })),
             Feature::DeploymentNeedsRecovery => entry(json!({ "op": "createDeployment",
                 "id": "d", "name": "acme", "owner": { "org": "org" }, "actor": "alice", "at": 1,
                 "deployment_needs_recovery": true })),
@@ -1288,7 +1291,6 @@ mod tests {
                 "outbound": ["https://api.example.com/"],
                 "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
             })),
-            Feature::HostFuel => unreachable!("no entry names hostFuel"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1555,7 +1557,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES.into_iter().filter(|f| f.names_an_entry()) {
+        for feature in FEATURES {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1587,15 +1589,12 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
-            .iter()
-            .filter(|f| f.names_an_entry())
-            .partition(|f| {
-                ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC37,
-                ]
-                .contains(&f.since())
-            });
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
+            ![
+                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC37,
+            ]
+            .contains(&f.since())
+        });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1876,14 +1875,15 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.36's (an instance outside every deployment is a deployer's, an undo only to a
-        // release still installed, an update on its own that keeps the unit's members) for
-        // every node on rc.36: an rc.35 node ignores the flags.
+        // release still installed, an update on its own that keeps the unit's members, a key
+        // with follow-ups) for every node on rc.36: an rc.35 node ignores the flags and fields.
         assert_eq!(
             rc36,
             [
                 Feature::OffersOnly,
                 Feature::UndoToInstalledRelease,
-                Feature::AutoUpdateMembersStay
+                Feature::AutoUpdateMembersStay,
+                Feature::KeyFollowUps
             ]
         );
         for &feature in &rc36 {
@@ -2169,20 +2169,6 @@ mod tests {
             let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
-    }
-
-    /// C7: host work is charged to fuel only from the logged cluster version that brings
-    /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.35, or with none logged, runs
-    /// apps as rc.35 does. No entry names it.
-    #[test]
-    fn host_fuel_follows_the_logged_cluster_version() {
-        let mut state = crate::system::SystemState::default();
-        assert!(!state.cluster_brings(Feature::HostFuel));
-        state.cluster_version = Some(RC35.to_owned());
-        assert!(!state.cluster_brings(Feature::HostFuel));
-        state.cluster_version = Some(RC36.to_owned());
-        assert!(state.cluster_brings(Feature::HostFuel));
-        assert!(!Feature::HostFuel.names_an_entry());
     }
 
     #[test]

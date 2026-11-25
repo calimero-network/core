@@ -270,7 +270,7 @@ public protocol APIProtocol: Sendable {
     func exportsSegment(_ input: Operations.ExportsSegment.Input) async throws -> Operations.ExportsSegment.Output
     /// Call a method
     ///
-    /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -414,7 +414,7 @@ public protocol APIProtocol: Sendable {
     func pipelineReceiptReceipt(_ input: Operations.PipelineReceiptReceipt.Input) async throws -> Operations.PipelineReceiptReceipt.Output
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -432,7 +432,7 @@ public protocol APIProtocol: Sendable {
     func pipelinesEstimateRun(_ input: Operations.PipelinesEstimateRun.Input) async throws -> Operations.PipelinesEstimateRun.Output
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -726,7 +726,7 @@ public protocol APIProtocol: Sendable {
     func apikeyList(_ input: Operations.ApikeyList.Input) async throws -> Operations.ApikeyList.Output
     /// Make an API key
     ///
-    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
+    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2236,7 +2236,7 @@ extension APIProtocol {
     }
     /// Call a method
     ///
-    /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2528,7 +2528,7 @@ extension APIProtocol {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2566,7 +2566,7 @@ extension APIProtocol {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3148,7 +3148,7 @@ extension APIProtocol {
     }
     /// Make an API key
     ///
-    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
+    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -5283,32 +5283,28 @@ public enum Components {
         /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer`.
         public struct BackupKeyAnswer: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder`.
-            public struct HolderPayload: Codable, Hashable, Sendable {
-                /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder/kind`.
-                @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                    case _operator = "operator"
-                    case org = "org"
-                    case account = "account"
-                }
-                /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder/kind`.
-                public var kind: Components.Schemas.BackupKeyAnswer.HolderPayload.KindPayload
-                /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder/id`.
-                public var id: Swift.String?
-                /// Creates a new `HolderPayload`.
-                ///
-                /// - Parameters:
-                ///   - kind:
-                ///   - id:
-                public init(
-                    kind: Components.Schemas.BackupKeyAnswer.HolderPayload.KindPayload,
-                    id: Swift.String? = nil
-                ) {
-                    self.kind = kind
-                    self.id = id
-                }
+            @frozen public enum HolderPayload: Codable, Hashable, Sendable {
                 public enum CodingKeys: String, CodingKey {
                     case kind
-                    case id
+                }
+                public init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    let discriminator = try container.decode(
+                        Swift.String.self,
+                        forKey: .kind
+                    )
+                    switch discriminator {
+                    default:
+                        throw Swift.DecodingError.unknownOneOfDiscriminator(
+                            discriminatorKey: CodingKeys.kind,
+                            discriminatorValue: discriminator,
+                            codingPath: decoder.codingPath
+                        )
+                    }
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    switch self {
+                    }
                 }
             }
             /// - Remark: Generated from `#/components/schemas/BackupKeyAnswer/holder`.
@@ -6959,7 +6955,7 @@ public enum Components {
                 case sha256
             }
         }
-        /// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only.
+        /// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only; `logs` (deprecated: a run keeps no log) is always empty, to the same callers.
         ///
         /// - Remark: Generated from `#/components/schemas/Run`.
         public struct Run: Codable, Hashable, Sendable {
@@ -7225,6 +7221,8 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/Run/queue`.
             public var queue: Components.Schemas.Run.QueuePayload?
+            /// - Remark: Generated from `#/components/schemas/Run/logs`.
+            public var logs: [OpenAPIRuntime.OpenAPIValueContainer]?
             /// Creates a new `Run`.
             ///
             /// - Parameters:
@@ -7239,6 +7237,7 @@ public enum Components {
             ///   - final:
             ///   - progress:
             ///   - queue:
+            ///   - logs:
             public init(
                 run: Swift.String,
                 method: Swift.String,
@@ -7250,7 +7249,8 @@ public enum Components {
                 attempts: Components.Schemas.Run.AttemptsPayload,
                 final: Components.Schemas.Run.FinalPayload? = nil,
                 progress: Components.Schemas.Run.ProgressPayload? = nil,
-                queue: Components.Schemas.Run.QueuePayload? = nil
+                queue: Components.Schemas.Run.QueuePayload? = nil,
+                logs: [OpenAPIRuntime.OpenAPIValueContainer]? = nil
             ) {
                 self.run = run
                 self.method = method
@@ -7263,6 +7263,7 @@ public enum Components {
                 self.final = final
                 self.progress = progress
                 self.queue = queue
+                self.logs = logs
             }
             public enum CodingKeys: String, CodingKey {
                 case run
@@ -7276,6 +7277,7 @@ public enum Components {
                 case final
                 case progress
                 case queue
+                case logs
             }
         }
         /// A statement, signed with the answering node's receipt key (hex, Ed25519 over the statement's canonical JSON after its domain), that the account asked to bind `nonce` for `audience`, valid from `issuedAt` to `expiresAt` (Unix seconds).
@@ -8256,6 +8258,13 @@ public enum Components {
                 }
                 /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/services`.
                 public var services: Components.Schemas.Package.VersionsPayloadPayload.ServicesPayload
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/components`.
+                @frozen public enum ComponentsPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case app = "app"
+                    case computeOnly = "computeOnly"
+                }
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/components`.
+                public var components: Components.Schemas.Package.VersionsPayloadPayload.ComponentsPayload
                 /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                 ///
                 /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/metadata`.
@@ -8274,6 +8283,7 @@ public enum Components {
                 ///   - size:
                 ///   - source:
                 ///   - services:
+                ///   - components:
                 ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                 ///   - outbound:
                 ///   - installedBy:
@@ -8284,6 +8294,7 @@ public enum Components {
                     size: Swift.Int64,
                     source: Components.Schemas.Package.VersionsPayloadPayload.SourcePayload,
                     services: Components.Schemas.Package.VersionsPayloadPayload.ServicesPayload,
+                    components: Components.Schemas.Package.VersionsPayloadPayload.ComponentsPayload,
                     metadata: OpenAPIRuntime.OpenAPIValueContainer,
                     outbound: [Swift.String],
                     installedBy: Swift.String,
@@ -8294,6 +8305,7 @@ public enum Components {
                     self.size = size
                     self.source = source
                     self.services = services
+                    self.components = components
                     self.metadata = metadata
                     self.outbound = outbound
                     self.installedBy = installedBy
@@ -8305,6 +8317,7 @@ public enum Components {
                     case size
                     case source
                     case services
+                    case components
                     case metadata
                     case outbound
                     case installedBy
@@ -9063,7 +9076,7 @@ public enum Components {
                 case defaultCapabilities
             }
         }
-        /// A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).
+        /// A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's).
         ///
         /// - Remark: Generated from `#/components/schemas/TeamView`.
         public struct TeamView: Codable, Hashable, Sendable {
@@ -17847,7 +17860,7 @@ public enum Operations {
     }
     /// Call a method
     ///
-    /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -20924,7 +20937,7 @@ public enum Operations {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -21519,7 +21532,7 @@ public enum Operations {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -27761,7 +27774,7 @@ public enum Operations {
     }
     /// Make an API key
     ///
-    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
+    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -27823,6 +27836,41 @@ public enum Operations {
                     }
                     /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/upgrades`.
                     public var upgrades: Operations.ApikeyCreate.Input.Body.JsonPayload.UpgradesPayload?
+                    /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/ThenPayload`.
+                    public struct ThenPayloadPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/ThenPayload/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/ThenPayload/method`.
+                        public var method: Swift.String
+                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///
+                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/ThenPayload/args`.
+                        public var args: OpenAPIRuntime.OpenAPIValueContainer?
+                        /// Creates a new `ThenPayloadPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - method:
+                        ///   - args: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        public init(
+                            app: Swift.String,
+                            method: Swift.String,
+                            args: OpenAPIRuntime.OpenAPIValueContainer? = nil
+                        ) {
+                            self.app = app
+                            self.method = method
+                            self.args = args
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case method
+                            case args
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/then`.
+                    public typealias ThenPayload = [Operations.ApikeyCreate.Input.Body.JsonPayload.ThenPayloadPayload]
+                    /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/then`.
+                    public var then: Operations.ApikeyCreate.Input.Body.JsonPayload.ThenPayload?
                     /// - Remark: Generated from `#/paths/auth/apikeys/POST/requestBody/json/confirm`.
                     public var confirm: Components.Schemas.Confirm?
                     /// Creates a new `JsonPayload`.
@@ -27835,6 +27883,7 @@ public enum Operations {
                     ///   - allowConfirm:
                     ///   - ttlSecs:
                     ///   - upgrades:
+                    ///   - then:
                     ///   - confirm:
                     public init(
                         label: Swift.String? = nil,
@@ -27844,6 +27893,7 @@ public enum Operations {
                         allowConfirm: Swift.Bool? = nil,
                         ttlSecs: Swift.Int64? = nil,
                         upgrades: Operations.ApikeyCreate.Input.Body.JsonPayload.UpgradesPayload? = nil,
+                        then: Operations.ApikeyCreate.Input.Body.JsonPayload.ThenPayload? = nil,
                         confirm: Components.Schemas.Confirm? = nil
                     ) {
                         self.label = label
@@ -27853,6 +27903,7 @@ public enum Operations {
                         self.allowConfirm = allowConfirm
                         self.ttlSecs = ttlSecs
                         self.upgrades = upgrades
+                        self.then = then
                         self.confirm = confirm
                     }
                     public enum CodingKeys: String, CodingKey {
@@ -27863,6 +27914,7 @@ public enum Operations {
                         case allowConfirm
                         case ttlSecs
                         case upgrades
+                        case then
                         case confirm
                     }
                 }
@@ -27893,21 +27945,60 @@ public enum Operations {
                         public var keyId: Swift.String
                         /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/key`.
                         public var key: Swift.String
+                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload`.
+                        public struct ThenPayloadPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload/index`.
+                            public var index: Swift.Int64
+                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                            ///
+                            /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload/result`.
+                            public var result: OpenAPIRuntime.OpenAPIValueContainer
+                            /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload/receipt`.
+                            public var receipt: Components.Schemas.Receipt
+                            /// Creates a new `ThenPayloadPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - index:
+                            ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                            ///   - receipt:
+                            public init(
+                                index: Swift.Int64,
+                                result: OpenAPIRuntime.OpenAPIValueContainer,
+                                receipt: Components.Schemas.Receipt
+                            ) {
+                                self.index = index
+                                self.result = result
+                                self.receipt = receipt
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case index
+                                case result
+                                case receipt
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/then`.
+                        public typealias ThenPayload = [Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayloadPayload]
+                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/then`.
+                        public var then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - keyId:
                         ///   - key:
+                        ///   - then:
                         public init(
                             keyId: Swift.String,
-                            key: Swift.String
+                            key: Swift.String,
+                            then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload? = nil
                         ) {
                             self.keyId = keyId
                             self.key = key
+                            self.then = then
                         }
                         public enum CodingKeys: String, CodingKey {
                             case keyId
                             case key
+                            case then
                         }
                     }
                     /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/application\/json`.

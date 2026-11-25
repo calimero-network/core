@@ -27,8 +27,10 @@ from .alias_set_response_200 import AliasSetResponse200
 from .api_key import ApiKey
 from .api_key_upgrades import ApiKeyUpgrades
 from .apikey_create_body import ApikeyCreateBody
+from .apikey_create_body_then_item import ApikeyCreateBodyThenItem
 from .apikey_create_body_upgrades import ApikeyCreateBodyUpgrades
 from .apikey_create_response_200 import ApikeyCreateResponse200
+from .apikey_create_response_200_then_item import ApikeyCreateResponse200ThenItem
 from .apikey_list_response_200 import ApikeyListResponse200
 from .apikey_revoke_response_200 import ApikeyRevokeResponse200
 from .app import App
@@ -162,8 +164,12 @@ from .assertion import Assertion
 from .attestation_doc import AttestationDoc
 from .attestation_purpose import AttestationPurpose
 from .backup_key_answer import BackupKeyAnswer
-from .backup_key_answer_holder import BackupKeyAnswerHolder
-from .backup_key_answer_holder_kind import BackupKeyAnswerHolderKind
+from .backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
+from .backup_key_answer_holder_type_0_kind import BackupKeyAnswerHolderType0Kind
+from .backup_key_answer_holder_type_1 import BackupKeyAnswerHolderType1
+from .backup_key_answer_holder_type_1_kind import BackupKeyAnswerHolderType1Kind
+from .backup_key_answer_holder_type_2 import BackupKeyAnswerHolderType2
+from .backup_key_answer_holder_type_2_kind import BackupKeyAnswerHolderType2Kind
 from .backup_key_answer_key_type_0 import BackupKeyAnswerKeyType0
 from .blob_delete_response_200 import BlobDeleteResponse200
 from .blob_info_response_200 import BlobInfoResponse200
@@ -177,6 +183,7 @@ from .cluster_release import ClusterRelease
 from .confirm import Confirm
 from .confirm_only import ConfirmOnly
 from .confirm_required import ConfirmRequired
+from .confirm_required_then_item import ConfirmRequiredThenItem
 from .consent_page_create_body_type_0 import ConsentPageCreateBodyType0
 from .consent_page_create_body_type_0_kind import ConsentPageCreateBodyType0Kind
 from .consent_page_create_body_type_0_scope_type_0 import (
@@ -368,6 +375,8 @@ from .file_info_response_200 import FileInfoResponse200
 from .files_list_response_200 import FilesListResponse200
 from .files_list_response_200_files_item import FilesListResponse200FilesItem
 from .files_upload_response_200 import FilesUploadResponse200
+from .follow_up_failed import FollowUpFailed
+from .follow_up_failed_error import FollowUpFailedError
 from .governance import Governance
 from .governance_app_upgrades import GovernanceAppUpgrades
 from .governance_deployers import GovernanceDeployers
@@ -611,6 +620,7 @@ from .package_ref import PackageRef
 from .package_upload_response_200 import PackageUploadResponse200
 from .package_upload_response_200_services import PackageUploadResponse200Services
 from .package_versions_item import PackageVersionsItem
+from .package_versions_item_components import PackageVersionsItemComponents
 from .package_versions_item_services import PackageVersionsItemServices
 from .package_versions_item_source import PackageVersionsItemSource
 from .page import Page
@@ -851,8 +861,10 @@ __all__ = (
     "AliasSetResponse200",
     "ApiKey",
     "ApikeyCreateBody",
+    "ApikeyCreateBodyThenItem",
     "ApikeyCreateBodyUpgrades",
     "ApikeyCreateResponse200",
+    "ApikeyCreateResponse200ThenItem",
     "ApikeyListResponse200",
     "ApikeyRevokeResponse200",
     "ApiKeyUpgrades",
@@ -963,8 +975,12 @@ __all__ = (
     "AttestationDoc",
     "AttestationPurpose",
     "BackupKeyAnswer",
-    "BackupKeyAnswerHolder",
-    "BackupKeyAnswerHolderKind",
+    "BackupKeyAnswerHolderType0",
+    "BackupKeyAnswerHolderType0Kind",
+    "BackupKeyAnswerHolderType1",
+    "BackupKeyAnswerHolderType1Kind",
+    "BackupKeyAnswerHolderType2",
+    "BackupKeyAnswerHolderType2Kind",
     "BackupKeyAnswerKeyType0",
     "BlobDeleteResponse200",
     "BlobInfoResponse200",
@@ -978,6 +994,7 @@ __all__ = (
     "Confirm",
     "ConfirmOnly",
     "ConfirmRequired",
+    "ConfirmRequiredThenItem",
     "ConsentPageCreateBodyType0",
     "ConsentPageCreateBodyType0Kind",
     "ConsentPageCreateBodyType0ScopeType0",
@@ -1127,6 +1144,8 @@ __all__ = (
     "FilesListResponse200",
     "FilesListResponse200FilesItem",
     "FilesUploadResponse200",
+    "FollowUpFailed",
+    "FollowUpFailedError",
     "Governance",
     "GovernanceAppUpgrades",
     "GovernanceDeployers",
@@ -1330,6 +1349,7 @@ __all__ = (
     "PackageUploadResponse200",
     "PackageUploadResponse200Services",
     "PackageVersionsItem",
+    "PackageVersionsItemComponents",
     "PackageVersionsItemServices",
     "PackageVersionsItemSource",
     "Page",

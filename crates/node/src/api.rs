@@ -58,7 +58,7 @@ const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 /// (`Config::refresh_rotate_after`): younger, a refresh mints a session on the
 /// system state at a read index and writes nothing to the system log; older,
 /// it is exchanged for a new token in the log (`UseRefresh`). Each active
-/// session then writes once per this, not once per [`SESSION_TTL`].
+/// session then writes once per this, not once per `SESSION_TTL`.
 pub const REFRESH_ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const CHALLENGE_TTL: u64 = 5 * 60;
 /// The code of a create or upgrade by bundle hash whose releases ship different compute components.
@@ -76,6 +76,8 @@ mod deployments;
 mod deprecation;
 mod exports;
 mod files;
+#[cfg(test)]
+mod golden;
 mod internal;
 #[cfg(test)]
 mod openapi;
@@ -239,7 +241,7 @@ pub enum Pending {
         expires: u64,
         /// What the retry needs that is not signed and never logged (a new
         /// API key, an invite token, the registered credential), for a
-        /// step-up whose arguments the node made ([`consent_minted`]).
+        /// step-up whose arguments the node made (`consent_minted`).
         #[serde(default)]
         carry: Option<Value>,
     },
@@ -277,7 +279,7 @@ impl Pending {
 /// The most ceremonies a node holds open for callers it does not know yet
 /// (sign-in, sign-up, a recovery's finish). Each lives at most
 /// `CHALLENGE_TTL`; past this a new one displaces the oldest of the caller
-/// holding the most ([`admit_pending`]), so the pool never grows without bound
+/// holding the most (`admit_pending`), so the pool never grows without bound
 /// (Xil's review, issue 12) and a flood never locks the others out (review
 /// finding D1). Ceremonies of known accounts do not count here, so a full
 /// anonymous pool never blocks an account's step-up.
@@ -967,7 +969,7 @@ pub(crate) const MAX_UNKNOWN_API_KEYS: usize = 4096;
 pub(crate) const UNKNOWN_API_KEY_TTL: Duration = Duration::from_secs(60);
 
 /// The hashes of API keys a caught-up read found no key for, each kept
-/// [`UNKNOWN_API_KEY_TTL`], at most [`MAX_UNKNOWN_API_KEYS`] (past that a
+/// `UNKNOWN_API_KEY_TTL`, at most `MAX_UNKNOWN_API_KEYS` (past that a
 /// missing key is not remembered, and costs a round each time). A key it holds
 /// is refused with no system read. It never refuses a key that exists: a hash is
 /// added only after a read caught up to an index past every write committed
@@ -1263,17 +1265,28 @@ fn session_token_for(
     Ok((token, expires_at))
 }
 
+/// A session as the API answers it (`#Session`): a sign-up's, a sign-in's, a recovery's and a
+/// refresh's.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SessionAnswer {
+    account_id: String,
+    session_token: String,
+    expires_at: u64,
+    refresh_token: String,
+}
+
 fn session_answer(
     account: &str,
     (token, expires_at): &(String, u64),
     new: &NewSession,
-) -> Json<Value> {
-    Json(json!({
-        "accountId": account,
-        "sessionToken": token,
-        "expiresAt": expires_at,
-        "refreshToken": new.refresh,
-    }))
+) -> Json<SessionAnswer> {
+    Json(SessionAnswer {
+        account_id: account.to_owned(),
+        session_token: token.clone(),
+        expires_at: *expires_at,
+        refresh_token: new.refresh.clone(),
+    })
 }
 
 // ---------------------------------------------------------------- public
@@ -1561,7 +1574,7 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
 /// Whether `account` holds a read-only row in the team `app` belongs to
 /// (checked again against the latest system state before saying yes: at or
 /// past `sys_index`, the index the request's round named, else a round's).
-/// The record is read again from that state ([`fresh_record`]): the one in hand
+/// The record is read again from that state (`fresh_record`): the one in hand
 /// can predate a change of its access or owner.
 pub async fn read_only_in(
     node: &Node,
@@ -1684,8 +1697,10 @@ async fn gate(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = Confirm))]
 pub(crate) struct ConfirmBody {
     challenge_id: String,
+    #[cfg_attr(test, schema(value_type = openapi::generated::Assertion))]
     assertion: Assertion,
 }
 
@@ -1888,7 +1903,7 @@ pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> 
 }
 
 /// How many events that reached this replica together one freshness round
-/// ([`Node::sys_caught_up`]) in [`local_events`] covers.
+/// ([`Node::sys_caught_up`]) in `local_events` covers.
 pub const MAX_EVENT_BATCH: usize = 256;
 
 /// The app's events from `from`, then live. A component's event carries its
@@ -1993,8 +2008,10 @@ struct MetadataBody {
 
 /// A body that carries only a passkey confirmation (after a `412`).
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = ConfirmOnly))]
 struct ConfirmOnlyBody {
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     confirm: Option<ConfirmBody>,
 }
 
@@ -2854,6 +2871,7 @@ mod tests {
         assert!(put(&mut c, sign_up(100), session(1), 0).is_ok());
     }
 
+    /// An id people type never starts with `-`, which `meroctl` would read as a flag.
     #[test]
     fn a_typed_id_never_starts_with_a_dash() {
         for _ in 0..10_000 {
