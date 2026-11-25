@@ -489,10 +489,8 @@ async fn deployment_offer(
     let _d = managed_deployment(&node, &p, &id).await?;
     node.refuse_undeployable(&account).await?;
     let seen = node.sys(|s| {
-        s.packages
-            .get(&body.package)
-            .and_then(|p| p.versions.get(&body.version))
-            .is_some_and(|v| s.sees_release(v, &account))
+        s.release_used(&body.package, &body.version, &account)
+            .is_some()
     });
     if !seen {
         return Err(ApiError::not_found(
@@ -1031,14 +1029,11 @@ async fn deployment_orgs(
             });
             entry.instances += 1;
             entry.first = entry.first.min(a.created_at);
+            // The release the record names: a release found by its WASM could be a private
+            // sibling of the one the instance runs.
             for (app, o) in &d.apps {
-                let version = s.packages.get(&o.package).and_then(|p| {
-                    p.versions
-                        .values()
-                        .find(|v| v.app_parts().values().any(|h| *h == a.bundle))
-                });
-                if let Some(v) = version {
-                    let _new = entry.apps.insert((app.as_str(), v.version.as_str()));
+                if let Some(r) = a.release.as_ref().filter(|r| r.package == o.package) {
+                    let _new = entry.apps.insert((app.as_str(), r.version.as_str()));
                 }
             }
         }

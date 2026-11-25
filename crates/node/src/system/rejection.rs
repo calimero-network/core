@@ -35,6 +35,10 @@ pub enum RejectionKind {
     CannotGrantUnheld,
     /// `400 UNKNOWN_CAPABILITIES`: [`super::UNKNOWN_CAPABILITIES`].
     UnknownCapabilities,
+    /// `403 TEAM_NOT_SEEN`: [`super::TEAM_NOT_SEEN`].
+    TeamNotSeen,
+    /// `403 INVITE_CREATOR_LACKS`: [`super::INVITE_CREATOR_LACKS`].
+    InviteCreatorLacks,
     /// `404 UNDECLARED_SECRET`: [`super::UNDECLARED_SECRET`].
     UndeclaredSecret,
     /// `409 OUTSIDE_DEPLOYMENT`: [`super::OUTSIDE_DEPLOYMENT`].
@@ -91,11 +95,13 @@ pub enum RejectionKind {
     NotHandingOver,
     /// `409 TRANSFER_STALE`: [`super::TRANSFER_STALE`].
     TransferStale,
+    /// `409 OFFERS_NOT_USABLE`: [`super::OFFERS_NOT_USABLE`].
+    OffersNotUsable,
 }
 
 impl RejectionKind {
     /// Every kind, for reading one back from its code.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 41] = [
         Self::Rejected,
         Self::QuotaExceeded,
         Self::ReleaseDeadline,
@@ -106,6 +112,8 @@ impl RejectionKind {
         Self::PersonalOrgsEnded,
         Self::CannotGrantUnheld,
         Self::UnknownCapabilities,
+        Self::TeamNotSeen,
+        Self::InviteCreatorLacks,
         Self::UndeclaredSecret,
         Self::OutsideDeployment,
         Self::NotFound,
@@ -134,6 +142,7 @@ impl RejectionKind {
         Self::NoTransfer,
         Self::NotHandingOver,
         Self::TransferStale,
+        Self::OffersNotUsable,
     ];
 
     /// The code the API answers it with, and `apply`'s answer carries.
@@ -150,6 +159,8 @@ impl RejectionKind {
             Self::PersonalOrgsEnded => "PERSONAL_ORGS_ENDED",
             Self::CannotGrantUnheld => crate::node::CANNOT_GRANT_UNHELD,
             Self::UnknownCapabilities => crate::node::UNKNOWN_CAPABILITIES,
+            Self::TeamNotSeen => "TEAM_NOT_SEEN",
+            Self::InviteCreatorLacks => "INVITE_CREATOR_LACKS",
             Self::UndeclaredSecret => "UNDECLARED_SECRET",
             Self::OutsideDeployment => "OUTSIDE_DEPLOYMENT",
             Self::NotFound => "NOT_FOUND",
@@ -178,6 +189,7 @@ impl RejectionKind {
             Self::NoTransfer => "NO_TRANSFER",
             Self::NotHandingOver => "FORBIDDEN",
             Self::TransferStale => "TRANSFER_STALE",
+            Self::OffersNotUsable => "OFFERS_NOT_USABLE",
         }
     }
 
@@ -189,6 +201,8 @@ impl RejectionKind {
             Self::SignUpRefused
             | Self::DeployNotGranted
             | Self::CannotGrantUnheld
+            | Self::TeamNotSeen
+            | Self::InviteCreatorLacks
             | Self::NotHandingOver => 403,
             Self::UndeclaredSecret | Self::NotFound | Self::NoTransfer => 404,
             Self::QuotaExceeded => 429,
@@ -218,7 +232,8 @@ impl RejectionKind {
             | Self::RecoveryKeyRequired
             | Self::TransferPending
             | Self::TransferLapsed
-            | Self::TransferStale => 409,
+            | Self::TransferStale
+            | Self::OffersNotUsable => 409,
         }
     }
 
@@ -402,7 +417,7 @@ mod tests {
     /// `node::rejected` answered for it when it matched the message.
     #[test]
     fn each_named_refusal_keeps_its_status_and_code() {
-        let named: [(&Rejection, u16, &str); 35] = [
+        let named: [(&Rejection, u16, &str); 36] = [
             (&system::NOT_A_DEPLOYER, 403, "DEPLOY_NOT_GRANTED"),
             (&system::PERSONAL_ORG_EXISTS, 409, "PERSONAL_ORG_EXISTS"),
             (&system::GUESTS_NOT_ALLOWED, 409, "GUESTS_NOT_ALLOWED"),
@@ -450,6 +465,7 @@ mod tests {
             (&system::NO_TRANSFER, 404, "NO_TRANSFER"),
             (&system::NOT_HANDING_OVER, 403, "FORBIDDEN"),
             (&system::TRANSFER_STALE, 409, "TRANSFER_STALE"),
+            (&system::OFFERS_NOT_USABLE, 409, "OFFERS_NOT_USABLE"),
         ];
         for (refused, status, code) in named {
             let api = crate::node::rejected(refused);

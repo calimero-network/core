@@ -2010,7 +2010,11 @@ impl<'a> Runner<'a> {
                 let mpk = self.file(&s(step, "mpk"))?;
                 let (package, version) = self.registry.publish(mpk)?;
                 let cl = self.client(step).await?;
-                let out = cl.packages().install(&package, &version).await.map(wire)?;
+                let out = cl
+                    .packages()
+                    .install(&package, &version, None)
+                    .await
+                    .map(wire)?;
                 let mut o = out.as_object().cloned().unwrap_or_default();
                 let _p = o.insert("package".into(), json!(package));
                 let _p = o.insert("version".into(), json!(version));

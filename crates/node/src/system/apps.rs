@@ -64,6 +64,11 @@ const KEEPS_UPGRADE_AUTHORITY: Rejection = Rejection::new(
     RejectionKind::Rejected,
     "an app whose owner upgrades it is not moved to a release its publisher upgrades",
 );
+/// A run's move to a release the app's owner may not use.
+pub(super) const RELEASE_NOT_USABLE: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an app is not moved to a release its owner may not use",
+);
 /// An owner's upgrade on a cluster whose operator upgrades apps.
 const UPGRADED_BY_OPERATOR: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -1030,6 +1035,23 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             .ok_or(NO_SUCH_UPGRADE_RUN)?;
         let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
         state.run_may_move(upgrade_run, app)?;
+    }
+    // A run moves an app only to a release its owner may use; entries logged below the
+    // version that brings private releases replay as they applied.
+    if run.is_some() && state.cluster_brings(cluster_version::Feature::PrivateReleases) {
+        if let (Some(app), Some(to)) = (state.apps.get(&app_id), release.as_ref()) {
+            let usable = state.release_offered_to(app, to, run.as_deref()).is_some()
+                || state
+                    .release_used(&to.package, &to.version, &app.owner)
+                    .is_some()
+                || (by_operator
+                    && state
+                        .release_used(&to.package, &to.version, OPERATOR)
+                        .is_some());
+            if !usable {
+                return Err(RELEASE_NOT_USABLE);
+            }
+        }
     }
     // The class it carries is judged against the log (a red update is never
     // logged as green), and where the app's policy asks for a second approver, a

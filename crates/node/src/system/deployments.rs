@@ -460,6 +460,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             {
                 return Err(Rejection::quota("deployments per owner"));
             }
+            let theirs = Deployment {
+                owner: to.clone(),
+                ..d.clone()
+            };
+            let serves = |o| {
+                s.offered_release(o)
+                    .is_none_or(|v| s.offer_serves(&theirs, v))
+            };
+            if !d.apps.values().all(serves) {
+                return Err(OFFERS_NOT_USABLE);
+            }
             let from = d.owner.clone();
             // The previous owner's secret values stay theirs: an offer the new owner makes
             // could otherwise declare a name and send its value to a host of its own.

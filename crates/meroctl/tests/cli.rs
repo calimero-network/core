@@ -1004,6 +1004,7 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
     // A WASM of each release's own: one that ships in another signer's package
     // is refused, and the node names an instance's release by its WASM.
     let wasm = app.join("app.wasm");
+    let org = s(&alice.run(&["org", "list"])["namespaces"][0]["orgId"]);
     let release = |version: &str| {
         std::fs::write(&wasm, variant(kv, &format!("dep-{version}"))).unwrap();
         alice.try_run(&[
@@ -1014,6 +1015,8 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
             path(&wasm),
             "--version",
             version,
+            "--install-org",
+            &org,
         ])
     };
     let shipped = release("1.0.0").unwrap();
@@ -1207,7 +1210,7 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
     let _ = alice.run(&offer_to_bob);
     let offered = bob.run(&["deployment", "list"]);
     assert_eq!(offered["offered"][0]["id"], id.as_str(), "{offered}");
-    let _ = bob.run(&[
+    let accept = [
         "deployment",
         "accept",
         &id,
@@ -1215,7 +1218,17 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
         "account",
         "--dev-passkey",
         path(&bob_pk),
+    ];
+    // The offered release is alice's organization's: bob installs it before taking over.
+    let unusable = bob.try_run(&accept).unwrap_err();
+    assert!(unusable.contains("OFFERS_NOT_USABLE"), "{unusable}");
+    let _ = bob.run(&[
+        "app",
+        "install",
+        "--path",
+        path(&app.join("dist/com.test.dep-1.1.0.mpk")),
     ]);
+    let _ = bob.run(&accept);
     assert_eq!(alice.run(&["deployment", "list"])["deployments"], json!([]));
 
     // Taken down by its new owner: withdrawn once no instance runs it, then deleted.

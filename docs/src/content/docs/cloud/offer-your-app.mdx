@@ -350,8 +350,9 @@ meroctl deployment list                       # the offer is under "offered"
 meroctl deployment accept <deployment-id> --to org:<their-org-id> --dev-passkey ./their-passkey.json
 ```
 
-The receiver needs a deployer grant of its own and, as an organization, a
-recovery key. Its offers and the customers' instances go with it; your secret
+The receiver needs a deployer grant of its own, as an organization a recovery
+key, and the use of every release you offer: a private release must be
+installed for it too (`409 OFFERS_NOT_USABLE` otherwise). Its offers and the customers' instances go with it; your secret
 values do not (the new owner sets its own). Either side can cancel a waiting
 offer (`deployment cancel-transfer`), and it lapses after 7 days or once you no
 longer manage the deployment. Customers are not asked, but every instance's

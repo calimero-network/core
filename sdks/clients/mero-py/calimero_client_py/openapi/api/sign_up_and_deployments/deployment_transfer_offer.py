@@ -110,7 +110,7 @@ def sync_detailed(
     with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a
     manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is
     cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.37.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -153,7 +153,7 @@ def sync(
     with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a
     manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is
     cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.37.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -191,7 +191,7 @@ async def asyncio_detailed(
     with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a
     manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is
     cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.37.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -232,7 +232,7 @@ async def asyncio(
     with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a
     manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is
     cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.37.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
