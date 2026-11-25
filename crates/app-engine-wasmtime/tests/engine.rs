@@ -882,13 +882,31 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
 
     // Event audiences count too; 100 events naming a 1 MiB account each are all refused.
     // Past the run's bytes an event is the soft error `emit` returns (C10), which this guest
-    // ignores: the run ends `Ok` and keeps none of them.
+    // ignores: the run ends `Ok` and keeps none of them. Each refused event still pays for the
+    // 1 MiB it was handed (C7), 100 MiB of fuel in all, more than a call's default budget, so
+    // it runs on a larger one.
+    let out = fx
+        .engine
+        .invoke(&app, host(InvocationKind::Call, "shout", b""), heavy());
+    assert_eq!(out.status, Status::Ok);
+    assert!(out.events.is_empty());
+    let handed = 100 * (1u64 << 20) * calimero_app_host::FUEL_PER_BYTE;
+    assert!(
+        out.usage.fuel > handed,
+        "100 refused events of 1 MiB cost {} fuel",
+        out.usage.fuel
+    );
     let out = fx.engine.invoke(
         &app,
         host(InvocationKind::Call, "shout", b""),
         Budget::call(),
     );
-    assert_eq!(out.status, Status::Ok);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}",
+        out.status
+    );
     assert!(out.events.is_empty());
 
     // Under the cap the same writes succeed: 15 versions of 64 KiB.
