@@ -1789,6 +1789,66 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
     );
 }
 
+/// From the logged version that brings private releases, an app's move in a run applies only
+/// to a release its owner may use, whoever started the run; an entry logged below it applies
+/// as it did.
+#[test]
+fn a_run_moves_an_app_only_to_a_release_its_owner_may_use() {
+    use super::apps::RELEASE_NOT_USABLE;
+    use super::cluster_version::Feature;
+    let (mut m, mut alice) = org_with_package_apps();
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    let c = consent(
+        &mut alice,
+        "org:org",
+        "__upgrade_org",
+        &json!({
+            "package": "p", "version": "2.0.0", "team": null,
+            "cascade": false, "migrate": null,
+        }),
+    );
+    let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+        "runId": "r1", "package": "p", "version": "2.0.0", "by": "alice",
+        "startedAt": 0, "apps": [], "done": [], "failed": {}, "finished": false,
+    }))
+    .unwrap();
+    m.index = 11;
+    let _ok = m
+        .run(SystemCmd::StartUpgradeRun {
+            org: "org".into(),
+            run: Box::new(run),
+            consent: c,
+            by_release: false,
+            owner_approves: false,
+        })
+        .unwrap();
+    let release = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("2.0.0"))
+        .unwrap();
+    release.visibility = Some(super::Visibility::Private);
+    release.orgs = ["elsewhere".to_owned()].into();
+    let upgrade = || {
+        let mut cmd = upgrade_to("p1", "alice", "b-2.0.0", Some(("p", "2.0.0")));
+        if let SystemCmd::UpgradeApp { run, .. } = &mut cmd {
+            *run = Some("r1".into());
+        }
+        cmd
+    };
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    m.index = 12;
+    assert_eq!(m.run(upgrade()).unwrap_err(), RELEASE_NOT_USABLE);
+    assert_eq!(m.state.apps["p1"].bundle, "b-1.0.0");
+
+    m.state.cluster_version = None;
+    let _ok = m.run(upgrade()).unwrap();
+    assert_eq!(m.state.apps["p1"].bundle, "b-2.0.0");
+}
+
 /// A publisher's run covers the instances that run a release of its package
 /// (`SystemState::app_release`), as an organization's run and each app's
 /// `UpgradeApp { run }` judge it: not the instances whose WASM another

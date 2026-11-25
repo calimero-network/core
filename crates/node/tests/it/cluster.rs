@@ -6143,6 +6143,77 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     assert!(e.to_string().starts_with("409"), "{e}");
 }
 
+/// A publisher's run judges each instance's target by the instance's owner: Pam, an admin
+/// of Cora's organization, installs 1.1.0 private to her own, and her run does not move Cora's
+/// instance onto a release Cora may not use.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publisher_run_never_moves_another_orgs_app_onto_a_release_it_may_not_use() {
+    use calimero_bundle::UpgradeAuthority::Publisher;
+    let c = Cluster::start(3).await;
+    let (pam, mut pam_pk) = signed_up(&c, 0, "pam").await;
+    let (cora, mut cora_pk) = signed_up(&c, 1, "cora").await;
+    let publisher = new_org(&pam, "Publisher").await;
+    let customer = new_org(&cora, "Customer").await;
+    join((&cora, &mut cora_pk), &pam, &customer, "admin").await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+    let release = |version: &str, wasm: &[u8]| {
+        mpk_full(
+            "com.test.pub",
+            version,
+            wasm,
+            &key,
+            &[],
+            &[],
+            Some(Publisher),
+        )
+    };
+    let kv = kv_wasm();
+    let _ok = pam
+        .packages()
+        .upload(release("1.0.0", &kv), Some(&publisher))
+        .await
+        .unwrap();
+    let _ok = cora
+        .packages()
+        .upload(release("1.0.0", &kv), Some(&customer))
+        .await
+        .unwrap();
+    let inst = cora
+        .apps()
+        .create(typed(
+            json!({ "name": "i", "package": "com.test.pub", "org": customer }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let _ok = pam
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{publisher}/publishers"))
+                .json(publisher_binding(&pam, &key, &publisher).await),
+            &mut pam_pk,
+        )
+        .await
+        .unwrap();
+    let _ok = pam
+        .packages()
+        .upload(release("1.1.0", &variant(&kv, "v2")), Some(&publisher))
+        .await
+        .unwrap();
+
+    let run = pam
+        .orgs()
+        .publisher_upgrade(&publisher, "com.test.pub", "1.1.0", None, Some(&mut pam_pk))
+        .await
+        .map(wire)
+        .unwrap();
+    let run = finished_run(&pam, &publisher, run["runId"].as_str().unwrap()).await;
+    assert_eq!(run["done"], json!([]), "{run}");
+    assert!(run["failed"].get(&inst).is_some(), "{run}");
+    let running = cora.apps().get(&inst).await.map(wire).unwrap();
+    assert_eq!(running["release"]["version"], json!("1.0.0"), "{running}");
+}
+
 // ---------------------------------------------------------------- version and approval reports
 
 /// The report that holds `app` for its owner: its organization's
