@@ -658,13 +658,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             ..
         } => {
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let role = role.unwrap_or(if lead {
                 TeamRole::Lead
             } else {
                 TeamRole::Member
             });
-            set_team_row(o, &team, &account, role, capabilities, &actor)?;
+            set_team_row(o, &team, &account, role, capabilities, &actor, held)?;
             Ok(Value::Null)
         }
         SystemCmd::SetTeamMembers {
@@ -678,6 +681,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             // All or nothing: each row is judged as its own
             // `SetTeamMember` would be, in order, on a copy kept only
             // when every one holds.
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let mut next = o.clone();
             for row in teams {
@@ -689,6 +695,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     role,
                     row.capabilities,
                     &actor,
+                    held,
                 )?;
             }
             *o = next;
@@ -863,6 +870,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             ..
         } => {
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             if o.role(&account).is_none() {
                 return Err("not a member".into());
@@ -874,6 +884,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     {
                         return Err("not allowed to manage this team".into());
                     }
+                    team_grant_refusal(o, &t, &actor, Some(capabilities), held)?;
                     let rec = o.teams.get_mut(&t).ok_or("no such team")?;
                     if !rec.members.contains_key(&account) {
                         return Err("not a member of this team".into());
@@ -917,6 +928,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             ..
         } => {
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let Some(team) = team else {
                 if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
@@ -931,6 +945,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             {
                 return Err("not allowed to manage this team".into());
             }
+            team_grant_refusal(o, &team, &actor, Some(capabilities), held)?;
             let t = o.teams.get_mut(&team).ok_or("no such team")?;
             t.default_capabilities = Some(capabilities);
             Ok(Value::Null)

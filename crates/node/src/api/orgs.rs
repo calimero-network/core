@@ -505,7 +505,9 @@ async fn org_metadata(
     Path(org): Path<String>,
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.unscoped()?;
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetOrgMetadata {
             org,
@@ -522,7 +524,9 @@ async fn member_metadata(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.unscoped()?;
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetMemberMetadata {
             org,
@@ -1200,6 +1204,15 @@ pub(crate) async fn create_invite(
             return Err(crate::node::cannot_grant_unheld());
         }
     }
+    // An invite's life is bounded as the consent page bounds it: one that never
+    // expires outlives every change to who may hand it out (security review).
+    let ttl = body.ttl_secs.unwrap_or(7 * 24 * 3600);
+    if ttl == 0 || ttl > crate::consent_page::MAX_INVITE_TTL {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            &format!("ttlSecs is 1 to {}", crate::consent_page::MAX_INVITE_TTL),
+        ));
+    }
     // Before the passkey step-up: an earlier release would drop the fields.
     node.require_features(&crate::system::cluster_version::invite_features(
         body.all_apps,
@@ -1211,7 +1224,7 @@ pub(crate) async fn create_invite(
         org: org.clone(),
         role: body.role,
         teams: body.teams,
-        expires_at: now_secs() + body.ttl_secs.unwrap_or(7 * 24 * 3600),
+        expires_at: now_secs() + ttl,
         uses_left: body.uses.unwrap_or(1).max(1),
         created_by: actor.clone(),
         created_at: now_secs(),

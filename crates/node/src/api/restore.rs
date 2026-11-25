@@ -96,7 +96,7 @@ pub(super) async fn recover_holder(
     Json(b): Json<RecoverHolderBody>,
 ) -> ApiResult {
     use crate::recovery_disk::{self as disk, Kind};
-    use crate::system::{import_holder_args, BackupHolder, HolderSlice, ImportedApp};
+    use crate::system::{import_holder_args, HolderSlice, ImportedApp};
     let bad = |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
     if b.apps.len() + b.code.len() > MAX_RECOVERY_CODE_FILES {
         return Err(ApiError::bad_request(
@@ -104,16 +104,7 @@ pub(super) async fn recover_holder(
             &format!("at most {MAX_RECOVERY_CODE_FILES} files"),
         ));
     }
-    let holder = match b.holder.split_once(':') {
-        Some(("org", id)) if !id.is_empty() => BackupHolder::Org(id.to_owned()),
-        Some(("account", id)) if !id.is_empty() => BackupHolder::Account(id.to_owned()),
-        _ => {
-            return Err(ApiError::bad_request(
-                "BAD_REQUEST",
-                "holder is org:<id> or account:<id>",
-            ))
-        }
-    };
+    let holder = parse_holder(&b.holder, false)?;
     let Some(dir) = node
         .config
         .recovery_dir
@@ -296,21 +287,8 @@ pub(super) async fn ops_recovery_files(
     Query(q): Query<RecoveryFilesQuery>,
 ) -> ApiResult {
     use crate::recovery_disk as disk;
-    use crate::system::BackupHolder;
     operator(&node, &headers)?;
-    let holder = match q.holder.as_deref().unwrap_or("operator") {
-        "operator" => BackupHolder::Operator,
-        h => match h.split_once(':') {
-            Some(("org", id)) if !id.is_empty() => BackupHolder::Org(id.to_owned()),
-            Some(("account", id)) if !id.is_empty() => BackupHolder::Account(id.to_owned()),
-            _ => {
-                return Err(ApiError::bad_request(
-                    "BAD_REQUEST",
-                    "holder is operator, org:<id> or account:<id>",
-                ))
-            }
-        },
-    };
+    let holder = parse_holder(q.holder.as_deref().unwrap_or("operator"), true)?;
     let Some(dir) = node
         .config
         .recover_from
@@ -682,4 +660,64 @@ pub(super) struct RecoveryFile {
     name: String,
     header: String,
     signature: String,
+}
+
+/// A backup holder named in a request: `org:<id>`, `account:<id>`, and with
+/// `operator` the operator. The id names a directory under `--recovery-dir`
+/// ([`crate::recovery_disk::holder_dir`]), so one that could leave it (a path
+/// separator, NUL, `.` or `..`) is refused (security review: `org:../..`).
+fn parse_holder(named: &str, operator: bool) -> Result<crate::system::BackupHolder, ApiError> {
+    use crate::system::BackupHolder;
+    let fits =
+        |id: &str| !id.is_empty() && id != "." && id != ".." && !id.contains(['/', '\\', '\0']);
+    match named.split_once(':') {
+        _ if operator && named == "operator" => Ok(BackupHolder::Operator),
+        Some(("org", id)) if fits(id) => Ok(BackupHolder::Org(id.to_owned())),
+        Some(("account", id)) if fits(id) => Ok(BackupHolder::Account(id.to_owned())),
+        _ => Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            if operator {
+                "holder is operator, org:<id> or account:<id>"
+            } else {
+                "holder is org:<id> or account:<id>"
+            },
+        )),
+    }
+}
+
+#[cfg(test)]
+mod holder_tests {
+    use super::parse_holder;
+    use crate::system::BackupHolder;
+
+    /// Security review: a holder id is a directory name under
+    /// `--recovery-dir`, so one that leaves it is refused before any file is read.
+    #[test]
+    fn a_holder_id_never_leaves_the_recovery_dir() {
+        for bad in [
+            "org:../..",
+            "org:..",
+            "org:.",
+            "account:a/b",
+            "account:a\\b",
+            "org:a\0b",
+            "org:",
+            "nobody:x",
+        ] {
+            assert!(parse_holder(bad, true).is_err(), "{bad}");
+        }
+        assert!(parse_holder("operator", false).is_err());
+        assert_eq!(
+            parse_holder("org:acme", false).unwrap(),
+            BackupHolder::Org("acme".into())
+        );
+        assert_eq!(
+            parse_holder("account:a.b-c_1", false).unwrap(),
+            BackupHolder::Account("a.b-c_1".into())
+        );
+        assert_eq!(
+            parse_holder("operator", true).unwrap(),
+            BackupHolder::Operator
+        );
+    }
 }

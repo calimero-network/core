@@ -109,7 +109,7 @@ NOT_COVERED = [
      "key's one passkey prompt",
      "it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its "
      "app with the key's consent; `CreateApiKey::then` is new in the log only behind cluster version "
-     "1.0.0-rc.36 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
+     "1.0.0-rc.38 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
      "`tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "

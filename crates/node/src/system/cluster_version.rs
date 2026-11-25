@@ -221,10 +221,24 @@ pub enum Feature {
     /// `CreateApiKey { then }`: a key whose consent also approved confirm calls. An earlier
     /// release rebuilds the statement without them and refuses the key a later one makes.
     KeyFollowUps,
+    /// Below admin, a team's row, a row's capabilities and a team's default are set only on a
+    /// team the actor sees, and grant only capabilities the actor holds organization-wide
+    /// (`set_team_row`, `SetCapabilities`, `SetDefaultCapabilities`), as an invite's are. No
+    /// entry changes shape: apply reads the logged version, so a log replays unchanged, and an
+    /// earlier release, which would apply what this one refuses, holds it below the version.
+    HeldTeamGrants,
+    /// An organization invite hands out only what its creator could still hand out when it is
+    /// redeemed: a creator no longer a member, below the invite's role, or no longer seeing a
+    /// team it names, gives nothing (`SystemState::redeem_org_invite`). No entry changes shape.
+    InviteCreatorStanding,
+    /// An organization's backup key is set only by those who approve its upgrades, its owner
+    /// and admins (`SystemState::may_set_backup_key`), as `OwnerApprovedUpgrades` made
+    /// upgrades theirs. No entry changes shape.
+    BackupKeyApprovers,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 50] = [
+pub const FEATURES: [Feature; 53] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -275,6 +289,9 @@ pub const FEATURES: [Feature; 50] = [
     Feature::UndoToInstalledRelease,
     Feature::AutoUpdateMembersStay,
     Feature::KeyFollowUps,
+    Feature::HeldTeamGrants,
+    Feature::InviteCreatorStanding,
+    Feature::BackupKeyApprovers,
 ];
 
 impl Feature {
@@ -332,7 +349,21 @@ impl Feature {
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
             Self::KeyFollowUps => "keyFollowUps",
+            Self::HeldTeamGrants => "heldTeamGrants",
+            Self::InviteCreatorStanding => "inviteCreatorStanding",
+            Self::BackupKeyApprovers => "backupKeyApprovers",
         }
+    }
+
+    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
+    /// `InviteCreatorStanding` and `BackupKeyApprovers` are rules apply reads from the logged
+    /// version: no entry names them.
+    #[must_use]
+    pub const fn names_an_entry(self) -> bool {
+        !matches!(
+            self,
+            Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers
+        )
     }
 
     /// The first core release that applies it. The features of a release
@@ -383,10 +414,15 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly
-            | Self::UndoToInstalledRelease
-            | Self::AutoUpdateMembersStay
-            | Self::KeyFollowUps => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
+                "1.0.0-rc.36"
+            }
+            // #5356 merged after 1.0.0-rc.37 was cut (#5368), so rc.37 does not decode
+            // `then`: it rebuilds the key's statement without it and refuses the key.
+            Self::KeyFollowUps
+            | Self::HeldTeamGrants
+            | Self::InviteCreatorStanding
+            | Self::BackupKeyApprovers => "1.0.0-rc.38",
         }
     }
 }
@@ -993,6 +1029,8 @@ mod tests {
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
     const RC36: &str = "1.0.0-rc.36";
+    const RC37: &str = "1.0.0-rc.37";
+    const RC38: &str = "1.0.0-rc.38";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1261,6 +1299,9 @@ mod tests {
                 "outbound": ["https://api.example.com/"],
                 "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
             })),
+            Feature::HeldTeamGrants
+            | Feature::InviteCreatorStanding
+            | Feature::BackupKeyApprovers => unreachable!("no entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1507,7 +1548,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES {
+        for feature in FEATURES.into_iter().filter(|f| f.names_an_entry()) {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1539,12 +1580,15 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![
-                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
-            ]
-            .contains(&f.since())
-        });
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
+            .iter()
+            .filter(|f| f.names_an_entry())
+            .partition(|f| {
+                ![
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC38,
+                ]
+                .contains(&f.since())
+            });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1631,8 +1675,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC33);
         let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
-        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+        let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
+        let (rc36, rc38): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC36);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1823,15 +1869,14 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.36's (an instance outside every deployment is a deployer's, an undo only to a
-        // release still installed, an update on its own that keeps the unit's members, a key
-        // with follow-ups) for every node on rc.36: an rc.35 node ignores the flags and fields.
+        // release still installed, an update on its own that keeps the unit's members) for
+        // every node on rc.36: an rc.35 node ignores the flags.
         assert_eq!(
             rc36,
             [
                 Feature::OffersOnly,
                 Feature::UndoToInstalledRelease,
                 Feature::AutoUpdateMembersStay,
-                Feature::KeyFollowUps
             ]
         );
         for &feature in &rc36 {
@@ -1850,6 +1895,36 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc36 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.38's (a key with follow-ups) waits past rc.37, which was cut without it: a
+        // cluster on the published rc.37 logs rc.37 and still refuses it, as an rc.37 node
+        // would refuse the key (it rebuilds the statement without `then`).
+        assert_eq!(rc38, [Feature::KeyFollowUps]);
+        for n in &mut nodes {
+            n.release = RC37;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC37.into(),
+            nodes: (1..=3).map(|id| (id, RC37.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc38 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC37))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC38;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC38.into(),
+            nodes: (1..=3).map(|id| (id, RC38.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
