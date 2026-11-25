@@ -579,16 +579,13 @@ pub(super) async fn install_request(
              it that way, remove no method and move none of the apps it created."
         ));
     }
-    let payer = subject.deployment.as_ref().and_then(|d| {
-        node.sys(|s| {
-            let d = s.deployments.get(d)?;
-            Some(match &d.owner {
-                crate::system::Deployer::Account(a) => s.accounts.get(a).map(|a| a.name.clone()),
-                crate::system::Deployer::Org(o) => s.orgs.get(o).map(|o| o.name.clone()),
-            })
-        })
-        .flatten()
-    });
+    let shown = subject
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
+    let payer = shown
+        .as_ref()
+        .and_then(|d| d["owner"]["name"].as_str().map(str::to_owned));
     let created = |org: Option<&str>| {
         format!(
             "{} is created for you{}: {app_name} {}{}.",
@@ -632,6 +629,8 @@ pub(super) async fn install_request(
         "attention": [],
         "app": { "name": app_name, "package": package },
         "publisher": { "name": author, "signer": facts.signer },
+        "deployment": shown,
+        "offeredBy": shown.as_ref().map(super::offered_by),
         "install": {
             "name": subject.name,
             "package": package,

@@ -1992,6 +1992,7 @@ pub(crate) async fn update_view(
         "policy": { "autoApply": policy.auto_apply, "holdHours": policy.hold_hours,
             "secondApprover": policy.second_approver, "source": source },
         "pendingApprovals": pending,
+        "deployment": app.deployment.as_ref().and_then(|d| node.sys(|s| s.deployment_shown(d))),
     })
 }
 
