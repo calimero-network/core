@@ -801,281 +801,157 @@ bounds every replica, since no node below it joins.
 
 ## In `calimero-node`
 
-Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
-unless another crate is named. The design and its reasons are above; a module's own detail is in its
-`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
 
 ### Cluster version
 
 Code: `system/cluster_version.rs`, `node/cluster_version.rs`.
 
-A new command or field ships with a feature gate.
-Each log entry shape an older release cannot apply alike is a `Feature` (`FEATURES`,
-`Feature::since`, named in the exhaustive `SystemCmd::features`); `Node::sys_write` refuses one
-above the active cluster version `409 FEATURE_NOT_ACTIVE` (`Node::require_features`, judged on
-`SystemState::cluster_version`, or on what every node's `/health` `clusterVersion` says now when
-that is newer).
-The system leader raises the logged version (`SetClusterVersion { version, nodes }`, only forward,
-naming every registered node; `reconcile` -> `raise_cluster_version`, at most every 10 s) once every
-node supports it, and admits no node below it to the system group (`joins_at_cluster_version`).
-Apply reads only the logged version at the entry's own position (`SystemState::cluster_brings`), so
-a log replays unchanged.
-The gate judges on the logged version; when every node supports a feature above it, the proposing
-node logs that version first (`cv::admit` -> `Admission::LogFirst`, `raise_cluster_version_once`
-through `Node::sys_propose`, the ungated write), so no gated entry precedes the version that keeps
-older nodes out (only `SetClusterVersion` itself, and floors below rc.16, go on the floor alone).
-An entry a node cannot decode stops its group there (`StateTx::fail`, B4), logs an error and counts
-in `calimero_log_undecodable_entries_total`.
-A node's `/health` advertises `Node::advertises` (`cv::supported`); a cluster test holds the cluster
-below a feature this build brings with `testing::advertise_cluster_version`, set in
-`Cluster::start_with`'s `configure` for one node, as a node not yet rolled onto the release.
+- Each gated shape is a `Feature` in `FEATURES` (`Feature::since`), named in the exhaustive `SystemCmd::features`.
+- `Node::sys_write` refuses it through `Node::require_features`, judged on `SystemState::cluster_version`, or on every node's `/health` `clusterVersion` when that is newer.
+- When every node supports a feature above the logged version, `cv::admit` answers `Admission::LogFirst`, and `raise_cluster_version_once` logs that version first through `Node::sys_propose` (the ungated write).
+- The system leader's `reconcile` calls `raise_cluster_version`; `joins_at_cluster_version` keeps older nodes out of the system group.
+- Apply reads `SystemState::cluster_brings` at the entry's own position.
+- An entry a node cannot decode stops its group there (`StateTx::fail`).
+- `/health` advertises `Node::advertises` (`cv::supported`).
+- A cluster test holds one node below a feature with `testing::advertise_cluster_version` in `Cluster::start_with`'s `configure`.
 
 ### Upgrades are code-only
 
-A component upgrade swaps the bundle (`componentUpgrade`); a named `migrate` is refused
-`MigrationsNotSupported`.
-The consent page shows the state version each side's `calimero:abi` declares and flags a change
-(`stateVersion`), as no migration runs.
+A component upgrade is the app-log entry `componentUpgrade`, which swaps the bundle; a named `migrate` is refused `MigrationsNotSupported`.
 The directory records the new bundle only once the upgrade succeeded.
-An app moves to any newer release in one upgrade: there is no migration step to chain.
-
-### Component upgrades
-
-The node's route and authority (`POST /apps/{app}/upgrade`, passkey consent, `UpgradeApp`); at the
-leader a component upgrades code-only (`componentUpgrade`) and a named `migrate` is refused
-`MigrationsNotSupported`.
+The consent page's `stateVersion` comes from each side's `calimero:abi`.
 
 ### Runtime requirements
 
 Code: `runtime.rs`, `node/runtime.rs`.
 
-A release's `minRuntimeVersion` is kept on `PackageVersion::min_runtime_version` (absent in releases
-from before, and dropped by an older node: then `Node::min_runtime_of` reads it from the `.mpk`,
-`consent_page::declared_min_runtime`).
-A node's runtime is `Config::release`, asked over the sealed channel (`POST /internal/runtime`,
-`Node::runtime_of_node`, kept `RUNTIME_KEPT`; a `404` is a node from before, `NodeRuntime::Before`
-the asker's own; no answer or a non-version is `Unknown` and not judged).
-`Node::require_runtime` refuses `409 RUNTIME_TOO_OLD` an upgrade with a replica below (`upgrade_app`
-before the step-up, the consent request, and `run_upgrade`, which records it), a replica move onto a
-joining node below (`ops_set_replicas`); `Node::place` leaves such nodes out of a new app's
-replicas.
-The reports name `latestReachable` and `latestBlocked` (`report::upgrade_targets`).
+- `PackageVersion::min_runtime_version` is absent for older releases or after an older node applied the install; `Node::min_runtime_of` then reads the `.mpk` (`consent_page::declared_min_runtime`).
+- A node's runtime is `Config::release`, asked by `Node::runtime_of_node` and kept `RUNTIME_KEPT`.
+  A `404` is `NodeRuntime::Before`, judged as the asker's own; no answer or a non-version is `Unknown`, not judged.
+- `Node::require_runtime` guards `upgrade_app` (before the step-up), the consent request, `run_upgrade` and `ops_set_replicas`; `Node::place` leaves such nodes out.
+- `latestReachable` and `latestBlocked` come from `report::upgrade_targets`.
 
 ### Upgrade runs
 
-(Cascade, status, retry.)
-
-`POST /orgs/{org}/upgrade { package, version, team?, cascade? }` (its owner or an admin,
-`approves_upgrades`; before `Feature::OwnerApprovedUpgrades`, whoever holds `MANAGE_APPLICATION`
-there, `SystemState::manages_apps`; one passkey assertion for the run) or `POST
-/ops/orgs/{org}/upgrade` (where the operator holds app upgrades) records a `types::UpgradeRun` in
-the org (`StartUpgradeRun`, newest `UPGRADE_RUNS_KEPT`), then upgrades its apps one by one in a
-background task; each `UpgradeApp`/`UpgradeFailed` notes the app on the run and on
-`AppRecord::last_upgrade`.
-`GET /orgs/{org}/upgrades/{run}` follows it; `.../retry` runs the failed apps again as a new run.
-A release missing from the cluster is installed from the registry first (owner runs).
-From `SystemState::current_rules_from` on, `apply` derives the run's apps from the state and its
-consent's method (`SystemState::upgrade_run_apps`: `org_run_apps`, `published_run_apps` (by the
-release each app runs, `app_release`, with `StartUpgradeRun { by_release }`, which a publisher's run
-sets; `Feature::PublishedRunByRelease`, rc.24; absent, by the bundle's first recorded package), or a
-retry's failed apps), clears its progress and refuses a run id any organization holds; `UpgradeApp {
-run }` moves an app once, only while it runs the run's package and never to an older release
-(`SystemState::run_may_move`, which `api::start_run` asks first and notes as failed, `NOT_IN_RUN`).
+- Who may start: `approves_upgrades`, or `SystemState::manages_apps` before `Feature::OwnerApprovedUpgrades`.
+- `StartUpgradeRun` records a `types::UpgradeRun` (newest `UPGRADE_RUNS_KEPT`); each `UpgradeApp`/`UpgradeFailed` notes the app on the run and on `AppRecord::last_upgrade`.
+- Once `SystemState::current_rules_from` is set, apply derives the apps with `SystemState::upgrade_run_apps`: `org_run_apps`, `published_run_apps` or a retry's failed apps.
+- A publisher's run sets `StartUpgradeRun { by_release }` (`Feature::PublishedRunByRelease`), judging each app by `app_release`.
+- `SystemState::run_may_move` judges each `UpgradeApp { run }`; `api::start_run` asks it first and notes `NOT_IN_RUN`.
 
 ### Upgrade keys
 
-Code: `ApiKeyRecord::upgrades`, `types::UpgradeScope`; docs: protocol "Upgrade keys", cloud "Deploy
-from CI".
+Code: `ApiKeyRecord::upgrades`, `types::UpgradeScope`.
 
-`POST /auth/apikeys { upgrades: { app, package? } }` (passkey consent; `api_key_args` states
-`upgrades` only when set, so other keys' consents read as before) makes a key bound to one app, its
-package and that package's pinned signer, plus the public half of an Ed25519 key derived from the
-key (`proof::api_key_public`).
-`api::principal` refuses it everywhere (`403 UPGRADE_KEY_ONLY`); only `app_upgrade` takes it
-(`api::credential`), for `{ version }` of its package (`SystemState::key_may_upgrade`), signing the
-statement in place of the step-up (`proof::sign_key_upgrade`, carried in `UpgradeApp::consent`).
-`authorize` verifies it under the key the log holds then (revoked or expired: refused) and spends
-it; every other upgrade rule is unchanged.
-Made and used only by an owner or admin of the app's organization (`upgrade_key_fits(..,
-owner_approves)` at `POST /auth/apikeys`, `403` before the passkey, and `CreateApiKey {
-owner_approves }` at apply; each use is judged on the key's account by `upgrade_app` and
-`UpgradeApp`, so a key whose account is no longer one upgrades nothing, a member's key from before
-included).
-`UpgradeRecord::api_key` names the key (`lastUpgrade.apiKey`).
+- `POST /auth/apikeys { upgrades: { app, package? } }`; `api_key_args` states `upgrades` only when set, so other keys' consents are unchanged.
+- The key also holds the public half of an Ed25519 key derived from it (`proof::api_key_public`).
+- `api::principal` refuses it everywhere (`403 UPGRADE_KEY_ONLY`); only `app_upgrade` takes it (`api::credential`), within `SystemState::key_may_upgrade`.
+- It signs in place of the step-up (`proof::sign_key_upgrade`, carried in `UpgradeApp::consent`); `authorize` verifies it under the key the log holds and spends it.
+- `upgrade_key_fits(.., owner_approves)` gates making it (`403` before the passkey), and `CreateApiKey { owner_approves }` again at apply.
+- `upgrade_app` and `UpgradeApp` judge each use on the key's account, so a key whose account lost the role upgrades nothing.
+- `UpgradeRecord::api_key` names the key (`lastUpgrade.apiKey`).
 
 ### Update available
 
-Code: `api/upgrades.rs`: `app_update`, `GET /apps/{app}/update`.
+Code: `api/upgrades.rs`: `app_update`.
 
-For whoever `GET /apps/{app}` admits (`principal`, `within`, `reaches`; a session bound to the
-package's frontend included), so the app's frontend can offer an upgrade and open the consent page.
-Answers `{ app, running: { package, version } | null, available: { package, version, source:
-deployment | release } | null, mayApprove, approvers: owner-and-admins | operator | managers }`:
-`available` is a deployment instance's offer for the package it runs (the newest when several) where
-it differs from the running one, else the newest release of its package the caller sees (all of them
-for a bound session) newer than the running one that the upgrade would take
-(`report::newer_versions`, `report::newest_reachable`: authority and runtime, as `latestReachable`);
-`mayApprove` is `api::upgrade_refusal` under the rule in force; `approvers` is `managers` while
-`Feature::OwnerApprovedUpgrades` is not.
-`available` also carries the update classifier's verdict (Unit destinations below), over the whole
-unit when the instance has members.
+`GET /apps/{app}/update` admits whoever `GET /apps/{app}` admits (`principal`, `within`, `reaches`), a bound session included.
+It answers `{ app, running, available, mayApprove, approvers }`:
+
+- `available` is a deployment instance's offer (`source: deployment`, the newest when several) where it differs from the running release.
+- Otherwise it is the newest visible, reachable release (`source: release`; `report::newer_versions`, `report::newest_reachable`); a bound session sees all of its package's.
+- `available` carries the classifier's verdict, over the whole unit when the instance has members.
+- `mayApprove` is `api::upgrade_refusal`; `approvers` is `managers` until `Feature::OwnerApprovedUpgrades`.
 
 ### Unit destinations
 
-Code: `egress.rs`; the classifier is `calimero_bundle::update`, shared with `meroctl`.
+Code: `egress.rs`; the classifier is `calimero_bundle::update`.
 
-A unit's egress is the union of the `outbound` prefixes (and any declared secret host no prefix
-names) of the release the app runs and of each member's (`links`, transitively; never `attached`).
-Only those destinations are reported; an empty list means no data leaves Calimero.
-Any destination outside the cluster is just a destination: the platform keeps no list of trusted
-endpoints and never vouches for one, a TEE such as private inference included; an app that wants to
-trust one verifies its attestation in its own code.
-Reads: the capability card adds `destinations` and `members` (`egress::release_unit`: each member
-release `unit_members` would create; both `null` while one is not installed here); `GET
-/apps/{app}/egress` (whoever `GET /apps/{app}` admits; `egress::instance_unit`) answers `{ app,
-destinations, members }` (each member with its own `destinations`); `GET /apps/{app}/update`'s
-`available` and the consent page's `upgrade`/`upgradeUnit` model (`unit`; a point "This update can
-send data to a new place: &lt;hosts>." when it adds any, else "Your data stays in Calimero." or
-"This app can send data to: &lt;hosts>.", followed by "That includes the apps it created." only when
-the instance has members; the `newDestinations` attention for destinations a member adds) carry
-`egress::update`'s `Classification`: `class` red when the signer changes, egress grows, a state
-version changes, a member with egress joins or leaves, or a release newly calls another app as the
-person, else green, with `reasons`, the egress diff (`before`, `after`, `added`, `removed`),
-`newMethods`/`removedMethods`.
-A single upgrade keeps the members where they are; a unit's moves its direct members as `unit_plan`
-does.
-The class decides how it applies: under `secondApprover` a red one takes two approvers, under
-`noDestinations` a green one of a unit with no destination before or after applies on its own,
-unless it removes a method or would move the unit's members.
+- `egress::release_unit` adds `destinations` and `members` to the capability card (both `null` while a member release is not installed here).
+- `GET /apps/{app}/egress` is `egress::instance_unit`, open to whoever `GET /apps/{app}` admits; each member carries its own `destinations`.
+- `egress::update` gives a `Classification`: `class`, `reasons`, the egress diff (`before`, `after`, `added`, `removed`), `newMethods` and `removedMethods`.
+- The consent sheets add "That includes the apps it created." only when the instance has members, and the `newDestinations` attention for destinations a member adds.
+- A single upgrade keeps members where they are; a unit's moves its direct members as `unit_plan` does.
 
 ### Update classes and policies
 
-(`system/updates.rs`, `api/update_policies.rs`; docs: protocol upgrades "The class at apply",
-"Update policies".)
+Code: `system/updates.rs`, `api/update_policies.rs`.
 
-Every `UpgradeApp` the API writes carries `class` (`types::UpgradeClass`: `egress::update` of that
-app's move, members where they are, `api::upgrades::move_class`; `None` for a raw bundle, another
-package, an unreadable release, or below `Feature::UpgradeClasses`, rc.34).
-Apply re-derives what the log holds (each package's pinned signer, a release's `outbound` and secret
-hosts; `SystemState::check_class`, the unit through `links` as deep as `MAX_UNIT_DEPTH`) and refuses
-`UPGRADE_CLASS_MISMATCH` a class that leaves out a reason it derives, red without reasons, green
-with them, or more than `MAX_CLASS_REASONS`, and a green class for a move it cannot rebuild (a
-release the app or a member runs, or a target, not installed: red is taken as said; the API says it
-with an `unclassified` reason per part the log lacks, `SystemState::unclassified`, through
-`egress::judged_update`, the one verdict `approve_upgrade`, `api::upgrades::class_of`, `GET
-/apps/{app}/update` and the consent page's sheets and `approval_step` take; every fact comparing the
-two sides is unknown, `null` in the API (`egress::verdict_json`: `egress`, `stateVersionChanged`,
-`newMethods`, `removedMethods`, `signerChanged`) and "Unknown" on the sheet, and apply refuses one
-naming anything else).
-An `ApproveUpgrade` or `UpgradeApp` whose class carries an `unclassified` reason is
-`Feature::UnclassifiedUpdates` (rc.35; rc.34 cannot decode the reason): below it
-`api::upgrades::unclassified_gate` refuses the first approval, the upgrade, the unit's upgrade and
-the consent page of such a move under a `secondApprover` policy `409 FEATURE_NOT_ACTIVE` before the
-passkey, and `class_of` logs it without a class otherwise, as rc.34 did (the view still shows it
-red); `UpgradeRecord::class`/`reasons`/`approved_by` keep it (`lastUpgrade`).
-The consent page cannot open such an update: `upgrade_request` reads the "before" facts through
-`release_of_app`, which is `None` once the release is uninstalled (`UninstallPackage` allows it
-while another release ships the same WASM), so a package-bound session gets `404` from
-`Principal::within` and any other `400 NOT_A_RELEASE`; `api::upgrades::upgrade_app` falls back to
-`app.release` and takes it (`instance update`, `instance approve-update`).
-Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org, app?, policy? }` by an owner
-or admin (`approves_upgrades`), consent `org:<org> / __set_upgrade_policy /
-system::upgrade_policy_args`, kept on `Org::upgrade_policy` and `Org::app_upgrade_policies` (a move
-drops the app's, `move_app`); `types::UpgradePolicy { autoApply: never | noDestinations, holdHours,
-secondApprover }`, `holdHours` in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS` (`BAD_UPGRADE_POLICY`);
-`SystemState::upgrade_policy_of` (app, org, default).
-`secondApprover` acts through `ApproveUpgrade` (consent `<app> / __approve_upgrade /
-system::approve_upgrade_args`, `POST /apps/{app}/upgrade-approvals { version, unit? }`) logs a
-`types::PendingApproval` in `Org::pending_upgrades` (one per app; `targets` for a unit;
-`ONE_APPROVAL` without the policy or for a green class, `APPROVAL_PENDING` for another's live one of
-the same move); `SystemState::update_gate` (apply of every non-operator `UpgradeApp` through
-`run_update_gate`, and `run_upgrade`/`upgrade_app` before the passkey) lets a red or unclassified
-move through only with another approver's live approval covering it (`approval_for`,
-`approval_live`: within `MAX_APPROVAL_AGE_SECS` of the upgrade's `at`, approver still an owner or
-admin, not every covered app at its target), else `SECOND_APPROVAL_REQUIRED`; `drop_spent_approvals`
-after each upgrade.
-A unit's run is judged once, under its instance's policy (`run_update_gate`, `api::unit_gate` for
-`upgrade_unit` before the passkey; the consent page's `upgradeUnit` asks `approval_step` over the
-unit's class and targets, so a unit red only through a member is approved first there): the
-instance's `UpgradeApp` carries the unit's class (`api::upgrades::run_class`) judged over the run's
-targets, its approval must have the same `targets` (`approval_for` looks at every live approval, so
-a parent unit's covering one never hides it), and each member the run moves takes the instance's
-judgement once the instance is `done` in that run (its own class still checked), so a member's own
-policy (which governs it alone) never stops a unit half way.
-Only a `__upgrade_unit` consent keeps `targets` on a run (`StartUpgradeRun` drops any other run's,
-whatever the entry lists), and its members are the instance's `links` (`upgrade_run_apps`).
-`POST /apps/{app}/upgrade-approvals` answers `approval` in the `pendingApprovals` shape
-(`api::upgrades::approval_json`).
-The apply errors carry their code (each a `system::Rejection` of its own `RejectionKind`).
-`autoApply` (`noDestinations`: a green update that removes no method and moves none of the apps it
-created, of an app whose unit has no destinations before or after) and `holdHours` act through updates that apply on their own
-(below).
-Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST /apps/{app}/upgrade-policy`
-(`policy_json`), `GET /apps/{app}/update` adds `policy`, `pendingApprovals`,
-`available.approvalsNeeded`/`approvedBy` (`api::upgrades::update_view`), `GET
-/orgs/{org}/updates?after=` (owners and admins, `MAX_UPDATES_PAGE` apps a page, those with an update
-or an approval waiting).
-`meroctl org upgrade-policy|updates`, `meroctl instance upgrade-policy|approve-update`.
+#### The class
+
+- The API's `UpgradeApp` carries `class` (`types::UpgradeClass`) from `api::upgrades::move_class`; `None` for a raw bundle, another package or an unreadable release.
+- `SystemState::check_class` re-derives it, following the unit through `links` as deep as `MAX_UNIT_DEPTH`, and refuses `UPGRADE_CLASS_MISMATCH`.
+  It also refuses more than `MAX_CLASS_REASONS` reasons.
+- `egress::judged_update` is the one verdict that `approve_upgrade`, `api::upgrades::class_of`, `GET /apps/{app}/update` and the consent page's `approval_step` take.
+- `egress::verdict_json` renders unknown facts (`egress`, `stateVersionChanged`, `newMethods`, `removedMethods`, `signerChanged`) as `null`.
+- `api::upgrades::unclassified_gate` answers the `409 FEATURE_NOT_ACTIVE` below `Feature::UnclassifiedUpdates`; otherwise `class_of` logs such a move without a class.
+- `UpgradeRecord::class`, `reasons` and `approved_by` keep it.
+- The consent page's `upgrade_request` reads the "before" side through `release_of_app`, which is `None` once that release is uninstalled; `api::upgrades::upgrade_app` falls back to `app.release`.
+
+#### Policies
+
+- `SetUpgradePolicy` (`Feature::UpgradePolicies`) needs `approves_upgrades`; its consent args are `system::upgrade_policy_args`.
+- It is kept on `Org::upgrade_policy` and `Org::app_upgrade_policies`; `move_app` drops the app's.
+- `types::UpgradePolicy`'s `holdHours` must lie in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS` (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` resolves app, org, default.
+
+#### A second approver
+
+- `ApproveUpgrade` (consent args `system::approve_upgrade_args`) logs a `types::PendingApproval` in `Org::pending_upgrades`, with `targets` for a unit.
+  It answers `ONE_APPROVAL` without the policy or for a green class, and `APPROVAL_PENDING` for another's live approval of the same move.
+- `SystemState::update_gate` is asked by `run_upgrade` and `upgrade_app` before the passkey and, through `run_update_gate`, at apply of every non-operator `UpgradeApp`.
+- `approval_for` and `approval_live` find a covering approval, else `SECOND_APPROVAL_REQUIRED`; `drop_spent_approvals` runs after each upgrade.
+- A unit is judged once under its instance's policy: `run_update_gate` at apply and `api::unit_gate` for `upgrade_unit` before the passkey.
+  The instance's `UpgradeApp` carries the unit's class (`api::upgrades::run_class`) over the run's targets.
+- `approval_for` looks at every live approval, so a parent unit's covering one never hides the instance's own.
+- `StartUpgradeRun` drops `targets` from any run but a `__upgrade_unit` consent's.
+- Each apply error is a `system::Rejection` of its own `RejectionKind`.
+
+#### Routes
+
+- `GET|POST /orgs/{org}/upgrade-policy` and `GET|POST /apps/{app}/upgrade-policy` (`policy_json`).
+- `GET /apps/{app}/update` adds `policy`, `pendingApprovals` and `available.approvalsNeeded`/`approvedBy` (`api::upgrades::update_view`).
+- `POST /apps/{app}/upgrade-approvals` answers `approval` in the `pendingApprovals` shape (`api::upgrades::approval_json`).
+- `GET /orgs/{org}/updates?after=` pages `MAX_UPDATES_PAGE` apps.
+- CLI: `meroctl org upgrade-policy|updates`, `meroctl instance upgrade-policy|approve-update`.
 
 ### Updates on their own, restore points and undo
 
-(`system/updates.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs:
-protocol upgrades "Updates that apply on their own".)
+Code: `system/updates.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`.
 
-Staged rollouts (waves across a deployment's instances) are not part of core: pacing across
-customers is fleet orchestration.
-*On its own* (`Feature::AutoUpdates`, rc.34): the system leader's pass (`Node::auto_update` from
-`reconcile`, every `AUTO_UPDATE_EVERY`, at most `MAX_AUTO_UPDATES_PER_PASS` apps tried; skipped ones
-do not count) takes `SystemState::auto_update_candidates(at)` (policy `noDestinations`; per app the
-releases that may apply, newest first, never one a failed update or an undo left), classifies them
-newest first (`move_class`, at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's
-first green one through `api::upgrades::auto_upgrade` -> `run_upgrade` (`Upgrader::auto`,
-`Caller::System`, actor `system::AUTO_UPDATE`): a release red only by its code (state version,
-delegated methods) never holds back a green one below it, and a green one that drops a method
-(`removed_methods`, read from the leader's verdict, `api::upgrades::move_verdict`) waits for a
-person as a red one does: another app may call it.
-Only the release's own failure is noted (`UpgradeFailed`: the group ran it and it failed or refused
-it); one before anything ran (refusal, restore point, runtime, no leader) is not, and the leader
-retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:
-`AUTO_UPDATE_RETRY_FIRST_SECS` doubling to `AUTO_UPDATE_RETRY_MAX_SECS`, and moves found not green
-for `NOT_GREEN_KEPT_SECS`, each at most `MAX_AUTO_UPDATE_MEMORY`).
-Passes take turns (`Node::auto_update_turn`): one called while another runs, a test's beside the
-timed one, waits for it, so two never upgrade the same app together; a pass off the system leader
-moves nothing and one that loses the leadership stops before its next upgrade (`leads_system`).
-An automatic `UpgradeFailed` carries `from_release` (`Feature::AutoUpdates`); apply notes nothing
-when the app runs the target already or no longer runs that release (another move won).
-`UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that actor); apply
-judges `SystemState::auto_update_gate`: policy, green class (and `check_class`), newer release of
-its package, not a unit member, the logged unit with no destination before or after, a release that
-keeps the unit's members where they are (`moves_members` over `release_of_use`, which `unit_members`
-picks with too; `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold
-(`at` >= `installedAt`, or the deployment offer's `addedAt`, + `holdHours`), a restore point
-(`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`; `UpgradeRecord::auto`).
-Every update decision's time is `types::update_now` (`testing::shift_update_clock` moves it in
-tests).
-*Restore points* (`Feature::RestorePoints`): `run_upgrade` takes one before an upgrade that runs on
-the group (`api::upgrades::take_restore_point`: `Node::take_restore_point`, here or a replica's
-`internal/restore-point { op: take }`; the group's `fresh_snapshot` written with `backup::write`
-into `<data>/restore-points/<app>/`), `{}` when nothing runs on the group, and `UpgradeApp {
-restore_point }` makes it `AppRecord::restore_point` (`types::RestorePoint`; replaced by each
-upgrade, cleared by one without, by `RestoreApp`, spent by `FinishRestore` after its undo).
-A manual upgrade goes on without one (warn); an automatic one does not.
-`sweep_restore_points` keeps the named file and those under `RESTORE_POINT_GRACE`.
-*Undo*: `UndoUpgrade { app_id, apps: { app: replicas } }` (consent `<app> / __undo_upgrade /
-SystemState::undo_args`; owner or admin; `undo_set`: the app and the members whose restore point is
-of the same run; `may_undo`: within `UNDO_WINDOW_SECS` of the upgrade's `at`, the app still on its
-target, or a retry while its restore runs) reverts bundle, compute and release and, with a file,
-moves the app to a new group with `PendingRestore { seed: the file's node }` as `RestoreApp` does;
-`POST /apps/{app}/undo` then asks that node to seed it (`Node::seed_undo` -> `seed_undo_here` ->
-`seed_restore`, in its own task, once a fresh system read shows it the undo: it may be a follower
-behind the commit) and waits `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites`: entries since, last
-write, `any`, read from the app's current replicas whether or not the restore point's node still
-hosts it (it may be behind its group; `restore_point_here` gives only `takenAt`),
-`Node::group_progress` over `internal/last-write`'s `appliedIndex`: every replica asked, the
-furthest of a majority, `furthest_progress`; an index below the restore point's, none, or no
-majority is `null`, `any` included, never `0`/`false`: `api::undo::lost_writes`).
-Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`, `UNDO_NOT_AS_NAMED`,
-`UNDO_RELEASE_GONE` (the release it returns to is uninstalled while another release's WASM kept the
-bundle; `UndoUpgrade { release_installed }`, `Feature::UndoToInstalledRelease` rc.36,
-`SystemState::undo_release_installed`, or the logged cluster version bringing it; an undo to a
-release the deployment no longer offers is allowed), `409 RESTORE_POINT_UNAVAILABLE`.
+#### The pass
+
+1. `Node::auto_update` runs from `reconcile` every `AUTO_UPDATE_EVERY` and takes `SystemState::auto_update_candidates(at)`.
+2. It classifies moves newest first with `move_class`, at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS`.
+3. It runs each app's first green move through `api::upgrades::auto_upgrade` → `run_upgrade` (`Upgrader::auto`, `Caller::System`, actor `system::AUTO_UPDATE`).
+4. A green move that drops a method is found from the leader's verdict (`api::upgrades::move_verdict`) and waits for a person.
+5. Failures before anything ran are kept in `node::auto_updates::AutoUpdateMemory` (at most `MAX_AUTO_UPDATE_MEMORY`), with the backoff and `NOT_GREEN_KEPT_SECS`.
+
+Passes take turns (`Node::auto_update_turn`), so a test's pass waits for the timed one.
+A pass that loses the system leadership stops before its next upgrade (`leads_system`).
+
+#### At apply
+
+- `UpgradeApp { auto }` carries no consent; `apps::authorize` admits it only with `system::AUTO_UPDATE`.
+- `SystemState::auto_update_gate` judges it, with `SystemState::moves_members` over `release_of_use` (as `unit_members` picks) for `UpgradeApp { members_stay }` (`Feature::AutoUpdateMembersStay`).
+- An automatic `UpgradeFailed` carries `from_release`; apply notes nothing when another move won.
+- Refusal codes are `AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER` and `RESTORE_POINT_REQUIRED`; `UpgradeRecord::auto` marks the record.
+- Every update decision's time is `types::update_now`, which `testing::shift_update_clock` moves in tests.
+
+#### Restore points
+
+- `run_upgrade` calls `api::upgrades::take_restore_point` → `Node::take_restore_point`, here or on a replica through `internal/restore-point { op: take }`.
+- It writes the group's `fresh_snapshot` with `backup::write`; a move that runs nothing on the group records `{}`.
+- `UpgradeApp { restore_point }` sets `AppRecord::restore_point`; an upgrade without one clears it, `RestoreApp` clears it, and `FinishRestore` spends it after an undo.
+- `sweep_restore_points` keeps the named file and those younger than `RESTORE_POINT_GRACE`.
+
+#### Undo
+
+- `UndoUpgrade { app_id, apps }` (consent args `SystemState::undo_args`) covers `undo_set` and is judged by `may_undo`.
+  A retry while the restore runs is allowed.
+- It reverts bundle, compute and release and, with a file, moves the app to a new group with `PendingRestore { seed }`, as `RestoreApp` does.
+- `POST /apps/{app}/undo` then has that node seed it (`Node::seed_undo` → `seed_undo_here` → `seed_restore`) in its own task, after a fresh system read shows the undo, and waits `UNDO_WAIT`.
+- `lostWrites` is `api::undo::lost_writes` over `Node::group_progress` (`internal/last-write`'s `appliedIndex`, `furthest_progress`).
+  `restore_point_here` gives only `takenAt`.
+- `UNDO_RELEASE_GONE` is judged by `UndoUpgrade { release_installed }` (`Feature::UndoToInstalledRelease`, `SystemState::undo_release_installed`) or by the logged cluster version.

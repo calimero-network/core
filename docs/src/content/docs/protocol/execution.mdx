@@ -347,3 +347,140 @@ A **view** runs the same way against a replica's applied state, with search
 available; a write traps `HostDenied` ([Reads](/protocol/reads/)). An
 **upgrade** swaps the bundle; a named migration is refused
 `MigrationsNotSupported` ([Upgrades](/protocol/upgrades/)).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Reserved methods
+
+Code: `node::reserved_method`, `HOST_METHODS`.
+
+The node's own commands (`__upgrade`, `__blob`, `__blob_forget`, `__blob_revoke`, `__pipeline_start`, `__pipeline_cancel`, `__secret_set`, `__secret_clear`) run only for a `CallRequest::host` request, which only the API builds.
+`/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and the leader refuses one named by an xcall or follow-up.
+
+### Outbound HTTPS
+
+Code: `calimero-outbound`.
+
+- `Config::outbound` comes from `--settings` (`[outbound]`).
+- `Node::outbound_for` hands a client only to `call_local`'s runs (not a read-only member's) and to actions (`NodeHttp`), for a signed release that declares prefixes.
+- Identity is (package, pinned signer); approvals are `Org/Account::outbound_approvals[signer]`, set by `SetOutboundApproval` and merged at apply by `merge_approval`.
+- The request is made inside the propose lock on its own thread (`run_blocking`); a leader-race re-run sends it again.
+
+#### The egress switch
+
+- `SystemCmd::SetEgress { org, app?, egress }` is ungated: an earlier release cannot decode it (a hard cutover).
+- It sets `Org::egress_off` or `AppRecord::egress_off`, read through `SystemState::egress_off`; the consent args are `system::egress_args`.
+- `outbound_for` wraps every client in `calimero_outbound::egress_gated`, which reads the system state before each request and refuses `EgressOff:`.
+- `SetOutboundApproval` for an org whose switch is off is `409 EGRESS_OFF`; `api::refuse_egress_off` answers it before the passkey, also on the consent page's `outbound`.
+- Turning egress on goes only through the consent page (`setEgress`, `consent_page::orgs::egress`, a red `egressOn` attention); other principals get `403 CONSENT_PAGE_REQUIRED` (`Principal::consent_page`).
+- `GET /apps/{app}/egress` answers `egress`, `offBy` and `summary` (`egress::NO_EGRESS`); `GET /orgs/{org}` answers `egressOff`.
+
+### Engine and host
+
+Code: `node/component.rs`.
+
+- One `WasmtimeEngine` per node (`Node::app_engine`) caches compiled artifacts under `<data_dir>/components`, each with a MAC under a key derived from K_c.
+- At start the engine deletes another wasmtime's or configuration's artifacts.
+- `Node::sweep_component_cache` runs every `COMPONENT_CACHE_SWEEP_EVERY` (1 h, the first an hour after start).
+  It deletes artifacts of bundles no app uses and this node does not keep prepared, once unmodified for an hour.
+- `Node::prepared_for` prepares a bundle once, single-flight.
+
+### Component state
+
+Code: `component::ComponentState`.
+
+- Stored keys, generation prefix included, are hidden rows `rows::CKV`, sealed and HMAC-keyed.
+- Each replica also keeps them in memory as `component::Kv`, an `imbl::OrdMap`, so a run's `StateView` is an O(1) clone with ordered `range` scans.
+- `apply` writes the next version sharing all it does not change, so a write while a run holds the previous one copies O(log n) nodes.
+- `restore` (a restart, a snapshot install) reads it back from the rows.
+- `ComponentHead` (`last_ts_ms`, `last_id`, `install_ts_ms`, `timers`, the idempotency rings) lives in the group's `Head`.
+- `last_write_ms` (`ComponentHead::note_write`) is the time of the newest call with a diff or files, or of an uploaded blob or file; it is left out at zero.
+
+### Calls
+
+`Node::call_component` runs inside `Group::propose_led`, off the async workers (`node::off_workers`, which every run uses).
+`base_index` is the app's last entry (`AppState::last_index`), and answers carry the node's receipt.
+
+### ABI gate
+
+Code: `Node::abi_gate`, `abi_check`.
+
+- It reads the ABI of the bundle the group runs; `/intents` takes `view` and `confirm` from it, and `AppRecord::confirm_methods` is always empty.
+- A `compute` or `computeResult` method is `WrongKind` on `/intents` and `/views` for every caller, System included.
+
+### Unique ids
+
+- In `Node::next_id`, `id_term` is the term `propose_led`'s leadership check found; `id_seq` is a per-term counter continuing from `max(memory, AppState last_id)`.
+- A deposed leader's entry never commits, or applies as a no-op through `base_index`.
+- A leader restored into its old term catches up with its own log before its first proposal, so the counter continues past every entry it appended.
+
+### Time and timers
+
+`Node::app_clock` adds `Config::clock_offset_ms`; tests move it with `Node::advance_clock` (feature `testing`).
+`lib.rs` polls every `node::TIMER_POLL`, and `Node::tick_timers` proposes each due slot as `ComponentCmd::Tick`.
+
+### Events
+
+A component's `EventRecord` carries its `audience` and caller.
+The stream (`api::local_events`, or a peer's `internal/events`) and a call's answer check `SystemState::receives` when they send it.
+
+- The stream judges on fresh system state, since an event made after a removal committed can reach a replica that has not applied it.
+- A read-index round, applied here (`Node::sys_caught_up`), covers the backlog and then each batch of up to `api::MAX_EVENT_BATCH` live events.
+- A replica that cannot catch up within `Config::read_wait` ends the stream; the subscriber resumes from its last id.
+- Every stream `gate` lets open also re-judges its principal before each batch (`api::still_admitted`, `Principal::admitted_on`).
+  A session token's own expiry does not end a stream, as it is refreshed.
+
+### The usage book
+
+Code: `component::RunUsage`, `DayUsage`.
+
+- `componentInit`, `componentCall` and `componentTick` outcomes carry `usage { fuel, wallMs, writes, bytesWritten, events }`, measured by the leader (`Outcome::from_host`); a `HostDenied` replacement keeps fuel, wall time and writes.
+- Apply adds it to `ComponentHead::usage` (a `UsageBook`) per UTC day of the entry's `ts_ms`; followers never measure, so every replica's book is the same.
+- Pruning keeps `USAGE_DAYS` back from the earlier of that day and the day after the newest held, so a far-future stamp never erases real days.
+- Not counted: timeouts (never logged), views, actions and compute runs.
+- The API gives every figure as a decimal string, so no client loses precision on a 64-bit value.
+
+### What a component sees
+
+- `component::SysDirectory` answers the org, owner and the caller's role and teams; `orgs-of` answers only the app's own organization, so an app learns nothing of the caller's other organizations.
+- The host refuses event handlers and TEE runs to a component, and an xcall into a wasmer app is a dead letter.
+
+### Apply reads through the batch
+
+Code: `component.rs`: `outgoing_in`, `action_in`, `replay_in`.
+
+A host row an entry's apply reads comes from its `StateTx`, never the group's committed state.
+A catching-up replica applies many entries in one batch and must end where its leader, which applied them one at a time, did.
+A row that cannot be read or decoded (`decode_in`, `get_json`) fails the batch (`StateTx::fail`) instead of reading as absent, so that replica stops on the entry rather than apply it differently.
+
+### Actions
+
+Code: `component/action.rs`.
+
+- `abi_check` lets an account or API key start one; the outcome carries `ActionOut { id: a.<term>.<seq>.0 }`.
+- Apply records it pending (`rows::CACT ‖ id`, `ActionsHead::pending`, at most `MAX_PENDING_ACTIONS`) with the starter's `Caller` and the entry time.
+- `Node::run_actions` runs pending ones from the leader's timer poll, at most `MAX_ACTION_WORKERS` at once (the `action_slots` semaphore).
+- `attempt_action` runs on a blocking thread with `kind = action`, `Budget::action` and a monotonic clock from the start.
+- `NodeAction` serves `view` (`Node::view`, strong) and `call` (`call_component` with the key derived from the action's key, method, arguments and occurrence and `CallRequest::action`, which alone reaches `allow(action)` methods).
+- The end is `componentActionEnd`; a timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`.
+- `ActionFailed` is an event with an `Accounts` audience.
+- An end another leader logged first changes nothing.
+
+### Outbound HTTP from calls
+
+Code: `RunExtras::outbound`, `TimedHttp`.
+
+- Each response is awaited at most `CALL_FETCH_TIMEOUT`, and never past the run's deadline.
+- The exchange is recorded as `component::HttpRecord` in `Outcome::http`, bodies cut to 64 KiB with their lengths.
+
+### A run's deadline covers its host calls
+
+Wasmtime's epoch deadline is checked only while guest code runs, so a run waiting in a host call would wait as long as the host does: a sync xcall up to `SYNC_XCALL_WAIT`, past a 2 s budget.
+
+- `run_with` and the action runner take `deadline = now + budget.wall_clock` and hand it to `HostCore::with_deadline`.
+- Every host that waits honours it: `TimedHttp` (actions' outbound included), `NodeXcall` (`wait_all`) and `NodeAction` (`wait`).
+- A wait that reaches the deadline ends the run `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, as an overrun in guest code does.
+- A `Timeout` is never logged (`Outcome::is_retryable`), and replicas apply only logged outcomes, so the deadline changes no entry and needs no gate.
