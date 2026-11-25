@@ -1,11 +1,10 @@
 # Deployments owned by an organization: design proposal
 
-Oct 31, 2026 · Status: **implemented**: deployments, offers, deployer grants, the cluster
+Oct 31, 2026 · Status: **largely implemented**: deployments, offers, deployer grants, the cluster
 owner, `/d/{deployment}/` and per-deployment hosts, `AppRecord::deployment` and
 `GET /deployments/{id}/orgs` (phases 1 to 3; `crates/node/src/system/deployments.rs`,
-`crates/node/src/api/deployments.rs`). The consent page names the deployment, an organization owns
-one only holding a recovery key (section 9), and a deployment changes hands by offer and
-acceptance (section 8, "Transfer"), as decided on Nov 23, 2026 (section 14). Dropped: migrating
+`crates/node/src/api/deployments.rs`). Decided Nov 23, 2026 and not built yet: the consent
+page naming the deployment, the recovery-key guard and transfer (section 14). Dropped: migrating
 old installs into deployments (section 14). Phase 5 is mdma's.
 
 A developer deploys apps from Calimero Cloud: their releases are installed on a
@@ -159,7 +158,7 @@ for `Owner::Org`, a member holding `MANAGE_APPLICATION` org-wide there; for
 | `CreateDeployment { name, owner }` | An empty deployment | `Owner::Org`: the actor holds `MANAGE_APPLICATION` there and the org holds a recovery key (section 9). `Owner::Account`: the actor is that account |
 | `OfferApp { deployment, app, package, version }` | Installs the release if absent (as `InstallPackage` does today, pinned signer and all), then adds or replaces the entry | A manager |
 | `WithdrawApp { deployment, app }` | Removes the entry. Refused while an instance created from this deployment runs that app's package. Removes the release when it is no longer offered or used | A manager |
-| `OfferDeployment { deployment, to }` | Records a pending transfer | The owner account, or an owner or admin of the owning organization (more than a manager); `to` exists and is not the owner; no live offer pending |
+| `OfferDeployment { deployment, to }` | Records a pending transfer | A manager; `to` exists and is not the owner; no live offer pending |
 | `AcceptDeployment { deployment, to }` | Moves ownership to `to` | A manager of `to`, before the offer lapses; `to` holds a live deployer grant where deployments are granted, an org `to` holds a recovery key (section 9), and `to` stays within `MAX_DEPLOYMENTS_PER_OWNER` |
 | `CancelDeploymentTransfer { deployment }` | Drops a pending transfer | A manager of either side |
 | `DeleteDeployment { deployment }` | Removes an empty deployment | A manager |
@@ -289,10 +288,9 @@ so when a teammate first opens a deployment on a cluster.
 The owner hands a deployment over in two steps; any owner to any owner (account
 or org on either side).
 
-- The owner offers it to `to` (`OfferDeployment`): the owner account, or an owner
-  or admin of the owning organization. A `MANAGE_APPLICATION` holder manages the
-  deployment but cannot move it out of the organization. One offer at a time: a
-  second is refused while one is pending and has not lapsed; the owner cancels first.
+- A manager of the current owner offers it to `to` (`OfferDeployment`). One offer
+  at a time: a second is refused while one is pending and has not lapsed; the
+  owner cancels first.
 - A manager of `to` accepts it (`AcceptDeployment`), naming `to` in their consent,
   within `TRANSFER_TTL_SECS` (7 days) of the offer, judged at the commands' own
   times. The receiver must hold a live deployer grant where deployments are granted
@@ -301,20 +299,14 @@ or org on either side).
   hold a recovery key (section 9).
 - A manager of either side cancels a pending offer (`CancelDeploymentTransfer`).
   Deleting the deployment drops it.
-- The id, name, offers and customers' instances stay; only the owner changes.
-  There is no rename. The previous owner's secret values are dropped: an offer the
-  new owner makes could otherwise declare a secret's name and send its value to a
-  host of its own. The new owner sets its own values.
-- An offer is accepted only while whoever made it may still hand the deployment
-  over, so removing that person, lowering their role, or recovering the
-  organization ends their offer.
+- The id, name, offers, secrets and customers' instances stay; only the owner
+  changes. There is no rename.
 - The deployment records the last hand-over (`transferred: { from, at }`).
   Customers are not asked and get no email; the next update sheet of each of
   their instances, when the hand-over came after that instance's creation or last
   upgrade, carries a line naming the new owner ("acme-labs is now run by the
   organization Globex"), so they learn who now chooses their updates before they
-  approve one. Until a person approves an update of the instance after the
-  hand-over, no update applies to it on its own.
+  approve one.
 
 One change at the organization covers its whole deployment; nothing is
 rewritten per app or per deployment.
