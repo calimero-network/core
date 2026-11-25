@@ -1,6 +1,7 @@
 //! Sealed files of component apps: the encrypted stream a file is stored as
-//! (`seal`), and the wrapping of its data key under the app's file key and to a
-//! job node (`wrap`). Plaintext exists only inside the TD.
+//! (`calimero_sealed::file`, re-exported here), and the wrapping of its data key
+//! under the app's file key and to a job node (`wrap`). Plaintext exists only
+//! inside the TD.
 
 use crate::backup::tag;
 
