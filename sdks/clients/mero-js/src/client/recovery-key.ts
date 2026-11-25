@@ -1,5 +1,5 @@
 /**
- * An organization's recovery key (core `docs/specs/org-recovery.md`): an
+ * An organization's recovery key ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)): an
  * Ed25519 key whose 32-byte seed the owner keeps offline. The node stores only
  * the public half; the seed signs, here and never on a node, the statement
  * that hands the organization to one account. Byte-for-byte core's

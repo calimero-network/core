@@ -1,7 +1,6 @@
-//! Rooms (`apps/rooms`) on the in-process three-node cluster: acceptance criteria A1
-//! (the shared scenario), A3 (no double booking under contention) and A5 (followers honour
-//! `minIndex` and hide titles), spec `docs/specs/app-runtime-v0.14.md` section 12.
-//! A4 (the fault test) runs against real processes: `tests/fault/rooms_fault.py`.
+//! Rooms (`apps/rooms`) on the in-process three-node cluster: the shared scenario, no double
+//! booking under contention, and followers that honour `minIndex` and hide titles. The fault
+//! test runs against real processes: `tests/fault/rooms_fault.py`.
 
 use crate::common;
 

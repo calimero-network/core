@@ -61,9 +61,8 @@
 //! same site there as on the package's host ([`Node::served_site`]); unlike
 //! the package's host it is a registered origin, under its own rp-id, so
 //! ceremonies, CORS and session binding go as they do for any registered
-//! origin. TLS for it ends where it does for the apps domain, inside the TD
-//! in front of merod, with a certificate mdma orders over the node's quote;
-//! design and rollout in `docs/specs/custom-domains.md`.
+//! origin. merod holds no certificate for it: TLS ends in front of merod, as it
+//! does for the apps domain ([Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains)).
 
 use core::future::Future;
 use std::collections::{BTreeMap, HashMap};
