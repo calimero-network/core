@@ -83,18 +83,16 @@ impl Rig {
             n.node.set_compute_limits(test_limits());
         }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
+        let _org = alice.orgs().create("alice org", None, None).await.unwrap();
         let both = common::components("fixture-compute");
         let compute = both.compute.expect("a compute component");
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
             .packages()
-            .upload(mpk_with(
-                "com.test.compute",
-                "1.0.0",
-                &both.app,
-                Some(&compute),
-                &key,
-            ))
+            .upload(
+                mpk_with("com.test.compute", "1.0.0", &both.app, Some(&compute), &key),
+                None,
+            )
             .await
             .unwrap();
         let app = alice

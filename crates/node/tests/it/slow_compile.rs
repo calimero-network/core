@@ -79,7 +79,7 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
     let install = {
         let node = Arc::clone(&node);
         tokio::spawn(async move {
-            node.install_upload(mpk, calimero_node::system::OPERATOR)
+            node.install_upload(mpk, calimero_node::system::OPERATOR, None)
                 .await
         })
     };

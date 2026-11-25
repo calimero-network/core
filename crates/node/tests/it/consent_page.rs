@@ -29,6 +29,8 @@ struct Declares<'a> {
     publisher_upgrades: bool,
     /// `uses`, as the manifest's JSON.
     uses: Option<Value>,
+    /// The display name (default `Notes`).
+    name: Option<&'a str>,
 }
 
 /// A signed single-service `.mpk` of `PACKAGE`, and its manifest's hash.
@@ -59,7 +61,7 @@ fn release_of(
         )),
         min_runtime_version: "0.1.0".to_owned(),
         metadata: Some(calimero_bundle::BundleMetadata {
-            name: "Notes".to_owned(),
+            name: d.name.unwrap_or("Notes").to_owned(),
             description: None,
             author: Some("Example".to_owned()),
             icon: None,
@@ -240,6 +242,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
     })
     .await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let (v1, v1_hash) = release(
         "1.0.0",
@@ -262,8 +265,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             ..Declares::default()
         },
     );
-    let _ = alice.packages().upload(v1).await.unwrap();
-    let _ = alice.packages().upload(v2).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
+    let _ = alice.packages().upload(v2, None).await.unwrap();
     let app = alice
         .apps()
         .create(typed(
@@ -604,12 +607,13 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
 async fn an_upgrades_page_names_what_the_components_abis_change() {
     let c = Cluster::start(3).await;
     let (alice, _) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let d = Declares::default();
     let (v1, _) = release("1.0.0", &fixture("apps/fixture-notes-v1"), &publisher, &d);
     let (v2, _) = release("2.0.0", &fixture("apps/fixture-notes-v2"), &publisher, &d);
-    let _ = alice.packages().upload(v1).await.unwrap();
-    let _ = alice.packages().upload(v2).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
+    let _ = alice.packages().upload(v2, None).await.unwrap();
     let app = alice
         .apps()
         .create(typed(
@@ -713,6 +717,7 @@ async fn an_upgrades_page_names_what_the_components_abis_change() {
 async fn a_bundle_swapped_under_the_same_version_is_refused() {
     let c = Cluster::start(3).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
     let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
     let wasm2 = variant(&kv_wasm(), "v2");
@@ -735,8 +740,8 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
         },
     );
     assert_ne!(shown_hash, swapped_hash);
-    let _ = alice.packages().upload(v1).await.unwrap();
-    let _ = alice.packages().upload(shown).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
+    let _ = alice.packages().upload(shown, None).await.unwrap();
     let app = alice
         .apps()
         .create(typed(
@@ -771,7 +776,7 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
         .await
         .map(wire)
         .unwrap();
-    let _ = alice.packages().upload(swapped).await.unwrap();
+    let _ = alice.packages().upload(swapped, None).await.unwrap();
 
     let (code, refused) = page.post("approve", json!({})).await;
     assert_eq!(
@@ -796,6 +801,344 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
         .unwrap();
 }
 
+/// The prefix v1 of [`reached_v1_private_v2`] declares.
+const OPEN_PREFIX: &str = "https://open.example/api/";
+
+/// Alice's private v1 and v2 of `PACKAGE`, v1 declaring [`OPEN_PREFIX`] and v2
+/// `secret_prefix`, and an instance of v1 that anyone reaches; Alice and Bob each in an
+/// organization of their own.
+async fn reached_v1_private_v2(
+    c: &Cluster,
+    secret_prefix: &str,
+) -> (
+    calimero_client::Client,
+    calimero_client::Client,
+    SoftAuthenticator,
+) {
+    let (alice, _a) = signed_up(c, 0, "alice").await;
+    let (bob, bob_pk) = signed_up(c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _o = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+    for (version, outbound) in [("1.0.0", OPEN_PREFIX), ("2.0.0", secret_prefix)] {
+        let (mpk, _) = release(
+            version,
+            &kv_wasm(),
+            &publisher,
+            &Declares {
+                outbound: &[outbound],
+                ..Declares::default()
+            },
+        );
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
+    }
+    let _ = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "open", "package": PACKAGE, "version": "1.0.0",
+            "grants": [{ "kind": "anyone" }] }),
+        ))
+        .await
+        .unwrap();
+    (alice, bob, bob_pk)
+}
+
+/// Reaching an instance of v1 shows the outbound sheet of v1, the newest release Bob reads,
+/// never the private v2: v2's prefix is answered as one no release declares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_outbound_sheet_never_shows_a_release_its_asker_cannot_read() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (_alice, bob, _b) = reached_v1_private_v2(&c, SECRET).await;
+    let sheet = |subject: Value| {
+        bob.consent().page_create(typed(json!({
+            "kind": "outbound",
+            "scope": "account",
+            "subject": subject,
+            "returnTo": format!("{ORIGIN}/settings"),
+        })))
+    };
+    let made = sheet(json!({ "package": PACKAGE }))
+        .await
+        .map(wire)
+        .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["outbound"]["release"], "1.0.0", "{model}");
+    assert_eq!(
+        model["outbound"]["declared"],
+        json!([OPEN_PREFIX]),
+        "{model}"
+    );
+    assert!(!model.to_string().contains(SECRET), "{model}");
+    for prefix in [SECRET, "https://guess.example/"] {
+        let e = sheet(json!({ "package": PACKAGE, "prefixes": [prefix] }))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_DECLARED"), "{prefix}: {e}");
+    }
+}
+
+/// Approving a package's outbound hosts approves the prefixes of the newest release its
+/// approver reads: Bob, who reaches only an instance of v1, approves v1's and never learns
+/// the private v2's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (_alice, bob, mut bob_pk) = reached_v1_private_v2(&c, SECRET).await;
+    let bobs = home_org(&bob).await;
+    let got = bob
+        .orgs()
+        .outbound_approval(
+            &bobs,
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            None,
+            Some(&mut bob_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(got["approval"]["prefixes"], json!([OPEN_PREFIX]), "{got}");
+    assert!(!got.to_string().contains(SECRET), "{got}");
+}
+
+/// Reaching an instance of one package reads nothing of another package shipping the same
+/// WASM at the same version: Bob runs the operator's `notes@1.0.0`, and approving outbound
+/// hosts of Acme's private `secret@1.0.0` answers as for a package not installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_outbound_approval_never_reads_another_packages_release_of_the_same_wasm() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _o = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[16; 32]);
+    let secret = Declares {
+        outbound: &[SECRET],
+        ..Declares::default()
+    };
+    let (mpk, _) = release_of("com.test.secret", "1.0.0", &kv_wasm(), &publisher, &secret);
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(mpk).await.unwrap();
+    let _ = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap();
+
+    let bobs = home_org(&bob).await;
+    let mut answers = Vec::new();
+    for package in ["com.test.secret", "com.test.missing"] {
+        let got = bob
+            .orgs()
+            .outbound_approval(
+                &bobs,
+                package,
+                Some(typed(json!("manifest"))),
+                None,
+                Some(&mut bob_pk),
+            )
+            .await
+            .map(wire)
+            .map_err(|e| e.to_string());
+        answers.push(got);
+    }
+    assert!(!format!("{answers:?}").contains(SECRET), "{answers:?}");
+    assert_eq!(answers[0], answers[1]);
+}
+
+/// A session bound to a package learns nothing of a release its account may not read: Bob,
+/// signed in on the origin of Alice's private package, asks for an organization, and the
+/// page names neither the release's display name nor its author and offers no app team, as
+/// for a package not installed; a sign-up begun on that origin names the package id alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_strangers_bound_session_never_shows_a_private_releases_name() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (_bob, bob_key) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1, None).await.unwrap();
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut bob_in_app = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut bob_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "createOrg", "subject": { "name": "bobs" },
+            "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["requestedBy"]["name"], Value::Null, "{model}");
+    assert_eq!(model["requestedBy"]["publisher"], Value::Null, "{model}");
+    assert_eq!(model["appTeam"], Value::Null, "{model}");
+    assert!(!model.to_string().contains("Notes"), "{model}");
+
+    let begun = post(
+        &c.client(2),
+        "auth/passkey/register/begin",
+        json!({ "name": "carol", "origin": app_origin }),
+    )
+    .await
+    .unwrap();
+    let shown = begun["options"]["user"]["name"].as_str().unwrap();
+    assert!(!shown.contains("Notes"), "{shown}");
+}
+
+/// A sign-up on a package's origin names its newest release open to anyone: the operator's
+/// 1.0.0, never the private 2.0.0 Acme installed since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_up_names_the_newest_release_open_to_anyone() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[14; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(v1).await.unwrap();
+    let private = Declares {
+        name: Some("Acme Internal"),
+        ..Declares::default()
+    };
+    let (v2, _) = release("2.0.0", &variant(&kv_wasm(), "v2"), &publisher, &private);
+    let _ = alice.packages().upload(v2, None).await.unwrap();
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let begun = post(
+        &c.client(2),
+        "auth/passkey/register/begin",
+        json!({ "name": "carol", "origin": app_origin }),
+    )
+    .await
+    .unwrap();
+    let shown = begun["options"]["user"]["name"].as_str().unwrap();
+    assert!(shown.contains("Notes"), "{shown}");
+    assert!(!shown.contains("Acme Internal"), "{shown}");
+}
+
+/// The app list names the release an instance runs, never a private sibling that shares its
+/// WASM: Bob's instance of the operator's 1.0.0 lists as 1.0.0, though Acme's private 2.0.0
+/// shipped that WASM first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_app_list_never_names_a_private_sibling_sharing_the_wasm() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[15; 32]);
+    let (v2, _) = release("2.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v2, None).await.unwrap();
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(v1).await.unwrap();
+    let app = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+
+    let listed = bob.apps().list(None, None).await.map(wire).unwrap();
+    let row = listed["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["appId"] == json!(app))
+        .unwrap();
+    assert_eq!(row["version"], json!("1.0.0"), "{listed}");
+    assert!(!listed.to_string().contains("2.0.0"), "{listed}");
+}
+
+/// The app list filters by the package an instance runs, never by the package its WASM was
+/// first recorded under: Bob's instance of the operator's `notes@1.0.0` shares its WASM with
+/// Acme's private `secret@1.0.0`, installed first, and lists under notes only, to his account
+/// and to a session bound to the notes frontend, in `GET /apps` and the account's report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_app_list_filters_by_the_package_an_instance_runs() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+    let (mpk, _) = release_of(
+        "com.test.secret",
+        "1.0.0",
+        &kv_wasm(),
+        &publisher,
+        &Declares::default(),
+    );
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(mpk).await.unwrap();
+    let app = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+    let ids = |listed: Value| -> Vec<Value> {
+        listed["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["appId"].clone())
+            .collect()
+    };
+    let list = |package| bob.apps().list(package, None);
+    let secret = ids(list(Some("com.test.secret")).await.map(wire).unwrap());
+    let missing = ids(list(Some("com.test.missing")).await.map(wire).unwrap());
+    let notes = ids(list(Some(PACKAGE)).await.map(wire).unwrap());
+    assert_eq!(secret, missing);
+    assert_eq!(notes, vec![json!(app)]);
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut bob_in_app = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut bob_in_app).await.unwrap();
+    let bound = ids(in_app.apps().list(None, None).await.map(wire).unwrap());
+    assert_eq!(bound, vec![json!(app)]);
+    let report = in_app
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(report["apps"][0]["app"], json!(app), "{report}");
+    assert_eq!(report["apps"].as_array().unwrap().len(), 1, "{report}");
+}
+
 /// Release and outbound requests through the page, a person's own account
 /// as the scope; the bounds a request is held to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -814,7 +1157,7 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
             ..Declares::default()
         },
     );
-    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
     let back = format!("{ORIGIN}/settings");
 
     // A release: the model says what changes before and after.
@@ -1289,6 +1632,7 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
 async fn a_publisher_upgraded_package_is_upgraded_on_its_organizations_page() {
     let c = Cluster::start(3).await;
     let (alice, _) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
     let (v1, _) = release(
         "1.0.0",
@@ -1305,8 +1649,8 @@ async fn a_publisher_upgraded_package_is_upgraded_on_its_organizations_page() {
         &publisher,
         &Declares::default(),
     );
-    let _ = alice.packages().upload(v1).await.unwrap();
-    let _ = alice.packages().upload(v2).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
+    let _ = alice.packages().upload(v2, None).await.unwrap();
     let create =
         |name: &str, version: &str| json!({ "name": name, "package": PACKAGE, "version": version });
     let app_of = |v: Value| v["appId"].as_str().unwrap().to_owned();
@@ -1405,6 +1749,7 @@ async fn get(c: &calimero_client::Client, path: &str) -> Result<Value, calimero_
 async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, bob_key) = signed_up(&c, 2, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
@@ -1412,7 +1757,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
         .to_owned();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
 
     // Alice and Bob in the app's own frontend: sessions bound to the package.
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
@@ -1766,6 +2111,7 @@ impl Server {
         })
         .await;
         let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+        let _org = alice.orgs().create("alice org", None, None).await.unwrap();
         let (bob, bob_key) = signed_up(&c, 2, "bob").await;
         let (carol, carol_key) = signed_up(&c, 2, "carol").await;
         let (alice_id, bob_id, carol_id) = (
@@ -1775,7 +2121,7 @@ impl Server {
         );
         let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
         let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-        let _ = alice.packages().upload(v1).await.unwrap();
+        let _ = alice.packages().upload(v1, None).await.unwrap();
 
         let org = alice
             .post("orgs", json!({ "name": "guild" }))
@@ -2345,6 +2691,7 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
 async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, _alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, bob_key) = signed_up(&c, 0, "bob").await;
     let (_carol, carol_key) = signed_up(&c, 0, "carol").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -2359,7 +2706,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
         },
     );
     let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
-    let _ = alice.packages().upload(mpk).await.unwrap();
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
     let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
 
     let card = get(&alice, &path).await.unwrap();
@@ -2397,7 +2744,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
     assert_eq!(status(&e), 404, "{e}");
     assert!(e.to_string().contains("no such package version"), "{e}");
 
-    // Bob in the package's own frontend: a session bound to it reads any release.
+    // Bob in the package's own frontend: a session bound to it sees what Bob sees.
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
     let app_origin = format!(
         "http://{}.localhost:{port}",
@@ -2406,7 +2753,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
     let in_app = c.client(1);
     let mut in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
     let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
-    assert_eq!(get(&in_app, &path).await.unwrap(), card);
+    assert_eq!(status(&get(&in_app, &path).await.unwrap_err()), 404);
 
     // Carol, bound to another package's frontend, sees nothing of this one.
     let (other, _) = release_of(
@@ -2416,7 +2763,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
         &publisher,
         &Declares::default(),
     );
-    let _ = alice.packages().upload(other).await.unwrap();
+    let _ = alice.packages().upload(other, None).await.unwrap();
     let other_origin = format!(
         "http://{}.localhost:{port}",
         calimero_node::app_host::label("com.test.other")
@@ -2436,18 +2783,17 @@ async fn a_member_removed_from_the_org_loses_the_capability_card() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
     let (amy, _amy_key) = signed_up(&c, 1, "amy").await;
-    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-    let _ = alice.packages().upload(mpk).await.unwrap();
-    let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
-    assert_eq!(status(&get(&amy, &path).await.unwrap_err()), 404);
-
     let org = alice
         .orgs()
         .create("acme", None, None)
         .await
         .unwrap()
         .org_id;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
+    assert_eq!(status(&get(&amy, &path).await.unwrap_err()), 404);
     let invite = alice
         .orgs()
         .invite_create(
@@ -2483,9 +2829,10 @@ async fn a_member_removed_from_the_org_loses_the_capability_card() {
 async fn a_frontend_creates_an_organization_with_member_capabilities_in_one_approval() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
     let app_origin = format!(
         "http://{}.localhost:{port}",
@@ -2587,6 +2934,7 @@ fn status_of(r: Result<Value, u16>) -> u16 {
 async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, bob_key) = signed_up(&c, 2, "bob").await;
     let (carol, carol_key) = signed_up(&c, 2, "carol").await;
     let carol_id = account_of(&carol).await;
@@ -2596,7 +2944,7 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
         .to_owned();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
     let app_origin = format!(
         "http://{}.localhost:{port}",
@@ -2790,6 +3138,7 @@ async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind(
         .unwrap();
     let behind = (0..3).find(|i| *i != leader).unwrap();
     let (alice, alice_key) = signed_up(&c, leader, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let behind_node = &c.nodes[behind].as_ref().unwrap().node;
     for _ in 0..100 {
         if behind_node.sys(|s| !s.accounts.is_empty()) {
@@ -2803,7 +3152,7 @@ async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind(
     calimero_log::testing::hold_apply(&dir, calimero_node::node::SYSTEM_GROUP);
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
     let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v1, None).await.unwrap();
     assert!(
         behind_node.sys(|s| !s.packages.contains_key(PACKAGE)),
         "the node must not have applied the install yet"
@@ -2837,6 +3186,7 @@ async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind(
 async fn a_unit_upgrades_on_the_page_in_one_approval() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
     let kv = "com.test.unit-kv";
     let uses = |version: &str| Declares {
@@ -2850,7 +3200,7 @@ async fn a_unit_upgrades_on_the_page_in_one_approval() {
         (PACKAGE, "2.0.0", uses("0.1.1")),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let made = alice
         .apps()
@@ -2905,6 +3255,85 @@ async fn a_unit_upgrades_on_the_page_in_one_approval() {
     }
 }
 
+/// A unit's available update tells a reader who may not use the release a member would move
+/// to nothing of it: the operator's notes 2.0.0 moves Alice's member to Acme's private kv
+/// 0.1.1, which declares a secret host; Bob reaches the instance and sees the update without
+/// that host, Acme's owner and members with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_units_update_never_shows_a_reader_a_member_release_it_may_not_use() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_key),
+        )
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = carol.orgs().invite_redeem(&token).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+    let kv = "com.test.unit-kv";
+    let uses = |version: &str| Declares {
+        uses: Some(json!({ "kv": { "package": kv, "range": "^0.1", "version": version } })),
+        ..Declares::default()
+    };
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = ops.ops().package_upload(mpk).await.unwrap();
+    }
+    let secret = Declares {
+        outbound: &[SECRET],
+        ..Declares::default()
+    };
+    let (mpk, _) = release_of(kv, "0.1.1", &kv_wasm(), &publisher, &secret);
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0",
+            "grants": [{ "kind": "anyone" }] }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+
+    for org_member in [&alice, &carol] {
+        let got = get(org_member, &format!("apps/{notes}/update"))
+            .await
+            .unwrap();
+        assert_eq!(got["available"]["version"], "2.0.0", "{got}");
+        assert!(got.to_string().contains(SECRET), "{got}");
+    }
+    let bobs = get(&bob, &format!("apps/{notes}/update")).await.unwrap();
+    assert_eq!(bobs["available"]["version"], "2.0.0", "{bobs}");
+    assert!(!bobs.to_string().contains(SECRET), "{bobs}");
+}
+
 /// An app's frontend asks the person to let it call another app as them: the page names both
 /// apps and every method the app's release lists for the other's package, the person's passkey
 /// covers exactly those (`__delegate`), and the grant is recorded. The same frontend may not
@@ -2913,6 +3342,7 @@ async fn a_unit_upgrades_on_the_page_in_one_approval() {
 async fn an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
     let cal = "com.test.delegated-cal";
     let plugin = Declares {
@@ -2927,7 +3357,7 @@ async fn an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page()
         (PACKAGE, "1.0.0", plugin),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let create = |name: &str, package: &str| {
         typed(json!({ "name": name, "package": package, "version": "1.0.0" }))
@@ -3017,6 +3447,7 @@ async fn an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page()
 async fn an_upgrade_warns_when_an_attached_app_falls_outside_its_range() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
     let cal = "com.test.attached-cal";
     let uses = |range: &str| Declares {
@@ -3029,7 +3460,7 @@ async fn an_upgrade_warns_when_an_attached_app_falls_outside_its_range() {
         (PACKAGE, "2.0.0", uses("^3")),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let create = |name: &str, package: &str, version: &str| {
         typed(json!({ "name": name, "package": package, "version": version }))
@@ -3109,6 +3540,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     const CREATE_APP: u64 = 1 << 0;
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (dev, mut dev_pk) = signed_up(&c, 0, "dev").await;
+    let _org = dev.orgs().create("dev org", None, None).await.unwrap();
     let (carol, mut carol_key) = signed_up(&c, 1, "carol").await;
     let (bob, bob_key) = signed_up(&c, 2, "bob").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
@@ -3120,7 +3552,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
             &publisher,
             &Declares::default(),
         );
-        let _ = dev.packages().upload(mpk).await.unwrap();
+        let _ = dev.packages().upload(mpk, None).await.unwrap();
     }
     let dev_id = account_of(&dev).await;
     let d = dev
@@ -3278,6 +3710,7 @@ async fn a_units_destinations_are_judged_over_its_members() {
     const TELEMETRY: &str = "https://telemetry.example/";
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
     let (kv, ai) = ("com.test.unit-kv", "com.test.unit-ai");
     let uses = |kv_version: &str| Declares {
@@ -3310,7 +3743,7 @@ async fn a_units_destinations_are_judged_over_its_members() {
         (PACKAGE, "2.0.0", uses("0.1.1")),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
 
     // A release that declares no destination keeps data in Calimero; NEAR AI is a
@@ -3457,6 +3890,7 @@ async fn a_red_update_waits_for_a_second_approver() {
     const TELEMETRY: &str = "https://telemetry.example/";
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     for (version, outbound) in [("1.0.0", &[][..]), ("2.0.0", &[TELEMETRY][..])] {
@@ -3465,7 +3899,7 @@ async fn a_red_update_waits_for_a_second_approver() {
             ..Declares::default()
         };
         let (mpk, _) = release(version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let org = home_org(&alice).await;
     let token = alice
@@ -3659,6 +4093,7 @@ async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
     const AI: &str = "https://inference.near.ai/v1/";
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
     let (kv, ai) = ("com.test.unit-kv", "com.test.unit-ai");
     for (package, version, d) in [
@@ -3684,7 +4119,7 @@ async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
         ),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let org = home_org(&alice).await;
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
@@ -3788,6 +4223,7 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
     const TELEMETRY: &str = "https://telemetry.example/";
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, bob_key) = signed_up(&c, 1, "bob").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
     for (version, outbound) in [
@@ -3800,7 +4236,11 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
             ..Declares::default()
         };
         let (mpk, _) = release(version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice
+            .packages()
+            .upload(mpk, Some(&home_org(&alice).await))
+            .await
+            .unwrap();
     }
     let org = home_org(&alice).await;
     let token = alice
@@ -4072,7 +4512,11 @@ async fn unit_red_through_its_member(
         (PACKAGE, "2.0.0", uses("0.1.1")),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice
+            .packages()
+            .upload(mpk, Some(&home_org(alice).await))
+            .await
+            .unwrap();
     }
     let org = home_org(alice).await;
     let made = alice
@@ -4172,7 +4616,11 @@ async fn unit_with_an_uninstalled_member(
         (PACKAGE, "2.0.0", Declares::default()),
     ] {
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice
+            .packages()
+            .upload(mpk, Some(&home_org(alice).await))
+            .await
+            .unwrap();
     }
     let org = home_org(alice).await;
     let made = alice
@@ -4480,10 +4928,11 @@ async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let n = c.urls.len();
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
     for version in ["1.0.0", "2.0.0"] {
         let (mpk, _) = release(version, &kv_wasm(), &publisher, &Declares::default());
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let app = alice
         .apps()
@@ -4591,6 +5040,7 @@ async fn a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_
     const TELEMETRY: &str = "https://telemetry.example/";
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
     for (version, outbound) in [("1.0.0", &[][..]), ("2.0.0", &[TELEMETRY][..])] {
@@ -4599,7 +5049,7 @@ async fn a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_
             ..Declares::default()
         };
         let (mpk, _) = release(version, &kv_wasm(), &publisher, &d);
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let org = home_org(&alice).await;
     let token = alice
