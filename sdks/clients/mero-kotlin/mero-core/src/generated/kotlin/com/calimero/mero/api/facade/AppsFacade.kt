@@ -325,7 +325,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         metadata: kotlinx.serialization.json.JsonElement?,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, emptySet()).apps.appMetadata(app = app, appMetadataRequest = AppMetadataRequest(metadata = metadata))
+        api(null, null, emptySet()).apps.appMetadata(app = app, metadataBody = MetadataBody(metadata = metadata))
 
     /**
      * Call a method by its path
@@ -419,10 +419,10 @@ class AppsFacade internal constructor(
      */
     suspend fun policySet(
         app: kotlin.String,
-        policy: com.calimero.mero.Explicit<AppPolicySetRequestPolicy>? = null,
+        policy: com.calimero.mero.Explicit<UpgradePolicyBodyPolicy>? = null,
         passkey: PasskeyProvider? = null,
     ): PolicyView =
-        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).apps.appPolicySet(app = app, appPolicySetRequest = AppPolicySetRequest(policy = policy?.value))
+        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).apps.appPolicySet(app = app, upgradePolicyBody = UpgradePolicyBody(policy = policy?.value))
 
     /**
      * One compute run
@@ -550,7 +550,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         egress: kotlin.Boolean,
         passkey: PasskeyProvider? = null,
-    ): AppSetEgress200Response =
+    ): EgressSet =
         api(passkey, null, emptySet()).apps.appSetEgress(app = app, appSetEgressRequest = AppSetEgressRequest(egress = egress))
 
     /**

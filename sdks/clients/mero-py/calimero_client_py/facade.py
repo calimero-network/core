@@ -271,8 +271,8 @@ from .openapi.models import AccountProofProveBody
 from .openapi.models import AccountRecoveryBeginBody
 from .openapi.models import AccountRecoveryFinishBody
 from .openapi.models import AccountRecoveryStartBody
-from .openapi.models import AccountSetBackupKeyBody
 from .openapi.models import AliasSetBody
+from .openapi.models import AllAppsBody
 from .openapi.models import ApikeyCreateBody
 from .openapi.models import AppAccessBody
 from .openapi.models import AppApproveUpgradeBody
@@ -280,19 +280,18 @@ from .openapi.models import AppCreateBody
 from .openapi.models import AppDelegateBody
 from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
-from .openapi.models import AppMetadataBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
-from .openapi.models import AppPolicySetBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppSetEgressBody
-from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
 from .openapi.models import AppUndoBody
 from .openapi.models import AppUnlinkBody
 from .openapi.models import AppUpgradeBody
 from .openapi.models import AppUpgradeUnitBody
 from .openapi.models import AttestationPurpose
+from .openapi.models import BackupKeyBody
+from .openapi.models import CapabilitiesBody
 from .openapi.models import ConfirmOnly
 from .openapi.models import ConsentPageCreateBodyType0
 from .openapi.models import ConsentPageCreateBodyType1
@@ -316,21 +315,18 @@ from .openapi.models import ConsentPageCreateBodyType6
 from .openapi.models import ConsentPageCreateBodyType7
 from .openapi.models import ConsentPageCreateBodyType8
 from .openapi.models import ConsentPageCreateBodyType9
-from .openapi.models import DeployerGrantBody
-from .openapi.models import DeploymentCreateBody
-from .openapi.models import DeploymentOfferBody
-from .openapi.models import DeploymentSecretSetBody
+from .openapi.models import DeployerBody
+from .openapi.models import DeploymentBody
+from .openapi.models import DeploymentSecretBody
 from .openapi.models import ExportsExportBody
 from .openapi.models import IntentsBody
-from .openapi.models import InviteCreateBody
+from .openapi.models import InviteBody
 from .openapi.models import LoginBeginBody
 from .openapi.models import LoginFinishBody
-from .openapi.models import MemberMetadataBody
-from .openapi.models import MemberRemoveTeamsBody
-from .openapi.models import MemberSetTeamsBody
+from .openapi.models import MemberBody
+from .openapi.models import MetadataBody
+from .openapi.models import OfferBody
 from .openapi.models import OpsClusterOwnerBody
-from .openapi.models import OpsDeployerGrantBody
-from .openapi.models import OpsOrgUpgradeBody
 from .openapi.models import OpsOutboundBody
 from .openapi.models import OpsPackageInstallBody
 from .openapi.models import OpsPoolsSetBody
@@ -345,19 +341,11 @@ from .openapi.models import OpsSetReplicasBody
 from .openapi.models import OpsSignUpInviteCreateBody
 from .openapi.models import OpsSignUpSetBody
 from .openapi.models import OpsUpgradeBody
-from .openapi.models import OrgAllAppsBody
-from .openapi.models import OrgCapabilitiesBody
-from .openapi.models import OrgCreateBody
+from .openapi.models import OrgBody
 from .openapi.models import OrgEgressBody
 from .openapi.models import OrgMembersDetail
-from .openapi.models import OrgMetadataBody
 from .openapi.models import OrgOutboundApprovalBody
-from .openapi.models import OrgPolicySetBody
-from .openapi.models import OrgPublisherBody
 from .openapi.models import OrgReleaseApprovalBody
-from .openapi.models import OrgRenameBody
-from .openapi.models import OrgSetBackupKeyBody
-from .openapi.models import OrgSetMemberBody
 from .openapi.models import OrgSettingsBody
 from .openapi.models import OrgUpgradeBody
 from .openapi.models import OrgUpgradeRetryBody
@@ -373,20 +361,26 @@ from .openapi.models import PipelinesValidateBody
 from .openapi.models import PresencePublishBody
 from .openapi.models import ProofOnly
 from .openapi.models import PublicLinkCreateBody
+from .openapi.models import PublisherBody
 from .openapi.models import PublisherUpgradeBody
 from .openapi.models import QuotaChanges
-from .openapi.models import RecoverySetBody
+from .openapi.models import RecoveryKeyBody
 from .openapi.models import RecoveryStartBody
 from .openapi.models import RefreshBody
 from .openapi.models import RegisterBeginBody
 from .openapi.models import RegisterFinishBody
+from .openapi.models import RenameOrgBody
 from .openapi.models import RestoreRecoverHolderBody
+from .openapi.models import ScopeAppsBody
 from .openapi.models import SignUpInviteCreateBody
 from .openapi.models import SignUpSetBody
-from .openapi.models import TeamCreateBody
+from .openapi.models import TeamBody
 from .openapi.models import TeamDeleteBody
-from .openapi.models import TeamSetMemberBody
+from .openapi.models import TeamIdsBody
+from .openapi.models import TeamMemberBody
+from .openapi.models import TeamRowsBody
 from .openapi.models import TeamUpdateBody
+from .openapi.models import UpgradePolicyBody
 from .openapi.models import UploadBeginBody
 from .openapi.models import ViewsBody
 from ._facade import UNSET, Group, Operation
@@ -561,7 +555,7 @@ _APP_LIST = Operation(
 _APP_METADATA = Operation(
     _app_metadata,
     "app_metadata",
-    body=AppMetadataBody,
+    body=MetadataBody,
     answer="json",
 )
 _APP_METHOD = Operation(
@@ -638,7 +632,7 @@ _APP_POLICY = Operation(
 _APP_POLICY_SET = Operation(
     _app_policy_set,
     "app_policy_set",
-    body=AppPolicySetBody,
+    body=UpgradePolicyBody,
     answer="json",
     confirm=True,
 )
@@ -1925,7 +1919,7 @@ class Apps(Group):
             egress: body `egress`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppSetEgressResponse200
+        Returns: EgressSet
         """
         return self._run(
             _APP_SET_EGRESS, (app,), {}, {"egress": egress}, confirm=confirm
@@ -2325,7 +2319,7 @@ _ACCOUNT_RECOVERY_START = Operation(
 _ACCOUNT_SET_BACKUP_KEY = Operation(
     _account_set_backup_key,
     "account_set_backup_key",
-    body=AccountSetBackupKeyBody,
+    body=BackupKeyBody,
     answer="json",
     confirm=True,
 )
@@ -3037,7 +3031,7 @@ class Consent(Group):
 _DEPLOYMENT_CREATE = Operation(
     _deployment_create,
     "deployment_create",
-    body=DeploymentCreateBody,
+    body=DeploymentBody,
     answer="json",
     confirm=True,
 )
@@ -3049,11 +3043,7 @@ _DEPLOYMENT_DELETE = Operation(
     confirm=True,
 )
 _DEPLOYER_GRANT = Operation(
-    _deployer_grant,
-    "deployer_grant",
-    body=DeployerGrantBody,
-    answer="json",
-    confirm=True,
+    _deployer_grant, "deployer_grant", body=DeployerBody, answer="json", confirm=True
 )
 _DEPLOYER_LIST = Operation(
     _deployer_list,
@@ -3077,11 +3067,7 @@ _DEPLOYMENT_LIST = Operation(
     answer="json",
 )
 _DEPLOYMENT_OFFER = Operation(
-    _deployment_offer,
-    "deployment_offer",
-    body=DeploymentOfferBody,
-    answer="json",
-    confirm=True,
+    _deployment_offer, "deployment_offer", body=OfferBody, answer="json", confirm=True
 )
 _DEPLOYMENT_ORGS = Operation(
     _deployment_orgs,
@@ -3099,7 +3085,7 @@ _DEPLOYMENT_SECRET_CLEAR = Operation(
 _DEPLOYMENT_SECRET_SET = Operation(
     _deployment_secret_set,
     "deployment_secret_set",
-    body=DeploymentSecretSetBody,
+    body=DeploymentSecretBody,
     answer="json",
     confirm=True,
 )
@@ -3162,7 +3148,7 @@ class Deployments(Group):
             owner: body `owner`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentCreateResponse200
+        Returns: DeploymentCreated
         """
         return self._run(
             _DEPLOYMENT_CREATE, (), {}, {"name": name, "owner": owner}, confirm=confirm
@@ -3177,7 +3163,7 @@ class Deployments(Group):
             id: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentDeleteResponse200
+        Returns: DeploymentDeleted
         """
         return self._run(_DEPLOYMENT_DELETE, (id,), {}, {}, confirm=confirm)
 
@@ -3193,7 +3179,7 @@ class Deployments(Group):
             until: body `until`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeployerGrantResponse200
+        Returns: DeployerGranted
         """
         return self._run(
             _DEPLOYER_GRANT,
@@ -3210,7 +3196,7 @@ class Deployments(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: DeployerListResponse200
+        Returns: DeployerList
         """
         return self._run(_DEPLOYER_LIST, (), {}, None)
 
@@ -3223,7 +3209,7 @@ class Deployments(Group):
             key: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeployerRevokeResponse200
+        Returns: DeployerRevoked
         """
         return self._run(_DEPLOYER_REVOKE, (key,), {}, {}, confirm=confirm)
 
@@ -3237,7 +3223,7 @@ class Deployments(Group):
         Args:
             id: path
 
-        Returns: DeploymentGetResponse200
+        Returns: PublicDeployment
         """
         return self._run(_DEPLOYMENT_GET, (id,), {}, None)
 
@@ -3248,7 +3234,7 @@ class Deployments(Group):
 
         **Who:** signed in (a session or an API key).
 
-        Returns: DeploymentListResponse200
+        Returns: DeploymentList
         """
         return self._run(_DEPLOYMENT_LIST, (), {}, None)
 
@@ -3264,7 +3250,7 @@ class Deployments(Group):
             version: body `version`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentOfferResponse200
+        Returns: AppOffered
         """
         return self._run(
             _DEPLOYMENT_OFFER,
@@ -3284,7 +3270,7 @@ class Deployments(Group):
         Args:
             id: path
 
-        Returns: DeploymentOrgsResponse200
+        Returns: DeploymentOrgs
         """
         return self._run(_DEPLOYMENT_ORGS, (id,), {}, None)
 
@@ -3300,7 +3286,7 @@ class Deployments(Group):
             name: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentSecretClearResponse200
+        Returns: DeploymentSecretCleared
         """
         return self._run(
             _DEPLOYMENT_SECRET_CLEAR,
@@ -3326,7 +3312,7 @@ class Deployments(Group):
             value: body `value`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentSecretSetResponse200
+        Returns: DeploymentSecretSet
         """
         return self._run(
             _DEPLOYMENT_SECRET_SET,
@@ -3349,7 +3335,7 @@ class Deployments(Group):
         Args:
             id: path
 
-        Returns: DeploymentSecretsResponse200
+        Returns: DeploymentSecrets
         """
         return self._run(_DEPLOYMENT_SECRETS, (id,), {}, None)
 
@@ -3431,7 +3417,7 @@ class Deployments(Group):
             app: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentWithdrawResponse200
+        Returns: AppWithdrawn
         """
         return self._run(
             _DEPLOYMENT_WITHDRAW,
@@ -3479,7 +3465,7 @@ _OPS_CLUSTER_OWNER = Operation(
 _OPS_DEPLOYER_GRANT = Operation(
     _ops_deployer_grant,
     "ops_deployer_grant",
-    body=OpsDeployerGrantBody,
+    body=DeployerBody,
     answer="json",
     operator=True,
 )
@@ -3519,7 +3505,7 @@ _OPS_METRICS = Operation(
 _OPS_ORG_UPGRADE = Operation(
     _ops_org_upgrade,
     "ops_org_upgrade",
-    body=OpsOrgUpgradeBody,
+    body=OrgUpgradeBody,
     answer="json",
     operator=True,
 )
@@ -4541,7 +4527,7 @@ class Ops(Group):
 
 
 _ORG_ALL_APPS = Operation(
-    _org_all_apps, "org_all_apps", body=OrgAllAppsBody, answer="json", confirm=True
+    _org_all_apps, "org_all_apps", body=AllAppsBody, answer="json", confirm=True
 )
 _APP_TEAM_LIST = Operation(
     _app_team_list,
@@ -4550,11 +4536,7 @@ _APP_TEAM_LIST = Operation(
     answer="json",
 )
 _APP_TEAMS_SCOPE = Operation(
-    _app_teams_scope,
-    "app_teams_scope",
-    body=AppTeamsScopeBody,
-    answer="json",
-    confirm=True,
+    _app_teams_scope, "app_teams_scope", body=ScopeAppsBody, answer="json", confirm=True
 )
 _ORG_APPS = Operation(
     _org_apps,
@@ -4571,14 +4553,14 @@ _ORG_BACKUP_KEY = Operation(
 _ORG_CAPABILITIES = Operation(
     _org_capabilities,
     "org_capabilities",
-    body=OrgCapabilitiesBody,
+    body=CapabilitiesBody,
     answer="json",
     confirm=True,
 )
 _ORG_CREATE = Operation(
     _org_create,
     "org_create",
-    body=OrgCreateBody,
+    body=OrgBody,
     answer="json",
 )
 _ORG_DELETE = Operation(
@@ -4594,7 +4576,7 @@ _ORG_GET = Operation(
     answer="json",
 )
 _INVITE_CREATE = Operation(
-    _invite_create, "invite_create", body=InviteCreateBody, answer="json", confirm=True
+    _invite_create, "invite_create", body=InviteBody, answer="json", confirm=True
 )
 _INVITE_LIST = Operation(
     _invite_list,
@@ -4614,20 +4596,20 @@ _INVITE_REVOKE = Operation(
 _MEMBER_METADATA = Operation(
     _member_metadata,
     "member_metadata",
-    body=MemberMetadataBody,
+    body=MetadataBody,
     answer="json",
 )
 _MEMBER_REMOVE_TEAMS = Operation(
     _member_remove_teams,
     "member_remove_teams",
-    body=MemberRemoveTeamsBody,
+    body=TeamIdsBody,
     answer="json",
     confirm=True,
 )
 _MEMBER_SET_TEAMS = Operation(
     _member_set_teams,
     "member_set_teams",
-    body=MemberSetTeamsBody,
+    body=TeamRowsBody,
     answer="json",
     confirm=True,
 )
@@ -4640,7 +4622,7 @@ _ORG_MEMBERS = Operation(
 _ORG_METADATA = Operation(
     _org_metadata,
     "org_metadata",
-    body=OrgMetadataBody,
+    body=MetadataBody,
     answer="json",
 )
 _ORG_OUTBOUND_APPROVAL = Operation(
@@ -4659,12 +4641,12 @@ _ORG_POLICY = Operation(
 _ORG_POLICY_SET = Operation(
     _org_policy_set,
     "org_policy_set",
-    body=OrgPolicySetBody,
+    body=UpgradePolicyBody,
     answer="json",
     confirm=True,
 )
 _ORG_PUBLISHER = Operation(
-    _org_publisher, "org_publisher", body=OrgPublisherBody, answer="json", confirm=True
+    _org_publisher, "org_publisher", body=PublisherBody, answer="json", confirm=True
 )
 _PUBLISHER_UPGRADE = Operation(
     _publisher_upgrade,
@@ -4680,7 +4662,7 @@ _RECOVERY_FINISH = Operation(
     _recovery_finish, "recovery_finish", body=ConfirmOnly, answer="json", confirm=True
 )
 _RECOVERY_SET = Operation(
-    _recovery_set, "recovery_set", body=RecoverySetBody, answer="json", confirm=True
+    _recovery_set, "recovery_set", body=RecoveryKeyBody, answer="json", confirm=True
 )
 _RECOVERY_START = Operation(
     _recovery_start,
@@ -4703,21 +4685,17 @@ _ORG_REMOVE_MEMBER = Operation(
     confirm=True,
 )
 _ORG_RENAME = Operation(
-    _org_rename, "org_rename", body=OrgRenameBody, answer="json", confirm=True
+    _org_rename, "org_rename", body=RenameOrgBody, answer="json", confirm=True
 )
 _ORG_SET_BACKUP_KEY = Operation(
     _org_set_backup_key,
     "org_set_backup_key",
-    body=OrgSetBackupKeyBody,
+    body=BackupKeyBody,
     answer="json",
     confirm=True,
 )
 _ORG_SET_MEMBER = Operation(
-    _org_set_member,
-    "org_set_member",
-    body=OrgSetMemberBody,
-    answer="json",
-    confirm=True,
+    _org_set_member, "org_set_member", body=MemberBody, answer="json", confirm=True
 )
 _ORG_SETTINGS = Operation(
     _org_settings, "org_settings", body=OrgSettingsBody, answer="json", confirm=True
@@ -4725,7 +4703,7 @@ _ORG_SETTINGS = Operation(
 _TEAM_CREATE = Operation(
     _team_create,
     "team_create",
-    body=TeamCreateBody,
+    body=TeamBody,
     answer="json",
 )
 _TEAM_DELETE = Operation(
@@ -4747,7 +4725,7 @@ _TEAM_REMOVE_MEMBER = Operation(
 _TEAM_SET_MEMBER = Operation(
     _team_set_member,
     "team_set_member",
-    body=TeamSetMemberBody,
+    body=TeamMemberBody,
     answer="json",
     confirm=True,
 )
@@ -4824,7 +4802,7 @@ class Orgs(Group):
         Args:
             org: path
 
-        Returns: AppTeamListResponse200
+        Returns: AppTeamList
         """
         return self._run(_APP_TEAM_LIST, (org,), {}, None)
 
@@ -4841,7 +4819,7 @@ class Orgs(Group):
             shared: body `shared`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppTeamsScopeResponse200
+        Returns: AppTeamsScoped
         """
         return self._run(
             _APP_TEAMS_SCOPE,
@@ -4919,7 +4897,7 @@ class Orgs(Group):
             recovery_key: body `recoveryKey`
             capabilities: body `capabilities`
 
-        Returns: OrgCreateResponse200
+        Returns: OrgCreated
         """
         return self._run(
             _ORG_CREATE,
@@ -4939,7 +4917,7 @@ class Orgs(Group):
             org: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgDeleteResponse200
+        Returns: OrgDeleted
         """
         return self._run(_ORG_DELETE, (org,), {}, {}, confirm=confirm)
 
@@ -4955,7 +4933,7 @@ class Orgs(Group):
             egress: body `egress`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgEgressResponse200
+        Returns: EgressSet
         """
         return self._run(_ORG_EGRESS, (org,), {}, {"egress": egress}, confirm=confirm)
 
@@ -5001,7 +4979,7 @@ class Orgs(Group):
             capabilities: body `capabilities`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: InviteCreateResponse200
+        Returns: InviteMade
         """
         return self._run(
             _INVITE_CREATE,
@@ -5028,7 +5006,7 @@ class Orgs(Group):
         Args:
             org: path
 
-        Returns: InviteListResponse200
+        Returns: InviteList
         """
         return self._run(_INVITE_LIST, (org,), {}, None)
 
@@ -5156,7 +5134,7 @@ class Orgs(Group):
             org: path
             detail: query
 
-        Returns: OrgMembersResponse200
+        Returns: MemberSecurityList
         """
         return self._run(
             _ORG_MEMBERS,
@@ -5252,7 +5230,7 @@ class Orgs(Group):
             signature: body `signature`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgPublisherResponse200
+        Returns: PublisherBound
         """
         return self._run(
             _ORG_PUBLISHER,
@@ -5315,7 +5293,7 @@ class Orgs(Group):
             org: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: RecoveryFinishResponse200
+        Returns: RecoveryFinished
         """
         return self._run(_RECOVERY_FINISH, (org,), {}, {}, confirm=confirm)
 
@@ -5349,7 +5327,7 @@ class Orgs(Group):
             nonce: body `nonce`
             signature: body `signature`
 
-        Returns: RecoveryStartResponse200
+        Returns: RecoveryStarted
         """
         return self._run(
             _RECOVERY_START, (org,), {}, {"nonce": nonce, "signature": signature}
@@ -5415,7 +5393,7 @@ class Orgs(Group):
             name: body `name`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgRenameResponse200
+        Returns: OrgRenamed
         """
         return self._run(_ORG_RENAME, (org,), {}, {"name": name}, confirm=confirm)
 
@@ -5475,7 +5453,7 @@ class Orgs(Group):
             allow_public_links: body `allowPublicLinks`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgSettingsResponse200
+        Returns: OrgSettingsSet
         """
         return self._run(
             _ORG_SETTINGS,
@@ -5498,7 +5476,7 @@ class Orgs(Group):
             parent: body `parent`
             join: body `join`
 
-        Returns: TeamCreateResponse200
+        Returns: TeamCreated
         """
         return self._run(
             _TEAM_CREATE, (org,), {}, {"name": name, "parent": parent, "join": join}
@@ -5517,7 +5495,7 @@ class Orgs(Group):
             keep_apps: body `keepApps`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: TeamDeleteResponse200
+        Returns: TeamDeleted
         """
         return self._run(
             _TEAM_DELETE,
@@ -5662,7 +5640,7 @@ class Orgs(Group):
             org: path
             after: query
 
-        Returns: OrgUpdatesResponse200
+        Returns: OrgUpdates
         """
         return self._run(_ORG_UPDATES, (org,), {"after": after}, None)
 
@@ -5768,7 +5746,7 @@ class Orgs(Group):
         Args:
             org: path
 
-        Returns: OrgUsageResponse200
+        Returns: OrgUsage
         """
         return self._run(_ORG_USAGE, (org,), {}, None)
 

@@ -15,6 +15,1143 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+/// The request body of `POST /orgs/{org}/all-apps`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllAppsBody {
+    pub account: String,
+    #[serde(rename = "allApps")]
+    pub all_apps: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /auth/backup-key`, `POST /orgs/{org}/backup-key`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupKeyBody {
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/capabilities`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CapabilitiesBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    pub capabilities: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /ops/deployers`, `POST /deployers`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeployerBody {
+    pub deployer: Deployer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    #[serde(rename = "operatorProof")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_proof: Option<OperatorProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /deployments`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentBody {
+    pub name: String,
+    pub owner: Deployer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `PUT /deployments/{id}/secrets/{name}`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentSecretBody {
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/invites`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InviteBody {
+    pub role: OrgRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teams: Option<Vec<String>>,
+    #[serde(rename = "ttlSecs")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<u64>,
+    #[serde(rename = "allApps")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all_apps: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/members`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MemberBody {
+    pub account: String,
+    pub role: OrgRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /apps/{app}/metadata`, `POST /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MetadataBody {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub metadata: Value,
+}
+
+/// The request body of `POST /deployments/{id}/apps`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfferBody {
+    pub app: String,
+    pub package: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrgBody {
+    pub name: String,
+    #[serde(rename = "recoveryKey")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
+}
+
+/// The request body of `POST /orgs/{org}/settings`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrgSettingsBody {
+    #[serde(rename = "allowGuests")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_guests: Option<bool>,
+    #[serde(rename = "allowPublicLinks")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_public_links: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OrgUpgradeBody {
+    pub package: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+    #[serde(rename = "operatorProof")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_proof: Option<OperatorProof>,
+}
+
+/// The request body of `POST /orgs/{org}/publishers`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublisherBody {
+    #[serde(rename = "signerId")]
+    pub signer_id: String,
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+    pub signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/packages/{package}/upgrade`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PublisherUpgradeBody {
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/recovery`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryKeyBody {
+    #[serde(rename = "publicKey")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub public_key: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/recovery/start`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryStartBody {
+    pub nonce: String,
+    pub signature: String,
+}
+
+/// The request body of `POST /orgs/{org}/name`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameOrgBody {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopeAppsBodyAppsItem {
+    pub package: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instances: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<TeamJoin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<Vec<String>>,
+    #[serde(rename = "childTeams")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_teams: Option<bool>,
+}
+
+/// The request body of `POST /orgs/{org}/app-teams`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeAppsBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps: Option<Vec<ScopeAppsBodyAppsItem>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/teams`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TeamBody {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    pub join: TeamJoin,
+}
+
+/// `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits stay, and the passkey confirmation after the `412`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDeleteBody {
+    #[serde(rename = "keepApps")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_apps: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `DELETE /orgs/{org}/members/{account}/teams`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamIdsBody {
+    pub teams: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/teams/{team}/members`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TeamMemberBody {
+    pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TeamRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TeamRowsBodyTeamsItem {
+    pub team: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TeamRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
+}
+
+/// The request body of `POST /orgs/{org}/members/{account}/teams`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamRowsBody {
+    pub teams: Vec<TeamRowsBodyTeamsItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// The request body of `POST /orgs/{org}/teams/{team}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TeamUpdateBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<TeamJoin>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub parent: Option<Option<String>>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UpgradePolicyBodyPolicyAutoApply {
+    /// `never`.
+    Never,
+    /// `noDestinations`.
+    NoDestinations,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl UpgradePolicyBodyPolicyAutoApply {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::NoDestinations => "noDestinations",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for UpgradePolicyBodyPolicyAutoApply {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for UpgradePolicyBodyPolicyAutoApply {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "never" => Self::Never,
+            "noDestinations" => Self::NoDestinations,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradePolicyBodyPolicy {
+    #[serde(rename = "autoApply")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_apply: Option<UpgradePolicyBodyPolicyAutoApply>,
+    #[serde(rename = "holdHours")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_hours: Option<u64>,
+    #[serde(rename = "secondApprover")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_approver: Option<bool>,
+}
+
+/// A policy to set at one scope; `null` drops it (an app then follows its organization's, an organization the defaults).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpgradePolicyBody {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub policy: Option<Option<UpgradePolicyBodyPolicy>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Confirm>,
+}
+
+/// What `OfferApp` answers: the offer now in force.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppOffered {
+    pub deployment: String,
+    pub app: String,
+    pub offer: Offer,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppTeamListMode {
+    /// `legacy`.
+    Legacy,
+    /// `standalone`.
+    Standalone,
+    /// `shared`.
+    Shared,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppTeamListMode {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Standalone => "standalone",
+            Self::Shared => "shared",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppTeamListMode {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppTeamListMode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "legacy" => Self::Legacy,
+            "standalone" => Self::Standalone,
+            "shared" => Self::Shared,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// `GET /orgs/{org}/app-teams`: the organization's mode and its app teams.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppTeamList {
+    pub mode: AppTeamListMode,
+    #[serde(rename = "appTeams")]
+    pub app_teams: Vec<AppTeamRow>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppTeamsScopedMode {
+    /// `legacy`.
+    Legacy,
+    /// `standalone`.
+    Standalone,
+    /// `shared`.
+    Shared,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppTeamsScopedMode {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Standalone => "standalone",
+            Self::Shared => "shared",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppTeamsScopedMode {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppTeamsScopedMode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "legacy" => Self::Legacy,
+            "standalone" => Self::Standalone,
+            "shared" => Self::Shared,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// What `ScopeApps` answers: the organization's mode after, and each package's app team.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppTeamsScoped {
+    pub mode: AppTeamsScopedMode,
+    pub teams: Vec<ScopedTeam>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `WithdrawApp` answers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppWithdrawn {
+    pub deployment: String,
+    pub app: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `GrantDeployer` answers: the grant's key, whom it names and its terms.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeployerGranted {
+    pub key: String,
+    pub deployer: Deployer,
+    pub grant: DeployerGrant,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeployerListDeployments {
+    /// `open`.
+    Open,
+    /// `granted`.
+    Granted,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl DeployerListDeployments {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Open => "open",
+            Self::Granted => "granted",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for DeployerListDeployments {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeployerListDeployments {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "open" => Self::Open,
+            "granted" => Self::Granted,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeployerListDeployers {
+    /// `operator`.
+    Operator,
+    /// `owner`.
+    Owner,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl DeployerListDeployers {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Operator => "operator",
+            Self::Owner => "owner",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for DeployerListDeployers {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeployerListDeployers {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "operator" => Self::Operator,
+            "owner" => Self::Owner,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// `GET /deployers`: the cluster's deployment rules, its owner and every grant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeployerList {
+    pub deployments: DeployerListDeployments,
+    pub deployers: DeployerListDeployers,
+    pub owner: Option<Deployer>,
+    pub grants: Vec<DeployerGrantView>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `RevokeDeployer` answers: the key of the grant withdrawn.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeployerRevoked {
+    pub key: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `POST /deployments`: the record the log made, and its frontend host.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentCreated {
+    pub id: String,
+    pub deployment: DeploymentRecord,
+    pub host: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `DeleteDeployment` answers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentDeleted {
+    pub deployment: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /deployments`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentList {
+    pub deployments: Vec<Deployment>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /deployments/{id}/orgs`: the customer organizations, by counts only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentOrgs {
+    pub deployment: String,
+    pub orgs: Vec<DeploymentCustomer>,
+    #[serde(rename = "outsideOrgs")]
+    pub outside_orgs: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `ClearDeploymentSecret` answers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretCleared {
+    pub deployment: String,
+    pub name: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `SetDeploymentSecret` answers: never the value, its fingerprint.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretSet {
+    pub deployment: String,
+    pub name: String,
+    pub fingerprint: String,
+    #[serde(rename = "setBy")]
+    pub set_by: String,
+    #[serde(rename = "setAt")]
+    pub set_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /deployments/{id}/secrets`: each name its offers declare or it holds a value for.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecrets {
+    pub deployment: String,
+    pub secrets: BTreeMap<String, DeploymentSecretView>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `SetEgress` answers: the switch as set, the organization's own, and the instance when one was named.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EgressSet {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub egress: bool,
+    #[serde(rename = "orgEgressOff")]
+    pub org_egress_off: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /orgs/{org}/invites`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InviteList {
+    pub invites: Vec<InviteView>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `POST /orgs/{org}/invites`: the invite's token, answered once.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InviteMade {
+    pub token: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `CreateOrg` answers: the new organization, and its app team when it is made with one (the consent page's `createOrg` for a package).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgCreated {
+    #[serde(rename = "orgId")]
+    pub org_id: String,
+    #[serde(rename = "teamId")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `DeleteOrg` answers: the instances deleted with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgDeleted {
+    pub apps: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /orgs/{org}/members?detail=security`: each member the caller sees, with what tells whether their account is safe.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MemberSecurityList {
+    #[serde(rename = "orgId")]
+    pub org_id: String,
+    pub members: Vec<MemberSecurity>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `RenameOrg` answers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgRenamed {
+    #[serde(rename = "orgId")]
+    pub org_id: String,
+    pub name: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `SetOrgSettings` answers: the settings after the change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgSettingsSet {
+    pub org: String,
+    #[serde(rename = "allowGuests")]
+    pub allow_guests: bool,
+    #[serde(rename = "allowPublicLinks")]
+    pub allow_public_links: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each as `GET /apps/{app}/update` shows it with its `name`, and the organization's policy.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrgUpdates {
+    pub org: String,
+    pub policy: UpgradePolicy,
+    pub updates: Vec<Value>,
+    pub next: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /orgs/{org}/usage`: the apps billed to it, its developer usage today (decimal strings) and the cluster's quotas.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgUsage {
+    pub apps: u64,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "developerFuelToday")]
+    pub developer_fuel_today: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "developerWritesToday")]
+    pub developer_writes_today: String,
+    pub quotas: Quotas,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /deployments/{id}`, public: its name, whose it is, and what it offers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PublicDeployment {
+    pub id: String,
+    pub host: Option<String>,
+    pub name: String,
+    pub owner: DeploymentOwner,
+    pub apps: Vec<PublicDeploymentApp>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `BindPublisher` answers: the key's binding generation now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublisherBound {
+    pub generation: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What an organization recovery's finish answers: the organization and the owners it replaced.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryFinished {
+    pub org: String,
+    #[serde(rename = "previousOwners")]
+    pub previous_owners: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What an organization recovery's start answers: when it started and when it may finish (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryStarted {
+    #[serde(rename = "startedAt")]
+    pub started_at: u64,
+    #[serde(rename = "readyAt")]
+    pub ready_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `CreateTeam` answers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TeamCreated {
+    #[serde(rename = "teamId")]
+    pub team_id: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances deleted with them, and with `keepApps` those kept instead (`apps` then empty).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TeamDeleted {
+    pub teams: Vec<String>,
+    pub apps: Vec<String>,
+    #[serde(rename = "keptApps")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_apps: Option<Vec<String>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One app team: its package, how many are in it, the capabilities a new member gets (`null`: the organization's), and whether the caller is in it or manages it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppTeamRow {
+    pub package: String,
+    #[serde(rename = "teamId")]
+    pub team_id: String,
+    pub name: String,
+    pub join: TeamJoin,
+    #[serde(rename = "memberCount")]
+    pub member_count: u64,
+    #[serde(rename = "defaultCapabilities")]
+    pub default_capabilities: Option<u64>,
+    pub member: bool,
+    pub manages: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An app a customer runs from the deployment, and its version.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CustomerApp {
+    pub app: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A deployer grant: whom it names (`null`: a key no deployer parses), until when (`until` RFC 3339, `untilSecs` Unix seconds; `null`: no end), who granted it and when.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeployerGrantView {
+    pub key: String,
+    pub deployer: Option<Deployer>,
+    pub until: Option<String>,
+    #[serde(rename = "untilSecs")]
+    pub until_secs: Option<u64>,
+    #[serde(rename = "grantedAt")]
+    pub granted_at: String,
+    #[serde(rename = "grantedBy")]
+    pub granted_by: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A customer organization of a deployment, by counts only: its members, those active in the last 30 days, its instances and the releases they run, and when its first was made (RFC 3339).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentCustomer {
+    #[serde(rename = "orgId")]
+    pub org_id: String,
+    pub name: Option<String>,
+    #[serde(rename = "memberCount")]
+    pub member_count: u64,
+    #[serde(rename = "activeMembers30d")]
+    pub active_members30d: u64,
+    pub instances: u64,
+    pub apps: Vec<CustomerApp>,
+    #[serde(rename = "firstCreatedAt")]
+    pub first_created_at: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An app a deployment offers, as its managers list it: the release, who offered it and when (RFC 3339).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentOffer {
+    pub app: String,
+    pub package: String,
+    pub version: String,
+    #[serde(rename = "addedBy")]
+    pub added_by: String,
+    #[serde(rename = "addedAt")]
+    pub added_at: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeploymentOwnerKind {
+    /// `account`.
+    Account,
+    /// `org`.
+    Org,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl DeploymentOwnerKind {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Account => "account",
+            Self::Org => "org",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for DeploymentOwnerKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentOwnerKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "account" => Self::Account,
+            "org" => Self::Org,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// Whose deployment it is: an account or an organization, and its name (`null`: gone).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentOwner {
+    pub kind: DeploymentOwnerKind,
+    pub name: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A secret of a deployment, never its value: the offered apps and releases that declare it, whether a value is set, and its fingerprint, setter and time when it is.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretView {
+    pub apps: Vec<String>,
+    #[serde(rename = "declaredBy")]
+    pub declared_by: Vec<SecretDeclarer>,
+    pub set: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(rename = "setBy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_by: Option<String>,
+    #[serde(rename = "setAt")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_at: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An organization invite as its list shows it, never its token: `createdBy`/`createdAt` `null` for one made before they were kept.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InviteView {
+    #[serde(rename = "inviteKey")]
+    pub invite_key: String,
+    pub role: OrgRole,
+    pub teams: Vec<String>,
+    #[serde(rename = "usesLeft")]
+    pub uses_left: u64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: u64,
+    pub expired: bool,
+    #[serde(rename = "createdBy")]
+    pub created_by: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<u64>,
+    #[serde(rename = "allApps")]
+    pub all_apps: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemberSecurityPasskeysN3Plus {
+    #[serde(rename = "3+")]
+    N3Plus,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant, reason = "an answer, read once")]
+pub enum MemberSecurityPasskeys {
+    Integer(u64),
+    N3Plus(MemberSecurityPasskeysN3Plus),
+}
+
+/// A member as the security listing shows them: their teams, how many passkeys (a number below 3, else `"3+"`), whether they hold a recovery code, the last UTC day they were active (`null`: never seen) and their live sessions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MemberSecurity {
+    pub account: String,
+    pub name: Option<String>,
+    pub role: OrgRole,
+    pub teams: Vec<String>,
+    pub passkeys: MemberSecurityPasskeys,
+    #[serde(rename = "recoveryCode")]
+    pub recovery_code: bool,
+    #[serde(rename = "lastActiveDay")]
+    pub last_active_day: Option<String>,
+    pub sessions: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An app a deployment offers: the release new instances run, who offered it and when (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Offer {
+    pub package: String,
+    pub version: String,
+    #[serde(rename = "addedBy")]
+    pub added_by: String,
+    #[serde(rename = "addedAt")]
+    pub added_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An app a deployment offers, and the release its new instances run.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicDeploymentApp {
+    pub app: String,
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One package's app team after a scope: whether it was made, the instances moved onto it, the rows added, how it is joined now (`null`: not changed) and how many lost it by a close.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopedTeam {
+    pub package: String,
+    #[serde(rename = "teamId")]
+    pub team_id: String,
+    pub created: bool,
+    pub apps: Vec<String>,
+    pub added: u64,
+    pub join: Option<TeamJoin>,
+    pub dropped: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A release that declares a secret.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecretDeclarer {
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same request sent again with it approves exactly that request.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Confirm {
@@ -2369,20 +3506,6 @@ pub struct TeamView {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentAppsItem {
-    pub app: String,
-    pub package: String,
-    pub version: String,
-    #[serde(rename = "addedBy")]
-    pub added_by: String,
-    #[serde(rename = "addedAt")]
-    pub added_at: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
 /// A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Deployment {
@@ -2390,7 +3513,7 @@ pub struct Deployment {
     pub host: Option<String>,
     pub name: String,
     pub owner: Deployer,
-    pub apps: Vec<DeploymentAppsItem>,
+    pub apps: Vec<DeploymentOffer>,
     #[serde(rename = "createdBy")]
     pub created_by: String,
     #[serde(rename = "createdAt")]
@@ -3231,19 +4354,6 @@ pub struct AppEgressResponse {
     pub off_by: Option<AppEgressResponseOffBy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AppSetEgressResponse {
-    pub org: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app: Option<String>,
-    pub egress: bool,
-    #[serde(rename = "orgEgressOff")]
-    pub org_egress_off: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5565,352 +6675,6 @@ pub struct ConsentPageResultResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeployerGrantResponse {
-    pub key: String,
-    pub deployer: Deployer,
-    pub grant: DeployerGrant,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DeployerListResponseDeployments {
-    /// `open`.
-    Open,
-    /// `granted`.
-    Granted,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl DeployerListResponseDeployments {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Open => "open",
-            Self::Granted => "granted",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for DeployerListResponseDeployments {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for DeployerListResponseDeployments {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "open" => Self::Open,
-            "granted" => Self::Granted,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DeployerListResponseDeployers {
-    /// `operator`.
-    Operator,
-    /// `owner`.
-    Owner,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl DeployerListResponseDeployers {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Operator => "operator",
-            Self::Owner => "owner",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for DeployerListResponseDeployers {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for DeployerListResponseDeployers {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "operator" => Self::Operator,
-            "owner" => Self::Owner,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeployerListResponseGrantsItem {
-    pub key: String,
-    pub deployer: Option<Deployer>,
-    pub until: Option<String>,
-    #[serde(rename = "untilSecs")]
-    pub until_secs: Option<u64>,
-    #[serde(rename = "grantedAt")]
-    pub granted_at: String,
-    #[serde(rename = "grantedBy")]
-    pub granted_by: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeployerListResponse {
-    pub deployments: DeployerListResponseDeployments,
-    pub deployers: DeployerListResponseDeployers,
-    pub owner: Option<Deployer>,
-    pub grants: Vec<DeployerListResponseGrantsItem>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeployerRevokeResponse {
-    pub key: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentCreateResponse {
-    pub id: String,
-    pub deployment: DeploymentRecord,
-    pub host: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentListResponse {
-    pub deployments: Vec<Deployment>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DeploymentGetResponseOwnerKind {
-    /// `account`.
-    Account,
-    /// `org`.
-    Org,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl DeploymentGetResponseOwnerKind {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Account => "account",
-            Self::Org => "org",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for DeploymentGetResponseOwnerKind {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for DeploymentGetResponseOwnerKind {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "account" => Self::Account,
-            "org" => Self::Org,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentGetResponseOwner {
-    pub kind: DeploymentGetResponseOwnerKind,
-    pub name: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentGetResponseAppsItem {
-    pub app: String,
-    pub package: String,
-    pub version: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentGetResponse {
-    pub id: String,
-    pub host: Option<String>,
-    pub name: String,
-    pub owner: DeploymentGetResponseOwner,
-    pub apps: Vec<DeploymentGetResponseAppsItem>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentDeleteResponse {
-    pub deployment: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentOfferResponseOffer {
-    pub package: String,
-    pub version: String,
-    #[serde(rename = "addedBy")]
-    pub added_by: String,
-    #[serde(rename = "addedAt")]
-    pub added_at: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentOfferResponse {
-    pub deployment: String,
-    pub app: String,
-    pub offer: DeploymentOfferResponseOffer,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentWithdrawResponse {
-    pub deployment: String,
-    pub app: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentOrgsResponseOrgsItemAppsItem {
-    pub app: String,
-    pub version: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentOrgsResponseOrgsItem {
-    #[serde(rename = "orgId")]
-    pub org_id: String,
-    pub name: Option<String>,
-    #[serde(rename = "memberCount")]
-    pub member_count: u64,
-    #[serde(rename = "activeMembers30d")]
-    pub active_members30d: u64,
-    pub instances: u64,
-    pub apps: Vec<DeploymentOrgsResponseOrgsItemAppsItem>,
-    #[serde(rename = "firstCreatedAt")]
-    pub first_created_at: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentOrgsResponse {
-    pub deployment: String,
-    pub orgs: Vec<DeploymentOrgsResponseOrgsItem>,
-    #[serde(rename = "outsideOrgs")]
-    pub outside_orgs: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentSecretsResponseSecretsValueDeclaredByItem {
-    pub package: String,
-    pub version: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentSecretsResponseSecretsValue {
-    pub apps: Vec<String>,
-    #[serde(rename = "declaredBy")]
-    pub declared_by: Vec<DeploymentSecretsResponseSecretsValueDeclaredByItem>,
-    pub set: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fingerprint: Option<String>,
-    #[serde(rename = "setBy")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub set_by: Option<String>,
-    #[serde(rename = "setAt")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub set_at: Option<u64>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentSecretsResponse {
-    pub deployment: String,
-    pub secrets: BTreeMap<String, DeploymentSecretsResponseSecretsValue>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentSecretSetResponse {
-    pub deployment: String,
-    pub name: String,
-    pub fingerprint: String,
-    #[serde(rename = "setBy")]
-    pub set_by: String,
-    #[serde(rename = "setAt")]
-    pub set_at: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentSecretClearResponse {
-    pub deployment: String,
-    pub name: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SignUpPublicResponse {
     pub policy: SignUp,
     #[serde(rename = "orgInvites")]
@@ -6342,6 +7106,7 @@ pub struct OpsOrgsResponse {
     pub extra: Map<String, Value>,
 }
 
+/// The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OpsOrgUpgradeRequest {
     pub package: String,
@@ -6723,96 +7488,6 @@ pub struct InviteRedeemResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgCreateResponse {
-    #[serde(rename = "orgId")]
-    pub org_id: String,
-    #[serde(rename = "teamId")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_id: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgDeleteResponse {
-    pub apps: Vec<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppTeamListResponseMode {
-    /// `legacy`.
-    Legacy,
-    /// `standalone`.
-    Standalone,
-    /// `shared`.
-    Shared,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl AppTeamListResponseMode {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Legacy => "legacy",
-            Self::Standalone => "standalone",
-            Self::Shared => "shared",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for AppTeamListResponseMode {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AppTeamListResponseMode {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "legacy" => Self::Legacy,
-            "standalone" => Self::Standalone,
-            "shared" => Self::Shared,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AppTeamListResponseAppTeamsItem {
-    pub package: String,
-    #[serde(rename = "teamId")]
-    pub team_id: String,
-    pub name: String,
-    pub join: TeamJoin,
-    #[serde(rename = "memberCount")]
-    pub member_count: u64,
-    #[serde(rename = "defaultCapabilities")]
-    pub default_capabilities: Option<u64>,
-    pub member: bool,
-    pub manages: bool,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AppTeamListResponse {
-    pub mode: AppTeamListResponseMode,
-    #[serde(rename = "appTeams")]
-    pub app_teams: Vec<AppTeamListResponseAppTeamsItem>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppTeamsScopeRequestAppsItem {
     pub package: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6826,72 +7501,6 @@ pub struct AppTeamsScopeRequestAppsItem {
     #[serde(rename = "childTeams")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_teams: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppTeamsScopeResponseMode {
-    /// `legacy`.
-    Legacy,
-    /// `standalone`.
-    Standalone,
-    /// `shared`.
-    Shared,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl AppTeamsScopeResponseMode {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Legacy => "legacy",
-            Self::Standalone => "standalone",
-            Self::Shared => "shared",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for AppTeamsScopeResponseMode {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AppTeamsScopeResponseMode {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "legacy" => Self::Legacy,
-            "standalone" => Self::Standalone,
-            "shared" => Self::Shared,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AppTeamsScopeResponseTeamsItem {
-    pub package: String,
-    #[serde(rename = "teamId")]
-    pub team_id: String,
-    pub created: bool,
-    pub apps: Vec<String>,
-    pub added: u64,
-    pub join: Option<TeamJoin>,
-    pub dropped: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AppTeamsScopeResponse {
-    pub mode: AppTeamsScopeResponseMode,
-    pub teams: Vec<AppTeamsScopeResponseTeamsItem>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -6909,19 +7518,7 @@ pub struct OrgAppsResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgEgressResponse {
-    pub org: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app: Option<String>,
-    pub egress: bool,
-    #[serde(rename = "orgEgressOff")]
-    pub org_egress_off: bool,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
+/// The request body of `POST /orgs/{org}/invites`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InviteCreateRequest {
     pub role: OrgRole,
@@ -6937,44 +7534,6 @@ pub struct InviteCreateRequest {
     pub all_apps: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<u64>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct InviteCreateResponse {
-    pub token: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InviteListResponseInvitesItem {
-    #[serde(rename = "inviteKey")]
-    pub invite_key: String,
-    pub role: OrgRole,
-    pub teams: Vec<String>,
-    #[serde(rename = "usesLeft")]
-    pub uses_left: u64,
-    #[serde(rename = "expiresAt")]
-    pub expires_at: u64,
-    pub expired: bool,
-    #[serde(rename = "createdBy")]
-    pub created_by: Option<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Option<u64>,
-    #[serde(rename = "allApps")]
-    pub all_apps: bool,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct InviteListResponse {
-    pub invites: Vec<InviteListResponseInvitesItem>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -7011,47 +7570,6 @@ impl<'de> Deserialize<'de> for OrgMembersDetail {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OrgMembersResponseMembersItemPasskeysN3Plus {
-    #[serde(rename = "3+")]
-    N3Plus,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-#[allow(clippy::large_enum_variant, reason = "an answer, read once")]
-pub enum OrgMembersResponseMembersItemPasskeys {
-    Integer(u64),
-    N3Plus(OrgMembersResponseMembersItemPasskeysN3Plus),
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OrgMembersResponseMembersItem {
-    pub account: String,
-    pub name: Option<String>,
-    pub role: OrgRole,
-    pub teams: Vec<String>,
-    pub passkeys: OrgMembersResponseMembersItemPasskeys,
-    #[serde(rename = "recoveryCode")]
-    pub recovery_code: bool,
-    #[serde(rename = "lastActiveDay")]
-    pub last_active_day: Option<String>,
-    pub sessions: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgMembersResponse {
-    #[serde(rename = "orgId")]
-    pub org_id: String,
-    pub members: Vec<OrgMembersResponseMembersItem>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MemberSetTeamsRequestTeamsItem {
     pub team: String,
@@ -7061,78 +7579,7 @@ pub struct MemberSetTeamsRequestTeamsItem {
     pub capabilities: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgRenameResponse {
-    #[serde(rename = "orgId")]
-    pub org_id: String,
-    pub name: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgPublisherResponse {
-    pub generation: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RecoveryFinishResponse {
-    pub org: String,
-    #[serde(rename = "previousOwners")]
-    pub previous_owners: Vec<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RecoveryStartResponse {
-    #[serde(rename = "startedAt")]
-    pub started_at: u64,
-    #[serde(rename = "readyAt")]
-    pub ready_at: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgSettingsResponse {
-    pub org: String,
-    #[serde(rename = "allowGuests")]
-    pub allow_guests: bool,
-    #[serde(rename = "allowPublicLinks")]
-    pub allow_public_links: bool,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TeamCreateResponse {
-    #[serde(rename = "teamId")]
-    pub team_id: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TeamDeleteResponse {
-    pub teams: Vec<String>,
-    pub apps: Vec<String>,
-    #[serde(rename = "keptApps")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept_apps: Option<Vec<String>>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
+/// The request body of `POST /orgs/{org}/teams/{team}/members`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TeamSetMemberRequest {
     pub account: String,
@@ -7144,17 +7591,7 @@ pub struct TeamSetMemberRequest {
     pub capabilities: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OrgUpdatesResponse {
-    pub org: String,
-    pub policy: UpgradePolicy,
-    pub updates: Vec<Value>,
-    pub next: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
+/// The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrgUpgradeRequest {
     pub package: String,
@@ -7219,21 +7656,6 @@ pub struct OrgPolicySetRequestPolicy {
     #[serde(rename = "secondApprover")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub second_approver: Option<bool>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OrgUsageResponse {
-    pub apps: u64,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    #[serde(rename = "developerFuelToday")]
-    pub developer_fuel_today: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    #[serde(rename = "developerWritesToday")]
-    pub developer_writes_today: String,
-    pub quotas: Quotas,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

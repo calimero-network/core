@@ -11,7 +11,8 @@ T = TypeVar("T", bound="RecoveryStartBody")
 
 @_attrs_define
 class RecoveryStartBody:
-    """
+    """The request body of `POST /orgs/{org}/recovery/start`.
+
     Attributes:
         nonce (str):
         signature (str):

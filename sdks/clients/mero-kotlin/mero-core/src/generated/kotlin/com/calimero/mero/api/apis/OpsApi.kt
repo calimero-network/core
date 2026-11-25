@@ -30,6 +30,7 @@ import okhttp3.HttpUrl
 import com.calimero.mero.api.models.ApprovedReleases
 import com.calimero.mero.api.models.BackupKeyAnswer
 import com.calimero.mero.api.models.Deadlines
+import com.calimero.mero.api.models.DeployerBody
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
 import com.calimero.mero.api.models.OpsApps200Response
@@ -38,10 +39,8 @@ import com.calimero.mero.api.models.OpsCluster200Response
 import com.calimero.mero.api.models.OpsClusterOwner200Response
 import com.calimero.mero.api.models.OpsClusterOwnerRequest
 import com.calimero.mero.api.models.OpsDeployerGrant200Response
-import com.calimero.mero.api.models.OpsDeployerGrantRequest
 import com.calimero.mero.api.models.OpsDeployerRevokeDelete200Response
 import com.calimero.mero.api.models.OpsDeploymentsGranted200Response
-import com.calimero.mero.api.models.OpsOrgUpgradeRequest
 import com.calimero.mero.api.models.OpsOrgs200Response
 import com.calimero.mero.api.models.OpsOutboundRequest
 import com.calimero.mero.api.models.OpsPackageInstall200Response
@@ -73,6 +72,7 @@ import com.calimero.mero.api.models.OpsSignUpSetRequest
 import com.calimero.mero.api.models.OpsStatus200Response
 import com.calimero.mero.api.models.OpsUpgrade200Response
 import com.calimero.mero.api.models.OpsUpgradeRequest
+import com.calimero.mero.api.models.OrgUpgradeBody
 import com.calimero.mero.api.models.OutboundApproved
 import com.calimero.mero.api.models.ProofOnly
 import com.calimero.mero.api.models.QuotaChanges
@@ -490,7 +490,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * POST /ops/deployers
      * Grant a deployer
      * An account or organization that may install where deployments are granted, &#x60;until&#x60; an RFC 3339 time.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
-     * @param opsDeployerGrantRequest 
+     * @param deployerBody 
      * @return OpsDeployerGrant200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -500,8 +500,8 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsDeployerGrant(opsDeployerGrantRequest: OpsDeployerGrantRequest) : OpsDeployerGrant200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = opsDeployerGrantWithHttpInfo(opsDeployerGrantRequest = opsDeployerGrantRequest)
+    suspend fun opsDeployerGrant(deployerBody: DeployerBody) : OpsDeployerGrant200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = opsDeployerGrantWithHttpInfo(deployerBody = deployerBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as OpsDeployerGrant200Response
@@ -522,17 +522,17 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * POST /ops/deployers
      * Grant a deployer
      * An account or organization that may install where deployments are granted, &#x60;until&#x60; an RFC 3339 time.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
-     * @param opsDeployerGrantRequest 
+     * @param deployerBody 
      * @return ApiResponse<OpsDeployerGrant200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsDeployerGrantWithHttpInfo(opsDeployerGrantRequest: OpsDeployerGrantRequest) : ApiResponse<OpsDeployerGrant200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = opsDeployerGrantRequestConfig(opsDeployerGrantRequest = opsDeployerGrantRequest)
+    suspend fun opsDeployerGrantWithHttpInfo(deployerBody: DeployerBody) : ApiResponse<OpsDeployerGrant200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = opsDeployerGrantRequestConfig(deployerBody = deployerBody)
 
-        return@withContext request<OpsDeployerGrantRequest, OpsDeployerGrant200Response>(
+        return@withContext request<DeployerBody, OpsDeployerGrant200Response>(
             localVariableConfig
         )
     }
@@ -540,11 +540,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
     /**
      * To obtain the request config of the operation opsDeployerGrant
      *
-     * @param opsDeployerGrantRequest 
+     * @param deployerBody 
      * @return RequestConfig
      */
-    fun opsDeployerGrantRequestConfig(opsDeployerGrantRequest: OpsDeployerGrantRequest) : RequestConfig<OpsDeployerGrantRequest> {
-        val localVariableBody = opsDeployerGrantRequest
+    fun opsDeployerGrantRequestConfig(deployerBody: DeployerBody) : RequestConfig<DeployerBody> {
+        val localVariableBody = deployerBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -936,7 +936,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * An operator&#39;s upgrade run
      * **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param org 
-     * @param opsOrgUpgradeRequest 
+     * @param orgUpgradeBody 
      * @return UpgradeRun
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -946,8 +946,8 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsOrgUpgrade(org: kotlin.String, opsOrgUpgradeRequest: OpsOrgUpgradeRequest) : UpgradeRun = withContext(Dispatchers.IO) {
-        val localVarResponse = opsOrgUpgradeWithHttpInfo(org = org, opsOrgUpgradeRequest = opsOrgUpgradeRequest)
+    suspend fun opsOrgUpgrade(org: kotlin.String, orgUpgradeBody: OrgUpgradeBody) : UpgradeRun = withContext(Dispatchers.IO) {
+        val localVarResponse = opsOrgUpgradeWithHttpInfo(org = org, orgUpgradeBody = orgUpgradeBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as UpgradeRun
@@ -969,17 +969,17 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * An operator&#39;s upgrade run
      * **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param org 
-     * @param opsOrgUpgradeRequest 
+     * @param orgUpgradeBody 
      * @return ApiResponse<UpgradeRun?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsOrgUpgradeWithHttpInfo(org: kotlin.String, opsOrgUpgradeRequest: OpsOrgUpgradeRequest) : ApiResponse<UpgradeRun?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = opsOrgUpgradeRequestConfig(org = org, opsOrgUpgradeRequest = opsOrgUpgradeRequest)
+    suspend fun opsOrgUpgradeWithHttpInfo(org: kotlin.String, orgUpgradeBody: OrgUpgradeBody) : ApiResponse<UpgradeRun?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = opsOrgUpgradeRequestConfig(org = org, orgUpgradeBody = orgUpgradeBody)
 
-        return@withContext request<OpsOrgUpgradeRequest, UpgradeRun>(
+        return@withContext request<OrgUpgradeBody, UpgradeRun>(
             localVariableConfig
         )
     }
@@ -988,11 +988,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * To obtain the request config of the operation opsOrgUpgrade
      *
      * @param org 
-     * @param opsOrgUpgradeRequest 
+     * @param orgUpgradeBody 
      * @return RequestConfig
      */
-    fun opsOrgUpgradeRequestConfig(org: kotlin.String, opsOrgUpgradeRequest: OpsOrgUpgradeRequest) : RequestConfig<OpsOrgUpgradeRequest> {
-        val localVariableBody = opsOrgUpgradeRequest
+    fun opsOrgUpgradeRequestConfig(org: kotlin.String, orgUpgradeBody: OrgUpgradeBody) : RequestConfig<OrgUpgradeBody> {
+        val localVariableBody = orgUpgradeBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"

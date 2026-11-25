@@ -290,7 +290,7 @@ async fn deployer_list(
         let grants = s
             .deployers
             .iter()
-            .map(|(key, grant)| GrantRow {
+            .map(|(key, grant)| DeployerGrantView {
                 key: key.clone(),
                 deployer: Deployer::from_key(key),
                 until: grant.until.map(crate::system::rfc3339),
@@ -359,7 +359,7 @@ fn deployment_json(node: &Node, d: &Deployment) -> DeploymentView {
         apps: d
             .apps
             .iter()
-            .map(|(app, o)| OfferView {
+            .map(|(app, o)| DeploymentOffer {
                 app: app.clone(),
                 package: o.package.clone(),
                 version: o.version.clone(),
@@ -378,13 +378,13 @@ pub(super) struct DeployerList {
     deployments: crate::system::Deployments,
     deployers: crate::system::Deployers,
     owner: Option<Deployer>,
-    grants: Vec<GrantRow>,
+    grants: Vec<DeployerGrantView>,
 }
 
 /// One grant of [`DeployerList`]: `until` RFC 3339, `untilSecs` Unix seconds.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GrantRow {
+pub(super) struct DeployerGrantView {
     key: String,
     deployer: Option<Deployer>,
     until: Option<String>,
@@ -401,7 +401,7 @@ pub(super) struct DeploymentView {
     host: Option<String>,
     name: String,
     owner: Deployer,
-    apps: Vec<OfferView>,
+    apps: Vec<DeploymentOffer>,
     created_by: String,
     created_at: String,
 }
@@ -409,7 +409,7 @@ pub(super) struct DeploymentView {
 /// One offer of a [`DeploymentView`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct OfferView {
+pub(super) struct DeploymentOffer {
     app: String,
     package: String,
     version: String,
@@ -437,20 +437,20 @@ pub(super) struct PublicDeployment {
     id: String,
     host: Option<String>,
     name: String,
-    owner: OwnerName,
-    apps: Vec<PublicOffer>,
+    owner: DeploymentOwner,
+    apps: Vec<PublicDeploymentApp>,
 }
 
 /// The owner of a [`PublicDeployment`]: its kind and name.
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct OwnerName {
+pub(super) struct DeploymentOwner {
     kind: String,
     name: Option<String>,
 }
 
 /// One offer of a [`PublicDeployment`].
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct PublicOffer {
+pub(super) struct PublicDeploymentApp {
     app: String,
     package: String,
     version: String,
@@ -460,15 +460,15 @@ pub(super) struct PublicOffer {
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct DeploymentSecrets {
     deployment: String,
-    secrets: BTreeMap<String, SecretRow>,
+    secrets: BTreeMap<String, DeploymentSecretView>,
 }
 
 /// One secret of [`DeploymentSecrets`]: never its value.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct SecretRow {
+pub(super) struct DeploymentSecretView {
     apps: Vec<String>,
-    declared_by: Vec<DeclaredBy>,
+    declared_by: Vec<SecretDeclarer>,
     set: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fingerprint: Option<String>,
@@ -480,7 +480,7 @@ pub(super) struct SecretRow {
 
 /// A release that declares a secret.
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct DeclaredBy {
+pub(super) struct SecretDeclarer {
     package: String,
     version: String,
 }
@@ -490,14 +490,14 @@ pub(super) struct DeclaredBy {
 #[serde(rename_all = "camelCase")]
 pub(super) struct DeploymentOrgs {
     deployment: String,
-    orgs: Vec<CustomerOrg>,
+    orgs: Vec<DeploymentCustomer>,
     outside_orgs: u64,
 }
 
 /// One customer organization of [`DeploymentOrgs`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CustomerOrg {
+pub(super) struct DeploymentCustomer {
     org_id: String,
     name: Option<String>,
     member_count: u64,
@@ -719,14 +719,14 @@ async fn deployment_get(
             id: d.id.clone(),
             host: node.deployment_host(&d.id),
             name: d.name.clone(),
-            owner: OwnerName {
+            owner: DeploymentOwner {
                 kind: kind.to_owned(),
                 name,
             },
             apps: d
                 .apps
                 .iter()
-                .map(|(app, o)| PublicOffer {
+                .map(|(app, o)| PublicDeploymentApp {
                     app: app.clone(),
                     package: o.package.clone(),
                     version: o.version.clone(),
@@ -755,19 +755,19 @@ pub(super) struct DeploymentSecretBody {
 /// its fingerprint, who set it and when. Never a value.
 fn deployment_secrets_json(s: &crate::system::SystemState, d: &Deployment) -> DeploymentSecrets {
     let held = s.deployment_secrets.get(&d.id);
-    let mut rows: BTreeMap<String, SecretRow> = s
+    let mut rows: BTreeMap<String, DeploymentSecretView> = s
         .deployment_declarers(d)
         .into_iter()
         .map(|(name, by)| {
             let declared_by = by
                 .declared_by
                 .into_iter()
-                .map(|(package, version)| DeclaredBy { package, version })
+                .map(|(package, version)| SecretDeclarer { package, version })
                 .collect();
-            let row = SecretRow {
+            let row = DeploymentSecretView {
                 apps: by.apps.into_iter().collect(),
                 declared_by,
-                ..SecretRow::default()
+                ..DeploymentSecretView::default()
             };
             (name, row)
         })
@@ -974,7 +974,7 @@ async fn deployment_orgs(
                         last_active(s, m, &used).is_some_and(|t| t + ACTIVE_WINDOW_SECS > now);
                     (n + 1, a + u64::from(recent))
                 });
-                CustomerOrg {
+                DeploymentCustomer {
                     org_id: org.to_owned(),
                     name: s.orgs.get(org).map(|o| o.name.clone()),
                     member_count: count,
@@ -1056,7 +1056,7 @@ mod answer_tests {
                 deployments: crate::system::Deployments::Granted,
                 deployers: crate::system::Deployers::Owner,
                 owner: None,
-                grants: vec![GrantRow {
+                grants: vec![DeployerGrantView {
                     key: "account:alice".to_owned(),
                     deployer: Deployer::from_key("account:alice"),
                     until: until.map(crate::system::rfc3339),
@@ -1096,7 +1096,7 @@ mod answer_tests {
                 apps: d
                     .apps
                     .iter()
-                    .map(|(app, o)| OfferView {
+                    .map(|(app, o)| DeploymentOffer {
                         app: app.clone(),
                         package: o.package.clone(),
                         version: o.version.clone(),
@@ -1133,14 +1133,14 @@ mod answer_tests {
                 id: d.id.clone(),
                 host: host.clone(),
                 name: d.name.clone(),
-                owner: OwnerName {
+                owner: DeploymentOwner {
                     kind: "org".to_owned(),
                     name: None,
                 },
                 apps: d
                     .apps
                     .iter()
-                    .map(|(app, o)| PublicOffer {
+                    .map(|(app, o)| PublicDeploymentApp {
                         app: app.clone(),
                         package: o.package.clone(),
                         version: o.version.clone(),
@@ -1186,23 +1186,23 @@ mod answer_tests {
         let mut rows = BTreeMap::new();
         let _new = rows.insert(
             "API_KEY".to_owned(),
-            SecretRow {
+            DeploymentSecretView {
                 apps: vec!["kv".to_owned()],
-                declared_by: vec![DeclaredBy {
+                declared_by: vec![SecretDeclarer {
                     package: "p1".to_owned(),
                     version: "1.0.0".to_owned(),
                 }],
-                ..SecretRow::default()
+                ..DeploymentSecretView::default()
             },
         );
         let _new = rows.insert(
             "TOKEN".to_owned(),
-            SecretRow {
+            DeploymentSecretView {
                 set: true,
                 fingerprint: Some("fp".to_owned()),
                 set_by: Some("account:alice".to_owned()),
                 set_at: Some(9),
-                ..SecretRow::default()
+                ..DeploymentSecretView::default()
             },
         );
         let mut before_rows: BTreeMap<String, Value> = BTreeMap::new();
@@ -1229,7 +1229,7 @@ mod answer_tests {
         same(
             &DeploymentOrgs {
                 deployment: "d1".to_owned(),
-                orgs: vec![CustomerOrg {
+                orgs: vec![DeploymentCustomer {
                     org_id: "o2".to_owned(),
                     name: Some("Customer".to_owned()),
                     member_count: count,

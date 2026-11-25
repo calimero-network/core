@@ -23,7 +23,7 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.DeploymentAppsInner
+import com.calimero.mero.api.models.DeploymentOffer
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -57,7 +57,7 @@ data class Deployment (
     val owner: com.calimero.mero.Deployer,
 
     @SerialName(value = "apps")
-    val apps: kotlin.collections.List<DeploymentAppsInner>,
+    val apps: kotlin.collections.List<DeploymentOffer>,
 
     @SerialName(value = "createdBy")
     val createdBy: kotlin.String,

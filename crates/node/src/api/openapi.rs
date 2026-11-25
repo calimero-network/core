@@ -186,8 +186,6 @@ struct Op {
     body: Body,
     query: Option<Input>,
     reply: Reply,
-    /// The Rust type the handler serializes into an inline `reply` shape, for the checks.
-    reply_ty: Option<OutTy>,
     /// `412 CONFIRM_REQUIRED` first: a passkey assertion over the exact request.
     step_up: bool,
     /// When the step-up applies, if not always (`x-calimero-step-up-when`).
@@ -217,7 +215,6 @@ fn op(
         body: Body::None,
         query: None,
         reply: Reply::Json("{}"),
-        reply_ty: None,
         step_up: false,
         step_up_when: "",
         user_verification: "required",
@@ -305,14 +302,6 @@ impl Op {
             shape,
             ty: Some(ty::<T>()),
         });
-        self
-    }
-
-    /// An inline answer the handler writes by serializing a `T`: held to `T` as a component
-    /// bound with [`Component::of`] is (`response_shapes_match_their_types`).
-    fn ok_of<T: DeserializeOwned + Serialize>(mut self, shape: &'static str) -> Self {
-        self.reply = Reply::Json(shape);
-        self.reply_ty = Some(out_ty::<T>());
         self
     }
 
@@ -517,9 +506,9 @@ fn details_of<'a>(codes: impl IntoIterator<Item = &'a str>) -> Map<String, Value
         .collect()
 }
 
-/// The handlers whose inline answer is not bound to a type yet (review finding E7): it is
-/// written here by hand and checked against nothing. `inline_answers_are_typed_but_for_the_listed_ones`
-/// keeps every other inline answer typed; convert one, then take it off.
+/// The handlers whose answer is not a named, typed component yet (review finding E7): written
+/// here by hand and checked against nothing. `answers_are_named_typed_components_but_for_the_listed_ones`
+/// holds every other; convert one, then take it off.
 const UNTYPED_INLINE: &[&str] = &[
     "account_apps",
     "account_proof::ops_receipt_key",
@@ -729,6 +718,413 @@ other integer is `format: int64` (read it into a 64-bit integer), and stays belo
 /// The shared shapes.
 fn components() -> Vec<Component> {
     vec![
+        // ---------------------------------------------------------------- request bodies (E7)
+        component(
+            "AllAppsBody",
+            "The request body of `POST /orgs/{org}/all-apps`.",
+            "{ account: string, allApps: bool, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "BackupKeyBody",
+            "The request body of `POST /auth/backup-key`, `POST /orgs/{org}/backup-key`.",
+            "{ publicKey: string, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "CapabilitiesBody",
+            "The request body of `POST /orgs/{org}/capabilities`.",
+            "{ account?: string, team?: string, capabilities: uint, confirm?: #Confirm }",
+        ),
+        component(
+            "DeployerBody",
+            "The request body of `POST /ops/deployers`, `POST /deployers`.",
+            "{ deployer: #Deployer, until?: string, operatorProof?: #OperatorProof, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "DeploymentBody",
+            "The request body of `POST /deployments`.",
+            "{ name: string, owner: #Deployer, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "DeploymentSecretBody",
+            "The request body of `PUT /deployments/{id}/secrets/{name}`.",
+            "{ value: string, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "InviteBody",
+            "The request body of `POST /orgs/{org}/invites`.",
+            "{ role: #OrgRole, teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool, capabilities?: uint, confirm?: #Confirm }",
+        ),
+        component(
+            "MemberBody",
+            "The request body of `POST /orgs/{org}/members`.",
+            "{ account: string, role: #OrgRole, confirm?: #Confirm }",
+        ),
+        component(
+            "MetadataBody",
+            "The request body of `POST /apps/{app}/metadata`, `POST /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.",
+            "{ metadata: any }",
+        ),
+        component(
+            "OfferBody",
+            "The request body of `POST /deployments/{id}/apps`.",
+            "{ app: string, package: string, version: string, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "OrgBody",
+            "The request body of `POST /orgs`.",
+            "{ name: string, recoveryKey?: string, capabilities?: uint }",
+        )
+        .closed_body(),
+        component(
+            "OrgSettingsBody",
+            "The request body of `POST /orgs/{org}/settings`.",
+            "{ allowGuests?: bool, allowPublicLinks?: bool, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "OrgUpgradeBody",
+            "The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`.",
+            "{ package: string, version: string, team?: string, cascade?: bool, migrate?: string, confirm?: #Confirm, operatorProof?: #OperatorProof }",
+        ),
+        component(
+            "PublisherBody",
+            "The request body of `POST /orgs/{org}/publishers`.",
+            "{ signerId: string, publicKey: string, signature: string, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "PublisherUpgradeBody",
+            "The request body of `POST /orgs/{org}/packages/{package}/upgrade`.",
+            "{ version: string, migrate?: string, confirm?: #Confirm }",
+        ),
+        component(
+            "RecoveryKeyBody",
+            "The request body of `POST /orgs/{org}/recovery`.",
+            "{ publicKey?: string | null, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "RecoveryStartBody",
+            "The request body of `POST /orgs/{org}/recovery/start`.",
+            "{ nonce: string, signature: string }",
+        )
+        .closed_body(),
+        component(
+            "RenameOrgBody",
+            "The request body of `POST /orgs/{org}/name`.",
+            "{ name: string, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "ScopeAppsBody",
+            "The request body of `POST /orgs/{org}/app-teams`.",
+            "{ apps?: { package: string, name?: string, instances?: string[], join?: #TeamJoin, keep?: string[], childTeams?: bool }[], shared?: bool, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "TeamBody",
+            "The request body of `POST /orgs/{org}/teams`.",
+            "{ name: string, parent?: string, join: #TeamJoin }",
+        ),
+        component(
+            "TeamDeleteBody",
+            "`DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits stay, and the passkey confirmation after the `412`.",
+            "{ keepApps?: bool, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "TeamIdsBody",
+            "The request body of `DELETE /orgs/{org}/members/{account}/teams`.",
+            "{ teams: string[], confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "TeamMemberBody",
+            "The request body of `POST /orgs/{org}/teams/{team}/members`.",
+            "{ account: string, lead?: bool, role?: #TeamRole, capabilities?: uint, confirm?: #Confirm }",
+        ),
+        component(
+            "TeamRowsBody",
+            "The request body of `POST /orgs/{org}/members/{account}/teams`.",
+            "{ teams: { team: string, role?: #TeamRole, capabilities?: uint }[], confirm?: #Confirm }",
+        )
+        .closed_body(),
+        component(
+            "TeamUpdateBody",
+            "The request body of `POST /orgs/{org}/teams/{team}`.",
+            "{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }",
+        ),
+        component(
+            "UpgradePolicyBody",
+            "A policy to set at one scope; `null` drops it (an app then follows its organization's, an organization the defaults).",
+            "{ policy?: { autoApply?: \"never\" | \"noDestinations\", holdHours?: uint, secondApprover?: bool } | null, confirm?: #Confirm }",
+        )
+        .closed_body(),
+        // ---------------------------------------------------------------- typed answers (E7)
+        component(
+            "AppOffered",
+            "What `OfferApp` answers: the offer now in force.",
+            "{ deployment: string, app: string, offer: #Offer }",
+        )
+        .of::<crate::system::AppOffered>(),
+        component(
+            "AppTeamList",
+            "`GET /orgs/{org}/app-teams`: the organization's mode and its app teams.",
+            "{ mode: \"legacy\" | \"standalone\" | \"shared\", appTeams: #AppTeamRow[] }",
+        )
+        .of::<super::orgs::AppTeamList>(),
+        component(
+            "AppTeamsScoped",
+            "What `ScopeApps` answers: the organization's mode after, and each package's app team.",
+            "{ mode: \"legacy\" | \"standalone\" | \"shared\", teams: #ScopedTeam[] }",
+        )
+        .of::<crate::system::AppTeamsScoped>(),
+        component(
+            "AppWithdrawn",
+            "What `WithdrawApp` answers.",
+            "{ deployment: string, app: string }",
+        )
+        .of::<crate::system::AppWithdrawn>(),
+        component(
+            "DeployerGranted",
+            "What `GrantDeployer` answers: the grant's key, whom it names and its terms.",
+            "{ key: string, deployer: #Deployer, grant: #DeployerGrant }",
+        )
+        .of::<crate::system::DeployerGranted>(),
+        component(
+            "DeployerList",
+            "`GET /deployers`: the cluster's deployment rules, its owner and every grant.",
+            "{ deployments: \"open\" | \"granted\", deployers: \"operator\" | \"owner\", owner: #Deployer | null, grants: #DeployerGrantView[] }",
+        )
+        .of::<super::deployments::DeployerList>(),
+        component(
+            "DeployerRevoked",
+            "What `RevokeDeployer` answers: the key of the grant withdrawn.",
+            "{ key: string }",
+        )
+        .of::<crate::system::DeployerRevoked>(),
+        component(
+            "DeploymentCreated",
+            "`POST /deployments`: the record the log made, and its frontend host.",
+            "{ id: string, deployment: #DeploymentRecord, host: string | null }",
+        )
+        .of::<super::deployments::DeploymentCreated>(),
+        component(
+            "DeploymentDeleted",
+            "What `DeleteDeployment` answers.",
+            "{ deployment: string }",
+        )
+        .of::<crate::system::DeploymentDeleted>(),
+        component(
+            "DeploymentList",
+            "`GET /deployments`.",
+            "{ deployments: #Deployment[] }",
+        )
+        .of::<super::deployments::DeploymentList>(),
+        component(
+            "DeploymentOrgs",
+            "`GET /deployments/{id}/orgs`: the customer organizations, by counts only.",
+            "{ deployment: string, orgs: #DeploymentCustomer[], outsideOrgs: uint }",
+        )
+        .of::<super::deployments::DeploymentOrgs>(),
+        component(
+            "DeploymentSecretCleared",
+            "What `ClearDeploymentSecret` answers.",
+            "{ deployment: string, name: string }",
+        )
+        .of::<crate::system::DeploymentSecretCleared>(),
+        component(
+            "DeploymentSecretSet",
+            "What `SetDeploymentSecret` answers: never the value, its fingerprint.",
+            "{ deployment: string, name: string, fingerprint: string, setBy: string, setAt: uint }",
+        )
+        .of::<crate::system::DeploymentSecretSet>(),
+        component(
+            "DeploymentSecrets",
+            "`GET /deployments/{id}/secrets`: each name its offers declare or it holds a value for.",
+            "{ deployment: string, secrets: { [string]: #DeploymentSecretView } }",
+        )
+        .of::<super::deployments::DeploymentSecrets>(),
+        component(
+            "EgressSet",
+            "What `SetEgress` answers: the switch as set, the organization's own, and the instance when one was named.",
+            "{ org: string, app?: string, egress: bool, orgEgressOff: bool }",
+        )
+        .of::<crate::system::EgressSet>(),
+        component(
+            "InviteList",
+            "`GET /orgs/{org}/invites`.",
+            "{ invites: #InviteView[] }",
+        )
+        .of::<super::orgs::InviteList>(),
+        component(
+            "InviteMade",
+            "`POST /orgs/{org}/invites`: the invite's token, answered once.",
+            "{ token: string }",
+        )
+        .of::<super::orgs::InviteMade>(),
+        component(
+            "OrgCreated",
+            "What `CreateOrg` answers: the new organization, and its app team when it is made with one (the consent page's `createOrg` for a package).",
+            "{ orgId: string, teamId?: string }",
+        )
+        .of::<crate::system::OrgCreated>(),
+        component(
+            "OrgDeleted",
+            "What `DeleteOrg` answers: the instances deleted with it.",
+            "{ apps: string[] }",
+        )
+        .of::<crate::system::OrgDeleted>(),
+        component(
+            "MemberSecurityList",
+            "`GET /orgs/{org}/members?detail=security`: each member the caller sees, with what tells whether their account is safe.",
+            "{ orgId: string, members: #MemberSecurity[] }",
+        )
+        .of::<super::orgs::MemberSecurityList>(),
+        component(
+            "OrgRenamed",
+            "What `RenameOrg` answers.",
+            "{ orgId: string, name: string }",
+        )
+        .of::<crate::system::OrgRenamed>(),
+        component(
+            "OrgSettingsSet",
+            "What `SetOrgSettings` answers: the settings after the change.",
+            "{ org: string, allowGuests: bool, allowPublicLinks: bool }",
+        )
+        .of::<crate::system::OrgSettingsSet>(),
+        component(
+            "OrgUpdates",
+            "`GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each as `GET /apps/{app}/update` shows it with its `name`, and the organization's policy.",
+            "{ org: string, policy: #UpgradePolicy, updates: any[], next: string | null }",
+        )
+        .of::<super::update_policies::OrgUpdates>(),
+        component(
+            "OrgUsage",
+            "`GET /orgs/{org}/usage`: the apps billed to it, its developer usage today (decimal strings) and the cluster's quotas.",
+            "{ apps: uint, developerFuelToday: u64, developerWritesToday: u64, quotas: #Quotas }",
+        )
+        .of::<super::orgs::OrgUsage>(),
+        component(
+            "PublicDeployment",
+            "`GET /deployments/{id}`, public: its name, whose it is, and what it offers.",
+            "{ id: string, host: string | null, name: string, owner: #DeploymentOwner, apps: #PublicDeploymentApp[] }",
+        )
+        .of::<super::deployments::PublicDeployment>(),
+        component(
+            "PublisherBound",
+            "What `BindPublisher` answers: the key's binding generation now.",
+            "{ generation: uint }",
+        )
+        .of::<crate::system::PublisherBound>(),
+        component(
+            "RecoveryFinished",
+            "What an organization recovery's finish answers: the organization and the owners it replaced.",
+            "{ org: string, previousOwners: string[] }",
+        )
+        .of::<crate::system::RecoveryFinished>(),
+        component(
+            "RecoveryStarted",
+            "What an organization recovery's start answers: when it started and when it may finish (Unix seconds).",
+            "{ startedAt: uint, readyAt: uint }",
+        )
+        .of::<crate::system::RecoveryStarted>(),
+        component(
+            "TeamCreated",
+            "What `CreateTeam` answers.",
+            "{ teamId: string }",
+        )
+        .of::<crate::system::TeamCreated>(),
+        component(
+            "TeamDeleted",
+            "What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances deleted with them, and with `keepApps` those kept instead (`apps` then empty).",
+            "{ teams: string[], apps: string[], keptApps?: string[] }",
+        )
+        .of::<crate::system::TeamDeleted>(),
+        component(
+            "AppTeamRow",
+            "One app team: its package, how many are in it, the capabilities a new member gets (`null`: the organization's), and whether the caller is in it or manages it.",
+            "{ package: string, teamId: string, name: string, join: #TeamJoin, memberCount: uint, defaultCapabilities: uint | null, member: bool, manages: bool }",
+        )
+        .of::<super::orgs::AppTeamRow>(),
+        component(
+            "CustomerApp",
+            "An app a customer runs from the deployment, and its version.",
+            "{ app: string, version: string }",
+        )
+        .of::<super::deployments::CustomerApp>(),
+        component(
+            "DeployerGrantView",
+            "A deployer grant: whom it names (`null`: a key no deployer parses), until when (`until` RFC 3339, `untilSecs` Unix seconds; `null`: no end), who granted it and when.",
+            "{ key: string, deployer: #Deployer | null, until: string | null, untilSecs: uint | null, grantedAt: string, grantedBy: string }",
+        )
+        .of::<super::deployments::DeployerGrantView>(),
+        component(
+            "DeploymentCustomer",
+            "A customer organization of a deployment, by counts only: its members, those active in the last 30 days, its instances and the releases they run, and when its first was made (RFC 3339).",
+            "{ orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: #CustomerApp[], firstCreatedAt: string }",
+        )
+        .of::<super::deployments::DeploymentCustomer>(),
+        component(
+            "DeploymentOffer",
+            "An app a deployment offers, as its managers list it: the release, who offered it and when (RFC 3339).",
+            "{ app: string, package: string, version: string, addedBy: string, addedAt: string }",
+        )
+        .of::<super::deployments::DeploymentOffer>(),
+        component(
+            "DeploymentOwner",
+            "Whose deployment it is: an account or an organization, and its name (`null`: gone).",
+            "{ kind: \"account\" | \"org\", name: string | null }",
+        )
+        .of::<super::deployments::DeploymentOwner>(),
+        component(
+            "DeploymentSecretView",
+            "A secret of a deployment, never its value: the offered apps and releases that declare it, whether a value is set, and its fingerprint, setter and time when it is.",
+            "{ apps: string[], declaredBy: #SecretDeclarer[], set: bool, fingerprint?: string, setBy?: string, setAt?: uint }",
+        )
+        .of::<super::deployments::DeploymentSecretView>(),
+        component(
+            "InviteView",
+            "An organization invite as its list shows it, never its token: `createdBy`/`createdAt` `null` for one made before they were kept.",
+            "{ inviteKey: string, role: #OrgRole, teams: string[], usesLeft: uint, expiresAt: uint, expired: bool, createdBy: string | null, createdAt: uint | null, allApps: bool }",
+        )
+        .of::<super::orgs::InviteView>(),
+        component(
+            "MemberSecurity",
+            "A member as the security listing shows them: their teams, how many passkeys (a number below 3, else `\"3+\"`), whether they hold a recovery code, the last UTC day they were active (`null`: never seen) and their live sessions.",
+            "{ account: string, name: string | null, role: #OrgRole, teams: string[], passkeys: uint | \"3+\", recoveryCode: bool, lastActiveDay: string | null, sessions: uint }",
+        )
+        .of::<super::orgs::MemberSecurity>(),
+        component(
+            "Offer",
+            "An app a deployment offers: the release new instances run, who offered it and when (Unix seconds).",
+            "{ package: string, version: string, addedBy: string, addedAt: uint }",
+        )
+        .of::<crate::system::Offer>(),
+        component(
+            "PublicDeploymentApp",
+            "An app a deployment offers, and the release its new instances run.",
+            "{ app: string, package: string, version: string }",
+        )
+        .of::<super::deployments::PublicDeploymentApp>(),
+        component(
+            "ScopedTeam",
+            "One package's app team after a scope: whether it was made, the instances moved onto it, the rows added, how it is joined now (`null`: not changed) and how many lost it by a close.",
+            "{ package: string, teamId: string, created: bool, apps: string[], added: uint, join: #TeamJoin | null, dropped: uint }",
+        )
+        .of::<crate::system::ScopedTeam>(),
+        component(
+            "SecretDeclarer",
+            "A release that declares a secret.",
+            "{ package: string, version: string }",
+        )
+        .of::<super::deployments::SecretDeclarer>(),
         component(
             "Error",
             "An error answer: `error` is the code. `details`, absent for most codes, has the schema `x-calimero-details` names for the code on the operation's response (every code's: `x-calimero-error-details` at the document's root); a code it names no schema for carries none, or a value clients need not read.",
@@ -1126,7 +1522,7 @@ fn components() -> Vec<Component> {
         component(
             "Deployment",
             "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.",
-            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: { app: string, package: string, version: string, addedBy: string, addedAt: string }[], createdBy: string, createdAt: string }",        )
+            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: #DeploymentOffer[], createdBy: string, createdAt: string }",        )
         .of::<super::deployments::DeploymentView>(),
         component(
             "DeadLetter",
@@ -1265,7 +1661,6 @@ fn operations() -> Vec<Op> {
     const OUTBOUND: &str =
         "{ package: string, prefixes?: #OutboundSelection, replace?: bool, confirm?: #Confirm }";
     const EGRESS: &str = "{ egress: bool, confirm?: #Confirm }";
-    const EGRESS_SET: &str = "{ org: string, app?: string, egress: bool, orgEgressOff: bool }";
     vec![
         // ---------------------------------------------------------------- public
         get("/health", "health", Anyone, "Node health")
@@ -1328,7 +1723,7 @@ fn operations() -> Vec<Op> {
             .ok("#BackupKeyAnswer"),
         post("/auth/backup-key", "account_set_backup_key", AccountHolder, "Set the account's backup key")
             .about("`publicKey`: 64 lowercase hex, an X25519 public key whose private half the account holder keeps (never a node), for its personal apps, where owners upgrade apps. `412` first.")
-            .json::<super::BackupKeyBody>("{ publicKey: string, confirm?: #Confirm }")
+            .json::<super::BackupKeyBody>("#BackupKeyBody")
             .ok("#BackupKeyAnswer")
             .step_up()
             .errors(&[(400, "BAD_BACKUP_KEY"), (403, "FORBIDDEN"), (409, "FEATURE_NOT_ACTIVE")]),
@@ -1481,7 +1876,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(409, "UNIT_MEMBER"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/metadata", "app_metadata", SignedIn, "Set an app's metadata")
             .about("The owner or an organization admin; 16 KiB at most. `metadata` is the caller's own JSON, free-form, kept as given.")
-            .json::<super::MetadataBody>("{ metadata: any }")
+            .json::<super::MetadataBody>("#MetadataBody")
             .ok("{}")
             .errors(&[(413, "TOO_LARGE")]),
         get("/apps/{app}/storage", "app_storage", AppAccess, "What an app stores")
@@ -1570,7 +1965,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/upgrade-policy", "app_policy_set", AccountHolder, "Set an app's own update policy")
             .about("An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
-            .json::<super::UpgradePolicyBody>("{ policy?: { autoApply?: \"never\" | \"noDestinations\", holdHours?: uint, secondApprover?: bool } | null, confirm?: #Confirm }")
+            .json::<super::UpgradePolicyBody>("#UpgradePolicyBody")
             .ok("#PolicyView")
             .step_up()
             .errors(&[(400, "BAD_UPGRADE_POLICY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
@@ -1808,8 +2203,8 @@ fn operations() -> Vec<Op> {
         // ---------------------------------------------------------------- organizations
         post("/orgs", "org_create", Session, "Create an organization")
             .about("`recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).")
-            .json::<super::OrgBody>("{ name: string, recoveryKey?: string, capabilities?: uint }")
-            .ok_of::<crate::system::OrgCreated>("{ orgId: string, teamId?: string }")
+            .json::<super::OrgBody>("#OrgBody")
+            .ok("#OrgCreated")
             .errors(&[(400, "BAD_REQUEST"), (400, "UNKNOWN_CAPABILITIES"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
         get("/orgs/{org}", "org_get", SignedIn, "One organization")
             .about("As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).")
@@ -1818,19 +2213,19 @@ fn operations() -> Vec<Op> {
         delete("/orgs/{org}", "org_delete", AccountHolder, "Delete an organization")
             .about("With its teams, invites and apps; the owner. `apps`: the apps deleted with it.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok_of::<crate::system::OrgDeleted>("{ apps: string[] }")
+            .ok("#OrgDeleted")
             .step_up(),
         post("/orgs/{org}/metadata", "org_metadata", SignedIn, "Set an organization's metadata")
             .about("`metadata` is the caller's own JSON, free-form, kept as given.")
-            .json::<super::MetadataBody>("{ metadata: any }")
+            .json::<super::MetadataBody>("#MetadataBody")
             .ok("{}"),
         get("/orgs/{org}/usage", "org_usage", SignedIn, "An organization's usage")
             .about("An admin: how many apps the organization develops, what their runs used today (decimal strings) and the cluster's quotas; a member gets `403`.")
-            .ok_of::<super::orgs::OrgUsage>("{ apps: uint, developerFuelToday: u64, developerWritesToday: u64, quotas: #Quotas }")
+            .ok("#OrgUsage")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/upgrade", "org_upgrade", AccountHolder, "Start an upgrade run")
             .about("Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.")
-            .json::<super::OrgUpgradeBody>("{ package: string, version: string, team?: string, cascade?: bool, migrate?: string, confirm?: #Confirm, operatorProof?: #OperatorProof }")
+            .json::<super::OrgUpgradeBody>("#OrgUpgradeBody")
             .ok("#UpgradeRun")
             .step_up()
             .errors(&[(403, "FORBIDDEN")]),
@@ -1847,16 +2242,16 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/members/{account}/metadata", "member_metadata", SignedIn, "Set a member's metadata")
             .about("`metadata` is the caller's own JSON, free-form, kept as given.")
-            .json::<super::MetadataBody>("{ metadata: any }")
+            .json::<super::MetadataBody>("#MetadataBody")
             .ok("{}"),
         get("/orgs/{org}/members", "org_members", AccountHolder, "Members' lockout risk")
             .about("`detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the owner or an admin: each member's passkeys (`1`, `2` or `\"3+\"`), recovery code, last active UTC day and sessions. `403` below admin, `404` outside the organization.")
             .query::<super::MembersQuery>(r#"{ detail?: "security" }"#)
-            .ok_of::<super::orgs::OrgMembers>(r#"{ orgId: string, members: { account: string, name: string | null, role: #OrgRole, teams: string[], passkeys: uint | "3+", recoveryCode: bool, lastActiveDay: string | null, sessions: uint }[] }"#)
+            .ok("#MemberSecurityList")
             .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/members", "org_set_member", Session, "Set a member's role")
             .about("`owner` moves ownership. `412` first.")
-            .json::<super::MemberBody>("{ account: string, role: #OrgRole, confirm?: #Confirm }")
+            .json::<super::MemberBody>("#MemberBody")
             .ok("{}")
             .step_up(),
         delete("/orgs/{org}/members/{account}", "org_remove_member", Session, "Remove a member, or leave")
@@ -1866,36 +2261,36 @@ fn operations() -> Vec<Op> {
             .step_up(),
         post("/orgs/{org}/members/{account}/teams", "member_set_teams", Session, "Set a member's rows in several teams")
             .about("Each team judged as `POST /orgs/{org}/teams/{team}/members` would judge it, and none set unless every one may be (a row's absent `role` is `member`; absent `capabilities`, a new row takes the defaults and an existing row keeps its own). 1 to 64 distinct teams; one passkey, `412` first.")
-            .json::<super::TeamRowsBody>("{ teams: { team: string, role?: #TeamRole, capabilities?: uint }[], confirm?: #Confirm }")
+            .json::<super::TeamRowsBody>("#TeamRowsBody")
             .ok("{}")
             .step_up()
             .errors(&[(400, "BAD_TEAMS"), (409, "FEATURE_NOT_ACTIVE")]),
         delete("/orgs/{org}/members/{account}/teams", "member_remove_teams", Session, "Remove a member from several teams, or leave them")
             .about("Each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}` would judge it, and none taken unless every one may be. 1 to 64 distinct teams; one passkey, `412` first.")
-            .json::<super::TeamIdsBody>("{ teams: string[], confirm?: #Confirm }")
+            .json::<super::TeamIdsBody>("#TeamIdsBody")
             .ok("{}")
             .step_up()
             .errors(&[(400, "BAD_TEAMS"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
             .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.")
-            .json::<super::TeamBody>("{ name: string, parent?: string, join: #TeamJoin }")
-            .ok_of::<crate::system::TeamCreated>("{ teamId: string }"),
+            .json::<super::TeamBody>("#TeamBody")
+            .ok("#TeamCreated"),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
             .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
             .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.")
-            .json::<super::TeamUpdateBody>("{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }")
+            .json::<super::TeamUpdateBody>("#TeamUpdateBody")
             .ok("{}"),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
             .about("With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
-            .opt_json::<super::TeamDeleteBody>("{ keepApps?: bool, confirm?: #Confirm }")
-            .ok_of::<crate::system::TeamDeleted>("{ teams: string[], apps: string[], keptApps?: string[] }")
+            .opt_json::<super::TeamDeleteBody>("#TeamDeleteBody")
+            .ok("#TeamDeleted")
             .step_up()
             .errors(&[(404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/capabilities", "org_capabilities", Session, "Set capabilities")
             .about("A member's (`account`), in a team (`team`), or a team's default; the capability bits. `412` first.")
-            .json::<super::CapabilitiesBody>("{ account?: string, team?: string, capabilities: uint, confirm?: #Confirm }")
+            .json::<super::CapabilitiesBody>("#CapabilitiesBody")
             .ok("{}")
             .step_up(),
         post("/orgs/{org}/releases", "org_release_approval", AccountHolder, "Approve a mero-tee release for the organization's apps")
@@ -1905,13 +2300,13 @@ fn operations() -> Vec<Op> {
             .step_up(),
         post("/orgs/{org}/publishers", "org_publisher", AccountHolder, "Bind a package signing key")
             .about("The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION` holders upgrade the apps of packages that name `publisher`. Answers the key's binding generation now.")
-            .json::<super::PublisherBody>("{ signerId: string, publicKey: string, signature: string, confirm?: #Confirm }")
-            .ok_of::<crate::system::PublisherBound>("{ generation: uint }")
+            .json::<super::PublisherBody>("#PublisherBody")
+            .ok("#PublisherBound")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/packages/{package}/upgrade", "publisher_upgrade", AccountHolder, "Upgrade every instance of a publisher's package")
             .about("An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher's own included), never another organization's: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its publisher upgrades.")
-            .json::<super::PublisherUpgradeBody>("{ version: string, migrate?: string, confirm?: #Confirm }")
+            .json::<super::PublisherUpgradeBody>("#PublisherUpgradeBody")
             .ok("#UpgradeRun")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
@@ -1928,18 +2323,18 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/egress", "org_egress", AccountHolder, "Turn the organization's egress off or on")
             .about("`egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.")
             .json::<super::EgressBody>(EGRESS)
-            .ok_of::<crate::system::EgressSet>(EGRESS_SET)
+            .ok("#EgressSet")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (403, "CONSENT_PAGE_REQUIRED"), (404, "NOT_FOUND")]),
         post("/apps/{app}/egress", "app_set_egress", AccountHolder, "Turn one app's egress off or on")
             .about("As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.")
             .json::<super::EgressBody>(EGRESS)
-            .ok_of::<crate::system::EgressSet>(EGRESS_SET)
+            .ok("#EgressSet")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (403, "CONSENT_PAGE_REQUIRED"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}/members", "team_set_member", Session, "Add or change a team member")
             .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
-            .json::<super::TeamMemberBody>("{ account: string, lead?: bool, role?: #TeamRole, capabilities?: uint, confirm?: #Confirm }")
+            .json::<super::TeamMemberBody>("#TeamMemberBody")
             .ok("{}")
             .step_up(),
         delete("/orgs/{org}/teams/{team}/members/{account}", "team_remove_member", Session, "Remove a team member, or leave")
@@ -1949,25 +2344,25 @@ fn operations() -> Vec<Op> {
             .step_up(),
         post("/orgs/{org}/invites", "invite_create", Session, "Make an invite")
             .about("A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. `412` first.")
-            .json::<super::InviteBody>("{ role: #OrgRole, teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool, capabilities?: uint, confirm?: #Confirm }")
-            .ok_of::<super::orgs::InviteMade>("{ token: string }")
+            .json::<super::InviteBody>("#InviteBody")
+            .ok("#InviteMade")
             .step_up()
             .errors(&[(400, "UNKNOWN_CAPABILITIES"), (400, "WRONG_CHALLENGE"), (403, "CANNOT_GRANT_UNHELD"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/name", "org_rename", Session, "Rename an organization")
             .about("The owner or an admin, to a name that fits as a new organization's would; `412` first.")
-            .json::<super::RenameOrgBody>("{ name: string, confirm?: #Confirm }")
-            .ok_of::<crate::system::OrgRenamed>("{ orgId: string, name: string }")
+            .json::<super::RenameOrgBody>("#RenameOrgBody")
+            .ok("#OrgRenamed")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/all-apps", "org_all_apps", Session, "Give a member every app added later")
             .about("Or stop it (`allApps: false`); apps already there are not touched. The owner or an admin; `412` first.")
-            .json::<super::AllAppsBody>("{ account: string, allApps: bool, confirm?: #Confirm }")
+            .json::<super::AllAppsBody>("#AllAppsBody")
             .ok("{}")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/orgs/{org}/invites", "invite_list", Session, "The organization's invites")
             .about("Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.")
-            .ok_of::<super::orgs::InviteList>("{ invites: { inviteKey: string, role: #OrgRole, teams: string[], usesLeft: uint, expiresAt: uint, expired: bool, createdBy: string | null, createdAt: uint | null, allApps: bool }[] }")
+            .ok("#InviteList")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}/invites/{key}", "invite_revoke", Session, "Revoke an invite")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1976,12 +2371,12 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/app-teams", "app_team_list", SignedIn, "The organization's app teams")
             .about("A member: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own).")
-            .ok_of::<super::orgs::AppTeamList>(r#"{ mode: "legacy" | "standalone" | "shared", appTeams: { package: string, teamId: string, name: string, join: #TeamJoin, memberCount: uint, defaultCapabilities: uint | null, member: bool, manages: bool }[] }"#)
+            .ok("#AppTeamList")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/app-teams", "app_teams_scope", Session, "Give apps app teams, or open or close one")
             .about("The owner or an admin; `keep` names who stays when a team closes; `childTeams` says whether the app team's members make restricted teams below it (private channels), adding or removing `CREATE_CHILD_TEAM` (absent: as they are). Naming `join` or `childTeams` on any package leaves `shared` unset to mean no other team. `412` first.")
-            .json::<super::ScopeAppsBody>("{ apps?: { package: string, name?: string, instances?: string[], join?: #TeamJoin, keep?: string[], childTeams?: bool }[], shared?: bool, confirm?: #Confirm }")
-            .ok_of::<crate::system::AppTeamsScoped>(r#"{ mode: "legacy" | "standalone" | "shared", teams: { package: string, teamId: string, created: bool, apps: string[], added: uint, join: #TeamJoin | null, dropped: uint }[] }"#)
+            .json::<super::ScopeAppsBody>("#ScopeAppsBody")
+            .ok("#AppTeamsScoped")
             .step_up()
             .errors(&[(400, "TOO_MANY_PACKAGES"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/orgs/{org}/backup-key", "org_backup_key", AccountHolder, "The organization's backup key")
@@ -1990,20 +2385,20 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/backup-key", "org_set_backup_key", AccountHolder, "Set the organization's backup key")
             .about("`publicKey`: 64 lowercase hex, an X25519 public key whose private half its holder keeps (never a node). Those who upgrade all the organization's apps (org-wide `MANAGE_APPLICATION`), where owners upgrade apps; replaces the key before. `412` first.")
-            .json::<super::BackupKeyBody>("{ publicKey: string, confirm?: #Confirm }")
+            .json::<super::BackupKeyBody>("#BackupKeyBody")
             .ok("#BackupKeyAnswer")
             .step_up()
             .errors(&[(400, "BAD_BACKUP_KEY"), (403, "FORBIDDEN"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/recovery", "recovery_set", AccountHolder, "Set the organization's recovery key")
             .about("Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.")
-            .json::<super::RecoveryKeyBody>("{ publicKey?: string | null, confirm?: #Confirm }")
+            .json::<super::RecoveryKeyBody>("#RecoveryKeyBody")
             .ok("{}")
             .step_up()
             .errors(&[(400, "BAD_RECOVERY_KEY")]),
         post("/orgs/{org}/recovery/start", "recovery_start", AccountHolder, "Start an organization recovery")
             .about("The recovery seed's signature handing the organization to the caller.")
-            .json::<super::RecoveryStartBody>("{ nonce: string, signature: string }")
-            .ok_of::<crate::system::RecoveryStarted>("{ startedAt: uint, readyAt: uint }")
+            .json::<super::RecoveryStartBody>("#RecoveryStartBody")
+            .ok("#RecoveryStarted")
             .errors(&[(403, "WRONG_RECOVERY_KEY"), (409, "RECOVERY_PENDING")]),
         post("/orgs/{org}/recovery/cancel", "recovery_cancel", AccountHolder, "Cancel an organization recovery")
             .about("The owner; `412` first.")
@@ -2014,7 +2409,7 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/recovery/finish", "recovery_finish", AccountHolder, "Finish an organization recovery")
             .about("The account that started it, once `readyAt` passed; `412` first.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok_of::<crate::system::RecoveryFinished>("{ org: string, previousOwners: string[] }")
+            .ok("#RecoveryFinished")
             .step_up()
             .errors(&[(404, "NOT_FOUND"), (409, "RECOVERY_NOT_READY")]),
         post("/invites/{token}/redeem", "invite_redeem", Session, "Join with an invite")
@@ -2027,19 +2422,19 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/upgrade-policy", "org_policy_set", AccountHolder, "Set the organization's update policy")
             .about("The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
-            .json::<super::UpgradePolicyBody>("{ policy?: { autoApply?: \"never\" | \"noDestinations\", holdHours?: uint, secondApprover?: bool } | null, confirm?: #Confirm }")
+            .json::<super::UpgradePolicyBody>("#UpgradePolicyBody")
             .ok("#PolicyView")
             .step_up()
             .errors(&[(400, "BAD_UPGRADE_POLICY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/orgs/{org}/updates", "org_updates", AccountHolder, "Updates waiting across an organization's apps")
             .about("For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.")
             .query::<super::UpdatesQuery>("{ after?: string }")
-            .ok_of::<super::update_policies::OrgUpdates>("{ org: string, policy: #UpgradePolicy, updates: any[], next: string | null }")
+            .ok("#OrgUpdates")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/settings", "org_settings", Session, "Change the organization's settings")
             .about("`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.")
-            .json::<super::OrgSettingsBody>("{ allowGuests?: bool, allowPublicLinks?: bool, confirm?: #Confirm }")
-            .ok_of::<crate::system::OrgSettingsSet>("{ org: string, allowGuests: bool, allowPublicLinks: bool }")
+            .json::<super::OrgSettingsBody>("#OrgSettingsBody")
+            .ok("#OrgSettingsSet")
             .step_up()
             .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         // ---------------------------------------------------------------- consent
@@ -2151,7 +2546,7 @@ fn operations() -> Vec<Op> {
             .operator(),
         post("/ops/deployers", "ops_deployer_grant", Ops, "Grant a deployer")
             .about("An account or organization that may install where deployments are granted, `until` an RFC 3339 time.")
-            .json::<super::DeployerBody>("{ deployer: #Deployer, until?: string, operatorProof?: #OperatorProof, confirm?: #Confirm }")
+            .json::<super::DeployerBody>("#DeployerBody")
             .ok("{ key: string, deployer: #Deployer, grant: #DeployerGrant }")
             .operator(),
         delete("/ops/deployers/{key}", "ops_deployer_revoke", Ops, "Revoke a deployer")
@@ -2209,7 +2604,7 @@ fn operations() -> Vec<Op> {
             .operator()
             .errors(&[(400, "AMBIGUOUS_COMPUTE"), (400, "BAD_REQUEST"), (409, "NOT_INSTALLED"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         post("/ops/orgs/{org}/upgrade", "ops_org_upgrade", Ops, "An operator's upgrade run")
-            .json::<super::OrgUpgradeBody>("{ package: string, version: string, team?: string, cascade?: bool, migrate?: string, confirm?: #Confirm, operatorProof?: #OperatorProof }")
+            .json::<super::OrgUpgradeBody>("#OrgUpgradeBody")
             .ok("#UpgradeRun")
             .operator()
             .errors(&[(404, "NOT_FOUND")]),
@@ -2271,61 +2666,61 @@ fn operations() -> Vec<Op> {
             .step_up(),
         post("/deployers", "deployer_grant", AccountHolder, "Grant a deployer")
             .about("The cluster's owner, with a passkey.")
-            .json::<super::DeployerBody>("{ deployer: #Deployer, until?: string, operatorProof?: #OperatorProof, confirm?: #Confirm }")
-            .ok_of::<crate::system::DeployerGranted>("{ key: string, deployer: #Deployer, grant: #DeployerGrant }")
+            .json::<super::DeployerBody>("#DeployerBody")
+            .ok("#DeployerGranted")
             .step_up(),
         get("/deployers", "deployer_list", AccountHolder, "The deployers")
             .about("The operator, or the cluster's owner: the deployments and deployers governance, the owner (`null` until named), and every grant (`until` RFC 3339 and `untilSecs`, `null` for none; `grantedAt` RFC 3339; `deployer` `null` for a key it cannot read).")
-            .ok_of::<super::deployments::DeployerList>(r#"{ deployments: "open" | "granted", deployers: "operator" | "owner", owner: #Deployer | null, grants: { key: string, deployer: #Deployer | null, until: string | null, untilSecs: uint | null, grantedAt: string, grantedBy: string }[] }"#)
+            .ok("#DeployerList")
             .errors(&[(403, "FORBIDDEN")]),
         delete("/deployers/{key}", "deployer_revoke", AccountHolder, "Revoke a deployer")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok_of::<crate::system::DeployerRevoked>("{ key: string }")
+            .ok("#DeployerRevoked")
             .step_up(),
         post("/deployments", "deployment_create", AccountHolder, "Create a deployment")
             .about("A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).")
-            .json::<super::DeploymentBody>("{ name: string, owner: #Deployer, confirm?: #Confirm }")
-            .ok_of::<super::deployments::DeploymentCreated>("{ id: string, deployment: #DeploymentRecord, host: string | null }")
+            .json::<super::DeploymentBody>("#DeploymentBody")
+            .ok("#DeploymentCreated")
             .step_up()
             .errors(&[(403, "FORBIDDEN")]),
         get("/deployments", "deployment_list", SignedIn, "Deployments")
             .about("The deployments the caller manages.")
-            .ok_of::<super::deployments::DeploymentList>("{ deployments: #Deployment[] }"),
+            .ok("#DeploymentList"),
         get("/deployments/{id}", "deployment_get", SignedIn, "One deployment")
             .about("As anyone may read it: its name, its owner's kind and name (`null` when unknown), and the releases it offers; never its managers or customers.")
-            .ok_of::<super::deployments::PublicDeployment>(r#"{ id: string, host: string | null, name: string, owner: { kind: "account" | "org", name: string | null }, apps: { app: string, package: string, version: string }[] }"#)
+            .ok("#PublicDeployment")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/deployments/{id}", "deployment_delete", AccountHolder, "Delete a deployment")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok_of::<crate::system::DeploymentDeleted>("{ deployment: string }")
+            .ok("#DeploymentDeleted")
             .step_up(),
         post("/deployments/{id}/apps", "deployment_offer", AccountHolder, "Offer a release in a deployment")
-            .json::<super::OfferBody>("{ app: string, package: string, version: string, confirm?: #Confirm }")
-            .ok_of::<crate::system::AppOffered>("{ deployment: string, app: string, offer: { package: string, version: string, addedBy: string, addedAt: uint } }")
+            .json::<super::OfferBody>("#OfferBody")
+            .ok("#AppOffered")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         delete("/deployments/{id}/apps/{app}", "deployment_withdraw", AccountHolder, "Withdraw an offer")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok_of::<crate::system::AppWithdrawn>("{ deployment: string, app: string }")
+            .ok("#AppWithdrawn")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
             .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
-            .ok_of::<super::deployments::DeploymentOrgs>("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),
+            .ok("#DeploymentOrgs"),
         get("/deployments/{id}/secrets", "deployment_secrets", SignedIn, "A deployment's secrets")
             .about("For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.")
-            .ok_of::<super::deployments::DeploymentSecrets>("{ deployment: string, secrets: { [string]: { apps: string[], declaredBy: { package: string, version: string }[], set: bool, fingerprint?: string, setBy?: string, setAt?: uint } } }")
+            .ok("#DeploymentSecrets")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         put("/deployments/{id}/secrets/{name}", "deployment_secret_set", AccountHolder, "Set a deployment's value of a secret")
             .about("Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.")
-            .json::<super::DeploymentSecretBody>("{ value: string, confirm?: #Confirm }")
-            .ok_of::<crate::system::DeploymentSecretSet>("{ deployment: string, name: string, fingerprint: string, setBy: string, setAt: uint }")
+            .json::<super::DeploymentSecretBody>("#DeploymentSecretBody")
+            .ok("#DeploymentSecretSet")
             .step_up()
             .errors(&[(400, "BAD_SECRET"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "UNDECLARED_SECRET"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
         delete("/deployments/{id}/secrets/{name}", "deployment_secret_clear", AccountHolder, "Remove a deployment's value of a secret")
             .about("Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok_of::<crate::system::DeploymentSecretCleared>("{ deployment: string, name: string }")
+            .ok("#DeploymentSecretCleared")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
     ]
@@ -3247,26 +3642,11 @@ mod tests {
         let mut wrong = Vec::new();
         let mut checked = 0;
         let mut nested = 0;
-        // The components bound to a type, then the inline answers bound to one.
-        let typed = components()
-            .into_iter()
-            .filter_map(|c| Some((format!("#{}", c.name), c.shape, c.ty?)))
-            .chain(
-                operations()
-                    .into_iter()
-                    .filter_map(|op| match (op.reply, op.reply_ty) {
-                        (Reply::Json(shape), Some(ty)) => Some((
-                            format!("{} {} ({})", op.method, op.path, op.handler),
-                            shape,
-                            ty,
-                        )),
-                        _ => None,
-                    }),
-            );
-        for (name, shape, ty) in typed {
+        for c in components() {
+            let Some(ty) = c.ty else { continue };
             checked += 1;
-            let at = format!("{name} ({})", ty.name);
-            let shape = parse(shape);
+            let at = format!("#{} ({})", c.name, ty.name);
+            let shape = parse(c.shape);
             if let Some(fields) = (ty.fields)() {
                 let actual: BTreeSet<&str> = fields.iter().copied().collect();
                 let named: BTreeSet<&str> =
@@ -3353,37 +3733,41 @@ mod tests {
         );
     }
 
-    /// An operation whose answer is an inline shape names the type its handler serializes
-    /// (`Op::ok_of`), unless it is one of [`UNTYPED_INLINE`], the ones not converted yet (review
-    /// finding E7). The list only shrinks: an operation converted must leave it, and one added
-    /// must be typed.
+    /// An operation's JSON answer is `{}` or a named component (`#Name`), so every SDK names
+    /// its type after the node's (`MemberSecurityList`, never `OrgMembers200Response`), bound to the
+    /// Rust type it is held to (`Component::of`): but for the handlers of
+    /// [`UNTYPED_INLINE`], the ones not converted yet (review finding E7). The list only shrinks:
+    /// a converted handler must leave it, and a new route must answer a named component.
     #[test]
-    fn inline_answers_are_typed_but_for_the_listed_ones() {
-        let mut untyped = BTreeSet::new();
+    fn answers_are_named_typed_components_but_for_the_listed_ones() {
+        let comps = components();
+        let mut inline = BTreeSet::new();
         let mut stale = BTreeSet::new();
         for op in operations() {
             let Reply::Json(shape) = op.reply else {
                 continue;
             };
-            if shape == "{}" || matches!(parse(shape), Shape::Ref(_)) {
-                continue;
-            }
+            let at = format!("{} {} ({})", op.method, op.path, op.handler);
             let listed = UNTYPED_INLINE.contains(&op.handler);
-            match (op.reply_ty.is_some(), listed) {
-                (false, false) => {
-                    let _new =
-                        untyped.insert(format!("{} {} ({})", op.method, op.path, op.handler));
+            match parse(shape) {
+                _ if shape == "{}" => {}
+                Shape::Ref(name) => {
+                    // An untyped component is `every_component_answered_whole_is_a_types`'s.
+                    let typed = comps.iter().any(|c| c.name == name && c.ty.is_some());
+                    if typed && listed {
+                        let _new = stale.insert(op.handler);
+                    }
                 }
-                (true, true) => {
-                    let _new = stale.insert(op.handler);
+                _ if listed => {}
+                _ => {
+                    let _new = inline.insert(at);
                 }
-                _ => {}
             }
         }
         assert!(
-            untyped.is_empty(),
-            "inline answers bound to no type (`.ok_of::<T>(..)`):\n{}",
-            untyped.into_iter().collect::<Vec<_>>().join("\n")
+            inline.is_empty(),
+            "answers written inline (make each a component named after its type):\n{}",
+            inline.into_iter().collect::<Vec<_>>().join("\n")
         );
         assert!(
             stale.is_empty(),

@@ -7,15 +7,15 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.deployer_body import DeployerBody
 from ...models.error import Error
-from ...models.ops_deployer_grant_body import OpsDeployerGrantBody
 from ...models.ops_deployer_grant_response_200 import OpsDeployerGrantResponse200
 from typing import cast
 
 
 def _get_kwargs(
     *,
-    body: OpsDeployerGrantBody,
+    body: DeployerBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -75,7 +75,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
+    body: DeployerBody,
 ) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
     """Grant a deployer
 
@@ -86,7 +86,7 @@ def sync_detailed(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -110,7 +110,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
+    body: DeployerBody,
 ) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
     """Grant a deployer
 
@@ -121,7 +121,7 @@ def sync(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -140,7 +140,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
+    body: DeployerBody,
 ) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
     """Grant a deployer
 
@@ -151,7 +151,7 @@ async def asyncio_detailed(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -173,7 +173,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
+    body: DeployerBody,
 ) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
     """Grant a deployer
 
@@ -184,7 +184,7 @@ async def asyncio(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

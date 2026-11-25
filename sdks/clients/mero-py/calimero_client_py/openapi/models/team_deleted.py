@@ -1,0 +1,86 @@
+from collections.abc import Mapping
+from typing import Any, TypeVar, Optional, BinaryIO, TextIO, TYPE_CHECKING, Generator
+
+from attrs import define as _attrs_define
+from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
+
+from ..types import UNSET, Unset
+from typing import cast
+from typing import Union
+
+T = TypeVar("T", bound="TeamDeleted")
+
+
+@_attrs_define
+class TeamDeleted:
+    """What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances deleted with them, and
+    with `keepApps` those kept instead (`apps` then empty).
+
+        Attributes:
+            teams (list[str]):
+            apps (list[str]):
+            kept_apps (Union[Unset, list[str]]):
+    """
+
+    teams: list[str]
+    apps: list[str]
+    kept_apps: Union[Unset, list[str]] = UNSET
+    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        teams = self.teams
+
+        apps = self.apps
+
+        kept_apps: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.kept_apps, Unset):
+            kept_apps = self.kept_apps
+
+        field_dict: dict[str, Any] = {}
+        field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "teams": teams,
+                "apps": apps,
+            }
+        )
+        if kept_apps is not UNSET:
+            field_dict["keptApps"] = kept_apps
+
+        return field_dict
+
+    @classmethod
+    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        d = dict(src_dict)
+        teams = cast(list[str], d.pop("teams"))
+
+        apps = cast(list[str], d.pop("apps"))
+
+        kept_apps = cast(list[str], d.pop("keptApps", UNSET))
+
+        team_deleted = cls(
+            teams=teams,
+            apps=apps,
+            kept_apps=kept_apps,
+        )
+
+        team_deleted.additional_properties = d
+        return team_deleted
+
+    @property
+    def additional_keys(self) -> list[str]:
+        return list(self.additional_properties.keys())
+
+    def __getitem__(self, key: str) -> Any:
+        return self.additional_properties[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.additional_properties[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.additional_properties[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.additional_properties

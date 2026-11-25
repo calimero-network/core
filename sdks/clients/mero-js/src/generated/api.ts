@@ -4324,6 +4324,491 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description The request body of `POST /orgs/{org}/all-apps`. */
+        AllAppsBody: {
+            account: string;
+            allApps: boolean;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /auth/backup-key`, `POST /orgs/{org}/backup-key`. */
+        BackupKeyBody: {
+            publicKey: string;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/capabilities`. */
+        CapabilitiesBody: {
+            account?: string;
+            team?: string;
+            /** Format: int64 */
+            capabilities: number;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /ops/deployers`, `POST /deployers`. */
+        DeployerBody: {
+            deployer: components["schemas"]["Deployer"];
+            until?: string;
+            operatorProof?: components["schemas"]["OperatorProof"];
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /deployments`. */
+        DeploymentBody: {
+            name: string;
+            owner: components["schemas"]["Deployer"];
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `PUT /deployments/{id}/secrets/{name}`. */
+        DeploymentSecretBody: {
+            value: string;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/invites`. */
+        InviteBody: {
+            role: components["schemas"]["OrgRole"];
+            teams?: string[];
+            /** Format: int64 */
+            ttlSecs?: number;
+            /** Format: int64 */
+            uses?: number;
+            allApps?: boolean;
+            /** Format: int64 */
+            capabilities?: number;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/members`. */
+        MemberBody: {
+            account: string;
+            role: components["schemas"]["OrgRole"];
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /apps/{app}/metadata`, `POST /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`. */
+        MetadataBody: {
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            metadata: unknown;
+        };
+        /** @description The request body of `POST /deployments/{id}/apps`. */
+        OfferBody: {
+            app: string;
+            package: string;
+            version: string;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs`. */
+        OrgBody: {
+            name: string;
+            recoveryKey?: string;
+            /** Format: int64 */
+            capabilities?: number;
+        };
+        /** @description The request body of `POST /orgs/{org}/settings`. */
+        OrgSettingsBody: {
+            allowGuests?: boolean;
+            allowPublicLinks?: boolean;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`. */
+        OrgUpgradeBody: {
+            package: string;
+            version: string;
+            team?: string;
+            cascade?: boolean;
+            migrate?: string;
+            confirm?: components["schemas"]["Confirm"];
+            operatorProof?: components["schemas"]["OperatorProof"];
+        };
+        /** @description The request body of `POST /orgs/{org}/publishers`. */
+        PublisherBody: {
+            signerId: string;
+            publicKey: string;
+            signature: string;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/packages/{package}/upgrade`. */
+        PublisherUpgradeBody: {
+            version: string;
+            migrate?: string;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/recovery`. */
+        RecoveryKeyBody: {
+            publicKey?: string | null;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/recovery/start`. */
+        RecoveryStartBody: {
+            nonce: string;
+            signature: string;
+        };
+        /** @description The request body of `POST /orgs/{org}/name`. */
+        RenameOrgBody: {
+            name: string;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/app-teams`. */
+        ScopeAppsBody: {
+            apps?: {
+                package: string;
+                name?: string;
+                instances?: string[];
+                join?: components["schemas"]["TeamJoin"];
+                keep?: string[];
+                childTeams?: boolean;
+            }[];
+            shared?: boolean;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/teams`. */
+        TeamBody: {
+            name: string;
+            parent?: string;
+            join: components["schemas"]["TeamJoin"];
+        };
+        /** @description `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits stay, and the passkey confirmation after the `412`. */
+        TeamDeleteBody: {
+            keepApps?: boolean;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `DELETE /orgs/{org}/members/{account}/teams`. */
+        TeamIdsBody: {
+            teams: string[];
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/teams/{team}/members`. */
+        TeamMemberBody: {
+            account: string;
+            lead?: boolean;
+            role?: components["schemas"]["TeamRole"];
+            /** Format: int64 */
+            capabilities?: number;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/members/{account}/teams`. */
+        TeamRowsBody: {
+            teams: {
+                team: string;
+                role?: components["schemas"]["TeamRole"];
+                /** Format: int64 */
+                capabilities?: number;
+            }[];
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description The request body of `POST /orgs/{org}/teams/{team}`. */
+        TeamUpdateBody: {
+            name?: string;
+            join?: components["schemas"]["TeamJoin"];
+            parent?: string | null;
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            metadata?: unknown;
+        };
+        /** @description A policy to set at one scope; `null` drops it (an app then follows its organization's, an organization the defaults). */
+        UpgradePolicyBody: {
+            policy?: {
+                /** @enum {string} */
+                autoApply?: "never" | "noDestinations";
+                /** Format: int64 */
+                holdHours?: number;
+                secondApprover?: boolean;
+            } | null;
+            confirm?: components["schemas"]["Confirm"];
+        };
+        /** @description What `OfferApp` answers: the offer now in force. */
+        AppOffered: {
+            deployment: string;
+            app: string;
+            offer: components["schemas"]["Offer"];
+        };
+        /** @description `GET /orgs/{org}/app-teams`: the organization's mode and its app teams. */
+        AppTeamList: {
+            /** @enum {string} */
+            mode: "legacy" | "standalone" | "shared";
+            appTeams: components["schemas"]["AppTeamRow"][];
+        };
+        /** @description What `ScopeApps` answers: the organization's mode after, and each package's app team. */
+        AppTeamsScoped: {
+            /** @enum {string} */
+            mode: "legacy" | "standalone" | "shared";
+            teams: components["schemas"]["ScopedTeam"][];
+        };
+        /** @description What `WithdrawApp` answers. */
+        AppWithdrawn: {
+            deployment: string;
+            app: string;
+        };
+        /** @description What `GrantDeployer` answers: the grant's key, whom it names and its terms. */
+        DeployerGranted: {
+            key: string;
+            deployer: components["schemas"]["Deployer"];
+            grant: components["schemas"]["DeployerGrant"];
+        };
+        /** @description `GET /deployers`: the cluster's deployment rules, its owner and every grant. */
+        DeployerList: {
+            /** @enum {string} */
+            deployments: "open" | "granted";
+            /** @enum {string} */
+            deployers: "operator" | "owner";
+            owner: components["schemas"]["Deployer"] | null;
+            grants: components["schemas"]["DeployerGrantView"][];
+        };
+        /** @description What `RevokeDeployer` answers: the key of the grant withdrawn. */
+        DeployerRevoked: {
+            key: string;
+        };
+        /** @description `POST /deployments`: the record the log made, and its frontend host. */
+        DeploymentCreated: {
+            id: string;
+            deployment: components["schemas"]["DeploymentRecord"];
+            host: string | null;
+        };
+        /** @description What `DeleteDeployment` answers. */
+        DeploymentDeleted: {
+            deployment: string;
+        };
+        /** @description `GET /deployments`. */
+        DeploymentList: {
+            deployments: components["schemas"]["Deployment"][];
+        };
+        /** @description `GET /deployments/{id}/orgs`: the customer organizations, by counts only. */
+        DeploymentOrgs: {
+            deployment: string;
+            orgs: components["schemas"]["DeploymentCustomer"][];
+            /** Format: int64 */
+            outsideOrgs: number;
+        };
+        /** @description What `ClearDeploymentSecret` answers. */
+        DeploymentSecretCleared: {
+            deployment: string;
+            name: string;
+        };
+        /** @description What `SetDeploymentSecret` answers: never the value, its fingerprint. */
+        DeploymentSecretSet: {
+            deployment: string;
+            name: string;
+            fingerprint: string;
+            setBy: string;
+            /** Format: int64 */
+            setAt: number;
+        };
+        /** @description `GET /deployments/{id}/secrets`: each name its offers declare or it holds a value for. */
+        DeploymentSecrets: {
+            deployment: string;
+            secrets: {
+                [key: string]: components["schemas"]["DeploymentSecretView"];
+            };
+        };
+        /** @description What `SetEgress` answers: the switch as set, the organization's own, and the instance when one was named. */
+        EgressSet: {
+            org: string;
+            app?: string;
+            egress: boolean;
+            orgEgressOff: boolean;
+        };
+        /** @description `GET /orgs/{org}/invites`. */
+        InviteList: {
+            invites: components["schemas"]["InviteView"][];
+        };
+        /** @description `POST /orgs/{org}/invites`: the invite's token, answered once. */
+        InviteMade: {
+            token: string;
+        };
+        /** @description What `CreateOrg` answers: the new organization, and its app team when it is made with one (the consent page's `createOrg` for a package). */
+        OrgCreated: {
+            orgId: string;
+            teamId?: string;
+        };
+        /** @description What `DeleteOrg` answers: the instances deleted with it. */
+        OrgDeleted: {
+            apps: string[];
+        };
+        /** @description `GET /orgs/{org}/members?detail=security`: each member the caller sees, with what tells whether their account is safe. */
+        MemberSecurityList: {
+            orgId: string;
+            members: components["schemas"]["MemberSecurity"][];
+        };
+        /** @description What `RenameOrg` answers. */
+        OrgRenamed: {
+            orgId: string;
+            name: string;
+        };
+        /** @description What `SetOrgSettings` answers: the settings after the change. */
+        OrgSettingsSet: {
+            org: string;
+            allowGuests: boolean;
+            allowPublicLinks: boolean;
+        };
+        /** @description `GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each as `GET /apps/{app}/update` shows it with its `name`, and the organization's policy. */
+        OrgUpdates: {
+            org: string;
+            policy: components["schemas"]["UpgradePolicy"];
+            updates: unknown[];
+            next: string | null;
+        };
+        /** @description `GET /orgs/{org}/usage`: the apps billed to it, its developer usage today (decimal strings) and the cluster's quotas. */
+        OrgUsage: {
+            /** Format: int64 */
+            apps: number;
+            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            developerFuelToday: string;
+            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            developerWritesToday: string;
+            quotas: components["schemas"]["Quotas"];
+        };
+        /** @description `GET /deployments/{id}`, public: its name, whose it is, and what it offers. */
+        PublicDeployment: {
+            id: string;
+            host: string | null;
+            name: string;
+            owner: components["schemas"]["DeploymentOwner"];
+            apps: components["schemas"]["PublicDeploymentApp"][];
+        };
+        /** @description What `BindPublisher` answers: the key's binding generation now. */
+        PublisherBound: {
+            /** Format: int64 */
+            generation: number;
+        };
+        /** @description What an organization recovery's finish answers: the organization and the owners it replaced. */
+        RecoveryFinished: {
+            org: string;
+            previousOwners: string[];
+        };
+        /** @description What an organization recovery's start answers: when it started and when it may finish (Unix seconds). */
+        RecoveryStarted: {
+            /** Format: int64 */
+            startedAt: number;
+            /** Format: int64 */
+            readyAt: number;
+        };
+        /** @description What `CreateTeam` answers. */
+        TeamCreated: {
+            teamId: string;
+        };
+        /** @description What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances deleted with them, and with `keepApps` those kept instead (`apps` then empty). */
+        TeamDeleted: {
+            teams: string[];
+            apps: string[];
+            keptApps?: string[];
+        };
+        /** @description One app team: its package, how many are in it, the capabilities a new member gets (`null`: the organization's), and whether the caller is in it or manages it. */
+        AppTeamRow: {
+            package: string;
+            teamId: string;
+            name: string;
+            join: components["schemas"]["TeamJoin"];
+            /** Format: int64 */
+            memberCount: number;
+            /** Format: int64 */
+            defaultCapabilities: number | null;
+            member: boolean;
+            manages: boolean;
+        };
+        /** @description An app a customer runs from the deployment, and its version. */
+        CustomerApp: {
+            app: string;
+            version: string;
+        };
+        /** @description A deployer grant: whom it names (`null`: a key no deployer parses), until when (`until` RFC 3339, `untilSecs` Unix seconds; `null`: no end), who granted it and when. */
+        DeployerGrantView: {
+            key: string;
+            deployer: components["schemas"]["Deployer"] | null;
+            until: string | null;
+            /** Format: int64 */
+            untilSecs: number | null;
+            grantedAt: string;
+            grantedBy: string;
+        };
+        /** @description A customer organization of a deployment, by counts only: its members, those active in the last 30 days, its instances and the releases they run, and when its first was made (RFC 3339). */
+        DeploymentCustomer: {
+            orgId: string;
+            name: string | null;
+            /** Format: int64 */
+            memberCount: number;
+            /** Format: int64 */
+            activeMembers30d: number;
+            /** Format: int64 */
+            instances: number;
+            apps: components["schemas"]["CustomerApp"][];
+            firstCreatedAt: string;
+        };
+        /** @description An app a deployment offers, as its managers list it: the release, who offered it and when (RFC 3339). */
+        DeploymentOffer: {
+            app: string;
+            package: string;
+            version: string;
+            addedBy: string;
+            addedAt: string;
+        };
+        /** @description Whose deployment it is: an account or an organization, and its name (`null`: gone). */
+        DeploymentOwner: {
+            /** @enum {string} */
+            kind: "account" | "org";
+            name: string | null;
+        };
+        /** @description A secret of a deployment, never its value: the offered apps and releases that declare it, whether a value is set, and its fingerprint, setter and time when it is. */
+        DeploymentSecretView: {
+            apps: string[];
+            declaredBy: components["schemas"]["SecretDeclarer"][];
+            set: boolean;
+            fingerprint?: string;
+            setBy?: string;
+            /** Format: int64 */
+            setAt?: number;
+        };
+        /** @description An organization invite as its list shows it, never its token: `createdBy`/`createdAt` `null` for one made before they were kept. */
+        InviteView: {
+            inviteKey: string;
+            role: components["schemas"]["OrgRole"];
+            teams: string[];
+            /** Format: int64 */
+            usesLeft: number;
+            /** Format: int64 */
+            expiresAt: number;
+            expired: boolean;
+            createdBy: string | null;
+            /** Format: int64 */
+            createdAt: number | null;
+            allApps: boolean;
+        };
+        /** @description A member as the security listing shows them: their teams, how many passkeys (a number below 3, else `"3+"`), whether they hold a recovery code, the last UTC day they were active (`null`: never seen) and their live sessions. */
+        MemberSecurity: {
+            account: string;
+            name: string | null;
+            role: components["schemas"]["OrgRole"];
+            teams: string[];
+            passkeys: number | "3+";
+            recoveryCode: boolean;
+            lastActiveDay: string | null;
+            /** Format: int64 */
+            sessions: number;
+        };
+        /** @description An app a deployment offers: the release new instances run, who offered it and when (Unix seconds). */
+        Offer: {
+            package: string;
+            version: string;
+            addedBy: string;
+            /** Format: int64 */
+            addedAt: number;
+        };
+        /** @description An app a deployment offers, and the release its new instances run. */
+        PublicDeploymentApp: {
+            app: string;
+            package: string;
+            version: string;
+        };
+        /** @description One package's app team after a scope: whether it was made, the instances moved onto it, the rows added, how it is joined now (`null`: not changed) and how many lost it by a close. */
+        ScopedTeam: {
+            package: string;
+            teamId: string;
+            created: boolean;
+            apps: string[];
+            /** Format: int64 */
+            added: number;
+            join: components["schemas"]["TeamJoin"] | null;
+            /** Format: int64 */
+            dropped: number;
+        };
+        /** @description A release that declares a secret. */
+        SecretDeclarer: {
+            package: string;
+            version: string;
+        };
         /** @description An error answer: `error` is the code. `details`, absent for most codes, has the schema `x-calimero-details` names for the code on the operation's response (every code's: `x-calimero-error-details` at the document's root); a code it names no schema for carries none, or a value clients need not read. */
         Error: {
             /** Format: int64 */
@@ -5319,13 +5804,7 @@ export interface components {
             host: string | null;
             name: string;
             owner: components["schemas"]["Deployer"];
-            apps: {
-                app: string;
-                package: string;
-                version: string;
-                addedBy: string;
-                addedAt: string;
-            }[];
+            apps: components["schemas"]["DeploymentOffer"][];
             createdBy: string;
             createdAt: string;
         };
@@ -6623,12 +7102,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        org: string;
-                        app?: string;
-                        egress: boolean;
-                        orgEgressOff: boolean;
-                    };
+                    "application/json": components["schemas"]["EgressSet"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -8044,10 +8518,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
-                    metadata: unknown;
-                };
+                "application/json": components["schemas"]["MetadataBody"];
             };
         };
         responses: {
@@ -10551,16 +11022,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    policy?: {
-                        /** @enum {string} */
-                        autoApply?: "never" | "noDestinations";
-                        /** Format: int64 */
-                        holdHours?: number;
-                        secondApprover?: boolean;
-                    } | null;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["UpgradePolicyBody"];
             };
         };
         responses: {
@@ -11644,10 +12106,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    publicKey: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["BackupKeyBody"];
             };
         };
         responses: {
@@ -13486,22 +13945,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** @enum {string} */
-                        deployments: "open" | "granted";
-                        /** @enum {string} */
-                        deployers: "operator" | "owner";
-                        owner: components["schemas"]["Deployer"] | null;
-                        grants: {
-                            key: string;
-                            deployer: components["schemas"]["Deployer"] | null;
-                            until: string | null;
-                            /** Format: int64 */
-                            untilSecs: number | null;
-                            grantedAt: string;
-                            grantedBy: string;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["DeployerList"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -13542,12 +13986,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    deployer: components["schemas"]["Deployer"];
-                    until?: string;
-                    operatorProof?: components["schemas"]["OperatorProof"];
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["DeployerBody"];
             };
         };
         responses: {
@@ -13557,11 +13996,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        key: string;
-                        deployer: components["schemas"]["Deployer"];
-                        grant: components["schemas"]["DeployerGrant"];
-                    };
+                    "application/json": components["schemas"]["DeployerGranted"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -13633,9 +14068,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        key: string;
-                    };
+                    "application/json": components["schemas"]["DeployerRevoked"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -13700,9 +14133,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployments: components["schemas"]["Deployment"][];
-                    };
+                    "application/json": components["schemas"]["DeploymentList"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -13734,11 +14165,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    name: string;
-                    owner: components["schemas"]["Deployer"];
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["DeploymentBody"];
             };
         };
         responses: {
@@ -13748,11 +14175,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        id: string;
-                        deployment: components["schemas"]["DeploymentRecord"];
-                        host: string | null;
-                    };
+                    "application/json": components["schemas"]["DeploymentCreated"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -13819,21 +14242,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        id: string;
-                        host: string | null;
-                        name: string;
-                        owner: {
-                            /** @enum {string} */
-                            kind: "account" | "org";
-                            name: string | null;
-                        };
-                        apps: {
-                            app: string;
-                            package: string;
-                            version: string;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["PublicDeployment"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -13887,9 +14296,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                    };
+                    "application/json": components["schemas"]["DeploymentDeleted"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -13950,12 +14357,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    app: string;
-                    package: string;
-                    version: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["OfferBody"];
             };
         };
         responses: {
@@ -13965,17 +14367,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                        app: string;
-                        offer: {
-                            package: string;
-                            version: string;
-                            addedBy: string;
-                            /** Format: int64 */
-                            addedAt: number;
-                        };
-                    };
+                    "application/json": components["schemas"]["AppOffered"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -14057,10 +14449,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                        app: string;
-                    };
+                    "application/json": components["schemas"]["AppWithdrawn"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -14136,26 +14525,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                        orgs: {
-                            orgId: string;
-                            name: string | null;
-                            /** Format: int64 */
-                            memberCount: number;
-                            /** Format: int64 */
-                            activeMembers30d: number;
-                            /** Format: int64 */
-                            instances: number;
-                            apps: {
-                                app: string;
-                                version: string;
-                            }[];
-                            firstCreatedAt: string;
-                        }[];
-                        /** Format: int64 */
-                        outsideOrgs: number;
-                    };
+                    "application/json": components["schemas"]["DeploymentOrgs"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -14195,23 +14565,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                        secrets: {
-                            [key: string]: {
-                                apps: string[];
-                                declaredBy: {
-                                    package: string;
-                                    version: string;
-                                }[];
-                                set: boolean;
-                                fingerprint?: string;
-                                setBy?: string;
-                                /** Format: int64 */
-                                setAt?: number;
-                            };
-                        };
-                    };
+                    "application/json": components["schemas"]["DeploymentSecrets"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -14264,10 +14618,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    value: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["DeploymentSecretBody"];
             };
         };
         responses: {
@@ -14277,14 +14628,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                        name: string;
-                        fingerprint: string;
-                        setBy: string;
-                        /** Format: int64 */
-                        setAt: number;
-                    };
+                    "application/json": components["schemas"]["DeploymentSecretSet"];
                 };
             };
             /** @description `BAD_SECRET`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -14384,10 +14728,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        deployment: string;
-                        name: string;
-                    };
+                    "application/json": components["schemas"]["DeploymentSecretCleared"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -15158,12 +15499,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    deployer: components["schemas"]["Deployer"];
-                    until?: string;
-                    operatorProof?: components["schemas"]["OperatorProof"];
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["DeployerBody"];
             };
         };
         responses: {
@@ -15774,15 +16110,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    package: string;
-                    version: string;
-                    team?: string;
-                    cascade?: boolean;
-                    migrate?: string;
-                    confirm?: components["schemas"]["Confirm"];
-                    operatorProof?: components["schemas"]["OperatorProof"];
-                };
+                "application/json": components["schemas"]["OrgUpgradeBody"];
             };
         };
         responses: {
@@ -17299,12 +17627,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    name: string;
-                    recoveryKey?: string;
-                    /** Format: int64 */
-                    capabilities?: number;
-                };
+                "application/json": components["schemas"]["OrgBody"];
             };
         };
         responses: {
@@ -17314,10 +17637,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        orgId: string;
-                        teamId?: string;
-                    };
+                    "application/json": components["schemas"]["OrgCreated"];
                 };
             };
             /** @description `BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES` */
@@ -17447,9 +17767,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        apps: string[];
-                    };
+                    "application/json": components["schemas"]["OrgDeleted"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -17510,11 +17828,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    account: string;
-                    allApps: boolean;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["AllAppsBody"];
             };
         };
         responses: {
@@ -17609,22 +17923,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** @enum {string} */
-                        mode: "legacy" | "standalone" | "shared";
-                        appTeams: {
-                            package: string;
-                            teamId: string;
-                            name: string;
-                            join: components["schemas"]["TeamJoin"];
-                            /** Format: int64 */
-                            memberCount: number;
-                            /** Format: int64 */
-                            defaultCapabilities: number | null;
-                            member: boolean;
-                            manages: boolean;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["AppTeamList"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -17667,18 +17966,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    apps?: {
-                        package: string;
-                        name?: string;
-                        instances?: string[];
-                        join?: components["schemas"]["TeamJoin"];
-                        keep?: string[];
-                        childTeams?: boolean;
-                    }[];
-                    shared?: boolean;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["ScopeAppsBody"];
             };
         };
         responses: {
@@ -17688,21 +17976,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** @enum {string} */
-                        mode: "legacy" | "standalone" | "shared";
-                        teams: {
-                            package: string;
-                            teamId: string;
-                            created: boolean;
-                            apps: string[];
-                            /** Format: int64 */
-                            added: number;
-                            join: components["schemas"]["TeamJoin"] | null;
-                            /** Format: int64 */
-                            dropped: number;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["AppTeamsScoped"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `TOO_MANY_PACKAGES`; `UNKNOWN_CHALLENGE` */
@@ -17889,10 +18163,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    publicKey: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["BackupKeyBody"];
             };
         };
         responses: {
@@ -17972,13 +18243,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    account?: string;
-                    team?: string;
-                    /** Format: int64 */
-                    capabilities: number;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["CapabilitiesBody"];
             };
         };
         responses: {
@@ -18062,12 +18327,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        org: string;
-                        app?: string;
-                        egress: boolean;
-                        orgEgressOff: boolean;
-                    };
+                    "application/json": components["schemas"]["EgressSet"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -18143,22 +18403,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        invites: {
-                            inviteKey: string;
-                            role: components["schemas"]["OrgRole"];
-                            teams: string[];
-                            /** Format: int64 */
-                            usesLeft: number;
-                            /** Format: int64 */
-                            expiresAt: number;
-                            expired: boolean;
-                            createdBy: string | null;
-                            /** Format: int64 */
-                            createdAt: number | null;
-                            allApps: boolean;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["InviteList"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -18210,18 +18455,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    role: components["schemas"]["OrgRole"];
-                    teams?: string[];
-                    /** Format: int64 */
-                    ttlSecs?: number;
-                    /** Format: int64 */
-                    uses?: number;
-                    allApps?: boolean;
-                    /** Format: int64 */
-                    capabilities?: number;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["InviteBody"];
             };
         };
         responses: {
@@ -18231,9 +18465,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        token: string;
-                    };
+                    "application/json": components["schemas"]["InviteMade"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CAPABILITIES`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
@@ -18393,20 +18625,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        orgId: string;
-                        members: {
-                            account: string;
-                            name: string | null;
-                            role: components["schemas"]["OrgRole"];
-                            teams: string[];
-                            passkeys: number | "3+";
-                            recoveryCode: boolean;
-                            lastActiveDay: string | null;
-                            /** Format: int64 */
-                            sessions: number;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["MemberSecurityList"];
                 };
             };
             /** @description `BAD_REQUEST`: the request is malformed */
@@ -18467,11 +18686,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    account: string;
-                    role: components["schemas"]["OrgRole"];
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["MemberBody"];
             };
         };
         responses: {
@@ -18616,10 +18831,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
-                    metadata: unknown;
-                };
+                "application/json": components["schemas"]["MetadataBody"];
             };
         };
         responses: {
@@ -18664,15 +18876,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    teams: {
-                        team: string;
-                        role?: components["schemas"]["TeamRole"];
-                        /** Format: int64 */
-                        capabilities?: number;
-                    }[];
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["TeamRowsBody"];
             };
         };
         responses: {
@@ -18753,10 +18957,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    teams: string[];
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["TeamIdsBody"];
             };
         };
         responses: {
@@ -18836,10 +19037,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
-                    metadata: unknown;
-                };
+                "application/json": components["schemas"]["MetadataBody"];
             };
         };
         responses: {
@@ -18883,10 +19081,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    name: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["RenameOrgBody"];
             };
         };
         responses: {
@@ -18896,10 +19091,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        orgId: string;
-                        name: string;
-                    };
+                    "application/json": components["schemas"]["OrgRenamed"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -19055,11 +19247,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    version: string;
-                    migrate?: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["PublisherUpgradeBody"];
             };
         };
         responses: {
@@ -19139,12 +19327,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    signerId: string;
-                    publicKey: string;
-                    signature: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["PublisherBody"];
             };
         };
         responses: {
@@ -19154,10 +19337,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** Format: int64 */
-                        generation: number;
-                    };
+                    "application/json": components["schemas"]["PublisherBound"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -19227,10 +19407,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    publicKey?: string | null;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["RecoveryKeyBody"];
             };
         };
         responses: {
@@ -19393,10 +19570,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        org: string;
-                        previousOwners: string[];
-                    };
+                    "application/json": components["schemas"]["RecoveryFinished"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -19475,10 +19649,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    nonce: string;
-                    signature: string;
-                };
+                "application/json": components["schemas"]["RecoveryStartBody"];
             };
         };
         responses: {
@@ -19488,12 +19659,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** Format: int64 */
-                        startedAt: number;
-                        /** Format: int64 */
-                        readyAt: number;
-                    };
+                    "application/json": components["schemas"]["RecoveryStarted"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -19620,11 +19786,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    allowGuests?: boolean;
-                    allowPublicLinks?: boolean;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["OrgSettingsBody"];
             };
         };
         responses: {
@@ -19634,11 +19796,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        org: string;
-                        allowGuests: boolean;
-                        allowPublicLinks: boolean;
-                    };
+                    "application/json": components["schemas"]["OrgSettingsSet"];
                 };
             };
             /** @description `BAD_REQUEST`: the request is malformed; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -19717,11 +19875,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    name: string;
-                    parent?: string;
-                    join: components["schemas"]["TeamJoin"];
-                };
+                "application/json": components["schemas"]["TeamBody"];
             };
         };
         responses: {
@@ -19731,9 +19885,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        teamId: string;
-                    };
+                    "application/json": components["schemas"]["TeamCreated"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -19827,13 +19979,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    name?: string;
-                    join?: components["schemas"]["TeamJoin"];
-                    parent?: string | null;
-                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
-                    metadata?: unknown;
-                };
+                "application/json": components["schemas"]["TeamUpdateBody"];
             };
         };
         responses: {
@@ -19888,10 +20034,7 @@ export interface operations {
         /** @description May be absent. */
         requestBody?: {
             content: {
-                "application/json": {
-                    keepApps?: boolean;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["TeamDeleteBody"];
             };
         };
         responses: {
@@ -19901,11 +20044,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        teams: string[];
-                        apps: string[];
-                        keptApps?: string[];
-                    };
+                    "application/json": components["schemas"]["TeamDeleted"];
                 };
             };
             /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
@@ -19985,14 +20124,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    account: string;
-                    lead?: boolean;
-                    role?: components["schemas"]["TeamRole"];
-                    /** Format: int64 */
-                    capabilities?: number;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["TeamMemberBody"];
             };
         };
         responses: {
@@ -20145,12 +20277,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        org: string;
-                        policy: components["schemas"]["UpgradePolicy"];
-                        updates: unknown[];
-                        next: string | null;
-                    };
+                    "application/json": components["schemas"]["OrgUpdates"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -20202,15 +20329,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    package: string;
-                    version: string;
-                    team?: string;
-                    cascade?: boolean;
-                    migrate?: string;
-                    confirm?: components["schemas"]["Confirm"];
-                    operatorProof?: components["schemas"]["OperatorProof"];
-                };
+                "application/json": components["schemas"]["OrgUpgradeBody"];
             };
         };
         responses: {
@@ -20339,16 +20458,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    policy?: {
-                        /** @enum {string} */
-                        autoApply?: "never" | "noDestinations";
-                        /** Format: int64 */
-                        holdHours?: number;
-                        secondApprover?: boolean;
-                    } | null;
-                    confirm?: components["schemas"]["Confirm"];
-                };
+                "application/json": components["schemas"]["UpgradePolicyBody"];
             };
         };
         responses: {
@@ -20587,15 +20697,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** Format: int64 */
-                        apps: number;
-                        /** @description an unsigned 64-bit integer as a decimal string (D20) */
-                        developerFuelToday: string;
-                        /** @description an unsigned 64-bit integer as a decimal string (D20) */
-                        developerWritesToday: string;
-                        quotas: components["schemas"]["Quotas"];
-                    };
+                    "application/json": components["schemas"]["OrgUsage"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */

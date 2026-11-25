@@ -115,7 +115,7 @@ class OpsFacade internal constructor(
         until: kotlin.String? = null,
         operator: DeviceSigner? = null,
     ): OpsDeployerGrant200Response =
-        api(null, operator, emptySet()).ops.opsDeployerGrant(opsDeployerGrantRequest = OpsDeployerGrantRequest(deployer = deployer, until = until))
+        api(null, operator, emptySet()).ops.opsDeployerGrant(deployerBody = DeployerBody(deployer = deployer, until = until))
 
     /**
      * Revoke a deployer
@@ -221,7 +221,7 @@ class OpsFacade internal constructor(
         migrate: kotlin.String? = null,
         operator: DeviceSigner? = null,
     ): UpgradeRun =
-        api(null, operator, emptySet()).ops.opsOrgUpgrade(org = org, opsOrgUpgradeRequest = OpsOrgUpgradeRequest(`package` = `package`, version = version, team = team, cascade = cascade, migrate = migrate))
+        api(null, operator, emptySet()).ops.opsOrgUpgrade(org = org, orgUpgradeBody = OrgUpgradeBody(`package` = `package`, version = version, team = team, cascade = cascade, migrate = migrate))
 
     /**
      * Each organization's approved releases

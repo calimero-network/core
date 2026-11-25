@@ -33,7 +33,7 @@ async fn org_members(
     headers: HeaderMap,
     Path(org): Path<String>,
     Query(q): Query<MembersQuery>,
-) -> ApiResult<Json<OrgMembers>> {
+) -> ApiResult<Json<MemberSecurityList>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     if q.detail.as_deref() != Some("security") {
@@ -89,7 +89,7 @@ async fn org_members(
                 }
             })
             .collect();
-        Ok(Json(OrgMembers {
+        Ok(Json(MemberSecurityList {
             org_id: org.clone(),
             members,
         }))
@@ -100,12 +100,12 @@ async fn org_members(
 /// whether their account is safe.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct OrgMembers {
+pub(super) struct MemberSecurityList {
     org_id: String,
     members: Vec<MemberSecurity>,
 }
 
-/// One member of [`OrgMembers`].
+/// One member of [`MemberSecurityList`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct MemberSecurity {
@@ -1696,7 +1696,7 @@ mod answer_tests {
             (2_usize, json!(2), Some("Al"), Some("2026-11-24")),
             (5, json!("3+"), None, None),
         ] {
-            let typed = OrgMembers {
+            let typed = MemberSecurityList {
                 org_id: "o1".to_owned(),
                 members: vec![MemberSecurity {
                     account: "alice".to_owned(),

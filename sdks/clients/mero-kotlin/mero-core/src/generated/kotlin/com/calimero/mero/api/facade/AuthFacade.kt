@@ -153,7 +153,7 @@ class AuthFacade internal constructor(
         publicKey: kotlin.String,
         passkey: PasskeyProvider? = null,
     ): BackupKeyAnswer =
-        api(passkey, null, emptySet()).accounts.accountSetBackupKey(accountSetBackupKeyRequest = AccountSetBackupKeyRequest(publicKey = publicKey))
+        api(passkey, null, emptySet()).accounts.accountSetBackupKey(backupKeyBody = BackupKeyBody(publicKey = publicKey))
 
     /**
      * What the account's passkeys did

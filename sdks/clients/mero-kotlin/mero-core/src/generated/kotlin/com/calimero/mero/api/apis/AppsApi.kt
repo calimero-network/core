@@ -47,19 +47,16 @@ import com.calimero.mero.api.models.AppLink200Response
 import com.calimero.mero.api.models.AppLinkRequest
 import com.calimero.mero.api.models.AppLinks200Response
 import com.calimero.mero.api.models.AppList200Response
-import com.calimero.mero.api.models.AppMetadataRequest
 import com.calimero.mero.api.models.AppMethod200Response
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMove200Response
 import com.calimero.mero.api.models.AppMoveRequest
-import com.calimero.mero.api.models.AppPolicySetRequest
 import com.calimero.mero.api.models.AppRunLogs200Response
 import com.calimero.mero.api.models.AppRuns200Response
 import com.calimero.mero.api.models.AppSecretClear200Response
 import com.calimero.mero.api.models.AppSecretSet200Response
 import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets200Response
-import com.calimero.mero.api.models.AppSetEgress200Response
 import com.calimero.mero.api.models.AppSetEgressRequest
 import com.calimero.mero.api.models.AppStorage200Response
 import com.calimero.mero.api.models.AppTransferRequest
@@ -78,6 +75,7 @@ import com.calimero.mero.api.models.BlobInfo200Response
 import com.calimero.mero.api.models.BlobList200Response
 import com.calimero.mero.api.models.BlobUpload200Response
 import com.calimero.mero.api.models.ConfirmOnly
+import com.calimero.mero.api.models.EgressSet
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.ExportsExport200Response
 import com.calimero.mero.api.models.ExportsExportRequest
@@ -86,6 +84,7 @@ import com.calimero.mero.api.models.FilesList200Response
 import com.calimero.mero.api.models.FilesUpload200Response
 import com.calimero.mero.api.models.Intents200Response
 import com.calimero.mero.api.models.IntentsRequest
+import com.calimero.mero.api.models.MetadataBody
 import com.calimero.mero.api.models.PipelineReceiptReceipt200Response
 import com.calimero.mero.api.models.PipelinesCancel200Response
 import com.calimero.mero.api.models.PipelinesEstimateRun200Response
@@ -103,6 +102,7 @@ import com.calimero.mero.api.models.PublicLinkCreate200Response
 import com.calimero.mero.api.models.PublicLinkCreateRequest
 import com.calimero.mero.api.models.PublicLinkList200Response
 import com.calimero.mero.api.models.Run
+import com.calimero.mero.api.models.UpgradePolicyBody
 import com.calimero.mero.api.models.UpgradeRun
 import com.calimero.mero.api.models.UploadBegin200Response
 import com.calimero.mero.api.models.UploadBeginRequest
@@ -1364,7 +1364,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s metadata
      * The owner or an organization admin; 16 KiB at most. &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @param appMetadataRequest 
+     * @param metadataBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1374,8 +1374,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appMetadata(app: kotlin.String, appMetadataRequest: AppMetadataRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = appMetadataWithHttpInfo(app = app, appMetadataRequest = appMetadataRequest)
+    suspend fun appMetadata(app: kotlin.String, metadataBody: MetadataBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = appMetadataWithHttpInfo(app = app, metadataBody = metadataBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -1397,17 +1397,17 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s metadata
      * The owner or an organization admin; 16 KiB at most. &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @param appMetadataRequest 
+     * @param metadataBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appMetadataWithHttpInfo(app: kotlin.String, appMetadataRequest: AppMetadataRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = appMetadataRequestConfig(app = app, appMetadataRequest = appMetadataRequest)
+    suspend fun appMetadataWithHttpInfo(app: kotlin.String, metadataBody: MetadataBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appMetadataRequestConfig(app = app, metadataBody = metadataBody)
 
-        return@withContext request<AppMetadataRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<MetadataBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -1416,11 +1416,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * To obtain the request config of the operation appMetadata
      *
      * @param app 
-     * @param appMetadataRequest 
+     * @param metadataBody 
      * @return RequestConfig
      */
-    fun appMetadataRequestConfig(app: kotlin.String, appMetadataRequest: AppMetadataRequest) : RequestConfig<AppMetadataRequest> {
-        val localVariableBody = appMetadataRequest
+    fun appMetadataRequestConfig(app: kotlin.String, metadataBody: MetadataBody) : RequestConfig<MetadataBody> {
+        val localVariableBody = metadataBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1744,7 +1744,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s own update policy
      * An owner or admin of the app&#39;s organization, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app, policy }&#x60;. &#x60;policy: null&#x60; (or left out) drops it: the app follows its organization&#39;s again. &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. A move to another organization drops it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
-     * @param appPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return PolicyView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1754,8 +1754,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appPolicySet(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : PolicyView = withContext(Dispatchers.IO) {
-        val localVarResponse = appPolicySetWithHttpInfo(app = app, appPolicySetRequest = appPolicySetRequest)
+    suspend fun appPolicySet(app: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = appPolicySetWithHttpInfo(app = app, upgradePolicyBody = upgradePolicyBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
@@ -1777,17 +1777,17 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s own update policy
      * An owner or admin of the app&#39;s organization, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app, policy }&#x60;. &#x60;policy: null&#x60; (or left out) drops it: the app follows its organization&#39;s again. &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. A move to another organization drops it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
-     * @param appPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return ApiResponse<PolicyView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appPolicySetWithHttpInfo(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = appPolicySetRequestConfig(app = app, appPolicySetRequest = appPolicySetRequest)
+    suspend fun appPolicySetWithHttpInfo(app: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appPolicySetRequestConfig(app = app, upgradePolicyBody = upgradePolicyBody)
 
-        return@withContext request<AppPolicySetRequest, PolicyView>(
+        return@withContext request<UpgradePolicyBody, PolicyView>(
             localVariableConfig
         )
     }
@@ -1796,11 +1796,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * To obtain the request config of the operation appPolicySet
      *
      * @param app 
-     * @param appPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return RequestConfig
      */
-    fun appPolicySetRequestConfig(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : RequestConfig<AppPolicySetRequest> {
-        val localVariableBody = appPolicySetRequest
+    fun appPolicySetRequestConfig(app: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : RequestConfig<UpgradePolicyBody> {
+        val localVariableBody = upgradePolicyBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2294,7 +2294,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * As &#x60;POST /orgs/{org}/egress&#x60;, for this instance alone, by its organization&#39;s owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, &#x60;kind: setEgress&#x60; with &#x60;app&#x60;) lets it send only while its organization&#39;s egress is on too.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appSetEgressRequest 
-     * @return AppSetEgress200Response
+     * @return EgressSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2303,11 +2303,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appSetEgress(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : AppSetEgress200Response = withContext(Dispatchers.IO) {
+    suspend fun appSetEgress(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : EgressSet = withContext(Dispatchers.IO) {
         val localVarResponse = appSetEgressWithHttpInfo(app = app, appSetEgressRequest = appSetEgressRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSetEgress200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as EgressSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2327,16 +2327,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * As &#x60;POST /orgs/{org}/egress&#x60;, for this instance alone, by its organization&#39;s owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, &#x60;kind: setEgress&#x60; with &#x60;app&#x60;) lets it send only while its organization&#39;s egress is on too.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appSetEgressRequest 
-     * @return ApiResponse<AppSetEgress200Response?>
+     * @return ApiResponse<EgressSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appSetEgressWithHttpInfo(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : ApiResponse<AppSetEgress200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appSetEgressWithHttpInfo(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : ApiResponse<EgressSet?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appSetEgressRequestConfig(app = app, appSetEgressRequest = appSetEgressRequest)
 
-        return@withContext request<AppSetEgressRequest, AppSetEgress200Response>(
+        return@withContext request<AppSetEgressRequest, EgressSet>(
             localVariableConfig
         )
     }

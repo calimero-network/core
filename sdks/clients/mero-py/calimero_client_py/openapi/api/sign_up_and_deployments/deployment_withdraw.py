@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.app_withdrawn import AppWithdrawn
 from ...models.confirm_only import ConfirmOnly
-from ...models.deployment_withdraw_response_200 import DeploymentWithdrawResponse200
 from ...models.error import Error
 from typing import cast
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentWithdrawResponse200, Error]]:
+) -> Optional[Union[AppWithdrawn, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentWithdrawResponse200.from_dict(response.json())
+        response_200 = AppWithdrawn.from_dict(response.json())
 
         return response_200
 
@@ -83,7 +83,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentWithdrawResponse200, Error]]:
+) -> Response[Union[AppWithdrawn, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -98,7 +98,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[DeploymentWithdrawResponse200, Error]]:
+) -> Response[Union[AppWithdrawn, Error]]:
     """Withdraw an offer
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -116,7 +116,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentWithdrawResponse200, Error]]
+        Response[Union[AppWithdrawn, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -138,7 +138,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[DeploymentWithdrawResponse200, Error]]:
+) -> Optional[Union[AppWithdrawn, Error]]:
     """Withdraw an offer
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -156,7 +156,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentWithdrawResponse200, Error]
+        Union[AppWithdrawn, Error]
     """
 
     return sync_detailed(
@@ -173,7 +173,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[DeploymentWithdrawResponse200, Error]]:
+) -> Response[Union[AppWithdrawn, Error]]:
     """Withdraw an offer
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -191,7 +191,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentWithdrawResponse200, Error]]
+        Response[Union[AppWithdrawn, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -211,7 +211,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[DeploymentWithdrawResponse200, Error]]:
+) -> Optional[Union[AppWithdrawn, Error]]:
     """Withdraw an offer
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -229,7 +229,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentWithdrawResponse200, Error]
+        Union[AppWithdrawn, Error]
     """
 
     return (

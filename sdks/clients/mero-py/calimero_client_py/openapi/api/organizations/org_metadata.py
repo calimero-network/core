@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.org_metadata_body import OrgMetadataBody
+from ...models.metadata_body import MetadataBody
 from ...models.org_metadata_response_200 import OrgMetadataResponse200
 from typing import cast
 
@@ -16,7 +16,7 @@ from typing import cast
 def _get_kwargs(
     org: str,
     *,
-    body: OrgMetadataBody,
+    body: MetadataBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -74,7 +74,7 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgMetadataBody,
+    body: MetadataBody,
 ) -> Response[Union[Error, OrgMetadataResponse200]]:
     """Set an organization's metadata
 
@@ -84,7 +84,8 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -110,7 +111,7 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgMetadataBody,
+    body: MetadataBody,
 ) -> Optional[Union[Error, OrgMetadataResponse200]]:
     """Set an organization's metadata
 
@@ -120,7 +121,8 @@ def sync(
 
     Args:
         org (str):
-        body (OrgMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -141,7 +143,7 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgMetadataBody,
+    body: MetadataBody,
 ) -> Response[Union[Error, OrgMetadataResponse200]]:
     """Set an organization's metadata
 
@@ -151,7 +153,8 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -175,7 +178,7 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgMetadataBody,
+    body: MetadataBody,
 ) -> Optional[Union[Error, OrgMetadataResponse200]]:
     """Set an organization's metadata
 
@@ -185,7 +188,8 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
