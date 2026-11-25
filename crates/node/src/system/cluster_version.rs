@@ -426,7 +426,7 @@ impl Feature {
             | Self::HostFuel
             | Self::AutoUpdateMembersStay => "1.0.0-rc.36",
             Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers => {
-                "1.0.0-rc.37"
+                "1.0.0-rc.38"
             }
         }
     }

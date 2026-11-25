@@ -140,7 +140,7 @@ is its command line.
   `__set_capabilities { team, account, capabilities }` (below admin, a team's row, a row's
   capabilities and a team's default only on a team the actor sees and only with bits the actor
   holds org-wide, `system::team_grant_refusal`, from the logged version that brings
-  `Feature::HeldTeamGrants`, rc.37; regression
+  `Feature::HeldTeamGrants`, rc.38; regression
   `system::tests::a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see`),
   `__set_all_apps { account, allApps }` (`Org::all_apps`: each app team made
   after gives them a row; `all_apps_rows` on `ScopeApps`, `MoveApp`,
@@ -155,7 +155,7 @@ is its command line.
   Invites are kept under the token's Ed25519 public key
   (`proof::invite_key`); `RedeemInvite` carries the token key's signature
   (`proof::sign_invite_redeem`), so a node that only saw the log cannot
-  redeem one. From the logged version that brings `Feature::InviteCreatorStanding` (rc.37) an
+  redeem one. From the logged version that brings `Feature::InviteCreatorStanding` (rc.38) an
   invite gives nothing once its creator could no longer make it (removed, below its role, or
   not seeing a team it names; `INVITE_CREATOR_LACKS`, `403`; regression
   `system::tests::a_removed_or_demoted_creators_invite_gives_nothing`). A redemption that changes nothing for the account (a member at
@@ -634,7 +634,7 @@ is its command line.
     below the version replays as it applied, under the rule before: `owner`:
     the app's owner, or, for an org app, whoever holds `MANAGE_APPLICATION` on
     its team or org-wide (`SystemState::manages_apps`, which still gates
-    outbound approvals and deployers, and backup keys below rc.37); `publisher`: the
+    outbound approvals and deployers, and backup keys below rc.38); `publisher`: the
     publisher's org-wide `MANAGE_APPLICATION` holders, for every instance, and
     nobody (`409`) while the key is unbound. Regressions:
     `system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades`,
@@ -2121,7 +2121,7 @@ is its command line.
   publisher-upgraded package's too). `SetBackupKey` (`Feature::BackupKeys`;
   `SystemState::may_set_backup_key`, `backup_keys`; an organization's is set by its owner and
   admins, `approves_upgrades`, from the logged version that brings `Feature::BackupKeyApprovers`,
-  rc.37, and by its org-wide `MANAGE_APPLICATION` holders before; regression
+  rc.38, and by its org-wide `MANAGE_APPLICATION` holders before; regression
   `system::tests::an_organizations_backup_key_is_set_by_its_owner_and_admins`): `/ops/backup-key` (operator-signed
   `operator / __set_backup_key / { publicKey }`), `/orgs/{org}/backup-key` and
   `/auth/backup-key` (passkey, `org:<org>` / `account:<a>`). A subject unchanged since its
