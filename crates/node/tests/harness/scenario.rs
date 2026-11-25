@@ -130,7 +130,7 @@ fn is_component(dir: &Path) -> bool {
 
 /// The app at `dir` (relative to the repository root or absolute) as WASM: a component built
 /// with `calimero-app-build` (cached by source hash under `target/app-components`, as
-/// `tests/common/mod.rs` does). Anything else is refused: nothing here builds or runs an SDK
+/// `tests/it/common.rs` does). Anything else is refused: nothing here builds or runs an SDK
 /// 0.12 (wasmer) app.
 pub fn build_app(dir: &Path) -> Result<Vec<u8>, String> {
     let root = root();

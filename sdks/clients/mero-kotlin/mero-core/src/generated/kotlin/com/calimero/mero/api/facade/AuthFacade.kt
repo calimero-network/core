@@ -229,7 +229,7 @@ class AuthFacade internal constructor(
     /**
      * Make an API key
      *
-     * Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
+     * Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -247,9 +247,10 @@ class AuthFacade internal constructor(
         allowConfirm: kotlin.Boolean? = null,
         ttlSecs: kotlin.Long? = null,
         upgrades: ApikeyCreateRequestUpgrades? = null,
+        then: kotlin.collections.List<ApikeyCreateRequestThenInner>? = null,
         passkey: PasskeyProvider? = null,
     ): ApikeyCreate200Response =
-        api(passkey, null, emptySet()).accounts.apikeyCreate(apikeyCreateRequest = ApikeyCreateRequest(label = label, apps = apps, methods = methods, readOnly = readOnly, allowConfirm = allowConfirm, ttlSecs = ttlSecs, upgrades = upgrades))
+        api(passkey, null, emptySet()).accounts.apikeyCreate(apikeyCreateRequest = ApikeyCreateRequest(label = label, apps = apps, methods = methods, readOnly = readOnly, allowConfirm = allowConfirm, ttlSecs = ttlSecs, upgrades = upgrades, then = then))
 
     /**
      * The account's API keys
