@@ -527,3 +527,177 @@ only a development cluster whose relying party accepts it can use it. Against
 a real cluster, people use their own authenticators in a browser and give
 programs API keys.
 
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Passkeys are per cluster
+
+Code: `api/passkeys.rs`; docs: protocol identities "Passkeys are each cluster's own".
+
+Clusters share an rp-id, so a registration's `user.name`/`displayName` is `passkey_user_name`
+(person · `config.cluster` · `cluster_tag`, the first 2 bytes of the cluster identity key, public in
+`GET /sign-up` as `passkeyTag`; plus the app's name for a sign-up begun on a package origin), every
+registration's user handle is random (a shared one makes a password manager replace the earlier
+passkey), and an assertion with a credential no account has answers `401 PASSKEY_UNKNOWN_HERE`
+(`unknown_here`, from `check_assertion_for`), naming no other cluster or account.
+
+### Devices
+
+A person is their account, and each passkey is a device: the session names the one it was opened
+with (`SessionClaims::passkey`, `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+
+### Passkey times and sessions
+
+(The account holder's alone.)
+
+`Account::passkey_times` (`types::PasskeyTimes { addedAt, lastSignInAt }`, by credential) and
+`RefreshRecord::opened_at` are set at apply from the times the entries carry: `CreateAccount::at`
+(added, signed in, session opened), `AddPasskey::at`, a sign-in's `CreateRefresh` record `opened_at`
+(last sign-in, the latest wins), a recovery finish's record `opened_at`; `UseRefresh` keeps the old
+record's `opened_at`, so a refresh is no sign-in and no extra entry is written.
+Each is outside what a passkey signs (`account_args` and `sign_in_args` are unchanged, and every
+field is left out when empty), so a replica on the earlier release checks the same consent and
+ignores them; an earlier release's entries carry none and leave the times unknown (`null`) on every
+replica.
+`/auth/me` gives `addedAt` and `lastSignInAt` per passkey; `GET /auth/sessions`
+(`api::account_sessions`, `MAX_SESSIONS_LISTED`) lists the caller's live sessions with
+`lastActiveAt` = the last exchange (`expires_at - REFRESH_TTL`, up to about 1 h 15 min behind), and
+`DELETE /auth/sessions/{session}` ends one (`RevokeSession`; `404` for any session the account does
+not hold live).
+Both are `holder` (unbound passkey session), as `/auth/logout-all`.
+
+### Key follow-ups
+
+Code: `api::auth::follow_ups`, `types::KeyFollowUp`; docs: "Follow-ups" above.
+
+`POST /auth/apikeys { then }` takes up to `MAX_KEY_FOLLOW_UPS` confirm calls of the key's own `apps`;
+`gate` and the running ABI judge each before the passkey (`takes_follow_up`: a `Call`, never an
+action), and `key:$key` is written as `key:<keyId>` (exact string values only, `for_key`).
+They are signed in the key's one consent: `api_key_args` states `then` only when set
+(`CreateApiKey { then }`, `Feature::KeyFollowUps`), and consent and entry carry
+`types::SignedFollowUp`, holding the arguments only by a hash salted per follow-up
+(`KeyFollowUp::signed`: the parsed arguments with keys sorted by UTF-8 bytes in compact JSON; the
+salts are in the challenge's `KeyCarry`), since the system log reaches unapproved nodes.
+Read-only team members and follow-ups without `key:$key` are refused before the prompt.
+Both requests check `SystemState::api_key_room` (the rule `CreateApiKey` applies); the retry takes
+`Node::api_key_turn` (per account, this node), catches up on the system log, and runs `make_key` in a
+spawned task (`interrupted`, `key_write_failed`: `keyWrite`).
+It runs the follow-ups first through `calls::call_consented`, each under `follow_up_consent`
+(`{ followUpOf, index, salt }`, never the assertion) and a `FOLLOW_UP_KEY_PREFIX` idempotency key that
+`/intents` refuses from clients (a 5xx is sent again up to `MAX_FOLLOW_UP_TRIES`), then writes the
+key; one that fails answers `422 FOLLOW_UP_FAILED` with the indexes `applied` and `unknown` and makes
+no key.
+`approval_of` adds an activity entry per follow-up.
+
+### Activity
+
+(The account holder's alone.)
+
+`SystemState::activity` (by account, beside `accounts` so `account_args` is unchanged), the last
+`types::ACTIVITY_KEPT` `ActivityEntry { at, passkey, kind }`, `kind` `signIn { app, origin }` (from
+a session's opening record: `CreateRefresh`, `CreateAccount`, `FinishAccountRecovery`, via
+`system::sign_in_of`) or `approval { method, subject }` (one hook in `SystemMachine::run`:
+`system::approval_of` finds the consent `authorize` verified, by its used marker, before the command
+applies, and records it after).
+The time is the step-up's `proof::Consent::at`, outside what the passkey signs; 0 (a sign-in's
+consent, or an earlier release's) records nothing, so a replayed old log adds nothing.
+`GET /auth/activity` (`api::activity_list`) is `holder`.
+
+### Account recovery
+
+Code: `docs/specs/account-recovery.md`; shaped like [organization
+recovery](/protocol/organizations/), same `RECOVERY_DELAY_SECS`.
+
+An account may hold one recovery code (`calimero_identity::new_recovery_code`, Crockford base32,
+`normalize_recovery_code`, `MAX_RECOVERY_CODE_CHARS`); the log keeps only its Ed25519 public key
+(`proof::recovery_key`, as invites; `SystemState::recovery_keys`, key -> account).
+`SetAccountRecoveryKey` (`POST /auth/recovery`, unbound passkey session, `consent_minted`
+`account:<a> / __set_recovery { recoveryKey }`, the code answered once), `RemoveAccountRecoveryKey`
+(`DELETE /auth/recovery`, `__remove_recovery {}`).
+Signed out, `POST /auth/recovery/begin { code }` then `/start { challengeId, code, registration }`
+(UV, the cluster's own origins): `StartAccountRecovery` carries the code key's signature
+(`proof::sign_recover` over account, credential id, SHA-256 of its public key and `at`, checked in
+`authorize` and spent), spends the code, and records `SystemState::account_recoveries[a] =
+types::PendingAccountRecovery { credential, startedAt, readyAt }`; no passkey, no session.
+One per account (`409 RECOVERY_PENDING`).
+`CancelAccountRecovery` (`POST /auth/recovery/cancel`, a passkey the account has, `__cancel_recovery
+{ credentialId }`).
+`FinishAccountRecovery` (`POST /auth/recovery/finish { accountId? }`, `412`,
+`Pending::RecoverFinish`): the pending passkey's assertion over `session / __sign_in / sign_in_args`
+of the new refresh token (`api::NewSession`, as `CreateRefresh`), verified at apply under that
+credential; at `at >= readyAt` (the node's `app_clock`, `409 RECOVERY_NOT_READY` before) it adds the
+passkey (counter from the assertion), revokes every session of the account
+(`SystemState::revoke_account_sessions`) and records the refresh token.
+`/auth/me`: `recoveryCode`, `recoveryPending`.
+
+### Members' security
+
+(Owner and admins.)
+
+`GET /orgs/{org}/members?detail=security` (`api::org_members`, `holder`,
+`SystemState::is_org_admin`, filtered by `Org::sees_member`) answers per member the passkey count
+capped at `PASSKEYS_COUNTED` (`"3+"`), `recoveryCode` (a `recovery_keys` entry), `lastActiveDay`
+(`api::last_active`: the latest `PasskeyTimes::last_sign_in_at` or live session exchange,
+`api::session_use`, as a UTC day) and `sessions` (live, unrevoked, each session once).
+Nothing the holder alone sees (ids, labels, sessions, origins, activity).
+`deployment_orgs` adds counts only, `memberCount` and `activeMembers30d` (`ACTIVE_WINDOW_SECS`).
+
+### Account proofs
+
+Code: `api/account_proof.rs`, `Node::account_proof`.
+
+`POST /auth/account-proof { nonce, audience }` (a passkey session, `holder`: never an API key or a
+package-bound session) answers `calimero_client::attest::AccountProof`, the receipt key's signature
+over `"calimero.account-proof.v1\0" || JCS({ cluster, node, account, nonce, audience, issuedAt,
+expiresAt })`, valid `ACCOUNT_PROOF_TTL` (5 min); limits `ACCOUNT_PROOF_NONCE`,
+`MAX_ACCOUNT_PROOF_AUDIENCE`, plain text only.
+`GET /ops/nodes/{id}/receipt-key` (ops token) answers the key `Node::session_issuer` holds for that
+node, so the operator (mdma) checks a proof from any node.
+
+### Aliases
+
+`Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}` and `GET /auth/aliases`; an alias names
+only an app its account reaches.
+
+### Registered origins
+
+Code: `origins.rs`, `api/origins.rs`; docs: protocol identities "Registered origins".
+
+A package's manager (`SystemState::manages_package`: the bound publisher's org-wide
+`MANAGE_APPLICATION` holders, else `PackageRecord::owner`) registers a web origin of their own
+(`GET|POST|DELETE /package-origins/{package}`; `AddPackageOrigin`/`RemovePackageOrigin`, passkey
+consent `package:{p} / __add_origin / { origin, rpId }`, `__remove_origin / { origin }`, checked in
+`authorize`).
+Each carries its own rp-id (the host or a parent; never the cluster's rp-id or a parent,
+`origins::covers_cluster`).
+`api::app_origin` is the one lookup (served first, then registered) for ceremonies (`claimed_app`,
+`rp_with`: a registered origin alone under its rp-id), CORS (`lib.rs`) and the consent page's
+`returnTo`; begin routes take `origin` (`403 ORIGIN_NOT_REGISTERED`).
+Sessions opened there are bound like a served frontend's and name the origin
+(`SessionClaims::origin`, `RefreshRecord::origin`, kept by a sign-up's `Pending::SignUp` and stated
+nowhere in the sign-in challenge, like `app`); `principal` and `refresh` refuse them once it is
+removed, and `UseRefresh` refuses an exchange that changes it.
+A sign-up there answers its `412` with the origin's rp-id and takes the confirmation from that
+origin only; the sign-up policy judges it like any other.
+`UninstallPackage` of the last release forgets them.
+Limits `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`; `http` only for `localhost` names on a
+`--dev` node (`allow_package_uploads`).
+
+**Served origins** (custom domains; design `docs/specs/custom-domains.md`): `served: true` on the
+body, `PackageOrigin::served` and `AddPackageOrigin::served` (both left out when false), consent `{
+origin, rpId, served: true }` (`origins::add_args`, the one builder for the API and `authorize`).
+`app_host::layer` serves the package's site on a `Host` whose origin (`served_origin_of`:
+`https://name` on 443, or `http://name.localhost:port`) is a served one (`Node::served_site`, after
+`app_host_site`; never under the apps domain or on a node's API host).
+Ceremonies, CORS, binding and removal are the registered origin's, unchanged (`app_origin` answers
+it with its rp-id; `app_origin_package` stays apps-domain only).
+The API refuses (`served_fits`) a port, no `--apps-domain` (`NOT_SERVING`), a name under the apps
+domain or the cluster's rp-id, a node's API host, a held origin with the other `served`; limits
+`MAX_SERVED_ORIGINS_PER_PACKAGE` (4), `MAX_SERVED_ORIGINS` (64, the certificate metadata budget);
+`require_upgraded_nodes` before the consent, so no older node drops the flag.
+`GET /ops/served-origins` (ops token) lists `{ origin, host, label, addedAt }`, no package names,
+for mdma's certificates and resolver routes. merod terminates no TLS: Traefik in the TD does, with
+certificates mdma delivers.

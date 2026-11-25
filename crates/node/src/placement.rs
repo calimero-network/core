@@ -137,6 +137,7 @@ mod tests {
         assert!(choose(&[], 3).is_empty());
     }
 
+    /// Placement never picks a job node as an app replica: a job node holds no K_c and no Raft log.
     #[test]
     fn a_job_node_is_never_placed() {
         let mut state = SystemState::default();

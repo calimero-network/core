@@ -1000,7 +1000,7 @@ impl KeyFollowUp {
 }
 
 /// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
-/// salt, then [`KeyFollowUp::args_bytes`]): the system log reaches nodes
+/// salt, then `KeyFollowUp::args_bytes`): the system log reaches nodes
 /// the app's organization never approved, so it holds none of an app's data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

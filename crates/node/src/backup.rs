@@ -76,7 +76,7 @@ pub const SYSTEM: &str = "system";
 pub const KEYS: &str = "cluster-key";
 
 /// Where code is kept in a backup directory: every bundle and package the
-/// system state names, by hash, sealed under [`code_key`].
+/// system state names, by hash, sealed under `code_sealer`'s key.
 pub const CODE: &str = "code";
 
 /// A kept cluster key file is never larger: magic, nonce, the key and a tag.

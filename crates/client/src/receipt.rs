@@ -449,7 +449,7 @@ pub fn job_attestation<'a>(
     Ok(doc)
 }
 
-/// Checks every step run's proof of a version 2 receipt ([`check_proof`]), each step's runs listed
+/// Checks every step run's proof of a version 2 receipt (`check_proof`), each step's runs listed
 /// once in index order, and answers each job key that signed a report with the node it ran on; a
 /// key named on two nodes is refused. Whose key each is, its attestation in `job_attestations`, is
 /// for the caller to verify. What a job signed is proven; the rest (step and run states, cached

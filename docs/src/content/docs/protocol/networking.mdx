@@ -216,3 +216,46 @@ after refuses it. Forwarded calls go to `internal/call`, views to `internal/view
 system writes to `internal/system`. A forward to an app's leader is bounded at
 5 seconds; a system write keeps the 30-second HTTP timeout.
 
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Peer identity and the inbound gate
+
+(Phase 0 of `docs/specs/gate-system-group.md`.)
+
+A node's channel to a peer is identified (Noise IK with its own transport key, `x-calimero-node:
+<id>`); `Node::identify_peer` attests the claimed node's registered address itself and takes the
+claim only if that quote names the proven key (cached by key; the quote's release with it).
+That attestation, and the one before a channel to a peer opens (`Node::connected`), runs in a task
+of its own (`node::detach`, one per caller or peer at a time, `MAX_DETACHED`): on TDX it takes about
+a second, longer than the one heartbeat openraft gives an RPC, and dropped with the RPC it never
+finished.
+`api::peer` replaces the bare cluster-secret check and refuses an anonymous session.
+Routes: app data (`view`, `call`, `events`, `storage`, `last-write`, `xcalls`, `blob/held`,
+`app-ready`, `presence`) need a release approved for the app (`caller_may_hold`); `blob/get` code to
+any node, other blobs only for an approved hosted app that marks them; `blob/delete` refused while a
+hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs
+`rpc.sender` = the caller and, for an app group, an approved release and membership (replicas or the
+group's voters/learners): openraft itself never checks (F4).
+Outbound, blobs (`spread_blob`) and presence go only to peers `may_send` allows.
+Both Raft checks run per heartbeat of every app group, so they read `SystemMachine::app_of_group`
+and `group_may_hold` (`system/routing.rs`: a group -> app and node -> apps index and a (group,
+release) decision cache, derived, dropped on every system apply and restore; `Node::sys_machine`),
+never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
+Heartbeats always travel batched per peer (`internal/raft-batch`, `PeerTransport::send_batch`, B6);
+every item passes `admit_raft` as a message alone does, only empty appends, at most
+`MAX_HEARTBEATS_PER_BATCH`; a batch a peer refuses is sent again item by item.
+
+### Raft addressee
+
+Code: `PeerTransport::send`, `api::internal_raft`.
+
+The sender check above covers one end of a Raft message; the other is its addressee.
+Every Raft message names the node it is for (`target`), and a node that is not that node refuses it
+with `421 NOT_ADDRESSEE`.
+So a genuine member's message that reaches the wrong node (a reused port, a node moved or replaced)
+cannot move that node's term or log.
+Both cases are counted in `calimero_raft_misaddressed_total{reason="not_addressee"|"no_target"}`.

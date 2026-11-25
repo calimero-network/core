@@ -242,7 +242,7 @@ fn validate_pipelines(manifest: &BundleManifest) -> eyre::Result<()> {
 
 /// Whether a blob is a bundle archive: a tar entry at `manifest.json`.
 ///
-/// Same walk, same bound and the same [`is_manifest_entry`] predicate as
+/// Same walk, same bound and the same `is_manifest_entry` predicate as
 /// [`extract_bundle_manifest`], since this is the only signature gate on the
 /// execution-time read: where the two disagree, one path installs a verified
 /// bundle the other serves as raw bytes. The one asymmetry left is an entry that
