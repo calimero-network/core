@@ -158,11 +158,16 @@ impl VerificationResult {
     /// allowlists, and the app-hash binding, and returns a typed
     /// [`crate::PolicyRejection`].
     ///
-    /// The existing enforcement layers below keep their own equivalent
-    /// enforcement by design (mode-specific errors `policy_valid` cannot
-    /// express), and `is_valid()` stays crypto-only for them:
-    /// - `crates/kms-client/src/kms.rs` — `enforce_attestation_policy`
-    ///   (measurement + TCB allowlists when the node verifies its KMS);
+    /// Admitting a node already goes through `policy_valid`: a peer
+    /// (`Node::identify_peer` in `crates/node/src/node.rs`) and a client are
+    /// both checked by `crates/client/src/attest.rs`.
+    ///
+    /// The enforcement layers below keep their own equivalent enforcement by
+    /// design (mode-specific errors `policy_valid` cannot express), and
+    /// `is_valid()` stays crypto-only for them:
+    /// - `calimero_kms_client::kms` — `enforce_attestation_policy`
+    ///   (measurement + TCB allowlists from the signed release policy, for
+    ///   the KMS's quote);
     /// - the mero-tee KMS `get_key.rs` `enforce_attestation_policy` on the
     ///   key-release side (external consumer of this crate).
     pub fn is_valid(&self) -> bool {

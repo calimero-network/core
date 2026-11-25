@@ -7,6 +7,10 @@
 //! it takes its storage key from (`Release mero-kms`), and a client or peer
 //! checking a node's quote against the node release it names
 //! (`Release mero-tee`).
+//!
+//! Spec: [What a node trusts its KMS on](https://calimero-network.github.io/core/protocol/tee-attestation/#what-a-node-trusts-its-kms-on),
+//! [What the verifier checks](https://calimero-network.github.io/core/protocol/tee-attestation/#what-the-verifier-checks).
+//! Crate guide: [`crates/tee-release/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/tee-release/AGENTS.md).
 
 mod fetch;
 mod node;

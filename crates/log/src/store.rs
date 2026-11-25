@@ -18,7 +18,7 @@
 //! Sealing every value under the storage key as well (format 1 and before)
 //! encrypted the same bytes twice, and is no longer read ([`crate::format`]).
 //! What leaves this disk is still sealed here: a snapshot file's frames, and the
-//! rows in them, under the storage key ([`Db::seal_state`]), so any node of the
+//! rows in them, under the storage key (`Db::seal_state`), so any node of the
 //! cluster opens it and a backup copied elsewhere stays sealed. The format row
 //! stays sealed too, so a store opened under another key is refused at once.
 //! A machine's private keys can be hidden ([`hide`]): the row is keyed by an
