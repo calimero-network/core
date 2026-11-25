@@ -13863,6 +13863,31 @@ public enum Components {
                 case responseBytes
             }
         }
+        /// An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not answer, so its runs' requests may be missing.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OutboundLog`.
+        public struct OutboundLog: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OutboundLog/entries`.
+            public var entries: [Components.Schemas.OutboundAuditEntry]
+            /// - Remark: Generated from `#/components/schemas/OutboundLog/partial`.
+            public var partial: Swift.Bool
+            /// Creates a new `OutboundLog`.
+            ///
+            /// - Parameters:
+            ///   - entries:
+            ///   - partial:
+            public init(
+                entries: [Components.Schemas.OutboundAuditEntry],
+                partial: Swift.Bool
+            ) {
+                self.entries = entries
+                self.partial = partial
+            }
+            public enum CodingKeys: String, CodingKey {
+                case entries
+                case partial
+            }
+        }
         /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
         ///
         /// - Remark: Generated from `#/components/schemas/UsageDay`.
@@ -25567,36 +25592,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json/entries`.
-                        public var entries: [Components.Schemas.OutboundAuditEntry]
-                        /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json/partial`.
-                        public var partial: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - entries:
-                        ///   - partial:
-                        public init(
-                            entries: [Components.Schemas.OutboundAuditEntry],
-                            partial: Swift.Bool
-                        ) {
-                            self.entries = entries
-                            self.partial = partial
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case entries
-                            case partial
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppOutboundLog.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OutboundLog)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppOutboundLog.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OutboundLog {
                         get throws {
                             switch self {
                             case let .json(body):

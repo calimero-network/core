@@ -280,7 +280,7 @@ extension CalimeroClient {
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func outboundLog(app: Swift.String) async throws -> Operations.AppOutboundLog.Output.Ok.Body.JsonPayload {
+        public func outboundLog(app: Swift.String) async throws -> Components.Schemas.OutboundLog {
             let input = Operations.AppOutboundLog.Input(path: .init(app: app))
             return try await client.perform { api in
                 try await api.appOutboundLog(input).ok.body.json
