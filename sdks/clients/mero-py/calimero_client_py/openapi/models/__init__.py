@@ -624,8 +624,10 @@ from .package_upload_response_200 import PackageUploadResponse200
 from .package_upload_response_200_services import PackageUploadResponse200Services
 from .package_versions_item import PackageVersionsItem
 from .package_versions_item_components import PackageVersionsItemComponents
+from .package_versions_item_orgs_item import PackageVersionsItemOrgsItem
 from .package_versions_item_services import PackageVersionsItemServices
 from .package_versions_item_source import PackageVersionsItemSource
+from .package_versions_item_visibility import PackageVersionsItemVisibility
 from .page import Page
 from .passkey_add_begin_response_200 import PasskeyAddBeginResponse200
 from .passkey_add_finish_body import PasskeyAddFinishBody
@@ -1356,8 +1358,10 @@ __all__ = (
     "PackageUploadResponse200Services",
     "PackageVersionsItem",
     "PackageVersionsItemComponents",
+    "PackageVersionsItemOrgsItem",
     "PackageVersionsItemServices",
     "PackageVersionsItemSource",
+    "PackageVersionsItemVisibility",
     "Page",
     "PasskeyAddBeginResponse200",
     "PasskeyAddFinishBody",

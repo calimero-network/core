@@ -50,7 +50,7 @@ bytes:
   answers `404`.
 - `Err`: a real fault (unreachable, other status, too large, unaddressable
   coordinates); the node answers `503`. Another status is a `RegistryStatus`
-  (`status`, `url`) inside the report, so the node reads it with
+  (`status`, `url`, and `error`: a JSON body's `error` field, if any) inside the report, so the node reads it with
   `downcast_ref`: a `401` or `403` to the fetch without the credential means the
   release is not public, and the install goes on with the credential.
 

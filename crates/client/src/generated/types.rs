@@ -2096,6 +2096,54 @@ impl<'de> Deserialize<'de> for PackageVersionsItemComponents {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PackageVersionsItemVisibility {
+    /// `public`.
+    Public,
+    /// `private`.
+    Private,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl PackageVersionsItemVisibility {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for PackageVersionsItemVisibility {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageVersionsItemVisibility {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "public" => Self::Public,
+            "private" => Self::Private,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PackageVersionsItemOrgsItem {
+    #[serde(rename = "orgId")]
+    pub org_id: String,
+    pub name: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PackageVersionsItem {
     pub version: String,
@@ -2111,12 +2159,16 @@ pub struct PackageVersionsItem {
     pub installed_by: String,
     #[serde(rename = "installedAt")]
     pub installed_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<PackageVersionsItemVisibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orgs: Option<Vec<PackageVersionsItemOrgsItem>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.
+/// A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. A release's `visibility`: `public` (everyone here uses it; a release the operator installed, the cluster's catalog, is always), `private` (members of the organizations it was installed for; none: the accounts that installed it), absent for one recorded before the node kept it. `orgs`: of a private release's organizations, only those the caller is a member of.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Package {
     pub package: String,

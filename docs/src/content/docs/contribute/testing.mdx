@@ -408,6 +408,7 @@ What it does:
 - seeds state with `meroctl` as a person whose dev passkey file it then imports into Chromium's virtual authenticator (CDP `WebAuthn.addVirtualAuthenticator` and `addCredential`), so the browser approves as the same account;
 - serves the app's own page itself at `http://<label>.localhost:PORT/1.0.0/` (the package's real origin) with mero-js bundled from this tree, signs in there and asks for a consent page as a frontend does;
 - opens the page, checks the model the node sent and the text a person reads, saves a screenshot of each sheet (`test-results/screens`), clicks approve and checks what the cluster did.
+- `shoot` saves a sheet's state in both themes (`<name>-light.png`, `<name>-dark.png`); `CONSENT_SCREENSHOTS` names another folder.
 
 The app's page signs in with a software passkey for the same account, because Chromium refuses the RP id `localhost` from a `<label>.localhost` origin; the consent page, on the node's own origin, uses the real authenticator.
 One counter is kept for every authenticator of a run (`support/counter.mjs`), because the node refuses a passkey counter that does not move forward.
