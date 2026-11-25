@@ -7,7 +7,7 @@ use calimero_pipeline::PriceTable;
 use serde_json::json;
 
 use super::{
-    OrgQuotas, PoolConfig, Quotas, RunSlot, SystemCmd, SystemMachine, SystemState,
+    OrgQuotas, PoolConfig, Quotas, Rejection, RunSlot, SystemCmd, SystemMachine, SystemState,
     RUNS_PER_JOB_NODE,
 };
 
@@ -119,12 +119,11 @@ fn pools(list: &[(&str, u32, u32)]) -> BTreeMap<String, PoolConfig> {
 fn set_pools(
     m: &mut SystemMachine,
     list: &[(&str, u32, u32)],
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, Rejection> {
     m.run_authorized(SystemCmd::SetPools {
         pools: pools(list),
         proof: serde_json::Value::Null,
     })
-    .map_err(str::to_owned)
 }
 
 /// How many runs each pool holds granted.
@@ -139,7 +138,7 @@ fn granted_by_pool(m: &SystemMachine) -> BTreeMap<String, usize> {
 }
 
 /// The `(code, retryable)` of a refused acquire; the answer must be a refusal.
-fn refusal(answer: Result<serde_json::Value, String>) -> (String, bool) {
+fn refusal(answer: Result<serde_json::Value, Rejection>) -> (String, bool) {
     let answer = answer.expect("a refusal is an answer, not an error");
     assert_eq!(answer["state"], json!("refused"), "{answer}");
     (
@@ -801,13 +800,16 @@ fn pools_are_bounded_in_number_and_name() {
         .collect();
     assert!(set_pools(&mut m, &many)
         .unwrap_err()
+        .message()
         .starts_with("BAD_POOLS"));
     let long = "x".repeat(super::MAX_POOL_NAME_BYTES + 1);
     assert!(set_pools(&mut m, &[(long.as_str(), 1, 1024)])
         .unwrap_err()
+        .message()
         .starts_with("BAD_POOLS"));
     assert!(set_pools(&mut m, &[("", 1, 1024)])
         .unwrap_err()
+        .message()
         .starts_with("BAD_POOLS"));
     assert!(m.state.pools.is_empty());
     set_pools(&mut m, &many[..super::MAX_POOLS]).unwrap();
@@ -839,7 +841,7 @@ fn removing_a_pool_in_use_is_refused() {
     set_pools(&mut m, &TWO_POOLS).unwrap();
     pool_node(&mut m, 6, "highmem");
     let err = set_pools(&mut m, &[("standard", 2, 4096)]).unwrap_err();
-    assert!(err.starts_with("POOL_IN_USE"), "{err}");
+    assert!(err.message().starts_with("POOL_IN_USE"), "{err}");
     assert_eq!(m.state.pools, pools(&TWO_POOLS));
     // Without the node, a granted run still keeps its pool.
     let mut m = machine();
@@ -847,7 +849,7 @@ fn removing_a_pool_in_use_is_refused() {
     pool_node(&mut m, 5, "standard");
     m.run(acquire_mem("a1", "r1", 1024)).unwrap();
     let err = set_pools(&mut m, &[("highmem", 1, 65536)]).unwrap_err();
-    assert!(err.starts_with("POOL_IN_USE"), "{err}");
+    assert!(err.message().starts_with("POOL_IN_USE"), "{err}");
     m.run(release("a1", "r1")).unwrap();
     pool_node(&mut m, 7, "highmem");
     m.run_authorized(SystemCmd::RemoveNode {
@@ -998,12 +1000,11 @@ fn price_table(version: u64) -> PriceTable {
     }
 }
 
-fn set_prices(m: &mut SystemMachine, table: PriceTable) -> Result<serde_json::Value, String> {
+fn set_prices(m: &mut SystemMachine, table: PriceTable) -> Result<serde_json::Value, Rejection> {
     m.run_authorized(SystemCmd::SetPriceTable {
         table,
         proof: serde_json::Value::Null,
     })
-    .map_err(str::to_owned)
 }
 
 #[test]
@@ -1012,13 +1013,13 @@ fn a_price_table_version_must_rise_by_exactly_one() {
     assert!(m.state.price_table.is_none());
     for wrong in [0, 2] {
         let err = set_prices(&mut m, price_table(wrong)).unwrap_err();
-        assert!(err.starts_with("PRICE_VERSION"), "{err}");
+        assert!(err.message().starts_with("PRICE_VERSION"), "{err}");
     }
     assert!(m.state.price_table.is_none());
     set_prices(&mut m, price_table(1)).unwrap();
     for wrong in [1, 3, 0] {
         let err = set_prices(&mut m, price_table(wrong)).unwrap_err();
-        assert!(err.starts_with("PRICE_VERSION"), "{err}");
+        assert!(err.message().starts_with("PRICE_VERSION"), "{err}");
     }
     set_prices(&mut m, price_table(2)).unwrap();
     assert_eq!(m.state.price_table, Some(price_table(2)));
@@ -1032,7 +1033,7 @@ fn a_zero_price_rate_is_refused_and_leaves_the_table_alone() {
         ..price_table(1)
     };
     let err = set_prices(&mut m, zero).unwrap_err();
-    assert!(err.starts_with("BAD_PRICES"), "{err}");
+    assert!(err.message().starts_with("BAD_PRICES"), "{err}");
     assert!(m.state.price_table.is_none());
     set_prices(&mut m, price_table(1)).unwrap();
     let err = set_prices(
@@ -1043,7 +1044,7 @@ fn a_zero_price_rate_is_refused_and_leaves_the_table_alone() {
         },
     )
     .unwrap_err();
-    assert!(err.starts_with("BAD_PRICES"), "{err}");
+    assert!(err.message().starts_with("BAD_PRICES"), "{err}");
     assert_eq!(m.state.price_table, Some(price_table(1)));
 }
 
