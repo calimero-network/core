@@ -572,6 +572,16 @@ impl PackageVersion {
         self.installed_by == who || self.installers.contains(who)
     }
 
+    /// Its kind as a reader is told: a release the operator installed (the catalog) is
+    /// everyone's, so public; else as recorded (`None`: recorded before it was kept).
+    #[must_use]
+    pub fn visibility_shown(&self) -> Option<Visibility> {
+        if self.installed_by_any(OPERATOR) {
+            return Some(Visibility::Public);
+        }
+        self.visibility
+    }
+
     /// The accounts that installed it (the operator left out).
     fn installing_accounts(&self) -> impl Iterator<Item = &AccountId> {
         std::iter::once(&self.installed_by)
@@ -2182,6 +2192,18 @@ impl SystemState {
             .get(org)
             .and_then(|o| o.role(who))
             .is_some_and(|r| r >= OrgRole::Member)
+    }
+
+    /// The organizations `v` was installed for that `who` is a member of: never another.
+    pub fn release_orgs_of<'a>(
+        &'a self,
+        v: &'a PackageVersion,
+        who: &'a str,
+    ) -> impl Iterator<Item = &'a crate::types::Org> + 'a {
+        v.orgs
+            .iter()
+            .filter(move |o| self.member_of(o, who))
+            .filter_map(|o| self.orgs.get(o))
     }
 
     // The lookups below are how a route reads a release a client names; anything else

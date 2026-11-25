@@ -201,12 +201,16 @@
     if (u.hold) pol.appendChild(el("p", u.hold, "note-box"));
     labels(u.approveLabel, u.keepLabel, u.keepByDefault, u.class === "red" ? u.keepWords : null);
   }
+  // The organization chosen on an install sheet that asks for one; posted with the approval.
+  var chosenOrg = null;
   function renderInstall(x, i) {
+    if (has(i.chooseOrg)) chooseOrg(x, i.chooseOrg);
     var made = section(x, "What gets created for you");
     var ul = add(made, el("ul", null, "creates"));
-    (i.creates || []).forEach(function (c) {
+    (i.creates || []).forEach(function (c, n) {
       var li = add(ul, el("li"));
       li.appendChild(el("span", c.name + " " + c.version, "n"));
+      if (!n && i.privateTo) li.appendChild(el("span", i.privateTo, "pill pill-plain"));
       li.appendChild(el("span", c.what, "s"));
     });
     var where = section(x, "Where your data can go");
@@ -221,6 +225,26 @@
     bullets(up, i.updates);
     if (i.payer) x.appendChild(el("p", i.payer + " pays for this app; you have no Calimero bill for it.", "note-box"));
     labels("Create with passkey", "Cancel", false, null);
+  }
+  function chooseOrg(x, orgs) {
+    var box = section(x, "Create it in");
+    var select = add(box, el("select", null, "choose-org"));
+    select.id = "org";
+    select.setAttribute("aria-label", "Organization");
+    var none = add(select, el("option", "Choose an organization"));
+    none.value = ""; none.disabled = true; none.selected = true;
+    orgs.forEach(function (o) { add(select, el("option", o.name)).value = o.orgId; });
+    var points = {};
+    orgs.forEach(function (o) { points[o.orgId] = o.point; });
+    box.appendChild(el("p", "You are in several organizations. The app and its data belong to the one you choose.", "small muted"));
+    chosenOrg = "";
+    $("approve").disabled = true;
+    select.addEventListener("change", function () {
+      chosenOrg = select.value;
+      $("approve").disabled = !chosenOrg;
+      if (chosenOrg) prepare();
+      if ($("created") && points[chosenOrg]) $("created").textContent = points[chosenOrg];
+    });
   }
   function renderPolicyChange(x, p) {
     bullets(section(x, "Now"), p.now && p.now.words);
@@ -428,12 +452,13 @@
     var li = add($("attention"), el("li", null, "fact " + kind));
     add(li, el("span", null, "fact-ic")).appendChild(icon(name));
     var body = add(li, el("div"));
-    body.appendChild(el("p", title, "fact-t"));
+    var t = add(body, el("p", title, "fact-t"));
     if (sub) body.appendChild(el("p", sub, "fact-s"));
     if (has(items)) {
       var box = add(body, el("p", null, "fact-items"));
       items.forEach(function (i) { var c = add(box, el("code", i)); c.title = i; });
     }
+    return t;
   }
   // The main view: what needs care first (in colour), then what holds up,
   // then what happens. Only risk gets colour, so a warning stands out.
@@ -444,7 +469,7 @@
     if (!attn.length && (m.kind === "upgrade" || m.kind === "upgradeUnit")) fact("ok", "shield", "No new permissions", "It reaches what the version you run now reaches.");
     if (signed) fact("ok", "key", signed[0], signed[1]);
     var points = (m.points || []).filter(Boolean);
-    if (points.length) fact("", "info", points[0], points[1]);
+    if (points.length) fact("", "info", points[0], points[1]).id = "created";
   }
   function renderChecks(m, host) {
     var ul = $("checks"), mockShown = false;
@@ -644,7 +669,7 @@
     location.assign(u.href);
   }
   function busy(on, text) {
-    $("approve").disabled = on; $("decline").disabled = on;
+    $("approve").disabled = on || chosenOrg === ""; $("decline").disabled = on;
     $("status").textContent = text || "";
   }
   // Where the approval is: 1 asks the node, 2 waits for the passkey, 3
@@ -671,10 +696,12 @@
   function prepare() {
     challenge = null;
     clearTimeout(refresh);
-    var p = post("/approve").then(function (r) {
+    // The chosen organization goes into the action, so the passkey signs it.
+    var org = chosenOrg;
+    var p = post("/approve", org ? { org: org } : {}).then(function (r) {
       if (r.status !== 412) throw new Error((r.body && r.body.message) || "unexpected answer " + r.status);
       if (asking === p) {
-        challenge = { d: r.body.details, at: Date.now() };
+        challenge = { d: r.body.details, at: Date.now(), org: org };
         refresh = setTimeout(prepare, CHALLENGE_FRESH_MS);
       }
       return r.body.details;
@@ -696,12 +723,12 @@
       step(3);
       challenge = asking = null;
       clearTimeout(refresh);
-      return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
+      return post("/approve", Object.assign({ confirm: { challengeId: d.challengeId, assertion: {
         credentialId: bytesToB64url(cred.rawId),
         authenticatorData: bytesToB64url(cred.response.authenticatorData),
         clientDataJson: bytesToB64url(cred.response.clientDataJSON),
         signature: bytesToB64url(cred.response.signature),
-      } } }).then(function (r) {
+      } } }, chosenOrg ? { org: chosenOrg } : {})).then(function (r) {
         if (r.status === 200) return r;
         var code = r.body && r.body.error;
         if (code === "EXPIRED_CHALLENGE" || code === "UNKNOWN_CHALLENGE") {
@@ -717,11 +744,11 @@
   function approve() {
     var c = challenge;
     var asked;
-    if (c && Date.now() - c.at < CHALLENGE_FRESH_MS) {
+    if (c && c.org === chosenOrg && Date.now() - c.at < CHALLENGE_FRESH_MS) {
       asked = ask(c.d);
     } else {
       step(1);
-      asked = (c || !asking ? prepare() : asking).then(ask);
+      asked = (c || !asking || (challenge && challenge.org !== chosenOrg) ? prepare() : asking).then(ask);
     }
     asked.then(function (r) {
       if (hub) {
@@ -753,7 +780,8 @@
   $("decline").addEventListener("click", decline);
   load()
     .then(render)
-    .then(function () { if (!$("actions").hidden) prepare(); })
+    // A choice of organization still pending: its challenge is asked for once one is chosen.
+    .then(function () { if (!$("actions").hidden && chosenOrg !== "") prepare(); })
     .catch(function (e) {
       document.querySelectorAll(".host").forEach(function (h) { h.textContent = location.host; });
       $("headline").textContent = "Nothing to approve here";

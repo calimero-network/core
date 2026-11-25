@@ -218,6 +218,12 @@ instance reachable to others (grants, guests, public links, a deployment's
 customers) shares that instance, never the release it runs. The full rule is in
 [Who sees a release](/protocol/applications/#who-sees-a-release).
 
+`GET /packages` shows each release's kind (`public` or `private`) and, of a
+private one's organizations, only those the reader is in. Installing from an
+app's own page creates a private release's instance in the one organization of
+the person's it is for, or asks which of them, and the passkey signs that
+choice ([Installs, updates and update policies](/protocol/consent-page/#installs-updates-and-update-policies)).
+
 ### Members' security
 
 The owner and admins read what tells them a member may be locked out, with
