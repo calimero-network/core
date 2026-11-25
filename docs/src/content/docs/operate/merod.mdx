@@ -68,6 +68,8 @@ with flags or environment variables only, no `init` and no `--node`, as long as
 - `--node-id` or `--public-url` is missing, or there is no data directory;
 - a `--peers` entry is not `id=url`;
 - only one of `--kms-url` and `--kms-identity` is given;
+- `--dev` is given with `--kms-url`: a development node attests with mock quotes, so it
+  never takes a key mero-kms releases to a real TD;
 - the node is in TDX mode (no `--dev`) and `--storage-key` or
   `--storage-key-file` is given, or no storage-key source is given at all;
 - the node is in TDX mode and `MERO_TEE_VERSION`, or both `MERO_TEE_PROFILE` and

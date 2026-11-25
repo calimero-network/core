@@ -882,9 +882,14 @@ async fn app_list(
         .as_ref()
         .and_then(|p| p.caller.account().map(str::to_owned));
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
+    let key = p.as_ref().and_then(|p| p.api_key.clone());
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
+            .filter(|a| {
+                key.as_ref()
+                    .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
+            })
             .map(|a| (a, s.running_release(a)))
             .filter(|(_, r)| {
                 bound
@@ -1415,6 +1420,7 @@ async fn app_metadata(
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
     p.within(&node, &node.app(&app_id).await?)?;
+    p.settings_write()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
