@@ -92,7 +92,8 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
             .filter_map(|f| f.ident.clone().map(|ident| (f, ident)));
         for (field, bind) in fields {
             let key = camel(&bind.to_string());
-            check_wire(&field.ty)?;
+            check_wire(&field.ty)
+                .map_err(|e| syn::Error::new(e.span(), format!("field `{bind}`: {e}")))?;
             type_deps.extend(probes(&field.ty, &[], &[]));
             let _ = fields_abi.insert(key.clone(), Value::String(abi_type(&field.ty)));
             let value = match wire(&field.ty) {
@@ -195,7 +196,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         /// The app types this module's fields refer to, for the ABI's `types`.
         #[doc(hidden)]
         #[allow(non_upper_case_globals, dead_code)]
-        pub const #types_konst: &[::core::option::Option<&#sdk::abi::TypeDef>] = #types;
+        pub const #types_konst: &[&#sdk::abi::TypeDef] = #types;
     })
 }
 

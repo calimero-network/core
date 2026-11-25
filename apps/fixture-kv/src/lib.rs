@@ -34,7 +34,7 @@ pub struct Beat {
 }
 
 /// A `beat` tick as `beats` lists it (D20: 64-bit integers are decimal strings).
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct BeatOut {
     pub scheduled: String,
     pub previous: Option<String>,
@@ -98,7 +98,7 @@ struct SetArgs<'a> {
 }
 
 /// A file as `file` lists it (D20: the size as a decimal string).
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct FileOut {
     pub id: String,
     pub size: String,
