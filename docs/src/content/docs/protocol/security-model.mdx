@@ -73,7 +73,11 @@ code, and app code beyond what its owner approved.
   approved host; an organization that needs that guarantee turns egress off
   (for itself or one instance), and then no request or connector call leaves
   for its apps whatever an approval says
-  ([Egress off](/build/guides/outbound/#egress-off)).
+  ([Egress off](/build/guides/outbound/#egress-off)). The instance's owner and
+  managers see each request's host, path, status and secret names in its
+  outbound audit, refusals while egress is off included, so a release that
+  turns an approved host or a secret to another use shows up there; the audit
+  reports, it does not stop anything.
 - **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
   are an hour old whose reuse after that revokes the session (a copy taken
   within the hour refreshes beside its owner until then), revocation that

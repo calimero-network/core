@@ -1559,6 +1559,28 @@ async fn app_usage(
     })))
 }
 
+/// The outbound requests the instance's runs made, newest first, for its
+/// owner and the admins of its organization only: when, the method, host and path
+/// (no query), the status or why it failed, the secret names asked for, and the
+/// sizes; never a value, a body, a query string or a header. Each replica keeps
+/// what its own runs sent, in memory ([`calimero_outbound::OutboundAudit`]).
+async fn app_outbound_log(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its outbound log",
+        ));
+    }
+    Ok(Json(node.outbound_log(&app).await))
+}
+
 /// This area's routes, merged into [`super::router`].
 /// The methods of `target` that the release `source` runs lists for its package in its
 /// signed `uses` (`BundleUse::methods`): what a person is asked to let it call as them.
@@ -2152,6 +2174,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/usage", get(app_usage))
+        .route("/apps/{app}/outbound-log", get(app_outbound_log))
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))

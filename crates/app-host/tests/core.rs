@@ -639,7 +639,7 @@ fn assert_send_static<T: Send + 'static>() {}
 
 #[test]
 fn host_core_is_send_and_static() {
-    // wasmtime 50 needs `Store<T: 'static>` and `Send` store data for wasi and async calls.
+    // wasmtime needs `Store<T: 'static>` and `Send` store data for wasi and async calls.
     assert_send_static::<HostCore>();
 }
 

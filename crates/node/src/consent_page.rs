@@ -33,7 +33,8 @@
 //!    No app code runs there. The page reads the model
 //!    (`GET /consent/{id}/model`) and renders it: what is approved, for
 //!    whom, what changes and what stays as it is until the person approves.
-//! 3. **Passkey.** On *Approve*, the page posts `POST /consent/{id}/approve`.
+//! 3. **Passkey.** The page posts `POST /consent/{id}/approve` before the
+//!    click, so *Approve* asks the authenticator inside it.
 //!    The node runs the same route code a signed-in client would
 //!    (`api::set_release_approval`, `api::upgrade_app`,
 //!    `api::set_outbound_approval`) with the arguments frozen in the

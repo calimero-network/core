@@ -104,6 +104,9 @@ class Case:
         """Read it while old and new nodes both hold apps."""
         self.verify(w)
 
+    def old_job(self, w: World):
+        """The rolled cluster with the old job node serving again, before the new one starts."""
+
     def verify(self, w: World):
         """Read all of it on the rolled cluster: read-only, it runs again after a restart."""
 
@@ -410,6 +413,9 @@ def main(argv=None):
                                        approve=w.approve_release)
         # Clients move to this tree's meroctl; the job node is replaced as the replicas were.
         fleet.meroctl = new_meroctl
+        # The pair a cloud roll has between its steps: new replicas, the old job node still registered.
+        fleet.restart(OLD_JOB)
+        run_step(w, cases, "old_job", results, label="old job node")
         fleet.start_job(NEW_JOB, new_merod, TO_RELEASE)
         fleet.retire_job(OLD_JOB)
         run_step(w, cases, "verify", results)

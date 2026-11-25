@@ -241,6 +241,7 @@ App instances.
 | `instance access INSTANCE [--grant GRANT]...` | `POST /apps/{app}/access` | Replace the instance's grants: each `--grant` is `org`, `team:TEAM`, `account:ID` (a member or a guest), `account:ID=SCOPE` (with the app's JSON scope) or `anyone` (any signed-in account; nobody signed out). No `--grant`: only its owner. |
 | `instance metadata INSTANCE JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
 | `instance storage INSTANCE` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
+| `instance outbound-log INSTANCE` | `GET /apps/{app}/outbound-log` | Its recent outbound HTTPS requests, newest first: host, path (no query), status or failure, secret names, sizes; never a value or body. Its owner and its organization's admins only. |
 | `instance abi INSTANCE` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
 | `instance presence list INSTANCE` (`ls`) | `GET /apps/{app}/presence` | Who is present now (ephemeral, never stored). |
 | `instance presence publish INSTANCE --seq N [--state HEX]` | `POST /apps/{app}/presence` | Publish this device's presence; no `--state` retracts it. |
