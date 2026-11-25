@@ -1,7 +1,7 @@
-//! Test support shared by the test binaries: the apps the tests run (`apps/fixture-*`,
+//! Test support for the `it` binary's modules: the apps the tests run (`apps/fixture-*`,
 //! `apps/team-space` and `apps/rooms`) built into components, and the in-process three-node cluster.
 
-// Each test binary includes this module and uses a different subset of it.
+// Each module of the `it` binary uses a different subset of this one.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

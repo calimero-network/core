@@ -1484,7 +1484,7 @@ fn credentials_need_the_accounts_own_passkey() {
         "methods": null, "readOnly": true, "allowConfirm": false, "expiresAt": 99,
     }))
     .unwrap();
-    let args = super::api_key_args("h1", &record);
+    let args = super::api_key_args("h1", &record, &[]);
     let mut wider = args.clone();
     wider["readOnly"] = json!(false);
     let create = |consent| SystemCmd::CreateApiKey {
@@ -1494,6 +1494,7 @@ fn credentials_need_the_accounts_own_passkey() {
         owner_in_org: true,
         owner_in_team: true,
         owner_approves: false,
+        then: Vec::new(),
     };
     // Another key's hash under the same consent: refused.
     let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
@@ -1505,6 +1506,7 @@ fn credentials_need_the_accounts_own_passkey() {
             owner_in_org: true,
             owner_in_team: true,
             owner_approves: false,
+            then: Vec::new(),
         })
         .is_err());
     needs_consent(
@@ -1516,6 +1518,106 @@ fn credentials_need_the_accounts_own_passkey() {
         create,
     );
     assert!(m.state.api_keys.contains_key("h1"));
+
+    // A key made with follow-up calls: its consent states them, and the entry
+    // must carry the same ones.
+    let then = vec![crate::types::SignedFollowUp {
+        app: "app".into(),
+        method: "setAccess".into(),
+        args_hash: "a1".into(),
+    }];
+    let record = crate::types::ApiKeyRecord {
+        key_id: "k2".into(),
+        ..record
+    };
+    let args = super::api_key_args("h2", &record, &then);
+    let with = |then: Vec<crate::types::SignedFollowUp>| {
+        let record = record.clone();
+        move |consent| SystemCmd::CreateApiKey {
+            hash: "h2".into(),
+            record: record.clone(),
+            consent,
+            owner_in_org: true,
+            owner_in_team: true,
+            owner_approves: false,
+            then: then.clone(),
+        }
+    };
+    let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
+    assert!(m.run(with(Vec::new())(c)).is_err(), "follow-ups dropped");
+    let mut other = args.clone();
+    other["then"][0]["argsHash"] = json!("a2");
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("account:alice", "__create_api_key"),
+        &args,
+        &other,
+        with(then),
+    );
+    assert!(m.state.api_keys.contains_key("h2"));
+}
+
+/// A key's consent, and so the system log every node holds, states each
+/// follow-up's arguments by a salted hash alone, never the app's data, and
+/// that hash tells apart any two arguments that differ.
+#[test]
+fn a_keys_statement_names_follow_up_arguments_by_a_salted_hash_only() {
+    let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+        "keyId": "k1", "account": "alice", "label": "ci", "expiresAt": 99,
+    }))
+    .unwrap();
+    let call = |args: serde_json::Value| crate::types::KeyFollowUp {
+        app: "app".into(),
+        method: "setAccess".into(),
+        args,
+    };
+    let hash = |args: serde_json::Value, salt: &[u8]| call(args).signed(salt).args_hash;
+    let secret = json!({ "role": "writer", "bucket": "payroll-secret", "at": { "b": 1, "a": 2 } });
+    let signed = call(secret.clone()).signed(b"salt-1");
+    let stated = super::api_key_args("h1", &record, std::slice::from_ref(&signed)).to_string();
+    assert!(!stated.contains("payroll-secret"), "{stated}");
+    assert_eq!(
+        stated,
+        json!({ "hash": "h1", "keyId": "k1", "label": "ci", "apps": null, "methods": null,
+            "readOnly": false, "allowConfirm": false, "expiresAt": 99,
+            "then": [{ "app": "app", "method": "setAccess", "argsHash": signed.args_hash }] })
+        .to_string()
+    );
+    // Key order, at any depth, does not matter.
+    let reordered =
+        json!({ "at": { "a": 2, "b": 1 }, "bucket": "payroll-secret", "role": "writer" });
+    assert_eq!(hash(reordered, b"salt-1"), signed.args_hash);
+    // Any difference does, past what a double holds and between 1 and 1.0.
+    assert_ne!(
+        hash(json!({ "role": "owner" }), b"salt-1"),
+        hash(json!({ "role": "writer" }), b"salt-1")
+    );
+    let big = |n: &str| {
+        serde_json::from_str::<serde_json::Value>(&format!(r#"{{"amount":{n}}}"#)).unwrap()
+    };
+    assert_ne!(
+        hash(big("9007199254740993"), b"s"),
+        hash(big("9007199254740992"), b"s")
+    );
+    assert_ne!(hash(big("1"), b"s"), hash(big("1.0"), b"s"));
+    // The same arguments of another key, under its own salt, state another hash.
+    assert_ne!(hash(secret, b"salt-2"), signed.args_hash);
+}
+
+/// A key without follow-ups states the bytes it did before they existed, so
+/// its consent verifies on every release.
+#[test]
+fn a_plain_keys_statement_is_unchanged() {
+    let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+        "keyId": "k1", "account": "alice", "label": "ci", "apps": ["app"],
+        "methods": null, "readOnly": true, "allowConfirm": false, "expiresAt": 99,
+    }))
+    .unwrap();
+    assert_eq!(
+        super::api_key_args("h1", &record, &[]).to_string(),
+        r#"{"hash":"h1","keyId":"k1","label":"ci","apps":["app"],"methods":null,"readOnly":true,"allowConfirm":false,"expiresAt":99}"#
+    );
 }
 
 /// A cluster begun before session proofs replays what it logged then as

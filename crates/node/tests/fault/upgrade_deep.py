@@ -100,6 +100,12 @@ NOT_COVERED = [
      "(`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
      "`a_guest_cannot_spend_fuel_its_host_calls_already_owe`, `refused_xcall_arguments_cost_fuel`, "
      "`stdout_costs_fuel_after_the_log_is_full`) covers it on one build"),
+    ("Keys", "An API key made with follow-ups (`POST /auth/apikeys { then }`): confirm calls approved by the "
+     "key's one passkey prompt",
+     "it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its "
+     "app with the key's consent; `CreateApiKey::then` is new in the log only behind cluster version "
+     "1.0.0-rc.36 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
+     "`tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
@@ -118,8 +124,12 @@ NOT_COVERED = [
      "makes, which `app-teams` covers. The verifier link is a startup setting "
      "(`--attestation-verifier-url`) that stores nothing"),
     ("Apps", "Timers (`#[app::every]`) firing across the roll",
-     "the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; "
-     "the cluster tests move the app clock"),
+     "the only timer the suite's apps carry is the kv fixture's `beat`, declared `#[app::every(\"1h\")]` and run on "
+     "the nodes' wall clock: one tick needs an hour, and a roll takes minutes, so no tick falls in any phase and "
+     "there is nothing to seed or read. The tests move the app clock with a test-only clock "
+     "that a release `merod` lacks, and no flag or route moves it; `ticks_run_once_per_slot`, "
+     "`a_tick_runs_once_across_failover` and `missed_ticks_collapse_into_one` (`component_cluster.rs`) cover ticks "
+     "on one build"),
     ("Packages", "Served frontends and served origins (custom domains)",
      "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
      "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
@@ -139,11 +149,6 @@ NOT_COVERED = [
     ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
      "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
      "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
-    ("Ops", "Replicas' state digests compared by each app's leader (`calimero_group_diverged`)",
-     "nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied "
-     "index, taken again from the rows when it is missing), and a peer on a release before answers "
-     "`/internal/digests` with `404` and is not compared; "
-     "`a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build"),
     ("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
      "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
      "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
@@ -549,6 +554,13 @@ def anyone(w, method, path, body=None, node=None):
 def ops(w, method, path, body=None, node=None):
     node = node if node is not None else w.members()[0]
     return _http(method, w.fleet.url(node) + path, body, w.fleet.ops_token, 30)
+
+
+def ops_text(w, path, node):
+    """A plain-text ops route (`ops/metrics`) as `node` answers it."""
+    req = urllib.request.Request(w.fleet.url(node) + path, headers={"authorization": f"Bearer {w.fleet.ops_token}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read().decode()
 
 
 def signed_ops(w, method, path, body=None):
