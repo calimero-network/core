@@ -49,7 +49,7 @@ pub struct Quotas {
     pub max_orgs_per_account: u32,
     /// Accounts the cluster takes in all: where sign-up is open
     /// ([`Governance::sign_up`]), this is what keeps it from growing without
-    /// bound (Xil's review, issue 12).
+    /// bound.
     pub max_accounts: u32,
     /// Plaintext bytes of the files an organization's apps hold (a personal
     /// organization's too).
@@ -59,21 +59,21 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
-    /// Fuel a developer's apps may burn per UTC day, summed over its component apps
-    /// (Q20, D76, D78); 0 (the default) is no limit. The developer is the one usage
+    /// Fuel a developer's apps may burn per UTC day, summed over its component
+    /// apps; 0 (the default) is no limit. The developer is the one usage
     /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
     /// was created from, else the app's organization or owner. Over it, a client's
     /// call or an xcall delivery to any of the developer's apps is refused before it
     /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
     /// count. Checked where the call runs, against the apps' usage books, not at
-    /// apply: those live in the app groups. A decimal string in JSON (D20); a number
-    /// is refused. Written only once every node runs a release that knows it
+    /// apply: those live in the app groups. A decimal string in JSON, so a JavaScript
+    /// client never rounds it; a number is refused. Written only once every node runs a release that knows it
     /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_developer_per_day: u64,
 }
 
-/// A `u64` as a decimal string in JSON (D20): digits only, no sign, no leading zero.
+/// A `u64` as a decimal string in JSON: digits only, no sign, no leading zero.
 /// A JSON number is refused, so a client never sends a cap a JavaScript number has
 /// already rounded.
 mod decimal_u64 {
@@ -88,9 +88,7 @@ mod decimal_u64 {
         let s = String::deserialize(d)?;
         let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
         if !digits || (s.len() > 1 && s.starts_with('0')) {
-            return Err(D::Error::custom(format!(
-                "{s:?} is not a decimal string (D20)"
-            )));
+            return Err(D::Error::custom(format!("{s:?} is not a decimal string")));
         }
         s.parse().map_err(D::Error::custom)
     }
@@ -1483,6 +1481,42 @@ impl DeployerGrant {
 /// DEPLOY_NOT_GRANTED` (`node::rejected`).
 pub const NOT_A_DEPLOYER: Rejection =
     Rejection::new(RejectionKind::DeployNotGranted, "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.");
+
+// Refusals more than one area answers. Each is `400 REJECTED`, the kind the
+// bare message it names was answered with; the message is what a client reads.
+
+/// A refusal: the command names an app the directory does not hold.
+pub(crate) const NO_SUCH_APP: Rejection = Rejection::new(RejectionKind::Rejected, "no such app");
+/// A refusal: the command names a deployment that does not exist.
+pub(crate) const NO_SUCH_DEPLOYMENT: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such deployment");
+/// A refusal: the command names an organization that does not exist.
+pub(crate) const NO_SUCH_ORG: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such organization");
+/// A refusal: the command names a package that is not installed.
+pub(crate) const NO_SUCH_PACKAGE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such package");
+/// A refusal: the command names a team its organization does not have.
+pub(crate) const NO_SUCH_TEAM: Rejection = Rejection::new(RejectionKind::Rejected, "no such team");
+/// A refusal: the command names an account that does not exist.
+pub(crate) const UNKNOWN_ACCOUNT: Rejection =
+    Rejection::new(RejectionKind::Rejected, "unknown account");
+/// A refusal: an organization of that id exists already.
+pub(crate) const ORG_EXISTS: Rejection =
+    Rejection::new(RejectionKind::Rejected, "organization exists");
+/// A refusal: a consent states another change than the command makes.
+pub(crate) const CONSENT_FOR_ANOTHER_CHANGE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "the consent is for another change");
+/// A refusal: an invite of that key exists already.
+pub(crate) const INVITE_EXISTS: Rejection =
+    Rejection::new(RejectionKind::Rejected, "invite exists");
+/// A refusal: an invite's redemption was spent before.
+pub(crate) const REDEMPTION_USED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "that redemption was used already");
+/// A refusal: a team's rows, or its default capabilities, set by someone who
+/// neither manages the team nor holds `MANAGE_MEMBERS` there.
+pub(crate) const MAY_NOT_MANAGE_TEAM: Rejection =
+    Rejection::new(RejectionKind::Rejected, "not allowed to manage this team");
 
 /// How many deployer grants a cluster keeps.
 pub const MAX_DEPLOYERS: usize = 10_000;
@@ -3472,8 +3506,8 @@ impl SystemState {
         }
     }
 
-    /// Whether `actor`, not `app`'s owner, may change its access to `to`
-    /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
+    /// Whether `actor`, not `app`'s owner, may change its access to `to`:
+    /// someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
     /// each team its grants name, organization-wide for grants with no team
     /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
@@ -4767,7 +4801,7 @@ impl SystemState {
     }
 
     /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
-    /// `audience` by `emitter` (R9): it must still reach the app, and be in the
+    /// `audience` by `emitter`: it must still reach the app, and be in the
     /// audience as the system state stands at this moment, so a removed member
     /// stops receiving at once.
     #[must_use]
@@ -6807,7 +6841,7 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// The capabilities members hold unless set for them: organization-wide
-    /// (`team: None`), or everyone in `team` on top of their own (G6).
+    /// (`team: None`), or everyone in `team` on top of their own.
     SetDefaultCapabilities {
         org: OrgId,
         /// Absent in entries from before, which set the organization's.
@@ -6953,7 +6987,7 @@ pub enum SystemCmd {
         now: u64,
         signature: String,
     },
-    /// Give apps their own access lists in one step (G3): for each package
+    /// Give apps their own access lists in one step: for each package
     /// named (absent: every package with an instance an `org` grant admits
     /// here), find or make its app team ([`crate::types::Team::app_package`]),
     /// give every person who reaches its instances now a row there, and give
@@ -7189,10 +7223,6 @@ fn acquire_refused(code: &str, retryable: bool) -> Value {
 }
 
 impl SystemMachine {
-    fn org_mut(&mut self, org: &str) -> Result<&mut Org, &'static str> {
-        self.state.orgs.get_mut(org).ok_or("no such organization")
-    }
-
     /// Apply `cmd`, only once its proof holds ([`authorize`]): refused if it
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.

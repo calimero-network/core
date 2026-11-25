@@ -12,7 +12,8 @@
 use super::*;
 
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
-// names was answered with; the message is what a client reads.
+// names was answered with; the message is what a client reads. Those another
+// area answers too are `system.rs`'s (`NO_SUCH_APP`, `NO_SUCH_ORG` and the rest).
 
 /// An upgrade key's consent names a key the actor no longer holds.
 const NO_SUCH_API_KEY: Rejection =
@@ -20,23 +21,13 @@ const NO_SUCH_API_KEY: Rejection =
 /// An upgrade names a run no organization keeps.
 const NO_SUCH_UPGRADE_RUN: Rejection =
     Rejection::new(RejectionKind::Rejected, "no such upgrade run");
-/// A consent states another change than the command makes.
-const CONSENT_FOR_ANOTHER_CHANGE: Rejection =
-    Rejection::new(RejectionKind::Rejected, "the consent is for another change");
-/// An instance invite's redemption was spent before.
-const REDEMPTION_USED: Rejection =
-    Rejection::new(RejectionKind::Rejected, "that redemption was used already");
 /// A replica set names one node twice.
 const NODE_NAMED_TWICE: Rejection =
     Rejection::new(RejectionKind::Rejected, "a node is named twice");
-/// The command names an app the directory does not hold.
-const NO_SUCH_APP: Rejection = Rejection::new(RejectionKind::Rejected, "no such app");
 /// The command names a bundle the directory does not hold.
 const UNKNOWN_BUNDLE: Rejection = Rejection::new(RejectionKind::Rejected, "unknown bundle");
 /// An app of that id exists already.
 const APP_EXISTS: Rejection = Rejection::new(RejectionKind::Rejected, "app exists");
-/// An app names a deployment that does not exist.
-const NO_SUCH_DEPLOYMENT: Rejection = Rejection::new(RejectionKind::Rejected, "no such deployment");
 /// An app from a deployment would run a release the deployment does not offer.
 const NOT_OFFERED: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -79,8 +70,6 @@ const NOT_AN_UPGRADER: Rejection = Rejection::new(
     RejectionKind::Rejected,
     "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
 );
-/// The command names an organization that does not exist.
-const NO_SUCH_ORG: Rejection = Rejection::new(RejectionKind::Rejected, "no such organization");
 /// An upgrade run of that id exists already.
 const RUN_EXISTS: Rejection = Rejection::new(RejectionKind::Rejected, "that run exists");
 /// The organization keeps no run of that id.
@@ -88,8 +77,6 @@ const NO_SUCH_RUN: Rejection = Rejection::new(RejectionKind::Rejected, "no such 
 /// An alias outside 1 to [`MAX_LABEL_CHARS`] characters.
 const BAD_ALIAS: Rejection =
     Rejection::new(RejectionKind::Rejected, "an alias is 1 to 64 characters");
-/// The command names an account that does not exist.
-const UNKNOWN_ACCOUNT: Rejection = Rejection::new(RejectionKind::Rejected, "unknown account");
 /// A new alias past [`MAX_ALIASES`].
 const TOO_MANY_ALIASES: Rejection = Rejection::new(RejectionKind::Rejected, "too many aliases");
 /// A transfer, judged by ownership alone, by someone other than the owner.
@@ -162,8 +149,6 @@ const INVITE_TOO_LONG: Rejection = Rejection::new(
     RejectionKind::Rejected,
     "an instance invite lasts at most 90 days",
 );
-/// An invite of that key exists already.
-const INVITE_EXISTS: Rejection = Rejection::new(RejectionKind::Rejected, "invite exists");
 /// A public link made by someone who may not change the instance's access.
 const ONLY_MANAGERS_MAKE_LINKS: Rejection = Rejection::new(
     RejectionKind::Rejected,

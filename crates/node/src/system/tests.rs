@@ -2574,6 +2574,102 @@ fn a_create_apps_refusals_keep_their_wording_and_code() {
     );
 }
 
+/// An organization command's refusals reach a client with the wording, status
+/// and code they always had: each check is named, none changed what it answers.
+#[test]
+fn an_org_commands_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let update_team = |parent: Option<Option<String>>, team: &str| SystemCmd::UpdateTeam {
+        org: "org".into(),
+        team: team.into(),
+        name: None,
+        join: None,
+        parent,
+        metadata: None,
+        actor: "alice".into(),
+        all_apps_rows: true,
+        close_drops_below: true,
+    };
+    let cases = [
+        (
+            SystemCmd::DeleteOrg {
+                org: "nope".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            },
+            "no such organization",
+        ),
+        (
+            SystemCmd::CreateOrg {
+                org_id: "org".into(),
+                name: "Docs".into(),
+                actor: "alice".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+                name_fits: true,
+                personal: false,
+                app_team: None,
+                capabilities: None,
+            },
+            "organization exists",
+        ),
+        (
+            SystemCmd::SetOrgRole {
+                org: "org".into(),
+                account: "carol".into(),
+                role: OrgRole::Member,
+                actor: "bob".into(),
+                consent: Value::Null,
+            },
+            "only admins manage members",
+        ),
+        (
+            SystemCmd::RemoveOrgMember {
+                org: "org".into(),
+                account: "alice".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            },
+            "transfer ownership before removing the owner",
+        ),
+        (
+            SystemCmd::CreateTeam {
+                org: "org".into(),
+                team_id: "t".into(),
+                name: "T".into(),
+                parent: None,
+                join: crate::types::TeamJoin::Invite,
+                actor: "alice".into(),
+                member_child_teams: true,
+            },
+            "team exists",
+        ),
+        (update_team(None, "nope"), "no such team"),
+        (
+            update_team(Some(Some("t".into())), "t"),
+            "a team cannot move under itself",
+        ),
+        (
+            SystemCmd::SetOrgSettings {
+                org: "org".into(),
+                settings: super::OrgSettings::default(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            },
+            "no setting to change",
+        ),
+    ];
+    for (cmd, message) in cases {
+        let refused = m.run_unproven(cmd).unwrap_err();
+        let api = crate::node::rejected(&refused);
+        assert_eq!(
+            (api.message.as_str(), api.status, api.code.as_str()),
+            (message, 400, "REJECTED")
+        );
+    }
+}
+
 /// Every account has its personal organization from sign-up
 /// (`CreateAccount { personal_org }`): it alone owns it, it is outside the
 /// organization quota, and a second one is refused. An ordinary
