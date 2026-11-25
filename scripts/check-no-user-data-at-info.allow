@@ -69,7 +69,6 @@ crates/node/src/app.rs | "an applied entry's answer does not serialize | serde_j
 crates/node/src/node/component.rs | target: "app_log" | an app's own lines, printed only on a development node (Config::app_logs, --dev; #5275): a production node collects none
 
 # --- calimero-outbound ---------------------------------------------------------
-crates/outbound/src/lib.rs | "outbound request failed" | TODO(F6): the transport's words can quote the request; #5333 logs FailureKind instead. Its `path` should then become `prefix`, as the success line logs
 
 # --- merod and the attestation crates: no user is involved ---------------------
 crates/merod/src/main.rs | "not reporting the data disk's KMS: {e:#}" | reading the node's own disk-key evidence file at startup

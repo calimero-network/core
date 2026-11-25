@@ -949,7 +949,7 @@ impl OutboundService {
                     context = %context,
                     package = %app.package,
                     host = %prepared.host,
-                    path = %prepared.url.path(),
+                    prefix = covering(declared, &prepared.url).map_or("-", String::as_str),
                     kind = kind.as_str(),
                     "outbound request failed"
                 );
