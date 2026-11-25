@@ -1249,7 +1249,7 @@ class CalimeroClientTest {
     fun `answers the passkey step-ups on invites, members and API keys`() =
         runBlocking {
             val passkey = softPasskey()
-            val cluster = Cluster(stepUp("""{"token":"inv_1","keyId":"k1","key":"cal_x"}"""))
+            val cluster = Cluster(stepUp("""{"token":"inv_1","keyId":"k1","key":"cal_x","then":[]}"""))
             val client = cluster.client()
             assertEquals("inv_1", client.orgs.inviteCreate(org = "org-1", role = ApiOrgRole.MEMBER, teams = listOf("t1"), passkey = passkey).token)
             assertEquals("/orgs/org-1/invites", path(cluster.nodes[0].requests[1].first))
@@ -1323,18 +1323,18 @@ class CalimeroClientTest {
                     when (path(head)) {
                         "/apps/app-1/xcalls" -> json(200, """{"pending":2,"deadLetters":[{"seq":4,"app":"app-2","method":"ping","reason":"gone","atMs":9}]}""")
                         "/deployments/d1" ->
-                            json(200, """{"id":"d1","name":"Chat","owner":{"kind":"org","name":"Acme"},"apps":[{"app":"chat","package":"com.calimero.chat","version":"1.0.0"}]}""")
+                            json(200, """{"id":"d1","host":null,"name":"Chat","owner":{"kind":"org","name":"Acme"},"apps":[{"app":"chat","package":"com.calimero.chat","version":"1.0.0"}]}""")
                         "/deployers" ->
                             if (head["method"]!!.jsonPrimitive.content == "GET") {
                                 json(200, """{"deployments":"granted","deployers":"owner","owner":{"account":"acc-1"},"grants":[{"key":"org:o1","deployer":{"org":"o1"},"until":null,"untilSecs":null,"grantedAt":"t","grantedBy":"acc-1"}]}""")
                             } else {
                                 stepUp("""{"key":"org:o1","deployer":{"org":"o1"},"grant":{"grantedAt":1,"grantedBy":"acc-1"}}""")(head, body)
                             }
-                        "/apps" -> json(200, """{"appId":"a1","contextId":"c1","group":1,"replicas":[0],"compute":false}""")
+                        "/apps" -> json(200, """{"appId":"a1","contextId":"c1","group":1,"replicas":[0],"compute":false,"links":{}}""")
                         "/deployers/org%3Ao1" -> stepUp("""{"key":"org:o1"}""")(head, body)
                         else ->
                             stepUp(
-                                """{"id":"d2","deployment":{"id":"d2","name":"Chat","owner":{"account":"acc-1"},"apps":{},"createdBy":"acc-1","createdAt":1},"host":null}""",
+                                """{"id":"d2","deployment":{"id":"d2","host":null,"name":"Chat","owner":{"account":"acc-1"},"apps":{},"createdBy":"acc-1","createdAt":1},"host":null}""",
                             )(head, body)
                     }
                 })
@@ -1442,7 +1442,7 @@ class CalimeroClientTest {
     fun `revokes API keys with the passkey and makes upgrade keys`() =
         runBlocking {
             val passkey = softPasskey()
-            val cluster = Cluster(stepUp("""{"keyId":"k1","key":"cal_x"}"""))
+            val cluster = Cluster(stepUp("""{"keyId":"k1","key":"cal_x","then":[]}"""))
             val client = cluster.client()
             client.auth.apikeyRevoke(key = "k 1", passkey = passkey)
             assertEquals("/auth/apikeys/k%201", path(cluster.nodes[0].requests[1].first))
@@ -1521,7 +1521,7 @@ class CalimeroClientTest {
             val cluster =
                 Cluster({ head, body ->
                     when (path(head)) {
-                        "/auth/me" -> json(200, """{"accountId":"acc-2","name":"b","passkeys":[],"orgs":[],"via":"session","passkeyId":null,"approvedReleases":[],"outboundApprovals":{},"app":"com.x","origin":"https://x.example"}""")
+                        "/auth/me" -> json(200, """{"accountId":"acc-2","name":"b","passkeys":[],"orgs":[],"via":"session","passkeyId":null,"approvedReleases":[],"outboundApprovals":{},"app":"com.x","origin":"https://x.example","recoveryCode":false,"recoveryPending":null}""")
                         "/orgs/o1/recovery/start" -> json(200, """{"startedAt":10,"readyAt":20}""")
                         "/orgs/o1" -> json(200, """{"orgId":"o1","name":"Acme","recovery":{"publicKey":"pk","setAt":3,"pending":{"account":"acc-2","startedAt":10,"readyAt":20}}}""")
                         "/orgs" -> json(200, """{"orgId":"o1"}""")

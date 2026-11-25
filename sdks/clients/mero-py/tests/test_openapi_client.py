@@ -308,9 +308,7 @@ def test_the_async_calls_run_on_the_same_channel():
     api = client_on(native).api()
 
     async def go():
-        return await org_create.asyncio_detailed(
-            client=api, body=OrgBody(name="Acme")
-        )
+        return await org_create.asyncio_detailed(client=api, body=OrgBody(name="Acme"))
 
     r = asyncio.run(go())
     assert r.status_code == 200
@@ -319,9 +317,7 @@ def test_the_async_calls_run_on_the_same_channel():
 
 def test_a_typed_answer_is_parsed_by_the_generated_models():
     native = Native(answer(200, {"orgId": "o1"}))
-    parsed = org_create.sync(
-        client=client_on(native).api(), body=OrgBody(name="A")
-    )
+    parsed = org_create.sync(client=client_on(native).api(), body=OrgBody(name="A"))
     assert parsed.org_id == "o1"
 
 

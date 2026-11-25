@@ -115,12 +115,13 @@ public final class FakeCloud: @unchecked Sendable {
             let mine = orgs.filter { $0.value.members[Self.me] != nil }.sorted { $0.key < $1.key }
             return .json([
                 "accountId": .string(Self.me), "name": "dev", "passkeys": [], "via": "session", "passkeyId": .null,
-                "approvedReleases": [], "outboundApprovals": [:],
+                "approvedReleases": [], "outboundApprovals": [:], "app": .null, "origin": .null,
+                "recoveryCode": false, "recoveryPending": .null,
                 "orgs": .array(
                     mine.map {
                         [
                             "orgId": .string($0.key), "name": .string($0.value.name),
-                            "role": .string($0.value.members[Self.me]!),
+                            "role": .string($0.value.members[Self.me]!), "personal": false,
                         ]
                     }),
             ])
@@ -219,6 +220,7 @@ public final class FakeCloud: @unchecked Sendable {
             )
             return .json([
                 "appId": .string(app), "contextId": .string(app), "group": 1, "replicas": [1], "compute": false,
+                "links": [:],
             ])
         case on("GET", "apps") != nil:
             let package = request.path.contains("package=") ? request.path.components(separatedBy: "package=")[1] : nil
