@@ -77,9 +77,16 @@ pub fn entry_bytes(of: EntryOf<'_>, ids: EntryIds, out: &Outcome) -> usize {
             let _ = entry.insert("previousMs".into(), json!(previous_ms));
         }
         EntryOf::Init { bundle } => {
+            // `componentInit`'s fields are not renamed: snake case.
             let _ = entry.insert("op".into(), json!("componentInit"));
             let _ = entry.insert("bundle".into(), json!(bundle));
-            let _ = entry.insert("computeBundle".into(), Value::Null);
+            let _ = entry.insert("compute_bundle".into(), Value::Null);
+            let _ = entry.insert("ts_ms".into(), json!(ids.ts_ms));
+            let _ = entry.insert("base_index".into(), json!(ids.base_index));
+            let _ = entry.insert("id_term".into(), json!(ids.id_term));
+            let _ = entry.insert("id_seq".into(), json!(ids.id_seq));
+            let _ = entry.insert("outcome".into(), outcome_json(out));
+            return serde_json::to_vec(&Value::Object(entry)).map_or(usize::MAX, |v| v.len());
         }
     }
     let _ = entry.insert("tsMs".into(), json!(ids.ts_ms));
