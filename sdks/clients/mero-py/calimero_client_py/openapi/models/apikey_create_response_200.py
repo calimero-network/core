@@ -6,6 +6,16 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import cast
+from typing import Union
+
+if TYPE_CHECKING:
+    from ..models.apikey_create_response_200_then_item import (
+        ApikeyCreateResponse200ThenItem,
+    )
+
+
 T = TypeVar("T", bound="ApikeyCreateResponse200")
 
 
@@ -15,16 +25,29 @@ class ApikeyCreateResponse200:
     Attributes:
         key_id (str):
         key (str):
+        then (Union[Unset, list['ApikeyCreateResponse200ThenItem']]):
     """
 
     key_id: str
     key: str
+    then: Union[Unset, list["ApikeyCreateResponse200ThenItem"]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.apikey_create_response_200_then_item import (
+            ApikeyCreateResponse200ThenItem,
+        )
+
         key_id = self.key_id
 
         key = self.key
+
+        then: Union[Unset, list[dict[str, Any]]] = UNSET
+        if not isinstance(self.then, Unset):
+            then = []
+            for then_item_data in self.then:
+                then_item = then_item_data.to_dict()
+                then.append(then_item)
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -34,19 +57,33 @@ class ApikeyCreateResponse200:
                 "key": key,
             }
         )
+        if then is not UNSET:
+            field_dict["then"] = then
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.apikey_create_response_200_then_item import (
+            ApikeyCreateResponse200ThenItem,
+        )
+
         d = dict(src_dict)
         key_id = d.pop("keyId")
 
         key = d.pop("key")
 
+        then = []
+        _then = d.pop("then", UNSET)
+        for then_item_data in _then or []:
+            then_item = ApikeyCreateResponse200ThenItem.from_dict(then_item_data)
+
+            then.append(then_item)
+
         apikey_create_response_200 = cls(
             key_id=key_id,
             key=key,
+            then=then,
         )
 
         apikey_create_response_200.additional_properties = d

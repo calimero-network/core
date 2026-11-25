@@ -2934,9 +2934,7 @@ fn app_invite_model(
         )));
     }
     if !allowed {
-        return Some(Err(ApiError::new(
-            409,
-            crate::api::apps::GUESTS_NOT_ALLOWED,
+        return Some(Err(crate::node::rejected(
             crate::system::GUESTS_NOT_ALLOWED,
         )));
     }

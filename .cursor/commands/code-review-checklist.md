@@ -13,7 +13,7 @@ Comprehensive checklist for Calimero core PR reviews. Align with AGENTS.md conve
 
 - [ ] Code is readable and well-structured
 - [ ] Imports follow StdExternalCrate pattern (std → external → crate → local)
-- [ ] No `mod.rs` – modules use named files
+- [ ] No `mod.rs` – modules use named files (except a shared `tests/common/mod.rs`)
 - [ ] Functions are small and focused
 - [ ] Variable names are descriptive
 - [ ] No code duplication

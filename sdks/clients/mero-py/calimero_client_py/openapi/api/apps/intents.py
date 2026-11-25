@@ -127,6 +127,8 @@ def sync_detailed(
     receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details {
     index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400
+    RESERVED_IDEMPOTENCY_KEY`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
     method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
@@ -168,6 +170,8 @@ def sync(
     receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details {
     index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400
+    RESERVED_IDEMPOTENCY_KEY`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
     method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
@@ -204,6 +208,8 @@ async def asyncio_detailed(
     receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details {
     index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400
+    RESERVED_IDEMPOTENCY_KEY`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
     method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
@@ -243,6 +249,8 @@ async def asyncio(
     receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details {
     index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+    An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400
+    RESERVED_IDEMPOTENCY_KEY`.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
     method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same

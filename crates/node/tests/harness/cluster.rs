@@ -18,7 +18,7 @@ pub const ORIGIN: &str = "http://localhost:3000";
 
 /// The kv fixture (`apps/fixture-kv`: `set`, `get`, `entries`, `remove`, ...) as a
 /// component, built on first use and cached by source hash under
-/// `target/app-components`, as `tests/common/mod.rs` builds its fixtures.
+/// `target/app-components`, as `tests/it/common.rs` builds its fixtures.
 pub fn kv_wasm() -> Vec<u8> {
     fixture("apps/fixture-kv")
 }
