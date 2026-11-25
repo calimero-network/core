@@ -82,26 +82,49 @@ pub struct ReleaseName {
     pub service: Option<String>,
 }
 
-/// The release `app` runs, if `reader` may see it: the one its record names
+/// The release `app` runs, if `reader` may read it: the one its record names
 /// (`AppRecord::release`, set at create and at every upgrade), else, for a
 /// record from before or a raw upload, the only one its bundle ships in
 /// ([`release_of_bundle`]).
 #[must_use]
 pub fn release_of_app(s: &SystemState, app: &AppRecord, reader: Reader<'_>) -> Option<ReleaseName> {
     match &app.release {
-        Some(r) => named_release(s, r, reader),
+        Some(r) => named_release(s, r, reader).or_else(|| uninstalled_release(s, app, r, reader)),
         None => release_of_bundle(s, &app.bundle, reader),
     }
 }
 
-/// Release `r`, if installed and `reader` may see it.
-fn named_release(s: &SystemState, r: &PackageRef, reader: Reader<'_>) -> Option<ReleaseName> {
-    let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
-    s.sees_release(v, reader.who()).then(|| ReleaseName {
+/// The release `app`'s record names once it is no longer installed: no record is left to
+/// judge, so an account that reaches the app reads its name, as it would have before.
+fn uninstalled_release(
+    s: &SystemState,
+    app: &AppRecord,
+    r: &PackageRef,
+    reader: Reader<'_>,
+) -> Option<ReleaseName> {
+    let Reader::Account(who) = reader else {
+        return None;
+    };
+    let installed = s
+        .packages
+        .get(&r.package)
+        .is_some_and(|p| p.versions.contains_key(&r.version));
+    (!installed && s.may_reach(app, Some(who))).then(|| ReleaseName {
         package: r.package.clone(),
         version: r.version.clone(),
         service: r.service.clone(),
     })
+}
+
+/// Release `r`, if installed and `reader` may read it ([`SystemState::reads_release`]).
+fn named_release(s: &SystemState, r: &PackageRef, reader: Reader<'_>) -> Option<ReleaseName> {
+    let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
+    s.reads_release(&r.package, v, reader.who())
+        .then(|| ReleaseName {
+            package: r.package.clone(),
+            version: r.version.clone(),
+            service: r.service.clone(),
+        })
 }
 
 /// The package release that ships bundle `hash`, if `reader` may see it and no
@@ -563,6 +586,73 @@ mod tests {
             Reader::Operator,
         );
         assert_eq!(v["package"], Value::Null, "{v}");
+    }
+
+    /// An app that names no release, whose WASM a public and a private release both ship, is
+    /// reported to one who only reaches it at the public one, never the private sibling, even
+    /// when its bundle was recorded from that one; a private one alone names nothing.
+    #[test]
+    fn reaching_an_app_by_its_bundle_never_names_a_private_sibling() {
+        let version = |v: &str, visibility: &str| {
+            json!({
+                "version": v, "mpk": v, "mpkSize": 1, "source": "upload",
+                "services": { "": "b" }, "installedBy": "alice", "installedAt": 0,
+                "visibility": visibility, "orgs": ["acme"],
+            })
+        };
+        let mut s = SystemState::default();
+        for who in ["alice", "bob"] {
+            let _prev = s.accounts.insert(
+                who.into(),
+                serde_json::from_value(
+                    json!({ "accountId": who, "name": who, "createdAt": 0, "passkeys": [] }),
+                )
+                .unwrap(),
+            );
+        }
+        let acme: Org = serde_json::from_value(json!({
+            "orgId": "acme", "name": "Acme", "members": { "alice": "owner" }, "teams": {},
+        }))
+        .unwrap();
+        let _prev = s.orgs.insert("acme".into(), acme);
+        let p = serde_json::from_value(json!({
+            "name": "p", "signerId": "k", "owner": "alice",
+            "versions": {
+                "1.0.0": version("1.0.0", "public"),
+                "1.1.0": version("1.1.0", "private"),
+            },
+        }))
+        .unwrap();
+        let _prev = s.packages.insert("p".into(), p);
+        let b = serde_json::from_value(json!({
+            "hash": "b", "size": 1, "uploadedBy": "alice",
+            "package": { "package": "p", "version": "1.1.0" },
+        }))
+        .unwrap();
+        let _prev = s.bundles.insert("b".into(), b);
+        let mut a = app("alice", Some("acme"));
+        a.access = serde_json::from_value(json!([{ "kind": "anyone" }])).unwrap();
+        let _prev = s.apps.insert("a".into(), a.clone());
+
+        let bob = Reader::Account("bob");
+        let alice = Reader::Account("alice");
+        assert_eq!(
+            release_of_app(&s, &a, bob),
+            None,
+            "two releases ship it: no guess"
+        );
+        assert_eq!(
+            release_of_app(&s, &a, alice),
+            None,
+            "two releases ship it: no guess"
+        );
+        let _gone = s.packages.get_mut("p").unwrap().versions.remove("1.0.0");
+        assert_eq!(release_of_app(&s, &a, bob), None);
+        assert_eq!(
+            release_of_app(&s, &a, alice).unwrap().version,
+            "1.1.0",
+            "a member of the organization it is for"
+        );
     }
 
     /// An upgrade record from before names no releases: its ends are

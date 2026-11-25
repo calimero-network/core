@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import Union
+
 T = TypeVar("T", bound="PackageInstallBody")
 
 
@@ -15,16 +18,20 @@ class PackageInstallBody:
     Attributes:
         package (str):
         version (str):
+        org (Union[Unset, str]):
     """
 
     package: str
     version: str
+    org: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         package = self.package
 
         version = self.version
+
+        org = self.org
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -34,6 +41,8 @@ class PackageInstallBody:
                 "version": version,
             }
         )
+        if org is not UNSET:
+            field_dict["org"] = org
 
         return field_dict
 
@@ -44,9 +53,12 @@ class PackageInstallBody:
 
         version = d.pop("version")
 
+        org = d.pop("org", UNSET)
+
         package_install_body = cls(
             package=package,
             version=version,
+            org=org,
         )
 
         package_install_body.additional_properties = d

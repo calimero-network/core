@@ -204,6 +204,10 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
+    /// `InstallPackage` whose release carries `visibility` or `orgs`: who may use it. An
+    /// earlier release drops both and would let anyone sharing an organization with an
+    /// installer, or reaching an app of it, use a private release.
+    PrivateReleases,
     /// `CreateApp { offers_only }`: where deployments are granted, an instance from no
     /// deployment's offer is a deployer's (`SystemState::creates_outside_offers`). An earlier
     /// release ignores the field and would create one a later one refuses. Apply also reads the
@@ -238,7 +242,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 53] = [
+pub const FEATURES: [Feature; 54] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -285,6 +289,7 @@ pub const FEATURES: [Feature; 53] = [
     Feature::AutoUpdates,
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
+    Feature::PrivateReleases,
     Feature::OffersOnly,
     Feature::UndoToInstalledRelease,
     Feature::AutoUpdateMembersStay,
@@ -345,6 +350,7 @@ impl Feature {
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
+            Self::PrivateReleases => "privateReleases",
             Self::OffersOnly => "offersOnly",
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
@@ -419,7 +425,8 @@ impl Feature {
             }
             // #5356 merged after 1.0.0-rc.37 was cut (#5368), so rc.37 does not decode
             // `then`: it rebuilds the key's statement without it and refuses the key.
-            Self::KeyFollowUps
+            Self::PrivateReleases
+            | Self::KeyFollowUps
             | Self::HeldTeamGrants
             | Self::InviteCreatorStanding
             | Self::BackupKeyApprovers => "1.0.0-rc.38",
@@ -844,6 +851,9 @@ impl SystemCmd {
                 }
                 if release.guests.is_some() {
                     f.push(Feature::Guests);
+                }
+                if release.visibility.is_some() || !release.orgs.is_empty() {
+                    f.push(Feature::PrivateReleases);
                 }
                 f
             }
@@ -1292,6 +1302,9 @@ mod tests {
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
                     "member": null, "package": "p", "version": "1.0.0" }] } })),
+            Feature::PrivateReleases => {
+                install(json!({ "visibility": "private", "orgs": ["org"] }))
+            }
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1897,10 +1910,10 @@ mod tests {
         for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.38's (a key with follow-ups) waits past rc.37, which was cut without it: a
+        // rc.38's (who may use a release, a key with follow-ups) waits past rc.37, which was cut without it: a
         // cluster on the published rc.37 logs rc.37 and still refuses it, as an rc.37 node
         // would refuse the key (it rebuilds the statement without `then`).
-        assert_eq!(rc38, [Feature::KeyFollowUps]);
+        assert_eq!(rc38, [Feature::PrivateReleases, Feature::KeyFollowUps]);
         for n in &mut nodes {
             n.release = RC37;
         }

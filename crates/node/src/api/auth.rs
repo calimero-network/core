@@ -1137,8 +1137,12 @@ async fn upgrade_scope(
                 "an upgrade key needs an app that runs a signed package",
             )
         })?;
+    // A package with no release the account may use answers as a missing one.
     let signer = node
-        .sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone()))
+        .sys(|s| {
+            s.package_used(&package, account, false)
+                .map(|p| p.signer_id.clone())
+        })
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     if !node.sys(|s| s.may_upgrade(&app, account, owner_approves)) {
         return Err(ApiError::forbidden(if owner_approves {

@@ -1881,8 +1881,8 @@ export function createRoutes(api: RouteClient) {
        * `POST /packages` (`package_upload`). **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      upload: (args: RawBody, options?: MethodOptions): Promise<operations['package_upload']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/packages","pathParams":[],"query":[],"body":"raw","optionalBody":false,"media":"application/octet-stream","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_upload']['responses'][200]['content']['application/json']>,
+      upload: (args: NonNullable<operations['package_upload']['parameters']['query']> & RawBody, options?: MethodOptions): Promise<operations['package_upload']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/packages","pathParams":[],"query":["org"],"body":"raw","optionalBody":false,"media":"application/octet-stream","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_upload']['responses'][200]['content']['application/json']>,
       /**
        * Uninstall one version.
        *

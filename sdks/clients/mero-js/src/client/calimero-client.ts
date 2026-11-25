@@ -25,7 +25,7 @@ import {
   type HttpMethod,
 } from '../runtime/transport.js';
 import { type NodePolicy, type NodeVerification } from '../runtime/attestation.js';
-import { CLOUD_ENVIRONMENTS, cloudEnvironment, type CloudEnvironment } from '../runtime/directory.js';
+import { CLOUD_ENVIRONMENTS, cloudEnvironment, defaultCloudEnvironment, type CloudEnvironment } from '../runtime/directory.js';
 import { CalimeroError, LoginRequired, NotFound, OriginNotRegistered, UnavailableError, WrongRecoveryCode } from '../runtime/errors.js';
 import { b64url, fromB64url, type PasskeyProvider } from '../runtime/passkey.js';
 import { createRouteClient, type RouteClientOptions } from '../routes/route-client.js';
@@ -333,7 +333,11 @@ export interface CalimeroConnectOptions {
    * ({@link CLOUD_ENVIRONMENTS}), which is {@link DEFAULT_DIRECTORY} for production.
    */
   directory?: string;
-  /** Which Calimero Cloud the cluster is in, when `directory` is not given. Default `production`. */
+  /**
+   * Which Calimero Cloud the cluster is in, when `directory` is not given.
+   * Default: the Cloud whose apps domain the page is on ({@link cloudEnvironment}),
+   * `production` anywhere else (another host, Node).
+   */
   environment?: CloudEnvironment;
   /** Try the nodes in this zone (e.g. `europe-west4-a`) first. */
   zone?: string;
@@ -459,7 +463,7 @@ export class CalimeroClient {
    * first request once the directory's `refreshAfterSeconds` has passed.
    */
   static async connect(options: CalimeroConnectOptions, challenges: RouteClientOptions = {}): Promise<CalimeroClient> {
-    const directory = options.directory ?? CLOUD_ENVIRONMENTS[options.environment ?? 'production'].directory;
+    const directory = options.directory ?? CLOUD_ENVIRONMENTS[options.environment ?? defaultCloudEnvironment()].directory;
     const transport = await directoryTransport({ ...options, directory });
     const client = new CalimeroClient(transport, challenges);
     client.placement = { cluster: options.cluster, deployment: null };

@@ -437,11 +437,8 @@ pub(super) async fn install_request(
         None => {
             let version = node
                 .sys(|s| {
-                    let p = s.packages.get(&package)?;
-                    p.versions
-                        .values()
+                    s.releases_used(&package, account, frontend)
                         .filter(|v| subject.version.as_ref().is_none_or(|w| &v.version == w))
-                        .filter(|v| frontend || s.sees_release(v, account))
                         .max_by(|a, b| crate::system::compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })
@@ -483,7 +480,9 @@ pub(super) async fn install_request(
         .metadata
         .as_ref()
         .and_then(|m| m.author.clone());
-    let unit = crate::egress::release_unit(node, &release).await?;
+    let unit =
+        crate::egress::release_unit(node, &release, (account, subject.deployment.as_deref()))
+            .await?;
     let mut creates = vec![json!({
         "name": app_name, "what": "the app", "package": package, "version": release.version,
     })];

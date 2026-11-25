@@ -131,6 +131,33 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             if !s.modules_installed(&release) {
                 return Err("a module the pipelines use is no longer installed".into());
             }
+            if release.orgs.iter().any(|o| !s.member_of(o, &actor)) {
+                return Err(NOT_AN_ORG_MEMBER.into());
+            }
+            // A pinned module never reaches more than may run it, judged on the release as
+            // this install leaves it; entries logged below private releases apply as they did.
+            if s.cluster_brings(cluster_version::Feature::PrivateReleases) {
+                let kept = s
+                    .packages
+                    .get(&package)
+                    .and_then(|p| p.versions.get(&release.version));
+                let (pins, visibility, orgs) = match kept {
+                    Some(v) => (
+                        v,
+                        if release.visibility == Some(Visibility::Public) {
+                            release.visibility
+                        } else {
+                            v.visibility
+                        },
+                        v.orgs.union(&release.orgs).cloned().collect(),
+                    ),
+                    None => (&release, release.visibility, release.orgs.clone()),
+                };
+                let private_for = (visibility == Some(Visibility::Private)).then_some(&orgs);
+                if !s.may_pin_all(pins, &actor, &signer_id, private_for) {
+                    return Err("a module the pipelines use is no longer installed".into());
+                }
+            }
             if let Some(p) = s.packages.get(&package) {
                 if p.signer_id != signer_id {
                     return Err("the package is published under another key".into());
@@ -151,6 +178,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     let fill_mode = v.instance_org.is_none() && release.instance_org.is_some();
                     // And whether it takes guests (`Feature::Guests`).
                     let fill_guests = v.guests.is_none() && release.guests.is_some();
+                    // The registry serving it to anyone makes it public; nothing makes it
+                    // private again, and a private install leaves a record from before as it is.
+                    let now_public = release.visibility == Some(Visibility::Public);
                     if let Some(v) = s
                         .packages
                         .get_mut(&package)
@@ -168,6 +198,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                         if fill_guests {
                             v.guests = release.guests;
                         }
+                        if now_public {
+                            v.visibility = release.visibility;
+                        }
+                        v.orgs.extend(release.orgs);
                     }
                     return Ok(json!({ "package": package, "version": release.version }));
                 }
@@ -234,13 +268,27 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
         } => {
             let p = s.packages.get(&package).ok_or("no such package")?;
+            // A release the actor may not use answers as a missing one; entries logged
+            // below the version that brings private releases replay as they applied.
+            let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases);
+            let usable = |v: &PackageVersion| !gated || s.sees_release(v, &actor);
+            if !p.versions.values().any(usable) {
+                return Err("no such package".into());
+            }
             if p.owner != actor {
                 return Err("only whoever installed the package (an account, or the operator) may uninstall it".into());
             }
             let gone: Vec<String> = match &version {
-                Some(v) if !p.versions.contains_key(v) => return Err("no such version".into()),
+                Some(v) if !p.versions.get(v).is_some_and(usable) => {
+                    return Err("no such version".into())
+                }
                 Some(v) => vec![v.clone()],
-                None => p.versions.keys().cloned().collect(),
+                None => p
+                    .versions
+                    .iter()
+                    .filter(|(_, v)| usable(v))
+                    .map(|(k, _)| k.clone())
+                    .collect(),
             };
             // An offered release is the deployments' to keep: whoever
             // installed it first does not take it from them.

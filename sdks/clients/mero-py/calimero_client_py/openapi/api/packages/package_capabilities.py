@@ -100,9 +100,10 @@ def sync_detailed(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -148,9 +149,10 @@ def sync(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -191,9 +193,10 @@ async def asyncio_detailed(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -237,9 +240,10 @@ async def asyncio(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 

@@ -155,7 +155,9 @@ check lints them) and to what counts as breaking.
   and the SDKs' root `VERSION` to the same (`python3 scripts/sdks.py version-sync`
   then writes it into every SDK's version files; the `SDK scope` job fails while
   they differ), and nothing else. Deciding to cut a release and merging this pull request is
-  a human's call; an agent drafts one only when asked.
+  a human's call; an agent drafts one only when asked. It runs `e2e.yml` in full
+  before it merges (any other PR runs it after, on master): the merge publishes. Cut
+  it from a green master, with no open `master is red` issue.
 - **Release notes, not a changelog file.** Core keeps no `CHANGELOG.md`: a
   hand-written one conflicted in nearly every pull request. The release's notes
   are generated when it is created (`gh release create --generate-notes`): every

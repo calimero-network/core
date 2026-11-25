@@ -237,10 +237,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
         } => {
             let record = s.packages.get(&package).ok_or("no such package")?;
             let signer = record.signer_id.clone();
-            let declared = record
-                .latest()
-                .map(|v| v.outbound.clone())
-                .unwrap_or_default();
+            // The newest release the actor reads (the operator, holding the cluster's
+            // approvals, the newest of all); entries logged below private releases as they did.
+            let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases)
+                && scope != ReleaseScope::Cluster;
+            let newest = record.latest_where(|v| !gated || s.reads_release(&package, v, &actor));
+            if gated && newest.is_none() {
+                return Err("no such package".into());
+            }
+            let declared = newest.map(|v| v.outbound.clone()).unwrap_or_default();
             let operator = s.governance().outbound == Authority::Operator;
             if operator != (scope == ReleaseScope::Cluster) {
                 return Err(if operator {

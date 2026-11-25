@@ -174,7 +174,8 @@ class KvPackage(Case):
     def extend(self, w):
         alice = w.account("alice")
         _, nxt = w.registry.publish(w.fixtures["kv_next"])
-        alice.raw("post", "packages/install", {"package": self.package, "version": nxt})
+        # An install names its organization once an account may be in several: the app's.
+        alice.raw("post", "packages/install", {"package": self.package, "version": nxt, "org": w.shared["org"]})
         alice.cli("instance", "update", self.app, "--version", nxt, "--dev-passkey", str(alice.passkey))
         self.release = nxt
         got = alice.view(self.app, "entries")["result"]

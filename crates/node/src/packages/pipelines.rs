@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::{compare_versions, ModulePin, PackageVersion, PipelineRef};
+use crate::system::{ModulePin, PackageVersion, PipelineRef, Visibility};
+use crate::types::OrgId;
 
 use super::verify;
 
@@ -236,7 +237,7 @@ impl Node {
     pub async fn validate_pipeline(
         &self,
         source: &[u8],
-        release: Option<&PackageVersion>,
+        release: Option<(&str, &PackageVersion)>,
         actor: &str,
     ) -> Result<PipelineValidation, ApiError> {
         let failed = |errs: &[SpecError]| PipelineValidation {
@@ -259,7 +260,7 @@ impl Node {
             worst_case_fuel: None,
             worst_case_cost: None,
         };
-        let Some(release) = release else {
+        let Some((signer, release)) = release else {
             return Ok(answer);
         };
         let own = |code: &'static str, message: &str| {
@@ -280,8 +281,16 @@ impl Node {
             }
         };
         let methods = self.caps_of_component(hash).await?;
+        let private_for =
+            (release.visibility == Some(Visibility::Private)).then_some(&release.orgs);
         let available = self
-            .resolve_modules(&[(String::new(), source.to_vec())], actor)
+            .resolve_modules(
+                &[(String::new(), source.to_vec())],
+                actor,
+                signer,
+                private_for,
+                &BTreeMap::new(),
+            )
             .await;
         let env = env_for(&methods, &self.pool_ceilings(), &available);
         if let Err(errs) = check(&pipeline, &env) {
@@ -295,13 +304,18 @@ impl Node {
         Ok(answer)
     }
 
-    /// The modules the files name that `actor` can use: a package release it sees, as written
-    /// (`package` for the newest, `package@version` for one), shipping one compute component.
-    /// A reference that resolves to none is left out, so `check` answers `UNKNOWN_MODULE`.
+    /// The modules the files name that a release signed by `signer`, private to `private_for`,
+    /// may pin for `actor` ([`crate::system::SystemState::may_pin`]): the one `pinned` names, else
+    /// as written (`package` for the newest, `package@version` for one), shipping one compute
+    /// component. A reference that resolves to none is left out, so `check` answers
+    /// `UNKNOWN_MODULE`.
     pub async fn resolve_modules(
         &self,
         files: &[(String, Vec<u8>)],
         actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+        pinned: &BTreeMap<String, ModulePin>,
     ) -> BTreeMap<String, Module> {
         let refs: BTreeSet<String> = files
             .iter()
@@ -315,25 +329,35 @@ impl Node {
             .collect();
         let mut found = BTreeMap::new();
         for reference in refs {
-            if let Some(module) = self.resolve_module(&reference, actor).await {
+            let pin = pinned.get(&reference).map(|p| p.version.as_str());
+            if let Some(module) = self
+                .resolve_module(&reference, pin, actor, signer, private_for)
+                .await
+            {
                 let _prev = found.insert(reference, module);
             }
         }
         found
     }
 
-    async fn resolve_module(&self, reference: &str, actor: &str) -> Option<Module> {
+    async fn resolve_module(
+        &self,
+        reference: &str,
+        pinned: Option<&str>,
+        actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+    ) -> Option<Module> {
         let (package, wanted) = match reference.split_once('@') {
             Some((p, v)) => (p, Some(v)),
             None => (reference, None),
         };
         let (version, compute) = self.sys(|s| {
             let record = s.packages.get(package)?;
-            let release = match wanted {
-                Some(v) => record.versions.get(v).filter(|r| s.sees_release(r, actor)),
-                None => s
-                    .visible_versions(record, actor)
-                    .max_by(|a, b| compare_versions(&a.version, &b.version)),
+            let usable = |r: &PackageVersion| s.may_pin(record, r, actor, signer, private_for);
+            let release = match pinned.or(wanted) {
+                Some(v) => record.versions.get(v).filter(|r| usable(r)),
+                None => record.latest_where(usable),
             }?;
             Some((release.version.clone(), release.compute.get("").cloned()?))
         })?;
