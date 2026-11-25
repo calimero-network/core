@@ -13,4 +13,4 @@ Keep each file's **Status** line true when its work lands.
 | [rollback-protection.md](rollback-protection.md) | Rollback protection implemented; keys per app not yet. |
 | [custom-domains.md](custom-domains.md) | Core part (served origins) implemented; other parts belong to mero-tee and mdma. |
 | [gate-system-group.md](gate-system-group.md) | Phase 0 implemented; phases 1 to 3 proposed. |
-| [org-owned-deployments.md](org-owned-deployments.md) | Largely implemented; consent naming the deployment built; the recovery-key guard and transfer decided, not built; migration dropped. |
+| [org-owned-deployments.md](org-owned-deployments.md) | Largely implemented; consent naming the deployment, the recovery-key guard and transfer decided, not built; migration dropped. |
