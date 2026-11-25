@@ -311,8 +311,20 @@ pub struct ShotsView {
 A JSON number past 2^53 loses precision in JavaScript (the TypeScript client types
 `u64_number` as `number`), so `#[abi(plain)]` suits values that stay below it
 (timestamps in milliseconds, counts) or apps whose JSON is already fixed; a new
-field is better as the decimal string. A type without
-either derive stays in the ABI by name only, and clients type it `unknown`.
+field is better as the decimal string.
+
+Every app type in a method's parameters or result, an error's or event's fields, or
+a field of a described type needs one of the two derives (or a hand-written
+`impl AbiType`): one without does not compile where it is used, so a bare `u64`
+cannot reach an app's JSON through a struct the macros never saw.
+`u128`, `i128`, `usize` and `isize` are refused wherever the ABI describes a type,
+`#[abi(plain)]` included: serde writes them as numbers and they have no string form;
+use `u32`, or `u64` with its `calimero_sdk::json` helper.
+
+```text
+error: field `views`: plain serde writes u64/i64 as a number that loses precision past 2^53 ...
+error[E0277]: `Totals` travels as an app's JSON but has no ABI shape: it does not implement `AbiType`
+```
 Two mutually recursive described types do not compile (a type that contains
 itself does); describe one of them by hand (`impl AbiType`) or not at all.
 
