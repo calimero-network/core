@@ -266,7 +266,7 @@ fun createSignedReleaseVerifier(options: SignedReleaseVerifierOptions): QuoteVer
             options.allowDebugProfile,
             options.identity,
             options.issuer,
-        ).verifier(options.dcapVerify, options.fetchCollateral, options.now)
+        ).verifier(options.dcapVerify, options.fetchCollateral, now = options.now)
             .verify(args)
     }
 }

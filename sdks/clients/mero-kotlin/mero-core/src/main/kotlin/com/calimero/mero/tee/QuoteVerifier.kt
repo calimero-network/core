@@ -1,6 +1,7 @@
 package com.calimero.mero.tee
 
 import com.calimero.mero.crypto.Hex
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -265,11 +266,59 @@ class QuoteVerifierOptions(
      * is an agent gate): for example [PccsCollateral.fetch]. Without it such a quote is refused.
      */
     val fetchCollateral: (suspend (ByteArray) -> DcapCollateral)? = null,
+    /**
+     * The oldest Intel TCB evaluation data (the collateral's `tcbEvaluationDataNumber`) a TCB
+     * status may be computed against. It can raise [DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER], never
+     * lower it: the floor enforced is the higher of the two (mero-js `minTcbEvaluationDataNumber`).
+     */
+    val minTcbEvaluationDataNumber: Int? = null,
     /** The current time in milliseconds. For tests. */
     val now: () -> Long = System::currentTimeMillis,
 )
 
+/**
+ * The oldest Intel TCB evaluation data (`tcbEvaluationDataNumber` in the collateral's TCB info) a
+ * quote's TCB status may be computed against.
+ *
+ * A status is only as current as the baseline that produced it. Intel signs every baseline it ever
+ * published, so a collateral source serving an older one passes every signature check and makes a
+ * platform that has since fallen behind read `UpToDate`. A real quote whose collateral names a
+ * lower number, or none, is refused; [QuoteVerifierOptions.minTcbEvaluationDataNumber] can raise
+ * the floor, never lower it.
+ *
+ * Mirrors core's `calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`
+ * (crates/tee-attestation/src/policy.rs) and mero-js's constant of the same name: raise them
+ * together, or this client trusts a node core's nodes refuse.
+ */
+const val DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER: Int = 20
+
 private val MEASUREMENT_HEX = Regex("^[0-9a-f]{96}$")
+private val tcbInfoJson = Json { ignoreUnknownKeys = true }
+
+/** Refuse a TCB info whose evaluation data is below [floor], or unknown. */
+private fun checkTcbEvaluationData(
+    tcbInfo: String,
+    floor: Int,
+) {
+    val number =
+        tcbEvaluationDataNumber(tcbInfo)
+            ?: refuse("The TCB evaluation data the platform's TCB status was computed against is unknown (minimum $floor)")
+    if (number < floor) {
+        refuse(
+            "The platform's TCB status was computed against Intel TCB evaluation data $number, older than the minimum " +
+                "$floor; point the collateral source at current collateral",
+        )
+    }
+}
+
+/** The `tcbEvaluationDataNumber` of a collateral's TCB info, or null when it names none. */
+internal fun tcbEvaluationDataNumber(tcbInfo: String): Int? {
+    val number =
+        runCatching { (tcbInfoJson.parseToJsonElement(tcbInfo) as? JsonObject)?.get("tcbEvaluationDataNumber") }
+            .getOrNull() as? JsonPrimitive ?: return null
+    if (number.isString) return null
+    return number.intOrNull?.takeIf { it >= 0 }
+}
 
 /**
  * A verifier that checks a TEE node's quote on the device and accepts it only when every
@@ -277,6 +326,8 @@ private val MEASUREMENT_HEX = Regex("^[0-9a-f]{96}$")
  *
  * - its signatures verify against Intel's root, with collateral that is valid now;
  * - the platform's TCB status is one allowed (`UpToDate` by default), and never `Revoked`;
+ * - that status was computed against Intel TCB evaluation data no older than
+ *   [DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER] (or the higher `minTcbEvaluationDataNumber`);
  * - it is not a debug TD (TUD bit 0), whatever [QuoteVerifierOptions.dcapVerify] allows;
  * - its measurements are those of a trusted image: one of `allowedMeasurements` in full, and
  *   the MRTD and any RTMRs listed;
@@ -316,6 +367,7 @@ fun createQuoteVerifier(options: QuoteVerifierOptions): QuoteVerifier {
         }
     }
     val allowedStatuses = options.allowedTcbStatuses ?: listOf("UpToDate")
+    val floor = maxOf(options.minTcbEvaluationDataNumber ?: 0, DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER)
 
     return quoteVerifier { args ->
         val quote =
@@ -340,6 +392,9 @@ fun createQuoteVerifier(options: QuoteVerifierOptions): QuoteVerifier {
         if (verified.status == "Revoked" || verified.status !in allowedStatuses) {
             refuse("The platform's TCB status is ${verified.status}, which is not accepted")
         }
+        // A status is only as current as the baseline that produced it. (A mock quote never gets
+        // here: it carries no signature, so it has no collateral.)
+        checkTcbEvaluationData(against.tcbInfo, floor)
         val td =
             when (val report = verified.report) {
                 is DcapReport.Td10 -> report.report
@@ -426,6 +481,7 @@ data class TrustedImages(
     fun verifier(
         dcapVerify: DcapVerify = Dcap,
         fetchCollateral: (suspend (ByteArray) -> DcapCollateral)? = null,
+        minTcbEvaluationDataNumber: Int? = null,
         now: () -> Long = System::currentTimeMillis,
     ): QuoteVerifier =
         createQuoteVerifier(
@@ -434,6 +490,7 @@ data class TrustedImages(
                 allowedMeasurements = allowedMeasurements,
                 allowedTcbStatuses = allowedTcbStatuses,
                 fetchCollateral = fetchCollateral,
+                minTcbEvaluationDataNumber = minTcbEvaluationDataNumber,
                 now = now,
             ),
         )

@@ -159,6 +159,7 @@ fn request(server: &Server, method: OutboundMethod, path: &str, body: &str) -> P
         headers: vec![("X-Probe".to_owned(), Zeroizing::new("calimero".to_owned()))],
         body: Zeroizing::new(body.as_bytes().to_vec()),
         secrets: Vec::new(),
+        redactor: Redactor::new(&[]).unwrap(),
     }
 }
 

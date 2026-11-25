@@ -119,8 +119,12 @@ deployment the page was opened for); anywhere else it connects to `fallback`
 (`{ cluster, environment? }` or `{ baseUrl, nodes? }`). The manifest only says
 where the nodes are: each is attested under `policy`, which is the app's own.
 `cloudEnvironment()` reads which Calimero Cloud the page is on from its
-hostname alone, so a page can choose its policy from it
-(`allowDebugProfile: cloudEnvironment() === 'staging'`).
+hostname alone, so a page can choose its policy from it:
+`release: { minReleaseVersion, ...CLOUD_ENVIRONMENTS[cloudEnvironment() ?? 'production'].trust }`
+adds nothing on production and, on staging, `profiles` (its three image
+profiles) with `allowDebugProfile`. `release.profiles` trusts any listed
+profile, as core's `allowed_profiles` does: the node's own is used when listed,
+and its quote must still be that profile's signed image.
 
 ## Confidential KV
 
@@ -144,9 +148,9 @@ Before it sends anything to a node, as core's Rust client does (`Measurements::R
 1. The node names the mero-tee release it runs. A release below `minReleaseVersion` is refused before anything is fetched.
 2. The release's `published-mrtds.json` is fetched and its Sigstore signature is checked against the mero-tee node release workflow.
    By default it comes from the `cloud.calimero.network` mirror; `releaseSource: 'github'` reads the GitHub release instead (Node only: GitHub sends no CORS headers).
-3. The quote is checked against Intel's collateral with `@phala/dcap-qvl`: the signature chain and the TCB status. The collateral comes from the cloud's mirror (`DEFAULT_COLLATERAL_MIRROR`), which browsers can read; it only carries Intel-signed items. `collateralSource: 'intel'` asks Intel's PCS (no CORS: not in browsers), `fetchCollateral` replaces the fetch, and `maxCollateralAgeDays` refuses collateral Intel issued longer ago.
+3. The quote is checked against Intel's collateral with `@phala/dcap-qvl`: the signature chain and the TCB status. The collateral comes from the cloud's mirror (`DEFAULT_COLLATERAL_MIRROR`), which browsers can read; it only carries Intel-signed items. `collateralSource: 'intel'` asks Intel's PCS (no CORS: not in browsers), `fetchCollateral` replaces the fetch, and `maxCollateralAgeDays` refuses collateral Intel issued longer ago. Collateral whose TCB evaluation data is below `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (20, core's floor) is refused; `minTcbEvaluationDataNumber` raises it, never lowers it.
 4. A debug TD is refused.
-5. The registers must be the release's `locked-read-only` image; a debug profile is trusted only with `allowDebugProfile`.
+5. The registers must be the release's `locked-read-only` image (or `release.profile`, or the node's own profile when `release.profiles` lists it); a debug profile is trusted only with `allowDebugProfile`.
 6. The quote's report data binds the client's nonce and the transport key the sealed channel opens to.
 
 Pinned measurements go through `policy.verifyQuote` (`createQuoteVerifier`).

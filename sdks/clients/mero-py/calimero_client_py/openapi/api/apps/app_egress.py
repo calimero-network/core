@@ -79,7 +79,10 @@ def sync_detailed(
     when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
     platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
     member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
-    own destinations. A development bundle declares none.
+    own destinations. A development bundle declares none. `egress`: `off` while its organization
+    (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are
+    absent while it is on), when none of the destinations is reached and `summary` says the app cannot
+    send data outside the cluster.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -118,7 +121,10 @@ def sync(
     when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
     platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
     member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
-    own destinations. A development bundle declares none.
+    own destinations. A development bundle declares none. `egress`: `off` while its organization
+    (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are
+    absent while it is on), when none of the destinations is reached and `summary` says the app cannot
+    send data outside the cluster.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -152,7 +158,10 @@ async def asyncio_detailed(
     when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
     platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
     member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
-    own destinations. A development bundle declares none.
+    own destinations. A development bundle declares none. `egress`: `off` while its organization
+    (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are
+    absent while it is on), when none of the destinations is reached and `summary` says the app cannot
+    send data outside the cluster.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -189,7 +198,10 @@ async def asyncio(
     when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
     platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
     member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
-    own destinations. A development bundle declares none.
+    own destinations. A development bundle declares none. `egress`: `off` while its organization
+    (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are
+    absent while it is on), when none of the destinations is reached and `summary` says the app cannot
+    send data outside the cluster.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

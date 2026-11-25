@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
         SystemCmd::GrantDeployer {
             deployer,
@@ -68,7 +65,7 @@ pub(super) fn authorize(
             })?;
             // The id is the consent's own, so a node cannot pick another.
             if *id != deployment_id(&st.nonce) {
-                return Err("the consent is for another change");
+                return Err("the consent is for another change".into());
             }
             Ok(Some(used))
         }
@@ -165,7 +162,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::GrantDeployer {
@@ -177,14 +174,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             s.grants_deployers(&actor)?;
             if !s.exists(&deployer) {
-                return Err("no such account or organization");
+                return Err("no such account or organization".into());
             }
             if until.is_some_and(|u| u <= at) {
-                return Err("a deployer grant ends after it is made");
+                return Err("a deployer grant ends after it is made".into());
             }
             let key = deployer.key();
             if !s.deployers.contains_key(&key) && s.deployers.len() >= MAX_DEPLOYERS {
-                return Err("too many deployer grants; revoke an old one first");
+                return Err("too many deployer grants; revoke an old one first".into());
             }
             let grant = DeployerGrant {
                 until,
@@ -208,7 +205,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .as_mut()
                 .ok_or("the cluster has no governance yet")?;
             if g.deployments == Deployments::Granted {
-                return Err("this cluster's deployments are granted already");
+                return Err("this cluster's deployments are granted already".into());
             }
             g.deployments = Deployments::Granted;
             Ok(json!({ "governance": g }))
@@ -216,14 +213,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         SystemCmd::SetClusterOwner { owner, proof: _ } => {
             if s.governance().deployers != Deployers::Owner {
                 return Err(
-                    "this cluster's operator grants its deployers; it has no owner to name",
+                    "this cluster's operator grants its deployers; it has no owner to name".into(),
                 );
             }
             if s.cluster_owner.is_some() {
-                return Err("this cluster's owner is named already");
+                return Err("this cluster's owner is named already".into());
             }
             if !s.exists(&owner) {
-                return Err("no such account or organization");
+                return Err("no such account or organization".into());
             }
             s.cluster_owner = Some(owner.clone());
             Ok(json!({ "owner": owner }))
@@ -237,29 +234,29 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             consent: _,
         } => {
             if !s.accounts.contains_key(&actor) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             deployment_segment_fits(&id)?;
             deployment_name_fits(&name)?;
             if !s.exists(&owner) {
-                return Err("no such account or organization");
+                return Err("no such account or organization".into());
             }
             if !s.acts_for(&owner, &actor) {
-                return Err("a deployment is created by its owner account, or by MANAGE_APPLICATION in its organization");
+                return Err("a deployment is created by its owner account, or by MANAGE_APPLICATION in its organization".into());
             }
             if !s.may_deploy(&actor, at) {
                 return Err(NOT_A_DEPLOYER);
             }
             if s.deployments.contains_key(&id) {
-                return Err("that deployment exists");
+                return Err("that deployment exists".into());
             }
             if s.deployments.values().filter(|d| d.owner == owner).count()
                 >= MAX_DEPLOYMENTS_PER_OWNER
             {
-                return Err("quota exceeded: deployments per owner");
+                return Err(Rejection::quota("deployments per owner"));
             }
             if s.deployments.len() >= MAX_DEPLOYMENTS {
-                return Err("quota exceeded: deployments");
+                return Err(Rejection::quota("deployments"));
             }
             let d = Deployment {
                 id: id.clone(),
@@ -295,15 +292,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .and_then(|p| p.versions.get(&version))
                 .is_some_and(|v| s.sees_release(v, &actor));
             if !seen {
-                return Err("install the release before offering it");
+                return Err("install the release before offering it".into());
             }
             match d.apps.get(&app) {
                 Some(o) if o.package != package => {
-                    return Err("an app moves to another release of its own package; withdraw it to offer another package");
+                    return Err("an app moves to another release of its own package; withdraw it to offer another package".into());
                 }
                 Some(_) => {}
                 None if d.apps.len() >= MAX_APPS_PER_DEPLOYMENT => {
-                    return Err("quota exceeded: apps per deployment");
+                    return Err(Rejection::quota("apps per deployment"));
                 }
                 None => {}
             }
@@ -336,7 +333,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     && s.ships(&offer.package, &a.bundle)
             });
             if running {
-                return Err("an instance created from this deployment still runs that app; withdraw it once none does");
+                return Err("an instance created from this deployment still runs that app; withdraw it once none does".into());
             }
             if let Some(d) = s.deployments.get_mut(&deployment) {
                 let _gone = d.apps.remove(&app);
@@ -351,13 +348,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
             s.manages_deployment(d, &actor)?;
             if !d.apps.is_empty() {
-                return Err("the deployment still offers apps; withdraw them first");
+                return Err("the deployment still offers apps; withdraw them first".into());
             }
             if s.apps
                 .values()
                 .any(|a| a.deployment.as_deref() == Some(deployment.as_str()))
             {
-                return Err("an instance created from this deployment still exists");
+                return Err("an instance created from this deployment still exists".into());
             }
             let _gone = s.deployments.remove(&deployment);
             let _secrets = s.deployment_secrets.remove(&deployment);
@@ -375,10 +372,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
             s.manages_deployment(d, &actor)?;
             if !calimero_bundle::is_secret_name(&name) {
-                return Err("a secret's name is A-Z, 0-9 and _, starting with a letter");
+                return Err("a secret's name is A-Z, 0-9 and _, starting with a letter".into());
             }
             if !value.fits() {
-                return Err(crate::component::SECRET_VALUE_SIZE);
+                return Err(crate::component::SECRET_VALUE_SIZE.into());
             }
             // An entry from before `used` is judged by the offered releases alone, as it was.
             let declared =
@@ -389,11 +386,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let held = s.deployment_secrets.get(&deployment);
             if !held.is_some_and(|h| h.contains_key(&name)) {
                 if held.is_some_and(|h| h.len() >= MAX_SECRETS_PER_DEPLOYMENT) {
-                    return Err("quota exceeded: secrets per deployment");
+                    return Err(Rejection::quota("secrets per deployment"));
                 }
                 let all: usize = s.deployment_secrets.values().map(BTreeMap::len).sum();
                 if all >= MAX_DEPLOYMENT_SECRETS {
-                    return Err("quota exceeded: deployment secrets");
+                    return Err(Rejection::quota("deployment secrets"));
                 }
             }
             let secret = crate::component::InstanceSecret {
