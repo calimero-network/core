@@ -114,7 +114,6 @@ bare-tag 21 crates/app-host/AGENTS.md
 bare-tag 21 crates/sdk/src/testing.rs
 bare-tag 30 crates/app-host/src/core.rs
 bare-tag 37 crates/sdk/AGENTS.md
-bare-tag 64 crates/node/AGENTS.md
 bare-tag 71 crates/node/src/node/component.rs
 bare-tag 71 crates/node/tests/it/component_cluster.rs
 bare-tag 74 crates/node/src/component.rs

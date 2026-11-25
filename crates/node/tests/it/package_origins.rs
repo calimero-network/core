@@ -123,6 +123,8 @@ async fn cors_allows(url: &str, origin: &str) -> bool {
         .is_some_and(|v| v == origin)
 }
 
+/// A session opened on a package's registered origin is bound to that package: it reaches no other
+/// package's apps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_registered_origin_signs_people_in_to_its_package_only() {
     let c = Cluster::start(3).await;
