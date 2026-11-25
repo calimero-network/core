@@ -516,7 +516,7 @@ impl Apps<'_> {
     /// An app's outbound requests.
     ///
     /// `GET /apps/{app}/outbound-log` (`app_outbound_log`). Who: signed in (a session or an API key).
-    pub async fn outbound_log(self, app: &str) -> Result<AppOutboundLogResponse> {
+    pub async fn outbound_log(self, app: &str) -> Result<OutboundLog> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/outbound-log", route::segment(app)),

@@ -4813,6 +4813,16 @@ pub struct OutboundAuditEntry {
     pub extra: Map<String, Value>,
 }
 
+/// An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not answer, so its runs' requests may be missing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OutboundLog {
+    pub entries: Vec<OutboundAuditEntry>,
+    pub partial: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageDay {
@@ -6679,15 +6689,6 @@ pub struct AppMethodRequest {
     pub min_index: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consistency: Option<AppMethodRequestConsistency>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AppOutboundLogResponse {
-    pub entries: Vec<OutboundAuditEntry>,
-    pub partial: bool,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
