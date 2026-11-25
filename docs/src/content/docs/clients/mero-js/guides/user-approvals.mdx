@@ -193,6 +193,8 @@ it and opens the node's own pages for it:
 const view = await client.updates.get(appId);
 // view.available: { version, class: 'green' | 'red', summary, reasons, ... } | null
 // view.mayApprove: whether this person may approve it (an owner or admin)
+// view.deployment: { id, name, owner: { kind, name } } for an instance from a
+//   deployment, whose developer chooses its updates; show the owner beside the name
 
 // In "Review"'s click handler: the update sheet in a pop-up.
 const opened = await client.updates.openSheet(appId);

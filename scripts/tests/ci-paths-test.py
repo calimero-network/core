@@ -26,7 +26,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.dont_write_bytecode = True  # imports a sibling script; leave no __pycache__ in the tree
-DOCS_WORKFLOWS = {"docs-ci.yml", "docs-site.yml", "doc-update.yaml"}
+DOCS_WORKFLOWS = {"code-refs.yml", "docs-ci.yml", "docs-site.yml", "doc-update.yaml"}
 
 spec = importlib.util.spec_from_file_location("ci_scope", ROOT / "scripts" / "ci-scope.py")
 ci_scope = importlib.util.module_from_spec(spec)

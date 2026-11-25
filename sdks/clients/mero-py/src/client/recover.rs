@@ -1,7 +1,7 @@
 //! What losing the node that issued a session, or a node on the wrong
 //! release, does to a session.
 //!
-//! Since core #4774 a session token is signed by the node that issued it, and
+//! A session token is signed by the node that issued it, and
 //! the cluster's other nodes take it only while they can vouch for that node's
 //! signing key. When the issuer is replaced, removed or out of reach (a rolling
 //! deploy, an image rollout), they answer its tokens `401 UNAUTHENTICATED`:
@@ -93,7 +93,7 @@ pub(crate) fn unauthenticated(e: &Error) -> bool {
 }
 
 /// `421 WRONG_NODE`, and not another 421 (`NOT_LEADER` names a leader to
-/// follow). Core's client names it `Error::WrongNode` (core #4774).
+/// follow). Core's client names it `Error::WrongNode`.
 pub(crate) fn wrong_node(e: &Error) -> bool {
     matches!(e, Error::WrongNode { .. })
         || matches!(e, Error::Api { status: 421, code, .. } if code == "WRONG_NODE")
@@ -395,7 +395,7 @@ impl<N: Node> Nodes<N> {
     }
 
     /// A node that may not serve the account answers `421 WRONG_NODE` before
-    /// it spends the refresh token (core #4774), so the same token goes on to
+    /// it spends the refresh token, so the same token goes on to
     /// the next node (which [`move_on`](Self::move_on) hands the session),
     /// once per node at most. Every node refusing is the caller's `WrongNode`.
     async fn exchange(&self) -> Result<Session, Error> {

@@ -1,4 +1,4 @@
-//! Organization recovery (`docs/specs/org-recovery.md`) through the API, on a
+//! Organization recovery ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)) through the API, on a
 //! three-node cluster: an owner who lost every passkey gets the organization
 //! back with its recovery seed, after the delay; a wrong seed, a non-owner, a
 //! rotated seed and a node writing to the log on its own recover nothing.

@@ -1209,7 +1209,7 @@ export interface paths {
         };
         /**
          * Whether an update is available for an app
-         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
@@ -4081,7 +4081,7 @@ export interface paths {
         put?: never;
         /**
          * Install a release from the registry
-         * @description For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+         * @description For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
          *
          *     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
          */
@@ -5199,7 +5199,7 @@ export interface components {
             auto?: boolean;
             undo?: boolean;
         };
-        /** @description A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. */
+        /** @description A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. A release's `visibility`: `public` (everyone here uses it; a release the operator installed, the cluster's catalog, is always), `private` (members of the organizations it was installed for; none: the accounts that installed it), absent for one recorded before the node kept it. `orgs`: of a private release's organizations, only those the caller is a member of. */
         Package: {
             package: string;
             signerId: string;
@@ -5223,6 +5223,12 @@ export interface components {
                 installedBy: string;
                 /** Format: int64 */
                 installedAt: number;
+                /** @enum {string} */
+                visibility?: "public" | "private";
+                orgs?: {
+                    orgId: string;
+                    name: string;
+                }[];
             }[];
         };
         /** @description An API key as the account's list shows it (never its secret): `apps` and `methods` are `null` for every one; `upgrades` makes it an upgrade key. */
@@ -5380,6 +5386,16 @@ export interface components {
             }[];
             createdBy: string;
             createdAt: string;
+        };
+        /** @description The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone). */
+        DeploymentShown: {
+            id: string;
+            name: string;
+            owner: {
+                /** @enum {string} */
+                kind: "account" | "org";
+                name: string | null;
+            };
         };
         /** @description A cross-app call that was never delivered: its sequence number, the target app and method, why, and when (`atMs`, Unix milliseconds). */
         DeadLetter: {
@@ -5693,7 +5709,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ACCOUNT_NOT_LINKED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10364,6 +10380,7 @@ export interface operations {
                             source: "app" | "org" | "default";
                         };
                         pendingApprovals: components["schemas"]["PendingApproval"][];
+                        deployment: components["schemas"]["DeploymentShown"] | null;
                     };
                 };
             };
@@ -21153,7 +21170,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ACCOUNT_NOT_LINKED`; `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
                 headers: {
                     [name: string]: unknown;

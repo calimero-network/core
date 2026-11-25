@@ -218,6 +218,12 @@ instance reachable to others (grants, guests, public links, a deployment's
 customers) shares that instance, never the release it runs. The full rule is in
 [Who sees a release](/protocol/applications/#who-sees-a-release).
 
+`GET /packages` shows each release's kind (`public` or `private`) and, of a
+private one's organizations, only those the reader is in. Installing from an
+app's own page creates a private release's instance in the one organization of
+the person's it is for, or asks which of them, and the passkey signs that
+choice ([Installs, updates and update policies](/protocol/consent-page/#installs-updates-and-update-policies)).
+
 ### Members' security
 
 The owner and admins read what tells them a member may be locked out, with
@@ -625,7 +631,7 @@ member of the organization (`member` or above) is always named; anyone else is
 admitted as a guest only while the instance's release says `guests: allowed`
 and the organization's `allowGuests` is on, judged on the state the redemption
 applies to, so a switch turned off after the invite was made holds (`409
-GUESTS_NOT_ALLOWED`; the invite and its uses stay). `GET
+GUESTS_NOT_ALLOWED`; the invite and its uses stay). From cluster version 1.0.0-rc.38 (`inviteCreatorStanding`) an instance invite names nobody once its creator no longer manages the instance's grants, removed, demoted or out of its team (`403 INVITE_CREATOR_LACKS`; no use spent), as an organization invite gives nothing once its creator could no longer make it. `GET
 /apps/{app}/invites` lists the pending ones (key, uses left, expiry, creator,
 scope; never a token) and `DELETE /apps/{app}/invites/{inviteKey}` revokes one
 with a passkey (`__revoke_app_invite { inviteKey }`). Deleting the instance
@@ -733,7 +739,8 @@ one fail.
 
 **Limits.** `RECOVERY_DELAY_SECS` (72 hours) is judged at the commands' own
 times (stamped by the node that takes the request, replicated with it), never
-at apply. One pending recovery per organization: a second start is `409
+at apply. 72 hours is long enough for an owner to notice over a weekend, and
+short enough to get a working organization back within a working week. One pending recovery per organization: a second start is `409
 RECOVERY_PENDING` until the owner cancels or the pending one finishes, so a
 seed holder cannot replace a pending recovery with their own. The nonce is at
 most `MAX_RECOVERY_NONCE_BYTES` (64); the key and signature text are bounded
@@ -1061,7 +1068,7 @@ Ownership moves with `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` 
 
 ### Organization recovery
 
-Code: `docs/specs/org-recovery.md`; `Org::recovery`, `types::OrgRecovery`.
+Code: `crates/node/src/system/recovery.rs`; `Org::recovery`, `types::OrgRecovery`.
 
 An org may hold a recovery key (Ed25519 public half; the owner keeps the seed).
 `SetRecoveryKey` (owner, consent `__set_recovery_key { publicKey }`; a new key or `null` ends a

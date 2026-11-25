@@ -62,9 +62,9 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
-    /// Fuel a developer's apps may burn per UTC day, summed over its component
-    /// apps; 0 (the default) is no limit. The developer is the one usage
-    /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
+    /// Fuel a developer's apps may burn per UTC day, summed over its component apps;
+    /// 0 (the default) is no limit. The developer is the one usage
+    /// is billed to (`usage::developer`): the owner of the deployment an app
     /// was created from, else the app's organization or owner. Over it, a client's
     /// call or an xcall delivery to any of the developer's apps is refused before it
     /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
@@ -570,6 +570,16 @@ impl PackageVersion {
         self.installed_by == who || self.installers.contains(who)
     }
 
+    /// Its kind as a reader is told: a release the operator installed (the catalog) is
+    /// everyone's, so public; else as recorded (`None`: recorded before it was kept).
+    #[must_use]
+    pub fn visibility_shown(&self) -> Option<Visibility> {
+        if self.installed_by_any(OPERATOR) {
+            return Some(Visibility::Public);
+        }
+        self.visibility
+    }
+
     /// The accounts that installed it (the operator left out).
     fn installing_accounts(&self) -> impl Iterator<Item = &AccountId> {
         std::iter::once(&self.installed_by)
@@ -725,7 +735,7 @@ pub struct SystemState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub delegations: BTreeMap<AccountId, BTreeMap<AppId, BTreeMap<AppId, Vec<String>>>>,
     /// Account recoveries under way, by account: the passkey the start
-    /// logged and when it may finish (`docs/specs/account-recovery.md`). At
+    /// logged and when it may finish ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)). At
     /// most one per account. Left out when empty, as `recovery_keys`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub account_recoveries: BTreeMap<AccountId, crate::types::PendingAccountRecovery>,
@@ -2226,6 +2236,18 @@ impl SystemState {
             .is_some_and(|r| r >= OrgRole::Member)
     }
 
+    /// The organizations `v` was installed for that `who` is a member of: never another.
+    pub fn release_orgs_of<'a>(
+        &'a self,
+        v: &'a PackageVersion,
+        who: &'a str,
+    ) -> impl Iterator<Item = &'a crate::types::Org> + 'a {
+        v.orgs
+            .iter()
+            .filter(move |o| self.member_of(o, who))
+            .filter_map(|o| self.orgs.get(o))
+    }
+
     // The lookups below are how a route reads a release a client names; anything else
     // answers as if it were not installed (`tests/it/release_lookups.rs`).
 
@@ -2838,6 +2860,24 @@ impl SystemState {
             Deployer::Account(a) => a == account,
             Deployer::Org(o) => self.manages_apps(o, account, None),
         }
+    }
+
+    /// `owner`'s kind (`account` or `org`) and its name, `None` once it is gone.
+    #[must_use]
+    pub fn deployer_named(&self, owner: &Deployer) -> (&'static str, Option<String>) {
+        match owner {
+            Deployer::Account(a) => ("account", self.accounts.get(a).map(|a| a.name.clone())),
+            Deployer::Org(o) => ("org", self.orgs.get(o).map(|o| o.name.clone())),
+        }
+    }
+
+    /// Deployment `id` as a customer is shown it: names are not unique, so never its
+    /// name alone, but with its id and its owner (`{ id, name, owner: { kind, name } }`).
+    #[must_use]
+    pub fn deployment_shown(&self, id: &str) -> Option<Value> {
+        let d = self.deployments.get(id)?;
+        let (kind, name) = self.deployer_named(&d.owner);
+        Some(json!({ "id": d.id, "name": d.name, "owner": { "kind": kind, "name": name } }))
     }
 
     /// Whether the cluster's sign-up policy lets an account in with `invite`

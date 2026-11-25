@@ -1650,7 +1650,7 @@ mod apply_reads {
         GroupState::new(Db::open(dir.path(), &[1; 32]).unwrap(), 5, 0)
     }
 
-    /// Review finding B3: a read that failed inside an apply read as absent and
+    /// A read that failed inside an apply read as absent and
     /// the batch committed. It now fails the batch.
     #[test]
     fn a_read_fault_fails_the_batch_instead_of_reading_absent() {

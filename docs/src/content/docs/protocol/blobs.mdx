@@ -11,8 +11,7 @@ A **blob** is immutable, content-addressed bytes kept outside every log: an
 attachment, an image, a model. Log entries are capped at 1 MiB and should stay
 small, so anything large goes to the **blob store** and the log carries only
 its id. The same store holds bundles and uploaded `.mpk` releases. Apps are
-`calimero:app` components, and the node keeps their blobs as described here
-(spec `app-runtime-v0.14` R8).
+`calimero:app` components, and the node keeps their blobs as described here.
 
 ## The store
 
@@ -131,7 +130,7 @@ A component app's runs can also make sealed files: a file is written in a call, 
 A file is a sealed blob.
 It shares the blob id namespace and the `BlobRef` type, and `blobs.info` answers for it with an empty content type.
 It cannot be downloaded or granted, and no blob upload can claim its id.
-A call, view, timer or `init` may create a file and ask for its size and hash, and `files.open` is refused there.
+A call, timer, `init` or xcall delivery may create a file, any run may ask for a file's size and hash (`files.info`), and `files.open` is refused everywhere but a compute run.
 So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
 The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
@@ -172,6 +171,12 @@ There is no delete.
 The entry that makes the file also applies the state write that stores the reference, so the file is never collectable in between.
 A file nothing refers to is held for an hour from its entry, and one whose last reference went is forgotten the same way a blob is.
 Every replica forgets the record in the same entry, and the bytes are then collected from the nodes that hold them.
+A run may store a `BlobRef` to a file the app holds or one it finished earlier in the same run; a file exists only once that run's entry commits, and a writer dropped unfinished leaves nothing.
+
+A run holds at most 16 readers and writers at once, writes at most 2 GiB to one file and 64 MiB in all (a compute run 2 GiB in all), finishes at most 1,000 new files, and reads at most 1 MiB per `read`; an empty read is the end of the file.
+Every refusal that is not a policy violation is a fixed soft error string: `no such file`, `files are not enabled`, `too many open files`, `file too large`, `run wrote too much`, `too many new files`, `file already finished` or `file write failed`.
+A write refused for a size cap, or failed in the node, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
+An unknown reader or writer handle traps `HostDenied`.
 
 The ciphertext lives on the app's replicas, not on every node.
 Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
@@ -219,7 +224,7 @@ Every replica applies the entry only if the source is a file the app's records m
 Otherwise it answers `NOT_A_RUN_OUTPUT` and changes nothing, so a leader cannot publish anything else.
 
 The plaintext counts against the organization's file quota from the entry until retention collects it.
-Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
+Retention is a blob's: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
 Publishing an output the app already holds as a plain blob stores and charges nothing again.
 A run publishes at most 16 outputs, each at most 47 MiB (the plain blob it becomes; a larger output answers `file too large`) and 64 MiB together.
 Past that `publish` answers the soft error `run published too much` and records nothing.

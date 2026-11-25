@@ -1,9 +1,9 @@
 //! `#[derive(Record)]` with `#[table(key = .., unique(..), index(..), count(..), search = [..])]`.
 //!
-//! The derive implements `calimero_sdk::Record` and serde for the struct: field names
-//! are camelCase in both CBOR (stored values) and JSON (results); `u64`/`i64` fields are
-//! integers in CBOR and decimal strings in JSON (D20, Ruling 25). `partition` is reserved
-//! and refused (D48). It also implements `AbiType`: the record's JSON shape, for the ABI's
+//! The derive implements `calimero_sdk::Record` and serde for the struct: field names are
+//! camelCase in both CBOR (stored values) and JSON (results); `u64`/`i64` fields are integers
+//! in CBOR and decimal strings in JSON. `partition` is reserved and refused: an app keeps one
+//! log for all its keys. It also implements `AbiType`: the record's JSON shape, for the ABI's
 //! `types`.
 
 use proc_macro2::{Span, TokenStream};
@@ -26,7 +26,7 @@ struct TableAttr {
     unique: Vec<FieldSet>,
     index: Vec<FieldSet>,
     count: Vec<FieldSet>,
-    /// Text fields the host indexes for full-text search (spec section 7).
+    /// Text fields the host indexes for full-text search.
     search: Vec<LitStr>,
 }
 

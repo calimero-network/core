@@ -26,6 +26,7 @@ package com.calimero.mero.api.models
 import com.calimero.mero.api.models.AppUpdate200ResponseAvailable
 import com.calimero.mero.api.models.AppUpdate200ResponsePolicy
 import com.calimero.mero.api.models.AppUpdate200ResponseRunning
+import com.calimero.mero.api.models.DeploymentShown
 import com.calimero.mero.api.models.PendingApproval
 
 import kotlinx.serialization.Serializable
@@ -43,6 +44,7 @@ import kotlinx.serialization.Contextual
  * @param approvers 
  * @param policy 
  * @param pendingApprovals 
+ * @param deployment 
  */
 @Serializable
 
@@ -70,7 +72,10 @@ data class AppUpdate200Response (
     val policy: AppUpdate200ResponsePolicy,
 
     @SerialName(value = "pendingApprovals")
-    val pendingApprovals: kotlin.collections.List<PendingApproval>
+    val pendingApprovals: kotlin.collections.List<PendingApproval>,
+
+    @SerialName(value = "deployment")
+    val deployment: DeploymentShown?
 
 ) {
 

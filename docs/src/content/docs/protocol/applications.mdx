@@ -99,7 +99,9 @@ the request verifies the release (`Node::verify_release`):
    needs](/protocol/upgrades/#the-runtime-a-release-needs)).
 3. The package's **pinned signer**: the first release of a package pins its
    publisher key (`did:key`); a release signed by any other key is refused.
-4. Each service's WASM compiles.
+4. Each service's WASM compiles, imports nothing outside the `calimero:app`
+   world ([What the host offers](/protocol/execution/#what-the-host-offers-a-cloud-run)),
+   and carries an ABI of a supported `abiVersion`; otherwise `400 BAD_BUNDLE`.
 5. A registry install got the package and version it asked for.
 6. No WASM it ships (a service or a compute component) ships in a release of
    another package signed by another key (`409`): a WASM belongs to one
@@ -237,7 +239,10 @@ prefixes, and have no pinned signer.
 The node reads the ABI a component embeds (its `calimero:abi` section) for what
 it acts on: which methods are views and confirm methods, whom each method admits
 (accounts, API keys, other apps, the system), its timers, and the tables search
-indexes. A method the ABI does not name is refused (default-deny).
+indexes. A method the ABI does not name is refused (default-deny). These facts
+are trusted because they are part of the component's bytes, which a release's
+publisher signs, so an operator cannot mark a method public or a view a
+write ([App interface](/build/app-abi/)).
 
 ## Frontends
 
@@ -292,8 +297,6 @@ A cluster label made for another cluster answers `404`.
 
 ### Deployment hosts
 
-The front does not route these yet; cluster hosts are what it routes.
-
 Every deployment has a host of its own too, `{dlabel}.D`, where the dlabel is
 52 lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
 `SHA-256("calimero.app-host.deployment.v1\0" ‖ id)` and `id` is the
@@ -331,9 +334,46 @@ serves it (every path above, the same content security policy, `/.well-known/cal
 before any node route. Unlike the package's host, it is a registered origin: a
 passkey ceremony there runs under the domain's own rp-id, never the
 cluster's, and opens a session bound to the package that names the origin;
-removing it ends the site and those sessions together. TLS for the name ends
-inside the TD with a certificate Calimero Cloud orders for the node's attested
-key; the end-to-end design is `docs/specs/custom-domains.md`.
+removing it ends the site and those sessions together, as does uninstalling
+the package's last release.
+
+- **Which requests.** A `Host` of the name alone, or with port 443, names
+  `https://{name}`; on a `--dev` node a `localhost` name with its port names
+  `http://{name}:{port}` (`app_host::served_origin_of`). Another port, a name
+  under D, or a node's own API host is never a served site, so the request
+  reaches the node's routes.
+- **What is refused.** Only on a node with `--apps-domain` (`400 NOT_SERVING`);
+  never a name under D or under the cluster's rp-id; 4 per package and 64 per
+  cluster (`MAX_SERVED_ORIGINS_PER_PACKAGE`, `MAX_SERVED_ORIGINS`). Adding one
+  needs every replica, voter and learner on a release that reads the flag
+  (`409 CLUSTER_NOT_UPGRADED`): an older node would drop `served` and hold the
+  origin unserved, not serving the site but still admitting its ceremonies. The
+  API and `SystemState::add_package_origin` judge the same rules, so a command
+  any node proposes is judged alike on every node. The full list is in
+  [Registered origins](/protocol/identities/#registered-origins).
+- **Certificates.** merod holds none: TLS for the name ends in front of it, as
+  for D. `GET /ops/served-origins` lists every served origin's host by its
+  package's label, never the package's name, for whatever orders the
+  certificates and routes the name ([The operator](/protocol/operator/)).
+- **One cluster's record.** Each cluster's log holds its own origins, so the
+  same origin may be registered on another cluster; which cluster a browser
+  reaches is decided by the name's DNS and the front, not by either log.
+
+**Why a flag on a registered origin.** Everything a custom domain needs once
+the bytes arrive (who may add and remove it, ceremonies under its rp-id, CORS,
+binding sessions to the package and ending them on removal) is a registered
+origin's already. A separate record would duplicate all of it, and the same
+name could then be held twice, by two packages or under two rp-ids. One map
+keyed by origin gives one answer to who holds `https://kv.example.com`, so a
+held origin keeps its `served` and its rp-id: changing either is refused
+(`409 ORIGIN_TAKEN` for `served`; remove it first). The consent names `served: true` so that a
+consent to the plain origin, signed by a client that never knew the flag,
+cannot be replayed to make the name served.
+
+A custom domain's sessions are only as safe as its DNS: whoever controls the
+name can serve their own page there and use its passkeys, though only for
+that package. On the package's host, that trust rests on the apps domain's
+DNS alone.
 
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its
@@ -365,6 +405,7 @@ release comes from the registry, which any node can fetch it from again).
 An account installs for an organization (`Node::install_org`): `org`, which it must be a member of (else `404`), else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`).
 Below the logged cluster version that brings `Feature::PrivateReleases` an install names no organization at all (`record_release` drops it), so a multi-org account is never asked for `org`.
 Public or private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.38; `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out first, and a release served so is public (a `401` or `403` to that fetch, `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the operator) and is private.
+That fetch refused `403` with the JSON `error` `account_not_linked` (the registry's answer for an account linked to no Cloud developer, for any package) is `403 ACCOUNT_NOT_LINKED`, telling the person to link it in Calimero Cloud (`refused_as_not_linked`; regression `a_registry_refusing_an_unlinked_account_says_to_link_it`).
 An upload is private.
 An account in no organization installs for none (`orgs` empty): such a private release is its installing accounts' alone (`sees_release`, `installed_by_any`) until an install for an organization adds one, and then the organization rule holds (regressions `a_private_release_for_no_organization_is_its_installers_alone`, `system::tests` and `tests/cluster.rs`).
 `PackageVersion::orgs` gains the organization of each install; `InstallPackage` refuses one the actor is not a member of (`NOT_AN_ORG_MEMBER`).
@@ -484,6 +525,7 @@ A release recorded before `visibility` keeps the earlier rule: its installers (`
 Reading the release an instance runs (`report::release_of_app`) is `SystemState::reads_release`: who sees it, or reaches an app running it (the package and version the app's record names, so a release sharing its WASM, in that package or another, is not read; for a record naming none, only a release not recorded private, so `GET /apps/{app}/update`'s `running`, `GET /apps`' `package` and `version` and the reports never name a private sibling to one who only reaches it: regressions `reaching_an_app_by_its_bundle_never_names_a_private_sibling`, `the_app_list_never_names_a_private_sibling_sharing_the_wasm`, `an_outbound_approval_never_reads_another_packages_release_of_the_same_wasm`, `the_app_list_filters_by_the_package_an_instance_runs`, `system::tests::reaching_an_instance_never_reads_another_packages_release_of_its_wasm`, `report::tests` and `tests/cluster.rs`).
 A route (`src/api`, `src/consent_page`) reads a release a client names only through `SystemState`'s lookups: `release_used`, `releases_used` (with a bound session's `frontend`), `package_used`, `newest_used` (use), `newest_read` (read) and `release_offered_to` (a deployment's offer that still serves).
 The gate `tests/it/release_lookups.rs` (`routes_read_releases_through_the_rule`) fails on any other read of `packages` or `versions` there, or of a bundle record's release (`bundles`, which names the release its WASM was first recorded from; filter by `report::release_of_app`), unless its `READS_ALLOWED` names the line and why no client names that release.
+`GET /packages[/{p}]` shows each release's kind (`PackageVersion::visibility_shown`: a catalog release is public) and, of a private one's `orgs`, only those the reader is in (`SystemState::release_orgs_of`; regression `a_release_shows_its_kind_and_only_the_readers_organizations`).
 For anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages` leave it out (`404` by name), `resolve_release` treats it as missing (a registry install makes it theirs; an upload answers as a missing release), a bundle hash it ships is an unknown bundle (`sees_bundle`; the uploader of a raw bundle still names it, while a release's first installer, recorded as its uploader too, counts only beside a release recorded before `visibility`), outbound approval (`POST /orgs/{org}/outbound`, the consent page's `outbound`) approves and shows the prefixes of the newest release the caller reads (the operator's cluster-wide one, the newest of all; `PackageRecord::latest_where`; `SetOutboundApproval` at apply once the logged cluster version brings `Feature::PrivateReleases`), `404` with none; the page's `requestedBy` and its `returnTo` origins read that release too (regression `an_outbound_approval_takes_the_newest_release_its_approver_reads`), and upgrade runs skip it (`api::upgrade_sees`; the operator's: its own or the app owner's).
 Frontends stay public by name; the newest release's display name and author reach a session bound to the package (the consent page's `requestedBy`) only when its account reads that release, an app team (`ScopeApps`, `MoveApp`, `createOrg`'s) is named after the newest release its maker may use (`PackageRecord::latest_where`), and a package named for one with no such release answers `no such package` (API, and apply once the logged cluster version brings `Feature::PrivateReleases`; `createOrg` then offers no app team; regressions `an_app_team_reads_only_the_releases_its_actor_may_use`, `an_app_team_of_a_private_package_answers_as_a_missing_package`), and a sign-up on the package's origin (`passkeys::app_name`) names the newest release that is public, the operator's or recorded before `visibility`; else they answer as for a release without them (`a_strangers_bound_session_never_shows_a_private_releases_name`, `a_sign_up_names_the_newest_release_open_to_anyone`).
 Regressions: `a_private_package_is_listed_only_to_accounts_that_may_use_it`, `a_release_from_before_installers_reads_and_records_who_installs_it_again`, `a_private_release_is_used_only_in_the_organizations_it_was_installed_for` (both `system::tests` and `tests/cluster.rs`), `a_release_recorded_before_visibility_keeps_the_rule_from_before`, `reaching_an_instance_reads_its_release_but_does_not_use_it`, `a_bound_session_does_not_open_a_package_its_account_cannot_see`, `another_orgs_account_cannot_install_a_private_package_from_the_registry`, `a_release_is_fetched_again_with_the_credential_only_while_it_is_private`, `an_anonymous_fetch_refused_as_unauthorized_goes_on_with_the_credential`, `an_outbound_approval_never_reads_a_release_its_approver_cannot_read`, `an_outbound_sheet_never_shows_a_release_its_asker_cannot_read`.

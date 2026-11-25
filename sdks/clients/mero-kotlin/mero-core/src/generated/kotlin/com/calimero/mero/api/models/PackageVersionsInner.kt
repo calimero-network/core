@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.PackageVersionsInnerOrgsInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -41,6 +42,8 @@ import kotlinx.serialization.Contextual
  * @param outbound 
  * @param installedBy 
  * @param installedAt 
+ * @param visibility 
+ * @param orgs 
  */
 @Serializable
 
@@ -75,7 +78,13 @@ data class PackageVersionsInner (
     val installedBy: kotlin.String,
 
     @SerialName(value = "installedAt")
-    val installedAt: kotlin.Long
+    val installedAt: kotlin.Long,
+
+    @SerialName(value = "visibility")
+    val visibility: PackageVersionsInner.Visibility? = null,
+
+    @SerialName(value = "orgs")
+    val orgs: kotlin.collections.List<PackageVersionsInnerOrgsInner>? = null
 
 ) {
 
@@ -98,6 +107,16 @@ data class PackageVersionsInner (
     enum class Components(val value: kotlin.String) {
         @SerialName(value = "app") APP("app"),
         @SerialName(value = "computeOnly") COMPUTE_ONLY("computeOnly");
+    }
+    /**
+     * 
+     *
+     * Values: PUBLIC,PRIVATE
+     */
+    @Serializable
+    enum class Visibility(val value: kotlin.String) {
+        @SerialName(value = "public") PUBLIC("public"),
+        @SerialName(value = "private") PRIVATE("private");
     }
 
 }

@@ -8,7 +8,7 @@
 //! ticking beside it. Told by order, not latency: while the install still
 //! compiles, the ticker must keep ticking. The watch starts when the install is
 //! spawned, so what the install does on the worker before its compile (a `.mpk`
-//! verified there held it 50-75 ms idle, up to 300 ms loaded, before #5336) is
+//! verified there held it 50-75 ms idle, up to 300 ms loaded, when that ran on the worker) is
 //! watched too, and the longest gap between ticks is judged: a worker the install
 //! holds shows a gap as long as the hold.
 
@@ -31,7 +31,7 @@ const TICK: Duration = Duration::from_millis(10);
 /// longest a thread of its own did (a runner that stalls both stalls them alike).
 /// Measured on four cores, idle and beside six busy loops (20 runs): the free
 /// worker's longest gap was 11-29 ms, the free thread's 10-33 ms; a `.mpk` verified
-/// on the worker (before #5336) gave 52-61 ms idle beside a free thread's 10-12 ms,
+/// on the worker gave 52-61 ms idle beside a free thread's 10-12 ms,
 /// and up to 324 ms loaded; a compile on it gives the whole `WATCH`.
 const MAX_EXTRA_GAP: Duration = Duration::from_millis(30);
 /// A free worker ticks at least this share of what a thread of its own ticks in

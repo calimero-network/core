@@ -340,6 +340,9 @@ from .deployment_secrets_response_200_secrets_additional_property import (
 from .deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
     DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
 )
+from .deployment_shown import DeploymentShown
+from .deployment_shown_owner import DeploymentShownOwner
+from .deployment_shown_owner_kind import DeploymentShownOwnerKind
 from .deployment_withdraw_response_200 import DeploymentWithdrawResponse200
 from .error import Error
 from .exports_export_body import ExportsExportBody
@@ -597,8 +600,10 @@ from .package_upload_response_200 import PackageUploadResponse200
 from .package_upload_response_200_services import PackageUploadResponse200Services
 from .package_versions_item import PackageVersionsItem
 from .package_versions_item_components import PackageVersionsItemComponents
+from .package_versions_item_orgs_item import PackageVersionsItemOrgsItem
 from .package_versions_item_services import PackageVersionsItemServices
 from .package_versions_item_source import PackageVersionsItemSource
+from .package_versions_item_visibility import PackageVersionsItemVisibility
 from .page import Page
 from .passkey_add_begin_response_200 import PasskeyAddBeginResponse200
 from .passkey_add_finish_body import PasskeyAddFinishBody
@@ -1093,6 +1098,9 @@ __all__ = (
     "DeploymentSecretsResponse200Secrets",
     "DeploymentSecretsResponse200SecretsAdditionalProperty",
     "DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem",
+    "DeploymentShown",
+    "DeploymentShownOwner",
+    "DeploymentShownOwnerKind",
     "DeploymentWithdrawResponse200",
     "Error",
     "ExportsExportBody",
@@ -1310,8 +1318,10 @@ __all__ = (
     "PackageUploadResponse200Services",
     "PackageVersionsItem",
     "PackageVersionsItemComponents",
+    "PackageVersionsItemOrgsItem",
     "PackageVersionsItemServices",
     "PackageVersionsItemSource",
+    "PackageVersionsItemVisibility",
     "Page",
     "PasskeyAddBeginResponse200",
     "PasskeyAddFinishBody",

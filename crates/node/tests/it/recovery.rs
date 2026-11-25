@@ -1,4 +1,4 @@
-//! Account recovery (`docs/specs/account-recovery.md`) through the API, on a
+//! Account recovery ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)) through the API, on a
 //! three-node cluster: a person who lost every passkey gets back in with the
 //! recovery code they made while signed in. The code starts a recovery with
 //! a new passkey; for `RECOVERY_DELAY_SECS` (72 hours, as an organization's

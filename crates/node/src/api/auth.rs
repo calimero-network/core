@@ -1757,11 +1757,11 @@ async fn passkey_label(
 }
 
 /// What the caller's account uses, against the cluster's quotas, and what today's
-/// runs of the apps it is the developer of used (Q20, D76, D78): fuel and writes,
+/// runs of the apps it is the developer of used: fuel and writes,
 /// summed over the component apps billed to `account:{id}` as their developer
 /// (`usage::developer`), on the UTC day of the node's app time. An organization's
 /// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
-/// decimal strings (D20): `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
+/// decimal strings: `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
     let today = node

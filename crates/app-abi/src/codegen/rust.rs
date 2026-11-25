@@ -4,12 +4,12 @@
 //! executor batches, and `env::xcall` for messages). `calimero-app-build`'s `uses` writes it from the app's `calimero.lock` and
 //! vendored ABIs, for the app's `build.rs`.
 //!
-//! The JSON is the SDK's (D20): `u64`/`i64` as decimal strings and `bytes` as base64url at the
+//! The JSON is the SDK's ([App interface types](https://calimero-network.github.io/core/build/app-abi/#types)): `u64`/`i64` as decimal strings and `bytes` as base64url at the
 //! top level of an argument, a result or a field, through `calimero_sdk::json`'s `with`
 //! modules; nested inside another type they have no JSON form, and generation fails.
 //!
 //! Each declared type derives the SDK's `AbiType` too, so an app may take or answer it in its
-//! own methods (the SDK requires a shape of every such type, D20): a `u64_number` or
+//! own methods (the SDK requires a shape of every such type): a `u64_number` or
 //! `i64_number` field is `#[abi(plain)]`, as the target declared it. A type that reaches one
 //! the ABI does not describe (its JSON, a `serde_json::Value`) or an integer with no JSON form
 //! (`u128`, `usize`, ..., from an ABI built before they were refused) derives only serde.
@@ -197,7 +197,7 @@ impl<'a> Module<'a> {
     // ── types ──────────────────────────────────────────────────────────────────────────────
 
     /// The Rust spelling of `ty`. `nested`: inside another type, where `u64`, `i64` and
-    /// `bytes` have no JSON form (D20).
+    /// `bytes` have no JSON form.
     fn ty(&mut self, ty: &Type, nested: bool) -> EyreResult<String> {
         Ok(match ty {
             Type::Unit => "()".to_owned(),
@@ -414,7 +414,7 @@ impl<'a> Module<'a> {
         Ok(s)
     }
 
-    /// A tuple item or newtype field: its D20 `with`, then its type.
+    /// A tuple item or newtype field: its `calimero_sdk::json` `with`, then its type.
     fn item(&mut self, ty: &Type, vis: &str) -> EyreResult<String> {
         let rust = self.field_ty(ty)?;
         let plain = if self.described && plain_json(ty) {
@@ -755,7 +755,7 @@ fn inline_types(shape: &Shape) -> Vec<Type> {
 
 /// Whether `#[derive(AbiType)]` can describe what `ty` holds, with `params` the generic
 /// parameters in scope: every app type it reaches has a shape in `abi`, and every integer a
-/// JSON form (`u128`, `i128`, `usize` and `isize` have none, D20).
+/// JSON form (`u128`, `i128`, `usize` and `isize` have none).
 fn describable(abi: &AppAbi, ty: &Type, params: &[String], seen: &mut BTreeSet<String>) -> bool {
     match ty {
         Type::Int(Int::U128 | Int::I128 | Int::Usize | Int::Isize) => false,
@@ -795,12 +795,12 @@ fn plain_json(ty: &Type) -> bool {
     }
 }
 
-/// `u64`, `i64` or `bytes`: a decimal string or base64url in JSON (D20).
+/// `u64`, `i64` or `bytes`: a decimal string or base64url in JSON.
 fn is_d20(ty: &Type) -> bool {
     matches!(ty, Type::Int(Int::U64 | Int::I64) | Type::Bytes)
 }
 
-/// The `calimero_sdk::json` module that writes `ty` at the top level, when D20 needs one.
+/// The `calimero_sdk::json` module that writes `ty` at the top level, when the type needs one.
 fn d20_module(ty: &Type) -> Option<&'static str> {
     Some(match ty {
         Type::Int(Int::U64) => "u64_str",
@@ -1019,7 +1019,7 @@ mod tests {
             decl("Page<T>").contains("::calimero_sdk::AbiType"),
             "{code}"
         );
-        // A D20 field keeps its `with`; a plain number is marked as one.
+        // A decimal-string or base64url field keeps its `with`; a plain number is marked as one.
         assert!(
             code.contains("#[serde(rename = \"at\", with = \"::calimero_sdk::json::u64_str\")]"),
             "{code}"

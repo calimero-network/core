@@ -51,7 +51,7 @@ const BAD_IMPORTED_APP: Rejection = Rejection::new(
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 ///
-/// Account recovery (`docs/specs/account-recovery.md`): making and removing a
+/// [Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery): making and removing a
 /// code, and cancelling a recovery, are the account's own passkey consent;
 /// starting is the code key's signature over the new passkey; finishing is
 /// that new passkey's sign-in assertion over the session it opens.

@@ -1,8 +1,8 @@
-//! The on-disk cache of compiled components (spec section 5 step 1, S8).
+//! The on-disk cache of compiled components.
 //!
 //! An artifact is named `<component sha256>-<wasmtime tag>-<config hash>.cwasm`, beside a
 //! `.cwasm.mac` sidecar: HMAC-SHA256 under the caller's cache key over the artifact's file
-//! name and bytes, written at compile time (S8, Ruling 38). The key comes from the node's
+//! name and bytes, written at compile time. The key comes from the node's
 //! storage key, so a party that can write the directory but does not hold the key can
 //! neither forge an artifact nor move a valid one under another component's name. A load
 //! reads the artifact into memory, verifies the MAC and only then deserializes those same
@@ -66,7 +66,7 @@ pub(crate) struct Cache {
 }
 
 impl Cache {
-    /// `key` authenticates the artifacts (S8): the node derives it from its storage key.
+    /// `key` authenticates the artifacts: the node derives it from its storage key.
     pub(crate) fn new(dir: PathBuf, engine: &Engine, key: &[u8; 32]) -> EyreResult<Self> {
         fs::create_dir_all(&dir)?;
         let mut hasher = Sha256Hasher(Sha256::new());
@@ -193,7 +193,7 @@ impl Cache {
         // SAFETY: `Component::deserialize` trusts its input to be an artifact this engine
         // produced. These exact in-memory bytes (not a re-read of the file) carry a MAC under
         // the node's cache key, which only this node (holding its storage key) could have
-        // written when it compiled and serialized them (S8); wasmtime still checks its own
+        // written when it compiled and serialized them; wasmtime still checks its own
         // version and config header before using them.
         unsafe { Component::deserialize(engine, &bytes) }.ok()
     }

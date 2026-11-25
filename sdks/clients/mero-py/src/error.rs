@@ -58,7 +58,7 @@ pub(crate) fn cloud_err(e: Error) -> PyErr {
                 _ => CloudError::new_err(args),
             }
         }
-        // Core's client names a `421 WRONG_NODE` itself (core #4774).
+        // Core's client names a `421 WRONG_NODE` itself.
         Error::WrongNode { message, details } => WrongNode::new_err((
             format!("421 WRONG_NODE: {message}"),
             421_u16,

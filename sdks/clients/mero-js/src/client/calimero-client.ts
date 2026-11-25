@@ -233,7 +233,7 @@ function safeHostname(origin: string): string | null {
   }
 }
 
-/** A recovery of an account under way (core #4844, `docs/specs/account-recovery.md`). */
+/** A recovery of an account under way ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)). */
 export interface AccountRecovery {
   accountId: string;
   /** The new passkey the recovery adds when it finishes. */
@@ -783,7 +783,7 @@ export class CalimeroClient {
 
   // ---------------------------------------------------------------- account recovery
   //
-  // core #4844 (`docs/specs/account-recovery.md`): a recovery code, made with
+  // ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): a recovery code, made with
   // a passkey and shown once, lets someone who lost every passkey register a
   // new one; it is added, and the account signed in, 72 hours later unless a
   // passkey the account still has cancels it first.

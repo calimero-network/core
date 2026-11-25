@@ -644,7 +644,7 @@ mod tests {
         assert!(!widens(&t("u32"), &t("u16")));
         assert!(widens(&t("list<u16>"), &t("list<u32>")));
         assert!(widens(&t("char"), &t("string")));
-        // A JSON number and D20's decimal string are different forms.
+        // A JSON number and the SDK's decimal string are different forms.
         assert!(!widens(&t("u64"), &t("u64_number")));
         assert!(!widens(&t("u64_number"), &t("u64")));
         assert!(widens(&t("u32"), &t("u64_number")));
