@@ -636,6 +636,17 @@ fn egress_off_refuses_a_connector_call_before_anything_is_sent() {
     assert_eq!(upstream.sent().len(), 1);
 }
 
+/// What the audit test compares of an entry: method, host, path, status, failure,
+/// secret names.
+type Seen<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<u16>,
+    Option<AuditFailure>,
+    Vec<String>,
+);
+
 /// The instance's outbound audit lists every connector call, sent or refused, as
 /// its connector's host and its operation's declared path (never the id the input
 /// put in it), the connector's binding name once attached; and a raw request to a
@@ -695,14 +706,7 @@ fn connector_calls_are_in_the_audit_with_the_declared_path_and_binding_name() {
     .unwrap_err();
 
     let entries = audit.entries_at("ctx", audit::now_ms());
-    let seen: Vec<(
-        &str,
-        &str,
-        &str,
-        Option<u16>,
-        Option<AuditFailure>,
-        Vec<String>,
-    )> = entries
+    let seen: Vec<Seen<'_>> = entries
         .iter()
         .map(|e| {
             (
