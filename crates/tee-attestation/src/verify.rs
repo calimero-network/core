@@ -161,7 +161,7 @@ impl VerificationResult {
     /// The existing enforcement layers below keep their own equivalent
     /// enforcement by design (mode-specific errors `policy_valid` cannot
     /// express), and `is_valid()` stays crypto-only for them:
-    /// - `crates/kms-client/src/kms/mod.rs` — `enforce_attestation_policy`
+    /// - `crates/kms-client/src/kms.rs` — `enforce_attestation_policy`
     ///   (measurement + TCB allowlists when the node verifies its KMS);
     /// - the mero-tee KMS `get_key.rs` `enforce_attestation_policy` on the
     ///   key-release side (external consumer of this crate).

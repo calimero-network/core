@@ -190,7 +190,7 @@ streams. Every other route is a generated method; a route no method fits (an
 `Request` through `client.transport()` (`json`, `confirmed`, `approved`). The
 node's tests read a typed answer as JSON with `wire` and write a typed request
 as JSON with `typed` (`crates/node/tests/harness/cluster.rs`,
-`tests/common/mod.rs`), which panics if the type would drop any of it.
+`tests/it/common.rs`), which panics if the type would drop any of it.
 
 A route change regenerates the document and then this layer, in the same change:
 

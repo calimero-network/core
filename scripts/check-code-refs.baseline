@@ -115,7 +115,7 @@ bare-tag 17 crates/node/src/node.rs
 bare-tag 18 crates/app-engine-wasmtime/AGENTS.md
 bare-tag 18 crates/sdk-macros/AGENTS.md
 bare-tag 21 crates/app-host/AGENTS.md
-bare-tag 21 crates/sdk/src/testing/mod.rs
+bare-tag 21 crates/sdk/src/testing.rs
 bare-tag 30 crates/app-host/src/core.rs
 bare-tag 37 crates/sdk/AGENTS.md
 bare-tag 64 crates/node/AGENTS.md
