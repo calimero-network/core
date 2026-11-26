@@ -555,13 +555,13 @@ impl Kv {
         env::start_action("enrich", &KeyArg { key: &key })
     }
 
-    /// An action: reads `key` through a view, sends it to the echo host with the
+    /// An action: reads `key` through `enrichSource`, sends it to the echo host with the
     /// action's key, and writes what came back through `applyEnrichment`. A secret the
     /// release binds to the echo host (`ECHO_KEY`, in tests) is attached by the node, never
     /// named here.
     #[app::action]
     pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
-        let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
+        let value: Option<String> = ctx.view("enrichSource", &KeyArg { key: &key })?;
         let request = Request::get(format!(
             "https://echo.outbound.test/v1/enrich?v={}",
             value.unwrap_or_default()
@@ -610,6 +610,23 @@ impl Kv {
     #[app::action]
     pub fn explode(_ctx: &mut ActionCtx) -> app::Result<()> {
         app::bail!(Error::BeatFailed)
+    }
+
+    /// An action that reads app `app`'s `enrichSource` for `key` through a synchronous xcall.
+    #[app::action]
+    pub async fn enrich_from(_ctx: &mut ActionCtx, app: String, key: String) -> app::Result<()> {
+        let _value: Option<String> =
+            env::xcall_view(&app, "enrichSource", &KeyArg { key: &key }).await?;
+        Ok(())
+    }
+
+    /// The value `enrich` sends for `key`. Only the app's own actions read it
+    /// (`allow(action)`); `allow(app = "*")` leaves that the only check another app fails.
+    #[app::view]
+    #[app::allow(action)]
+    #[app::allow(app = "*")]
+    pub fn enrich_source(&self, key: String) -> app::Result<Option<String>> {
+        self.get(key)
     }
 
     /// Only the app's own actions write here (`allow(action)`).
