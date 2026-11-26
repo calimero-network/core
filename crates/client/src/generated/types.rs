@@ -1251,13 +1251,13 @@ pub struct PipelineRunCostTable {
 /// The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PipelineRunCost {
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxCost")]
     pub max_cost: String,
     #[serde(rename = "priceVersion")]
     pub price_version: u64,
     pub table: PipelineRunCostTable,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "worstCase")]
     pub worst_case: String,
     /// The fields this client does not name, as the node sent them.
@@ -1368,7 +1368,7 @@ pub struct PipelineRunStep {
     #[serde(rename = "cachedKeys")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_keys: Option<BTreeMap<String, String>>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1501,7 +1501,7 @@ pub struct PipelineRunView {
     pub end_ts_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<PipelineRunCost>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "costSoFar")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_so_far: Option<String>,

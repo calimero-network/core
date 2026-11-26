@@ -7986,7 +7986,7 @@ public enum Components {
         ///
         /// - Remark: Generated from `#/components/schemas/PipelineRunCost`.
         public struct PipelineRunCost: Codable, Hashable, Sendable {
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunCost/maxCost`.
             public var maxCost: Swift.String
@@ -8047,17 +8047,17 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table`.
             public var table: Components.Schemas.PipelineRunCost.TablePayload
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunCost/worstCase`.
             public var worstCase: Swift.String
             /// Creates a new `PipelineRunCost`.
             ///
             /// - Parameters:
-            ///   - maxCost: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - maxCost: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - priceVersion:
             ///   - table:
-            ///   - worstCase: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - worstCase: an unsigned 64-bit integer as a decimal string, exact past 2^53
             public init(
                 maxCost: Swift.String,
                 priceVersion: Swift.Int64,
@@ -8194,7 +8194,7 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cachedKeys`.
             public var cachedKeys: Components.Schemas.PipelineRunStep.CachedKeysPayload?
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cost`.
             public var cost: Swift.String?
@@ -8225,7 +8225,7 @@ public enum Components {
             ///   - cachedCount:
             ///   - cachedItems:
             ///   - cachedKeys:
-            ///   - cost: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - cost: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - capped:
             ///   - legacyItems:
             ///   - cached:
@@ -8460,7 +8460,7 @@ public enum Components {
             public var endTsMs: Swift.Int64?
             /// - Remark: Generated from `#/components/schemas/PipelineRunView/cost`.
             public var cost: Components.Schemas.PipelineRunCost?
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunView/costSoFar`.
             public var costSoFar: Swift.String?
@@ -8538,7 +8538,7 @@ public enum Components {
             ///   - steps:
             ///   - endTsMs:
             ///   - cost:
-            ///   - costSoFar: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - costSoFar: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - retryOf:
             ///   - limits:
             public init(

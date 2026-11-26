@@ -4975,7 +4975,7 @@ export interface components {
         };
         /** @description The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings. */
         PipelineRunCost: {
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxCost: string;
             /** Format: int64 */
             priceVersion: number;
@@ -4995,7 +4995,7 @@ export interface components {
                 /** Format: int64 */
                 egressGib: number;
             };
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             worstCase: string;
         };
         /** @description A file a pipeline step made: its size and hash only to those who handle the app's files. */
@@ -5033,7 +5033,7 @@ export interface components {
             cachedKeys?: {
                 [key: string]: string;
             };
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             cost?: string;
             capped?: boolean;
             /** Format: int64 */
@@ -5084,7 +5084,7 @@ export interface components {
             /** Format: int64 */
             endTsMs: number | null;
             cost?: components["schemas"]["PipelineRunCost"];
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             costSoFar?: string;
             retryOf?: string;
             limits?: {

@@ -29791,7 +29791,7 @@
           "maxCost": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)$",
-            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+            "description": "an unsigned 64-bit integer as a decimal string, exact past 2^53"
           },
           "priceVersion": {
             "type": "integer",
@@ -29850,7 +29850,7 @@
           "worstCase": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)$",
-            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+            "description": "an unsigned 64-bit integer as a decimal string, exact past 2^53"
           }
         },
         "required": [
@@ -29971,7 +29971,7 @@
           "cost": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)$",
-            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+            "description": "an unsigned 64-bit integer as a decimal string, exact past 2^53"
           },
           "capped": {
             "type": "boolean"
@@ -30129,7 +30129,7 @@
           "costSoFar": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)$",
-            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+            "description": "an unsigned 64-bit integer as a decimal string, exact past 2^53"
           },
           "retryOf": {
             "type": "string"
