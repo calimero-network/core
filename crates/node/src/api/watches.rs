@@ -373,9 +373,21 @@ async fn view_access(
     }
 }
 
-/// An answer that says the caller may not call the view (as opposed to "not now").
+/// An answer that says the caller may not call (or watch) the view, as opposed to "not
+/// now": among them a view an upgrade made unwatchable (no longer subscribable, removed,
+/// of another kind).
 fn refuses(e: &ApiError) -> bool {
+    let refused_by_abi = || {
+        e.status == 422
+            && e.code == "APP_ERROR"
+            && matches!(
+                e.details.get("code").and_then(Value::as_str),
+                Some("UnknownMethod" | "WrongKind" | "NotAView" | "Forbidden")
+            )
+    };
     matches!(e.status, 401 | 403 | 404)
+        || (e.status == 400 && e.code == "NOT_SUBSCRIBABLE")
+        || refused_by_abi()
 }
 
 /// Runs the watch's view again as the holder (or takes the answer another watch of the same
@@ -877,4 +889,26 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/watches/{sub}", delete(watch_remove))
         .route("/internal/watches", post(internal_watch_add))
         .route("/internal/watches/remove", post(internal_watch_remove))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::app_refusal;
+
+    /// A view the app no longer lets the holder watch ends its watches: an upgrade that drops
+    /// `subscribable`, removes the view or makes it something else; a passing failure does not.
+    #[test]
+    fn a_view_no_longer_watchable_is_refused_not_retried() {
+        let not_subscribable = ApiError::bad_request("NOT_SUBSCRIBABLE", "get is not subscribable");
+        assert!(refuses(&not_subscribable));
+        for code in ["UnknownMethod", "WrongKind", "NotAView", "Forbidden"] {
+            assert!(refuses(&app_refusal(code)), "{code}");
+        }
+        assert!(refuses(&ApiError::new(403, "FORBIDDEN", "no")));
+        assert!(!refuses(&ApiError::unavailable(
+            "the app is not initialized yet"
+        )));
+        assert!(!refuses(&ApiError::bad_request("BAD_ARGS", "args")));
+    }
 }
