@@ -62,6 +62,7 @@ fn release(package: &str, mode: Option<calimero_bundle::InstanceOrg>) -> Vec<u8>
         upgrades: None,
         instance_org: mode,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,

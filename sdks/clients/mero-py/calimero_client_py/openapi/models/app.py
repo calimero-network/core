@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..models.grant_type_3 import GrantType3
     from ..models.app_restore import AppRestore
     from ..models.app_links import AppLinks
+    from ..models.app_lineage import AppLineage
     from ..models.upgrade import Upgrade
     from ..models.grant_type_2 import GrantType2
     from ..models.package_ref import PackageRef
@@ -36,7 +37,8 @@ class App:
     lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload;
     `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner
     or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST
-    /apps/{app}/egress`), absent while on.
+    /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned`
+    pinned it to, absent while unpinned: it moves only to releases of that package, never an older one.
 
         Attributes:
             app_id (str):
@@ -74,6 +76,7 @@ class App:
                 members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the
                 upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way.
             egress_off (Union[Unset, bool]):
+            lineage (Union[Unset, AppLineage]):
     """
 
     app_id: str
@@ -102,6 +105,7 @@ class App:
     attached: Union[Unset, "AppAttached"] = UNSET
     restore_point: Union[Unset, "RestorePoint"] = UNSET
     egress_off: Union[Unset, bool] = UNSET
+    lineage: Union[Unset, "AppLineage"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,6 +113,7 @@ class App:
         from ..models.grant_type_3 import GrantType3
         from ..models.app_restore import AppRestore
         from ..models.app_links import AppLinks
+        from ..models.app_lineage import AppLineage
         from ..models.upgrade import Upgrade
         from ..models.grant_type_2 import GrantType2
         from ..models.package_ref import PackageRef
@@ -196,6 +201,10 @@ class App:
 
         egress_off = self.egress_off
 
+        lineage: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.lineage, Unset):
+            lineage = self.lineage.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -238,6 +247,8 @@ class App:
             field_dict["restorePoint"] = restore_point
         if egress_off is not UNSET:
             field_dict["egressOff"] = egress_off
+        if lineage is not UNSET:
+            field_dict["lineage"] = lineage
 
         return field_dict
 
@@ -247,6 +258,7 @@ class App:
         from ..models.grant_type_3 import GrantType3
         from ..models.app_restore import AppRestore
         from ..models.app_links import AppLinks
+        from ..models.app_lineage import AppLineage
         from ..models.upgrade import Upgrade
         from ..models.grant_type_2 import GrantType2
         from ..models.package_ref import PackageRef
@@ -398,6 +410,13 @@ class App:
 
         egress_off = d.pop("egressOff", UNSET)
 
+        _lineage = d.pop("lineage", UNSET)
+        lineage: Union[Unset, AppLineage]
+        if isinstance(_lineage, Unset):
+            lineage = UNSET
+        else:
+            lineage = AppLineage.from_dict(_lineage)
+
         app = cls(
             app_id=app_id,
             name=name,
@@ -423,6 +442,7 @@ class App:
             attached=attached,
             restore_point=restore_point,
             egress_off=egress_off,
+            lineage=lineage,
         )
 
         app.additional_properties = d

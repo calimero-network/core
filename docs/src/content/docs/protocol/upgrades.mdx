@@ -152,6 +152,23 @@ the capability sheet (outbound, frontend origins, interfaces, methods,
 events, timers, the state version each side declares, build) and takes the owner's passkey there
 ([The consent page](/protocol/consent-page/)).
 
+### Pinned instances
+
+A release whose signed manifest declares `lineage: pinned` pins the instances
+created from it to its package and its publisher's key: the record's
+`lineage` names both, and nothing clears it. Such an instance moves only to a
+release of that package, still signed by that key, whose version is no older
+than the one it runs (both read as semver). Another package, the operator's
+catalog and a raw bundle are refused `409 OUTSIDE_LINEAGE`, an older release
+`409 LINEAGE_OLDER_RELEASE`, before the step-up. Every path is judged again
+before the upgrade reaches the app's group (an organization's or publisher's
+run, an update on its own, the operator's upgrade where it holds app
+upgrades: no one is exempt), since the group runs `__upgrade` before the
+directory logs `UpgradeApp`, and `UpgradeApp` is judged once more where it
+applies. Who approves the upgrade is unchanged: the lineage says only where it
+may go. A pinning release is installed only from cluster version 1.0.0-rc.39
+(`409 FEATURE_NOT_ACTIVE` below it), and must name a semver version.
+
 ## What an upgrade runs
 
 An upgrade is **code only**: the app's state stays as the old code wrote it,
@@ -839,6 +856,14 @@ Code: `system/cluster_version.rs`, `node/cluster_version.rs`.
 A component upgrade is the app-log entry `componentUpgrade`, which swaps the bundle; a named `migrate` is refused `MigrationsNotSupported`.
 The directory records the new bundle only once the upgrade succeeded.
 The consent page's `stateVersion` comes from each side's `calimero:abi`.
+
+### Pinned instances
+
+Code: `system.rs` (`SystemState::within_lineage`, `SystemState::lineage_of`), `system/apps.rs`, `api/upgrades.rs`.
+
+- `PackageVersion::lineage` records the manifest's `lineage`; `Feature::PinnedLineage` gates installing a pinning release.
+- `CreateApp` sets `AppRecord::lineage` from the release it governs.
+- `within_lineage` runs before the step-up, in `run_upgrade` before `__upgrade` reaches the group, and in `UpgradeApp`'s apply, without an operator exemption.
 
 ### Runtime requirements
 

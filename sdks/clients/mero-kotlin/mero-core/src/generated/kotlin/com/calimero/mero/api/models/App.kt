@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.AppLineage
 import com.calimero.mero.api.models.AppRestore
 import com.calimero.mero.api.models.PackageRef
 import com.calimero.mero.api.models.RestorePoint
@@ -33,7 +34,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
+ * An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned` pinned it to, absent while unpinned: it moves only to releases of that package, never an older one.
  *
  * @param appId 
  * @param name 
@@ -59,6 +60,7 @@ import kotlinx.serialization.Contextual
  * @param attached 
  * @param restorePoint 
  * @param egressOff 
+ * @param lineage 
  */
 @Serializable
 
@@ -136,7 +138,10 @@ data class App (
     val restorePoint: RestorePoint? = null,
 
     @SerialName(value = "egressOff")
-    val egressOff: kotlin.Boolean? = null
+    val egressOff: kotlin.Boolean? = null,
+
+    @SerialName(value = "lineage")
+    val lineage: AppLineage? = null
 
 ) {
 

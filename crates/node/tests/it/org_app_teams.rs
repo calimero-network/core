@@ -82,6 +82,7 @@ fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,

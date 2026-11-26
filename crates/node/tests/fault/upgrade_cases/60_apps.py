@@ -680,3 +680,7 @@ not_covered("Apps", "An xcall chain ending at its budget (`MAX_XCALL_CHAIN`, `Fe
             "chain stores is an outbox row and a dead letter, whose old shapes (no budget) the `xcall` case reads "
             "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` (`component_cluster.rs`) covers it on one "
             "build")
+not_covered("Apps", "A pinned instance (`lineage: pinned`, `AppRecord::lineage`) held to its package, publisher and "
+            "forward order",
+            "no release before 1.0.0-rc.39 installs a pinning release (`Feature::PinnedLineage`), so the old build "
+            "seeds none; `tests/it/lineage.rs` covers the refusals end to end and `system/tests.rs` the rule at apply")

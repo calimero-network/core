@@ -771,6 +771,7 @@ async fn create_instance(
                 attached: BTreeMap::new(),
                 restore_point: None,
                 egress_off: false,
+                lineage: None,
             }),
             unit_offer: body.unit_offer,
             offers_only,

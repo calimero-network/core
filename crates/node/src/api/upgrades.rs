@@ -362,7 +362,10 @@ pub(crate) async fn upgrade_app(
             .await?
         }
     };
-    if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref(), None)) {
+    if let Err(why) = node.sys(|s| {
+        s.within_deployment(&app, release.as_ref(), None)?;
+        s.within_lineage(&app, release.as_ref())
+    }) {
         return Err(crate::node::rejected(why));
     }
     let may = || {
@@ -567,6 +570,10 @@ async fn run_upgrade(
             ));
         }
         if let Err(why) = s.within_deployment(a, release.as_ref(), who.run.as_deref()) {
+            return Some(crate::node::rejected(why));
+        }
+        // The real gate: the app's group runs `__upgrade` before `UpgradeApp` is logged.
+        if let Err(why) = s.within_lineage(a, release.as_ref()) {
             return Some(crate::node::rejected(why));
         }
         if !who.by_operator
