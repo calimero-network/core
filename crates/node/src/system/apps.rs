@@ -1371,6 +1371,7 @@ fn transfer_app(
         }
     }
     state.set_app_file_bytes(&app_id, held);
+    state.forget_app_origins(&app_id);
     let payer = state.apps.get(&app_id).map(crate::usage::payer);
     if let (Some(payer), Some(runs)) = (payer, state.compute.get_mut(&app_id)) {
         for slot in runs.values_mut() {

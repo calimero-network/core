@@ -449,7 +449,8 @@ has a new account, which reaches the instance only once its managers let it in
 (a guest of the organization with a grant on the instance) and the app's own
 grants then decide. An instance's origin is never served, 4 per instance and
 4096 per cluster (apart from packages' own 4096, so instances never fill the
-packages' room), and deleting the instance takes them with it. The same
+packages' room), and deleting the instance, moving it to another organization or handing it
+to a new owner takes them with it. The same
 first-come rule holds, one package or instance per origin, with one exception:
 the package's manager takes back an origin an instance of its own package
 holds (`POST /packages/{package}/origins`), which ends the instance's
@@ -668,7 +669,7 @@ Code: `origins.rs`, `api/origins.rs`.
 - The origin rides in `SessionClaims::origin` and `RefreshRecord::origin`, kept by `Pending::SignUp` and stated nowhere in the sign-in challenge.
 - `principal` and `refresh` refuse such sessions once the origin is removed, and `UseRefresh` refuses an exchange that changes it.
 - `UninstallPackage` of the last release forgets them.
-- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app` forgets them, and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, `beyond_instance`, instance creation, app lists, streams).
+- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app`, `TransferApp` and `MoveApp` forget them (`forget_app_origins`), and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, `beyond_instance`, instance creation, app lists, streams).
 - Limits `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS` and, for instances, `MAX_ORIGINS_PER_APP` and `MAX_APP_ORIGINS` (`SystemState::origins_full`); `http` only for `localhost` names on a `--dev` node (`allow_package_uploads`).
 
 #### Served origins

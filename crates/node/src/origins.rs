@@ -494,6 +494,13 @@ impl SystemState {
     pub(crate) fn forget_origins(&mut self, package: &str) {
         self.package_origins.retain(|_, o| o.package != package);
     }
+
+    /// Forget instance `app`'s origins, which were its managers' until it was
+    /// deleted, moved or handed on, and with them the sessions opened there.
+    pub(crate) fn forget_app_origins(&mut self, app: &str) {
+        self.package_origins
+            .retain(|_, o| o.app.as_deref() != Some(app));
+    }
 }
 
 /// What removing an origin answers.

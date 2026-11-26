@@ -9,7 +9,7 @@
 //! (see `harness/cluster.rs`).
 
 use calimero_client::types::TeamJoin;
-use calimero_client::Request;
+use calimero_client::{Client, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use reqwest::Method;
 use serde_json::json;
@@ -468,5 +468,88 @@ async fn a_packages_manager_takes_back_an_origin_an_instance_holds() {
         .unwrap()
         .is_empty());
     let e = carol.auth().me().await.unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
+}
+
+/// An instance moved to another organization, or handed to a new owner,
+/// leaves its origins behind: the former manager's site signs no one in to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_instance_moved_or_transferred_loses_its_origins() {
+    let c = Cluster::start(3).await;
+    into_catalog(&c, release(KV, "1.0.0")).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
+    let org_of = |v: serde_json::Value| v["orgId"].as_str().unwrap().to_owned();
+    let acme = org_of(wire(alice.orgs().create("acme", None, None).await.unwrap()));
+    let beta = org_of(wire(alice.orgs().create("beta", None, None).await.unwrap()));
+    let store = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "flags", "package": KV, "org": acme }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+
+    let carol = signed_in_at_site(&c, &alice, &mut alice_pk, &store, "carol").await;
+    let _moved = alice
+        .apps()
+        .app_move(&store, &beta, Some(false), Some(&mut alice_pk))
+        .await
+        .unwrap();
+    assert_site_gone(&alice, &store, &carol).await;
+
+    let dave = signed_in_at_site(&c, &alice, &mut alice_pk, &store, "dave").await;
+    let token = alice
+        .orgs()
+        .invite_create(
+            &beta,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap()
+        .token;
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = wire(bob.auth().me().await.unwrap())["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    alice
+        .apps()
+        .transfer(&store, &bob_id, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    assert_site_gone(&alice, &store, &dave).await;
+}
+
+/// `store`'s manager registers [`SITE`] for it, and `name` signs up there.
+async fn signed_in_at_site(
+    c: &Cluster,
+    manager: &Client,
+    pk: &mut SoftAuthenticator,
+    store: &str,
+    name: &str,
+) -> Client {
+    let _ok = manager
+        .apps()
+        .origin_add(store, SITE, None, Some(pk))
+        .await
+        .unwrap();
+    let person = c.client(2);
+    let mut site_pk = SoftAuthenticator::new(SITE_RP, SITE);
+    let _s = person
+        .sign_up_at(&mut site_pk, name, Some(SITE))
+        .await
+        .unwrap();
+    let _me = person.auth().me().await.unwrap();
+    person
+}
+
+/// `store` holds no origin, and `person`'s session from the site is over.
+async fn assert_site_gone(manager: &Client, store: &str, person: &Client) {
+    let listed = wire(manager.apps().origins(store).await.unwrap());
+    assert!(listed["origins"].as_array().unwrap().is_empty(), "{listed}");
+    let e = person.auth().me().await.unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
 }

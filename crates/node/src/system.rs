@@ -2056,8 +2056,7 @@ impl SystemState {
     fn remove_app(&mut self, app_id: &str) {
         self.set_app_file_bytes(app_id, 0);
         let _gone = self.apps.remove(app_id);
-        self.package_origins
-            .retain(|_, o| o.app.as_deref() != Some(app_id));
+        self.forget_app_origins(app_id);
         // A grant from or to the app goes with it.
         for sources in self.delegations.values_mut() {
             let _from = sources.remove(app_id);
@@ -5202,6 +5201,7 @@ impl SystemState {
             a.org = to_org.to_owned();
             a.access = access.clone();
         }
+        self.forget_app_origins(app_id);
         // Its update policy and a first approval of its update were the source's owner's
         // and admins' decisions: the target's decide there.
         if let Some(o) = self.orgs.get_mut(&from) {
