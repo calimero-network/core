@@ -17533,6 +17533,75 @@ fn a_packages_manager_takes_back_its_instances_origin() {
     assert_eq!(m.state.origins_of_app("a").count(), 0);
 }
 
+/// An upgrade into another package forgets the instance's origins: each was
+/// bound to the package it was added under, which no longer reaches the instance.
+#[test]
+fn an_upgrade_into_another_package_forgets_the_instances_origins() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let _ok = m
+        .run_unproven(upgrade_to("a", "alice", "b-1.0.0", Some(("q", "1.0.0"))))
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 1);
+    let _ok = m
+        .run_unproven(upgrade_to("a", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+    let mut fresh = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    if let SystemCmd::AddPackageOrigin { registration, .. } = &mut fresh {
+        *registration = "r2".into();
+    }
+    let _ok = m.run_unproven(fresh).unwrap();
+    assert_eq!(m.state.package_origins[NOTES].app, None);
+}
+
+/// An undo or a restore that leaves the instance on another package forgets
+/// its origins as an upgrade does.
+#[test]
+fn an_undo_or_restore_into_another_package_forgets_the_instances_origins() {
+    let mut m = instance_of_a_shared_bundle();
+    let mut up = upgrade_to("a", "alice", "b-1.0.0", Some(("p", "1.0.0")));
+    if let SystemCmd::UpgradeApp { restore_point, .. } = &mut up {
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UndoUpgrade {
+            app_id: "a".into(),
+            apps: serde_json::from_value(json!({ "a": [] })).unwrap(),
+            actor: "alice".into(),
+            at: 20,
+            consent: Value::Null,
+            release_installed: true,
+        })
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    register(&mut m, 1, "replica");
+    let _prev = m.state.bundles.insert(
+        "b-other".into(),
+        serde_json::from_value(json!({ "hash": "b-other", "size": 1, "uploadedBy": "alice" }))
+            .unwrap(),
+    );
+    let _ok = m
+        .run_unproven(SystemCmd::RestoreApp {
+            app_id: "a".into(),
+            replicas: vec![1],
+            bundle: "b-other".into(),
+            compute_bundle: None,
+            source: crate::types::RestoreSource {
+                name: "a.snap".into(),
+                sha256: "ab".into(),
+                index: 1,
+            },
+            proof: Value::Null,
+        })
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+}
+
 /// Instances' origins have a cluster-wide budget of their own: filled, it
 /// leaves packages' origins room.
 #[test]

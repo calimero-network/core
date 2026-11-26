@@ -505,6 +505,18 @@ impl SystemState {
         self.package_origins.retain(|_, o| o.package != package);
     }
 
+    /// Forget instance `app`'s origins added under a package it no longer runs:
+    /// their sessions are bound to that package and reach the instance no more.
+    pub(crate) fn forget_moved_app_origins(&mut self, app: &str) {
+        let package = self
+            .apps
+            .get(app)
+            .and_then(|r| self.running_release(r))
+            .map(|r| r.package);
+        self.package_origins
+            .retain(|_, o| o.app.as_deref() != Some(app) || package.as_ref() == Some(&o.package));
+    }
+
     /// Forget instance `app`'s origins, which were its managers' until it was
     /// deleted, moved or handed on, and with them the sessions opened there.
     pub(crate) fn forget_app_origins(&mut self, app: &str) {
