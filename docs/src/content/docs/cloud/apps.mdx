@@ -15,7 +15,7 @@ of one a node's data still holds; such an app can still be listed and deleted.
 ## On a cluster
 
 - **Packages.** Install a signed `.mpk` by `package@version`
-  from the operator's registry (`POST /packages/install`, `meroctl app install
+  from the operator's registry (`POST /packages/install`, `meroctl package install
   PACKAGE@VERSION`); a file (`POST /packages`) only on a development cluster.
   Every node that runs a
   release fetches it and checks the publisher's signature, the artifact digests
@@ -89,7 +89,7 @@ of one a node's data still holds; such an app can still be listed and deleted.
   cannot reach the cluster cannot write, so there are never concurrent edits to
   reconcile later.
 
-See [Application execution](/protocol/execution/) for how a call runs.
+See [App execution](/protocol/execution/) for how a call runs.
 
 ## Limits
 

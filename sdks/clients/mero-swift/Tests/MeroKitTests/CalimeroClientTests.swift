@@ -336,7 +336,7 @@ final class CalimeroClientTests: XCTestCase {
                 ])
             case ("GET", "/consent/r1/result"):
                 return .json(["requestId": "r1", "kind": "upgrade", "status": "approved", "decidedAt": 2])
-            case ("POST", "/apps"): return .json(["appId": "a1", "contextId": "c"])
+            case ("POST", "/apps"): return .json(["appId": "a1"])
             default: return .json([:])
             }
         }

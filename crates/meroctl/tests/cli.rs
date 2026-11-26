@@ -318,30 +318,34 @@ fn scenario(root: &Path, url: &str) {
         "{activity}"
     );
 
-    // app: v1's applications are signed packages.
-    let installed = alice.run(&["app", "install", "--path", path(&kv_1_0)]);
+    // package: v1's applications are signed packages, installed on the cluster.
+    let installed = alice.run(&["package", "install", "--path", path(&kv_1_0)]);
     assert_eq!(installed["package"], "com.test.kv");
     assert!(alice
-        .run(&["app", "list"])
+        .run(&["package", "list"])
         .to_string()
         .contains("com.test.kv"));
+    // `app install`, from before `package`, still installs.
     let _ = alice.run(&["app", "install", "--path", path(&kv_1_1)]);
-    let versions = alice.run(&["app", "versions", "com.test.kv"]);
+    let versions = alice.run(&["package", "versions", "com.test.kv"]);
     assert_eq!(versions["versions"].as_array().unwrap().len(), 2);
     // Each release says its kind: an upload is private, here to its installer alone.
     for listed in [
         &versions["versions"][0],
-        &alice.run(&["app", "list"])["packages"][0]["versions"][0],
+        &alice.run(&["package", "list"])["packages"][0]["versions"][0],
     ] {
         assert_eq!(listed["visibility"], "private", "{listed}");
         assert_eq!(listed["orgs"], json!([]), "{listed}");
     }
     assert_eq!(
-        alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
+        alice.run(&["package", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"
     );
     // A release without pipelines registers none; the newest version is the default.
-    assert_eq!(alice.run(&["app", "pipelines", "com.test.kv"]), json!({}));
+    assert_eq!(
+        alice.run(&["package", "pipelines", "com.test.kv"]),
+        json!({})
+    );
 
     // Web origins: the first installer manages them, with a passkey per change.
     let site = "https://kv.example.com";
@@ -374,15 +378,15 @@ fn scenario(root: &Path, url: &str) {
         "--dev-passkey",
         pk,
     ]);
-    let listed = alice.run(&["app", "origins", "list", "com.test.kv"]);
+    let listed = alice.run(&["package", "origins", "list", "com.test.kv"]);
     assert_eq!(listed["origins"][0]["origin"], site, "{listed}");
     assert_eq!(listed["origins"][0]["rpId"], "example.com", "{listed}");
     let asked = alice
-        .try_run(&["app", "origins", "remove", "com.test.kv", site])
+        .try_run(&["package", "origins", "remove", "com.test.kv", site])
         .unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let _ = alice.run(&[
-        "app",
+        "package",
         "origins",
         "remove",
         "com.test.kv",
@@ -391,11 +395,11 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     assert_eq!(
-        alice.run(&["app", "origins", "list", "com.test.kv"])["origins"],
+        alice.run(&["package", "origins", "list", "com.test.kv"])["origins"],
         json!([])
     );
 
-    // context: an instance of an application, named by an alias.
+    // instance: a running copy of a package, named by an alias.
     let created = alice.run(&[
         "instance",
         "create",
@@ -655,7 +659,7 @@ fn scenario(root: &Path, url: &str) {
         "kv-1.2.0.mpk",
         &mpk("com.test.kv", "1.2.0", &variant(&kv, "v12"), &publisher),
     );
-    let _ = alice.run(&["app", "install", "--path", path(&kv_1_2)]);
+    let _ = alice.run(&["package", "install", "--path", path(&kv_1_2)]);
     let ci_key = alice.run(&[
         "account",
         "api-key",
@@ -680,7 +684,7 @@ fn scenario(root: &Path, url: &str) {
     assert!(alice
         .run(&["instance", "get", "notes"])
         .to_string()
-        .contains(&s(&alice.run(&["app", "versions", "com.test.kv"])
+        .contains(&s(&alice.run(&["package", "versions", "com.test.kv"])
             ["versions"]
             .as_array()
             .unwrap()
@@ -1012,7 +1016,7 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
     // A WASM of each release's own: one that ships in another signer's package
     // is refused, and the node names an instance's release by its WASM.
     let wasm = app.join("app.wasm");
-    let org = s(&alice.run(&["org", "list"])["namespaces"][0]["orgId"]);
+    let org = s(&alice.run(&["org", "list"])["orgs"][0]["orgId"]);
     let release = |version: &str| {
         std::fs::write(&wasm, variant(kv, &format!("dep-{version}"))).unwrap();
         alice.try_run(&[
@@ -1231,7 +1235,7 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
     let unusable = bob.try_run(&accept).unwrap_err();
     assert!(unusable.contains("OFFERS_NOT_USABLE"), "{unusable}");
     let _ = bob.run(&[
-        "app",
+        "package",
         "install",
         "--path",
         path(&app.join("dist/com.test.dep-1.1.0.mpk")),

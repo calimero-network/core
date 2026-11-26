@@ -103,7 +103,7 @@ can later prove which node answered what at which log index.
    the leader over the peer sealed channel. A forward waits at most 5 seconds,
    then tries whoever leads now; the loop rides out elections for a few
    seconds before answering `503`.
-8. **Run and append** on the leader ([Application execution](/protocol/execution/),
+8. **Run and append** on the leader ([App execution](/protocol/execution/),
    [Replication](/protocol/replication/#proposing-the-leader-runs-everyone-applies)).
    For a client's call the leader reads the caller's organization standing on
    fresh system state first: it waits until its own system replica has applied

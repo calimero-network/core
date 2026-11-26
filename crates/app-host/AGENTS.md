@@ -4,7 +4,7 @@
 
 - **Crate**: `calimero-app-host` (`publish = false`, prototype); engine-neutral, no wasmtime
 - **Entry**: `src/lib.rs`; `core.rs` (`HostCore`, `RunLimit`), `entry.rs` (`entry_bytes`), `action.rs` (`ActionHost`, `HttpHost`, `subcall_key`), `blobs.rs` (`BlobHost`, `blob_refs`, `BLOB_REF_TAG`), `search.rs` (`SearchHost`, `SearchQuery`), `files.rs` (`Files` provider traits, limits, soft-error strings, `NoFiles`, `MemoryFiles` under `testing`), `core/file_ops.rs` (the `files_*`, `writer_*`, `reader_*` host calls), `fuel.rs` (the host-work fuel table, `MAX_SEARCHES_PER_RUN`), `engine.rs` (`Engine`, `Prepared`), `abi.rs`, `overlay.rs`, `state.rs` (`StateView`, `stored_key`), `time.rs`, `types.rs`
-- **Docs**: [Application execution](https://calimero-network.github.io/core/protocol/execution/) ([Storage](https://calimero-network.github.io/core/protocol/execution/#storage), [Time and randomness](https://calimero-network.github.io/core/protocol/execution/#time-and-randomness)), [The env API](https://calimero-network.github.io/core/build/host-functions/)
+- **Docs**: [App execution](https://calimero-network.github.io/core/protocol/execution/) ([Storage](https://calimero-network.github.io/core/protocol/execution/#storage), [Time and randomness](https://calimero-network.github.io/core/protocol/execution/#time-and-randomness)), [The env API](https://calimero-network.github.io/core/build/host-functions/)
 
 ## What This Crate Does
 

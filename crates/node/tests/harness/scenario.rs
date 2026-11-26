@@ -1772,7 +1772,11 @@ impl<'a> Runner<'a> {
             .and_then(Value::as_array)
             .map(|a| {
                 a.iter()
-                    .map(|x| x.get("contextId").cloned().unwrap_or(Value::Null))
+                    .map(|x| {
+                        x.get("appId")
+                            .and_then(Value::as_str)
+                            .map_or(Value::Null, |a| Value::String(context_id(a)))
+                    })
                     .collect()
             })
             .unwrap_or_default();

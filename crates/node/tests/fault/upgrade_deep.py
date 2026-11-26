@@ -29,6 +29,7 @@ holds no session of theirs (a node the rollout added).
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import re
@@ -177,14 +178,27 @@ def eq(got, want, what):
         raise Failed(f"{what}: got {_short(got)}, want {_short(want)}")
 
 
+@functools.cache
+def cut_fields() -> frozenset:
+    """Answer fields a hard cutover removed from the API (`[[cutover]] field = ...` in
+    `crates/node/api-deprecations.toml`): a release before it answered them, this one may not."""
+    import tomllib
+
+    doc = tomllib.loads((ROOT / "crates/node/api-deprecations.toml").read_text())
+    return frozenset(c["field"] for c in doc.get("cutover", []) if "field" in c)
+
+
 def subset(got, want, what, path="$"):
     """`got` holds every key `want` holds, with the same value; a list holds the
     same items in the same order, each compared the same way: a new release may
-    add fields (to an object, or to every object in a list), never drop or change
-    one, nor add, drop or reorder a list's items."""
+    add fields (to an object, or to every object in a list), never change one or
+    drop one a hard cutover did not remove (`cut_fields`), nor add, drop or
+    reorder a list's items."""
     if isinstance(want, dict):
         check(isinstance(got, dict), f"{what}: {path} is {_short(got)}, want an object")
         for k, v in want.items():
+            if k not in got and k in cut_fields():
+                continue
             check(k in got, f"{what}: {path}.{k} is gone (have {sorted(got)})")
             subset(got[k], v, what, f"{path}.{k}")
         return

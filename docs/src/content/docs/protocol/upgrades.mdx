@@ -576,9 +576,9 @@ run, then each app upgraded in turn. There are three kinds, by who starts it:
 | A publisher's | `POST /orgs/{org}/packages/{package}/upgrade { version }` | An owner or admin of the [publisher](/protocol/governance/#publishers) of `package` (before 1.0.0-rc.33: an organization-wide `MANAGE_APPLICATION` holder there) | Every instance of `package` that the starter may upgrade: those of the organizations they are an owner or admin of, never another's (before 1.0.0-rc.33: every instance, chiefly those whose release declares `upgrades: publisher`) | `org:<org> / __upgrade_published / { package, version, migrate }` |
 | The operator's | `POST /ops/orgs/{org}/upgrade { package, version, team?, cascade? }` | The operator, where governance gives it app upgrades | As an organization's run | The operator key's signature over `org:<org> / __upgrade_org / …` ([The operator](/protocol/operator/#the-credential)) |
 
-`meroctl group upgrade trigger <org> --package P --version V [--group T
-[--cascade]]` starts an organization's run, `meroctl group upgrade status
-<org> <run>` follows it and `meroctl group upgrade retry <org> <run>` retries
+`meroctl team upgrade trigger <org> --package P --version V [--team T
+[--cascade]]` starts an organization's run, `meroctl team upgrade status
+<org> <run>` follows it and `meroctl team upgrade retry <org> <run>` retries
 it; `meroctl ops upgrade-org` starts the operator's. A publisher's run
 has no command yet: `meroctl raw post /orgs/<org>/packages/<package>/upgrade
 '{"version":"V"}'`.

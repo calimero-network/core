@@ -17,12 +17,11 @@ T = TypeVar("T", bound="AppCreated")
 
 @_attrs_define
 class AppCreated:
-    """What `POST /apps` answers: the new instance, its context id, its group and replicas, whether its release ships a
-    compute component, and the apps it created with it by name.
+    """What `POST /apps` answers: the new instance, its app group and replicas, whether its release ships a compute
+    component, and the apps it created with it by name.
 
         Attributes:
             app_id (str):
-            context_id (str):
             group (int):
             replicas (list[int]):
             compute (bool):
@@ -30,7 +29,6 @@ class AppCreated:
     """
 
     app_id: str
-    context_id: str
     group: int
     replicas: list[int]
     compute: bool
@@ -41,8 +39,6 @@ class AppCreated:
         from ..models.app_created_links import AppCreatedLinks
 
         app_id = self.app_id
-
-        context_id = self.context_id
 
         group = self.group
 
@@ -57,7 +53,6 @@ class AppCreated:
         field_dict.update(
             {
                 "appId": app_id,
-                "contextId": context_id,
                 "group": group,
                 "replicas": replicas,
                 "compute": compute,
@@ -74,8 +69,6 @@ class AppCreated:
         d = dict(src_dict)
         app_id = d.pop("appId")
 
-        context_id = d.pop("contextId")
-
         group = d.pop("group")
 
         replicas = cast(list[int], d.pop("replicas"))
@@ -86,7 +79,6 @@ class AppCreated:
 
         app_created = cls(
             app_id=app_id,
-            context_id=context_id,
             group=group,
             replicas=replicas,
             compute=compute,

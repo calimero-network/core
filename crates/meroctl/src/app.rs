@@ -1,11 +1,13 @@
-//! `meroctl app`: signed packages, v1's applications, from start to install.
-//! Making one (`new`, `build`, `codegen`, `abi`) and shipping it (`key`,
-//! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); an
-//! application is then installed once on the cluster (verified on every
-//! node), and each running copy of it is an instance (`meroctl instance create
-//! --package`). `meroctl package` is the same command. `check` judges a
-//! release against the one it replaces (`app/check.rs`): offline against a
-//! `.mpk`, with a node against an installed version.
+//! `meroctl app` makes and ships an app's signed package (v1's application):
+//! making one (`new`, `build`, `codegen`, `abi`) and shipping it (`signer`,
+//! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); `release`
+//! packs and installs in one step. `meroctl package` ([`PackageCmd`]) handles
+//! the packages installed on the cluster (verified on every node); each
+//! running copy of one is an instance (`meroctl instance create --package`).
+//! `meroctl app install` and the rest of `package`'s commands still parse,
+//! hidden from `app`'s help. `check` judges a release against the one it
+//! replaces (`app/check.rs`): offline against a `.mpk`, with a node against an
+//! installed version.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -69,7 +71,16 @@ pub enum AppCmd {
     /// that is not newer than every release of the package the cluster has
     /// installed, before building anything.
     Release(Box<crate::make::ReleaseArgs>),
-    /// Install an application: `PACKAGE@VERSION` (or `PACKAGE --version V`)
+    /// The packages installed on the cluster (`meroctl package`): hidden
+    /// here, where they parse as before.
+    #[command(flatten)]
+    Package(PackageCmd),
+}
+
+/// `meroctl package`: the packages installed on the cluster.
+#[derive(Debug, Subcommand)]
+pub enum PackageCmd {
+    /// Install a package: `PACKAGE@VERSION` (or `PACKAGE --version V`)
     /// from the node's registry, or a local file with `--path` (a signed
     /// `.mpk`; on a development cluster also a raw `.wasm`, which uploads a
     /// bundle). `PACKAGE` alone installs the latest version `--registry`
@@ -94,15 +105,15 @@ pub enum AppCmd {
         #[arg(long, env = "CALIMERO_REGISTRY_API_KEY", hide_env_values = true)]
         registry_api_key: Option<String>,
     },
-    /// Installed applications and their versions.
+    /// Installed packages and their versions.
     #[command(alias = "ls", alias = "list-packages")]
     List,
-    /// One installed application.
+    /// One installed package.
     Get { package: String },
-    /// An application's installed versions.
+    /// A package's installed versions.
     #[command(alias = "list-versions")]
     Versions { package: String },
-    /// An application's newest installed version.
+    /// A package's newest installed version.
     GetLatestVersion { package: String },
     /// The pipelines a version registers (default: the newest installed): name, hash,
     /// worst-case fuel, the modules it pins and the canonical pipeline.
@@ -111,28 +122,27 @@ pub enum AppCmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Uninstall one version, or the whole application. Refused while an instance runs it.
+    /// Uninstall one version, or the whole package. Refused while an instance runs it.
     Uninstall {
         package: String,
         #[arg(long)]
         version: Option<String>,
     },
-    /// Push a build to its instances now, then on every save (v1's `app
-    /// watch`). A signed `.mpk` is installed and the instances running its
+    /// Push a build to its instances now, then on every save. A signed `.mpk` is installed and the instances running its
     /// package are updated to its version; a raw `.wasm` (development
     /// clusters) updates the instances named with `--instance`.
     Watch(WatchArgs),
     /// The web origins (a developer's own site, a hosting preview) whose
-    /// pages may sign people in to this application, each under its own
-    /// passkey rp-id. Its manager's: the publisher organization's
-    /// `MANAGE_APPLICATION` holders, else whoever installed it first.
+    /// pages may sign people in to this package's frontend, each under its
+    /// own passkey rp-id. Its manager's: the publisher organization's
+    /// holders of the capability to manage apps, else whoever installed it first.
     #[command(subcommand)]
     Origins(OriginsCmd),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum OriginsCmd {
-    /// The origins registered for an application, with their rp-ids and
+    /// The origins registered for a package, with their rp-ids and
     /// whether the cluster serves its frontend there (`served`).
     #[command(alias = "ls")]
     List { package: String },
@@ -147,7 +157,7 @@ pub enum OriginsCmd {
         /// default) or a parent domain of it, never the cluster's.
         #[arg(long)]
         rp_id: Option<String>,
-        /// Have the cluster serve the application's frontend on this origin
+        /// Have the cluster serve the package's frontend on this origin
         /// too (a custom domain: `https://host`, no port). The approval names
         /// it, and every node of the cluster must run this release or later.
         #[arg(long)]
@@ -165,7 +175,7 @@ pub enum OriginsCmd {
     },
 }
 
-/// What `app watch` and `dev watch` push, where, and how often.
+/// What `package watch` and `dev watch` push, where, and how often.
 #[derive(Debug, clap::Args)]
 pub struct WatchArgs {
     #[arg(long)]
@@ -249,9 +259,28 @@ pub async fn run_offline(cmd: AppCmd, home: &Home) -> eyre::Result<Value> {
 }
 
 pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
+    Ok(match cmd {
+        AppCmd::Package(cmd) => run_package(cmd, env).await?,
+        AppCmd::Check(a) => check::run(*a, Some(env)).await?,
+        AppCmd::Release(a) => release(&a, env).await?,
+        AppCmd::New(_)
+        | AppCmd::Build(_)
+        | AppCmd::Codegen { .. }
+        | AppCmd::Abi(_)
+        | AppCmd::Uses(_)
+        | AppCmd::Signer(_)
+        | AppCmd::Pack(_)
+        | AppCmd::Sign(_)
+        | AppCmd::Inspect { .. }
+        | AppCmd::Publish(_) => unreachable!("runs before connecting (main)"),
+    })
+}
+
+/// `meroctl package` (and the same commands under `app`).
+pub async fn run_package(cmd: PackageCmd, env: &Env) -> eyre::Result<Value> {
     let packages = env.client.packages();
     Ok(match cmd {
-        AppCmd::Install {
+        PackageCmd::Install {
             coords,
             version,
             path,
@@ -277,42 +306,30 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             }
             (None, None) => unreachable!("clap requires one"),
         },
-        AppCmd::List => json!({ "packages": packages.list().await?.packages }),
-        AppCmd::Get { package } => to_json(&packages.get(&package).await?)?,
-        AppCmd::Versions { package } => {
+        PackageCmd::List => json!({ "packages": packages.list().await?.packages }),
+        PackageCmd::Get { package } => to_json(&packages.get(&package).await?)?,
+        PackageCmd::Versions { package } => {
             json!({ "package": package, "versions": packages.get(&package).await?.versions })
         }
-        AppCmd::GetLatestVersion { package } => {
+        PackageCmd::GetLatestVersion { package } => {
             json!({ "package": package, "latest": packages.get(&package).await?.latest })
         }
-        AppCmd::Pipelines { package, version } => {
+        PackageCmd::Pipelines { package, version } => {
             let version = match version {
                 Some(v) => v,
                 None => packages.get(&package).await?.latest,
             };
             env.client.package_pipelines(&package, &version).await?
         }
-        AppCmd::Uninstall { package, version } => match version {
+        PackageCmd::Uninstall { package, version } => match version {
             Some(v) => to_json(&packages.version_uninstall(&package, &v).await?)?,
             None => to_json(&packages.uninstall(&package).await?)?,
         },
-        AppCmd::Watch(a) => {
+        PackageCmd::Watch(a) => {
             watch(env, &a, true).await?;
             return Ok(Value::Null);
         }
-        AppCmd::Origins(cmd) => origins(cmd, env).await?,
-        AppCmd::Check(a) => check::run(*a, Some(env)).await?,
-        AppCmd::Release(a) => release(&a, env).await?,
-        AppCmd::New(_)
-        | AppCmd::Build(_)
-        | AppCmd::Codegen { .. }
-        | AppCmd::Abi(_)
-        | AppCmd::Uses(_)
-        | AppCmd::Signer(_)
-        | AppCmd::Pack(_)
-        | AppCmd::Sign(_)
-        | AppCmd::Inspect { .. }
-        | AppCmd::Publish(_) => unreachable!("runs before connecting (main)"),
+        PackageCmd::Origins(cmd) => origins(cmd, env).await?,
     })
 }
 
@@ -398,7 +415,7 @@ async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value>
     }))
 }
 
-/// `meroctl app origins`. A change goes out with the manager's passkey
+/// `meroctl package origins`. A change goes out with the manager's passkey
 /// assertion when `--dev-passkey` names one; without it the request goes as
 /// is, and the node's `412 CONFIRM_REQUIRED` is the answer (no passkey, no
 /// change: the console makes it with the manager's own).

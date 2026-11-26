@@ -598,7 +598,9 @@ async fn deploy(cl: &Client, name: &str, wasm: Vec<u8>, options: Value) -> (Stri
         })
         .await
         .unwrap();
-    (created.app_id, created.context_id)
+    // The context id is derived from the app id (the API accepts either).
+    let ctx = hex::encode(calimero_identity::sha256(created.app_id.as_bytes()));
+    (created.app_id, ctx)
 }
 
 /// Poll a strong view until `done` holds (follow-ups run after their entry).

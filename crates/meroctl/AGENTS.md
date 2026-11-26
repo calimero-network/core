@@ -11,10 +11,15 @@ from the node's OpenAPI document; `crates/client/AGENTS.md`) and prints the
 typed answer serialized back to JSON; `raw` and `proxy` send any route through
 `Transport`.
 
+Names (commands, flags, value names, help, output keys) are the glossary's:
+`package`, `instance`, `org`, `team`, never v1's application, context,
+namespace or group (test `help_uses_the_glossary_words`; `scripts/check-vocabulary.py`
+holds the API document and the docs to the same words).
+
 | v1 | here | API |
 | --- | --- | --- |
 | `node add/remove/use/list` | saved nodes, `{home}/meroctl/nodes.json` | (local) |
-| `app install/list/get/versions/get-latest-version/pipelines/uninstall/watch` (also `package`) | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle; `app origins list/add/remove` its registered web origins (its manager's; `add --served` a custom domain the cluster serves the frontend on) | `/packages*`, `/bundles`, `/package-origins/{package}` |
+| `app install/list/get/versions/get-latest-version/pipelines/uninstall/watch` → `package ...` (the `app` spellings still parse, hidden from `app`'s help: `mut_subcommand(.., hidden)` in `main.rs`; test `package_commands_are_packages_and_hidden_under_app`) | signed packages installed on the cluster (v1's applications); `--path` a `.mpk`, or a dev `.wasm` bundle; `package origins list/add/remove` its registered web origins (its manager's; `add --served` a custom domain the cluster serves the frontend on) | `/packages*`, `/bundles`, `/package-origins/{package}` |
 | `instance create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
 | `call` | `call --instance I METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
 | `blob list/upload/download/info/delete` | an instance's blobs | `/apps/{app}/blobs*` |
@@ -31,7 +36,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | (new) `app new/build/codegen/abi show\|diff/uses update\|check/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `uses update NAME --from <crate\|.mpk\|.wasm\|abi.json>` (`make/uses.rs`: checks the package, the semver range and the listed methods, then `calimero_app_build::uses::vendor` writes `calimero.lock` and `calimero/abi/NAME.json`) and `uses check` (`uses::check` plus the range), `meroctl-sign`, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `app check [DIR\|--mpk F] --against VERSION\|F.mpk [--fail-on red\|egress] [--allow-egress P]...` | `app/check.rs`: the candidate (packed with `app pack`'s flags, or `--mpk`) against the release it replaces, both as units (`uses` mode `create`, at most 3 deep, members from `--uses-mpk` then the node), judged by `calimero_bundle::update::classify`; the summary reports only destinations (`Data: stays in Calimero` or `Data can go to: <destinations>`; an external endpoint, a TEE included, is listed like any other) or `--json`; exit 0 judged, 1 the gate failed, 2 could not judge. Offline with `--against FILE.mpk` (`AppCmd::is_offline`). Tests: `tests/app_check.rs` | `/packages/{p}/{v}/capabilities`, `/packages/{p}` |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (the release's image by default, `docker_ready` checking Docker first; `--local` or `MEROD`: the binary; `--registry-url`, default the public registry) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
-| (new) `registry login/logout/list/search/versions/get` | the app registry's `GET /api/bundles` (`registry.rs`, no node): `search` filters the listing here (the registry has no search route); a key (`--api-key`, `CALIMERO_REGISTRY_API_KEY`, else the one `login` checked and saved per registry URL in `{home}/meroctl/registry.json`, 0600) lists private packages (`include_private=1`) and `--mine`; `app publish`, `app release --publish` (which refuses a version the registry already lists before building) and a version-less `app install PACKAGE` (the registry's latest) use it too. Tests: `tests/registry.rs` | registry |
+| (new) `registry login/logout/list/search/versions/get` | the app registry's `GET /api/bundles` (`registry.rs`, no node): `search` filters the listing here (the registry has no search route); a key (`--api-key`, `CALIMERO_REGISTRY_API_KEY`, else the one `login` checked and saved per registry URL in `{home}/meroctl/registry.json`, 0600) lists private packages (`include_private=1`) and `--mine`; `app publish`, `app release --publish` (which refuses a version the registry already lists before building) and a version-less `package install PACKAGE` (the registry's latest) use it too. Tests: `tests/registry.rs` | registry |
 | (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default | `/api/orgs`, `/api/clusters` |
 | `network status` | `/health` | |
 | (new) `login`, `logout [--all]`, `whoami`, `attest [node\|app INSTANCE]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
@@ -53,7 +58,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 - What an owner approves (`instance update`, `instance transfer`, `org delete`, approvals,
   update policies (`org|instance upgrade-policy` with a flag), `instance approve-update`,
   `instance undo --yes`,
-  `team upgrade trigger/retry`, `app origins add/remove`, a deployment's changes) takes `--dev-passkey FILE` on a development
+  `team upgrade trigger/retry`, `package origins add/remove`, a deployment's changes) takes `--dev-passkey FILE` on a development
   cluster: `DevPasskey` loads it, gives it to the generated method as its
   `passkey` (the routes the document marks `x-calimero-step-up`) and saves it
   after; without it the request is sent as is and the node answers `412
