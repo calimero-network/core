@@ -309,6 +309,19 @@ pub enum CreateBody {
 }
 
 impl CreateBody {
+    /// Whether this asks about one instance alone, all a session opened on an
+    /// instance's own origin may ask ([`crate::api::Principal::within`] judges which).
+    fn about_one_app(&self) -> bool {
+        match self {
+            Self::Upgrade { .. }
+            | Self::UpgradeUnit { .. }
+            | Self::Delegate { .. }
+            | Self::AcceptInvite { .. } => true,
+            Self::UpdatePolicy { subject, .. } => subject.names_app(),
+            _ => false,
+        }
+    }
+
     /// The organization request this is, with its `returnTo`; the body itself
     /// for every other kind.
     fn into_org_ask(self) -> Result<(orgs::OrgAsk, String), Self> {
@@ -1174,6 +1187,11 @@ pub async fn create(
     let package = p.bound_app().map(str::to_owned);
     // `person` made this request's round (`Node::sys_fresh_from`).
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    if !body.about_one_app() && !node.sys(|s| p.origin_admits(s, None)) {
+        return Err(ApiError::forbidden(
+            "a session opened on an instance's own site asks only about that instance",
+        ));
+    }
     let body = match body.into_org_ask() {
         Ok((ask, return_to)) => {
             let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;

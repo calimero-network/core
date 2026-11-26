@@ -745,6 +745,12 @@ pub struct UpdatePolicySubject {
     policy: Option<UpgradePolicy>,
 }
 
+impl UpdatePolicySubject {
+    pub(super) const fn names_app(&self) -> bool {
+        self.app.is_some()
+    }
+}
+
 /// The policy change's page, judged as the route judges it before the passkey.
 pub(super) async fn policy_request(
     node: &Node,

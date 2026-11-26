@@ -207,6 +207,17 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
     let e = carol.apps().public_link_list(&other).await.unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     let _ok = carol.apps().invite_list(&store).await.unwrap();
+    // Nor does the site ask her for anything past the store: an organization of hers.
+    let e = carol
+        .transport()
+        .json(Request::new(Method::POST, "consent/requests").json(json!({
+            "kind": "createOrg",
+            "subject": { "name": "mine" },
+            "returnTo": format!("{SITE}/"),
+        })))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
     // Bob's own valid consent over the change, logged without the API, is refused at apply.
     let statement = calimero_node::proof::Statement::new(
         &store,
