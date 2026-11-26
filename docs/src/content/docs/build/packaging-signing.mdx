@@ -116,6 +116,11 @@ detail.
 
    `pack` checks each against the node's own rules before signing.
 
+   `connectors`, also from `[package.metadata.calimero]` only, declares the
+   node's first-party connectors the app calls, with their operations and limit
+   values ([Use a first-party connector](/build/guides/connectors/); a node refuses
+   one it does not have with `400 BAD_CONNECTORS`).
+
    One more comes only from the crate's `[package.metadata.calimero]`:
 
    - `uses`: the other apps the release calls, by the name its code knows each by.
