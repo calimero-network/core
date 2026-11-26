@@ -10,6 +10,7 @@ import ed25519_sign
 from upgrade_deep import (VOLATILE, _http, DeepCase, Failed, anyone, check, decision, decisions, eq, events, host,
                           hosts, join, kv_wasm, new_org, people, person, same_decisions, same_read, scrub, snap, subset,
                           team_id, until)
+from upgrade_deep import not_covered
 from upgrade_path import case
 
 
@@ -607,3 +608,64 @@ class Usage(DeepCase):
         same_read(una, "auth/usage", s["me"], "the account's usage", USAGE_VOLATILE)
         same_read(una, f"orgs/{s['org']}/usage", s["org_usage"], "the organization's usage", USAGE_VOLATILE | {"apps"})
         subset(una.result(s["app"], "len"), 10, "the metered app")
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
+            "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
+            "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
+            "below cluster version 1.0.0-rc.33 (`Feature::OwnerApprovedUpgrades`), and the owner's upgrade after the "
+            "roll is already the `kv-package` case's (`extend`: the organization's owner upgrades on the new release). "
+            "`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and "
+            "`a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and "
+            "`an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization` the refusals on one build")
+
+not_covered("Apps", "A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`)",
+            "the hold is at least a day (`MIN_HOLD_HOURS`) of logged time from the release's install, which a deep run "
+            "cannot wait on either release (the tests move the update clock with a testing hook a release `merod` "
+            "lacks), so no automatic update is seeded or made; the policy that asks for one is the "
+            "`upgrade-policies` case's, and the restore point every upgrade takes and its undo are "
+            "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
+            "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
+            "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build")
+
+not_covered("Apps", "An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`)",
+            "it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster "
+            "version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. "
+            "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
+            "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
+            "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build")
+
+not_covered("Apps", "An instance's outbound audit (`GET /apps/{app}/outbound-log`, `meroctl instance outbound-log`)",
+            "it stores nothing: each node keeps its runs' requests in memory (`calimero_outbound::OutboundAudit`), which "
+            "a restart or a roll empties by design, so there is no data to carry across releases; the suite's clusters "
+            "also run with outbound off. `an_instances_owner_reads_its_outbound_requests_without_values` "
+            "(`component_cluster.rs`) and `calimero_outbound`'s audit tests cover it on one build")
+
+not_covered("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per request (`calimero_app_host`'s fuel table)",
+            "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
+            "the log replays alike on either release, and a search cap answers a view, which is never logged. The "
+            "deep cases' calls and searches run far within the default fuel on both releases. `tests/engine.rs` "
+            "(`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
+            "`a_guest_cannot_spend_fuel_its_host_calls_already_owe`, `refused_xcall_arguments_cost_fuel`, "
+            "`stdout_costs_fuel_after_the_log_is_full`) covers it on one build")
+
+not_covered("Apps", "Timers (`#[app::every]`) firing across the roll",
+            "the only timer the suite's apps carry is the kv fixture's `beat`, declared `#[app::every(\"1h\")]` and run on "
+            "the nodes' wall clock: one tick needs an hour, and a roll takes minutes, so no tick falls in any phase and "
+            "there is nothing to seed or read. The tests move the app clock with a test-only clock "
+            "that a release `merod` lacks, and no flag or route moves it; `ticks_run_once_per_slot`, "
+            "`a_tick_runs_once_across_failover` and `missed_ticks_collapse_into_one` (`component_cluster.rs`) cover ticks "
+            "on one build")
+
+not_covered("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
+            "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
+            "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
+            "`GET /apps/{app}/update`'s `summary`",
+            "pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, "
+            "and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, "
+            "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and "
+            "`update-classes-approvals` cases'. "
+            "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
+            "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build")
