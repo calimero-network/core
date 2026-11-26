@@ -519,7 +519,7 @@ describe('credentials, memberships and invites are approved with a passkey (412 
   });
 });
 
-describe('app teams, the invite list and team default capabilities (core #4890)', () => {
+describe('app teams, the invite list and team default capabilities', () => {
   const confirmed = { challengeId: 'c-1', assertion: expect.objectContaining({ signature: 'sig' }) };
 
   it('lists the app teams and the mode, with no approval', async () => {
@@ -738,7 +738,7 @@ describe('the rest of the node API', () => {
     ]);
   });
 
-  it("reads the passkeys' times from me(), lists the account's sessions and ends one (core #4894)", async () => {
+  it("reads the passkeys' times from me(), lists the account's sessions and ends one", async () => {
     const c = client();
     const SESSIONS = [
       { session: 's-2', passkey: 'cred', app: null, origin: null, openedAt: 10, lastActiveAt: 20, current: true },
@@ -850,7 +850,7 @@ describe('the rest of the node API', () => {
     expect(await c.orgs.create({ name: 'Acme', capabilities }).catch((e: unknown) => e)).toBeInstanceOf(FeatureNotActive);
   });
 
-  it("lists an organization's members' lockout risk for its admins (core #4902)", async () => {
+  it("lists an organization's members' lockout risk for its admins", async () => {
     const c = client();
     const MEMBERS = [
       { account: 'acc-1', name: 'Ana', role: 'admin', teams: ['t1'], passkeys: '3+', recoveryCode: true, lastActiveDay: '2026-11-10', sessions: 2 },
@@ -862,7 +862,7 @@ describe('the rest of the node API', () => {
     expect(sent()).toEqual([['GET', '/orgs/o%2F1/members?detail=security']]);
   });
 
-  it("lists what the account's passkeys did (core #4901)", async () => {
+  it("lists what the account's passkeys did", async () => {
     const c = client();
     const ACTIVITY = [
       { at: 30, passkey: 'cred', kind: 'approval', app: null, origin: null, method: '__create_api_key', subject: 'account:acc-1' },

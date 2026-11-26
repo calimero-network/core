@@ -37,7 +37,8 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use calimero_log::{Group, GroupId, NodeId};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::info;
 
 use super::{Node, SYSTEM_GROUP};
@@ -230,7 +231,7 @@ impl Node {
         &self,
         system: (&str, &[u8; 32]),
         code: &[(String, [u8; 32])],
-    ) -> Result<Value, ApiError> {
+    ) -> Result<SystemRecovered, ApiError> {
         use crate::recovery_disk::{self as disk, Kind};
         use crate::system::BackupHolder;
         let refused =
@@ -305,7 +306,11 @@ impl Node {
             .await
             .map_err(|e| ApiError::unavailable(&format!("{e:#}")))?;
         info!(file = %name, index, apps, accounts, "founded the cluster again from its recovery disk; restore each app from its own file");
-        Ok(json!({ "apps": apps, "accounts": accounts, "index": index }))
+        Ok(SystemRecovered {
+            apps: apps as u64,
+            accounts: accounts as u64,
+            index,
+        })
     }
 
     /// A recovery file's header was written by attested hardware: its
@@ -439,14 +444,14 @@ impl Node {
         app_id: &str,
         group: GroupId,
         found: &Found,
-    ) -> Result<Value, ApiError> {
-        let backup = json!({
-            "name": found.name,
-            "index": found.index,
-            "format": found.format(),
-            "merod": found.manifest.as_ref().map(|m| m.merod.clone()),
-            "release": found.manifest.as_ref().map(|m| m.release.clone()),
-        });
+    ) -> Result<AppRestored, ApiError> {
+        let backup = RestoredFrom {
+            name: Some(found.name.clone()),
+            index: found.index,
+            format: found.format(),
+            merod: found.manifest.as_ref().map(|m| m.merod.clone()),
+            release: found.manifest.as_ref().map(|m| m.release.clone()),
+        };
         self.seed_with(app_id, group, found.index, backup, |g| {
             g.replace_state(found.group, &found.snapshot_id, &found.path)
         })
@@ -461,9 +466,9 @@ impl Node {
         app_id: &str,
         group: GroupId,
         from_index: u64,
-        backup: Value,
+        backup: RestoredFrom,
         fill: impl FnOnce(&Group<AppMachine>) -> eyre::Result<u64>,
-    ) -> Result<Value, ApiError> {
+    ) -> Result<AppRestored, ApiError> {
         let _caught_up = self.sys_fresh().await;
         let app = self
             .sys_until(|s| s.apps.get(app_id).filter(|a| a.group == group).cloned())
@@ -505,13 +510,13 @@ impl Node {
             })
             .await?;
         info!(app = %app_id, group, index, rows, from_index, "restored an app from its backup");
-        Ok(json!({
-            "app": app_id,
-            "group": group,
-            "rows": rows,
-            "backup": backup,
-            "status": g.status(),
-        }))
+        Ok(AppRestored {
+            app: app_id.to_owned(),
+            group,
+            rows,
+            backup,
+            status: g.status(),
+        })
     }
 
     /// Add the restored app's other replicas to its new group, from the
@@ -546,4 +551,35 @@ impl Node {
             .await
             .map_err(|e| ApiError::unavailable(&e.to_string()))
     }
+}
+
+/// What `POST /ops/recover` answers: the apps and accounts the system state was founded with
+/// again, and the index of the `system` file it came from.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SystemRecovered {
+    apps: u64,
+    accounts: u64,
+    index: u64,
+}
+
+/// An app restored from a backup or a recovery file: its new group, the rows seeded, the
+/// backup it came from and the group's status once every replica holds it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppRestored {
+    app: String,
+    group: u64,
+    rows: u64,
+    backup: RestoredFrom,
+    status: calimero_log::Status,
+}
+
+/// The backup an app was restored from: its file name, the app log's index it holds, its
+/// format, and the merod and release that wrote it (`null`: not recorded).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestoredFrom {
+    pub name: Option<String>,
+    pub index: u64,
+    pub format: u32,
+    pub merod: Option<String>,
+    pub release: Option<String>,
 }

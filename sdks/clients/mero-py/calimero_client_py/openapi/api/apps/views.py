@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
+from ...models.view_result import ViewResult
 from ...models.views_body import ViewsBody
-from ...models.views_response_200 import ViewsResponse200
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, ViewsResponse200]]:
+) -> Optional[Union[Error, ViewResult]]:
     if response.status_code == 200:
-        response_200 = ViewsResponse200.from_dict(response.json())
+        response_200 = ViewResult.from_dict(response.json())
 
         return response_200
 
@@ -71,7 +71,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, ViewsResponse200]]:
+) -> Response[Union[Error, ViewResult]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -85,7 +85,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ViewsBody,
-) -> Response[Union[Error, ViewsResponse200]]:
+) -> Response[Union[Error, ViewResult]]:
     r"""Read with a view method
 
      Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it):
@@ -106,7 +106,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, ViewsResponse200]]
+        Response[Union[Error, ViewResult]]
     """
 
     kwargs = _get_kwargs(
@@ -126,7 +126,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ViewsBody,
-) -> Optional[Union[Error, ViewsResponse200]]:
+) -> Optional[Union[Error, ViewResult]]:
     r"""Read with a view method
 
      Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it):
@@ -147,7 +147,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, ViewsResponse200]
+        Union[Error, ViewResult]
     """
 
     return sync_detailed(
@@ -162,7 +162,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ViewsBody,
-) -> Response[Union[Error, ViewsResponse200]]:
+) -> Response[Union[Error, ViewResult]]:
     r"""Read with a view method
 
      Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it):
@@ -183,7 +183,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, ViewsResponse200]]
+        Response[Union[Error, ViewResult]]
     """
 
     kwargs = _get_kwargs(
@@ -201,7 +201,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ViewsBody,
-) -> Optional[Union[Error, ViewsResponse200]]:
+) -> Optional[Union[Error, ViewResult]]:
     r"""Read with a view method
 
      Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it):
@@ -222,7 +222,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, ViewsResponse200]
+        Union[Error, ViewResult]
     """
 
     return (

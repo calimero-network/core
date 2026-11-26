@@ -23,12 +23,15 @@ async fn ops_metrics(
 }
 
 /// `GET /ops/cluster`: the cluster's name and identity key, which a job node is started with.
-async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn ops_cluster(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<ClusterIdentity>> {
     operator(&node, &headers)?;
-    Ok(Json(json!({
-        "cluster": node.config.cluster,
-        "identity": hex::encode(node.cluster_identity()),
-    })))
+    Ok(Json(ClusterIdentity {
+        cluster: node.config.cluster.clone(),
+        identity: hex::encode(node.cluster_identity()),
+    }))
 }
 
 /// `GET /ops/job-nodes/{id}/attestation`: the leader's check of job node `id` before it sends
@@ -39,7 +42,7 @@ async fn ops_job_node_attestation(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(id): Path<u64>,
-) -> ApiResult {
+) -> ApiResult<Json<JobNodeVerdict>> {
     operator(&node, &headers)?;
     let verdict = match node.job_attestation(id).await {
         Ok(peer) => node.check_not_retired(&peer).map(|()| peer.release),
@@ -48,27 +51,36 @@ async fn ops_job_node_attestation(
             .map_err(|e| ApiError::internal(&format!("{e:#}")))?),
     };
     match verdict {
-        Ok(release) => Ok(Json(
-            json!({ "state": "admitted", "node": id, "release": release }),
-        )),
+        Ok(release) => Ok(Json(JobNodeVerdict::Admitted {
+            state: "admitted".to_owned(),
+            node: id,
+            release,
+        })),
         Err(JobAttestError::NotRegistered(_)) => Err(ApiError::not_found(&format!(
             "node {id} is not a registered job node"
         ))),
         Err(JobAttestError::Stale) => Err(ApiError::unavailable(
             "this node's directory could not be brought up to date",
         )),
-        Err(JobAttestError::Unreachable(reason)) => Ok(Json(
-            json!({ "state": "unreachable", "node": id, "reason": reason }),
-        )),
-        Err(JobAttestError::Refused(reason)) => Ok(Json(
-            json!({ "state": "refused", "node": id, "reason": reason }),
-        )),
+        Err(JobAttestError::Unreachable(reason)) => Ok(Json(JobNodeVerdict::NotAdmitted {
+            state: "unreachable".to_owned(),
+            node: id,
+            reason,
+        })),
+        Err(JobAttestError::Refused(reason)) => Ok(Json(JobNodeVerdict::NotAdmitted {
+            state: "refused".to_owned(),
+            node: id,
+            reason,
+        })),
     }
 }
 
-async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn ops_status(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<OpsStatus>> {
     operator(&node, &headers)?;
-    let groups: Vec<Value> = node
+    let groups: Vec<HostedGroup> = node
         .sys(|s| {
             s.apps
                 .values()
@@ -77,8 +89,10 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
         })
         .into_iter()
         .filter_map(|(app, _g)| {
-            node.hosted(&app)
-                .map(|g| json!({ "app": app, "status": g.status() }))
+            node.hosted(&app).map(|g| HostedGroup {
+                status: g.status(),
+                app,
+            })
         })
         .collect();
     let (nodes, apps, accounts) = node.sys(|s| {
@@ -90,17 +104,17 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
     });
     // Counts and ids only: the Ops API never returns app state, names or
     // credentials (`/ops/placement` is the same: ids, zones, releases, counts).
-    Ok(Json(json!({
-        "node": node.config.node_id,
-        "system": node.system.status(),
-        "governance": node.sys(crate::system::SystemState::governance),
-        "groups": groups,
-        "nodes": nodes,
-        "apps": apps,
-        "accounts": accounts,
+    Ok(Json(OpsStatus {
+        node: node.config.node_id,
+        system: node.system.status(),
+        governance: node.sys(crate::system::SystemState::governance),
+        groups,
+        nodes,
+        apps: apps as u64,
+        accounts: accounts as u64,
         // This node's rollback counter (`rollback::Status`); null: unprotected.
-        "rollback": node.checkpoints.as_ref().and_then(|c| c.status()),
-    })))
+        rollback: node.checkpoints.as_ref().and_then(|c| c.status()),
+    }))
 }
 
 /// Where every app's replicas are, for a rebalancer (mdma): each app's id,
@@ -108,14 +122,21 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
 /// app count. Ids and counts only: no names, state or credentials. Read from
 /// the system state after a read index (`fresh` says whether this replica
 /// caught up with the system leader).
-async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn ops_placement(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Placement>> {
     operator(&node, &headers)?;
     let fresh = node.sys_fresh().await;
     let (apps, nodes) = node.sys(|s| {
-        let apps: Vec<Value> = s
+        let apps: Vec<PlacedApp> = s
             .apps
             .values()
-            .map(|a| json!({ "app": a.app_id, "group": a.group, "replicas": a.replicas }))
+            .map(|a| PlacedApp {
+                app: a.app_id.clone(),
+                group: a.group,
+                replicas: a.replicas.clone(),
+            })
             .collect();
         let nodes: Vec<(u64, String, NodeRole, usize)> = s
             .nodes
@@ -136,19 +157,26 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))
         }))
         .await;
-    let nodes: Vec<Value> = nodes
+    let nodes: Vec<PlacedNode> = nodes
         .into_iter()
         .zip(releases)
-        .map(|((id, zone, role, hosted), release)| {
-            json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
+        .map(|((id, zone, role, hosted), release)| PlacedNode {
+            id,
+            zone,
+            role,
+            release: release.ok().flatten(),
+            apps: hosted as u64,
         })
         .collect();
     // The logged cluster version (`null` until the system leader logs one):
     // a rollout is finished for the system log once it is the new release's.
     let cluster_version = node.sys(|s| s.cluster_version.clone());
-    Ok(Json(
-        json!({ "fresh": fresh, "apps": apps, "nodes": nodes, "clusterVersion": cluster_version }),
-    ))
+    Ok(Json(Placement {
+        fresh,
+        apps,
+        nodes,
+        cluster_version,
+    }))
 }
 
 /// What every app runs, for the operator (mdma): per app its id, group,
@@ -176,11 +204,11 @@ async fn ops_apps(
         (apps, next, s.governance())
     });
     with_last_writes(&node, &mut apps).await;
-    Ok(Json(json!({
-        "fresh": fresh,
-        "governance": governance,
-        "apps": apps,
-        "next": next,
+    Ok(Json(json!(OpsApps {
+        fresh,
+        governance,
+        apps,
+        next,
     })))
 }
 
@@ -206,22 +234,20 @@ async fn ops_orgs(
             ids.truncate(limit);
             ids.last().map(|id| (*id).clone())
         });
-        let orgs: Vec<Value> = ids
+        let orgs: Vec<OrgApprovals> = ids
             .into_iter()
-            .map(|id| {
-                json!({
-                    "org": id,
-                    "approvedReleases": report::approved_releases(s.approved_for(id)),
-                })
+            .map(|id| OrgApprovals {
+                org: id.clone(),
+                approved_releases: report::approved_releases(s.approved_for(id)),
             })
             .collect();
         (orgs, next.flatten(), s.governance())
     });
-    Ok(Json(json!({
-        "fresh": fresh,
-        "governance": governance,
-        "orgs": orgs,
-        "next": next,
+    Ok(Json(json!(OpsOrgs {
+        fresh,
+        governance,
+        orgs,
+        next,
     })))
 }
 
@@ -365,7 +391,9 @@ async fn ops_remove_node(
     let in_membership = st.voters.iter().chain(&st.learners).any(|m| *m == id);
     let _ok = node.sys_write(&SystemCmd::RemoveNode { id, proof }).await?;
     if !in_membership {
-        return Ok(Json(json!({ "status": node.system.status() })));
+        return Ok(Json(json!(NodeRemoved {
+            status: node.system.status(),
+        })));
     }
     let learners: Vec<u64> = node.sys(|s| {
         st.learners
@@ -384,7 +412,9 @@ async fn ops_remove_node(
         .change_voters(voters)
         .await
         .map_err(|e| membership_err(&e))?;
-    Ok(Json(json!({ "status": node.system.status() })))
+    Ok(Json(json!(NodeRemoved {
+        status: node.system.status(),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -532,14 +562,17 @@ async fn move_replicas(
     let st = g.status();
     let voters: std::collections::BTreeSet<u64> = st.voters.iter().copied().collect();
     if current == target && voters == target {
-        return Ok(Json(json!({ "status": st, "unchanged": true })));
+        return Ok(Json(json!(ReplicasSet {
+            status: st,
+            unchanged: true,
+        })));
     }
     // `replicas[0]` forms the group when it is created (`Node::ensure_app_group`
     // initializes it there): every set this move records keeps the current
     // replicas first, in their order, so it is never a node that has not
-    // joined the group yet. A sorted union put a newcomer with a lower id
-    // first, and it formed an empty group of its own with the others as voters
-    // (B8). The system group compares these sets as sets, so the order is the
+    // joined the group yet: a sorted union would put a newcomer with a lower id
+    // first, and it would form an empty group of its own with the others as
+    // voters. The system group compares these sets as sets, so the order is the
     // writer's to choose.
     let kept = |set: &std::collections::BTreeSet<u64>| -> Vec<u64> {
         app.replicas
@@ -605,7 +638,10 @@ async fn move_replicas(
             })
             .await?;
     }
-    Ok(Json(json!({ "status": g.status(), "unchanged": false })))
+    Ok(Json(json!(ReplicasSet {
+        status: g.status(),
+        unchanged: false,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -673,10 +709,9 @@ async fn ops_prices_set(
 /// The price table, or `{}` until one is set.
 async fn ops_prices_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
-    Ok(Json(
-        node.sys(|s| s.price_table)
-            .map_or_else(|| json!({}), |t| json!(t)),
-    ))
+    Ok(Json(json!(node
+        .sys(|s| s.price_table)
+        .map_or_else(PriceTableView::default, PriceTableView::of))))
 }
 
 /// The pools and the runs each takes at once.
@@ -684,11 +719,14 @@ async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
     operator(&node, &headers)?;
     // An operator reads back what it just set, through any node.
     let _caught_up = node.sys_fresh().await;
-    Ok(Json(node.sys(|s| {
-        let capacity: std::collections::BTreeMap<&String, usize> =
-            s.pools.keys().map(|p| (p, s.pool_capacity(p))).collect();
-        json!({ "pools": s.pools, "capacity": capacity })
-    })))
+    Ok(Json(json!(node.sys(|s| OpsPools {
+        pools: s.pools.clone(),
+        capacity: s
+            .pools
+            .keys()
+            .map(|p| (p.clone(), s.pool_capacity(p) as u64))
+            .collect(),
+    }))))
 }
 
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -833,7 +871,7 @@ async fn ops_backup(
         node.backup().await
     }
     .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!({ "written": n })))
+    Ok(Json(json!(BackupWritten { written: n as u64 })))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -856,4 +894,166 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         .route("/ops/pools", get(ops_pools_get).post(ops_pools_set))
         .route("/ops/prices", get(ops_prices_get).post(ops_prices_set))
+}
+
+/// `GET /ops/cluster`: the cluster's name and identity key, which a job node is started with.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ClusterIdentity {
+    cluster: String,
+    identity: String,
+}
+
+/// `GET /ops/job-nodes/{id}/attestation`: the leader's check of a job node.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum JobNodeVerdict {
+    /// `admitted`, with the release it attested.
+    Admitted {
+        state: String,
+        node: u64,
+        release: String,
+    },
+    /// `refused` or `unreachable`, and why.
+    NotAdmitted {
+        state: String,
+        node: u64,
+        reason: String,
+    },
+}
+
+/// `GET /ops/status`: this node's view of the cluster: its system group, governance, the app
+/// groups it hosts, the registered nodes, counts, and its rollback counter (`null`: unprotected).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OpsStatus {
+    node: u64,
+    system: calimero_log::Status,
+    governance: crate::system::Governance,
+    groups: Vec<HostedGroup>,
+    nodes: Vec<crate::types::NodeRecord>,
+    apps: u64,
+    accounts: u64,
+    rollback: Option<crate::rollback::Status>,
+}
+
+/// An app group this node hosts, and its status here.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct HostedGroup {
+    app: String,
+    status: calimero_log::Status,
+}
+
+/// `GET /ops/placement`: where every app's replicas are, and each node's zone, role, attested
+/// release and app count; ids and counts only.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Placement {
+    fresh: bool,
+    apps: Vec<PlacedApp>,
+    nodes: Vec<PlacedNode>,
+    cluster_version: Option<String>,
+}
+
+/// An app's group and replica nodes.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PlacedApp {
+    app: String,
+    group: u64,
+    replicas: Vec<u64>,
+}
+
+/// A node's zone, role, attested release (`null`: unknown) and how many apps it holds.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PlacedNode {
+    id: u64,
+    zone: String,
+    role: NodeRole,
+    release: Option<String>,
+    apps: u64,
+}
+
+/// `GET /ops/apps`: a page of what every app runs, for the operator.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OpsApps {
+    fresh: bool,
+    governance: crate::system::Governance,
+    apps: Vec<Value>,
+    next: Option<String>,
+}
+
+/// `GET /ops/orgs`: a page of organizations and the releases approved to hold their apps.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OpsOrgs {
+    fresh: bool,
+    governance: crate::system::Governance,
+    orgs: Vec<OrgApprovals>,
+    next: Option<String>,
+}
+
+/// An organization and the releases approved to hold its apps (`null`: unrestricted).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OrgApprovals {
+    org: String,
+    approved_releases: Option<Vec<String>>,
+}
+
+/// What `DELETE /ops/nodes/{id}` answers: the system group's status after.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct NodeRemoved {
+    status: calimero_log::Status,
+}
+
+/// What `POST /ops/apps/{app}/replicas` answers: the app group's status after, and whether the
+/// set was already the one asked for.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ReplicasSet {
+    status: calimero_log::Status,
+    unchanged: bool,
+}
+
+/// `GET /ops/prices`: the price table, every field absent until one is set.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PriceTableView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fuel_per_vcpu_second: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vcpu_second: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gib_second: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    connector_gib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage_gib_month: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    egress_gib: Option<u64>,
+}
+
+impl PriceTableView {
+    fn of(t: calimero_pipeline::PriceTable) -> Self {
+        Self {
+            version: Some(t.version),
+            fuel_per_vcpu_second: Some(t.fuel_per_vcpu_second),
+            vcpu_second: Some(t.vcpu_second),
+            gib_second: Some(t.gib_second),
+            connector_gib: Some(t.connector_gib),
+            storage_gib_month: Some(t.storage_gib_month),
+            egress_gib: Some(t.egress_gib),
+        }
+    }
+}
+
+/// `GET /ops/pools`: the pools, and the runs each takes at once.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OpsPools {
+    pools: BTreeMap<String, crate::system::PoolConfig>,
+    capacity: BTreeMap<String, u64>,
+}
+
+/// What `POST /ops/backup` answers: how many backups were written.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct BackupWritten {
+    written: u64,
 }

@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.alias_list_response_200 import AliasListResponse200
+from ...models.alias_list import AliasList
 from ...models.error import Error
 from typing import cast
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AliasListResponse200, Error]]:
+) -> Optional[Union[AliasList, Error]]:
     if response.status_code == 200:
-        response_200 = AliasListResponse200.from_dict(response.json())
+        response_200 = AliasList.from_dict(response.json())
 
         return response_200
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AliasListResponse200, Error]]:
+) -> Response[Union[AliasList, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,7 +60,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AliasListResponse200, Error]]:
+) -> Response[Union[AliasList, Error]]:
     """The account's aliases
 
      **Who:** signed in (a session or an API key).
@@ -70,7 +70,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AliasListResponse200, Error]]
+        Response[Union[AliasList, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -85,7 +85,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AliasListResponse200, Error]]:
+) -> Optional[Union[AliasList, Error]]:
     """The account's aliases
 
      **Who:** signed in (a session or an API key).
@@ -95,7 +95,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AliasListResponse200, Error]
+        Union[AliasList, Error]
     """
 
     return sync_detailed(
@@ -106,7 +106,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AliasListResponse200, Error]]:
+) -> Response[Union[AliasList, Error]]:
     """The account's aliases
 
      **Who:** signed in (a session or an API key).
@@ -116,7 +116,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AliasListResponse200, Error]]
+        Response[Union[AliasList, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -129,7 +129,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AliasListResponse200, Error]]:
+) -> Optional[Union[AliasList, Error]]:
     """The account's aliases
 
      **Who:** signed in (a session or an API key).
@@ -139,7 +139,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AliasListResponse200, Error]
+        Union[AliasList, Error]
     """
 
     return (

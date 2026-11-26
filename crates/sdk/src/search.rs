@@ -1,4 +1,4 @@
-//! Full-text search over a table's declared text fields (spec section 7, R2).
+//! Full-text search over a table's declared text fields.
 //!
 //! A record declares the fields with `#[table(key = "id", search = ["title", "body"])]`;
 //! the state ABI lists them, and the host keeps the index from the app's state, outside it.

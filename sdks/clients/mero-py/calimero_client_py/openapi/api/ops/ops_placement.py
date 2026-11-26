@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_placement_response_200 import OpsPlacementResponse200
+from ...models.placement import Placement
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsPlacementResponse200]]:
+) -> Optional[Union[Error, Placement]]:
     if response.status_code == 200:
-        response_200 = OpsPlacementResponse200.from_dict(response.json())
+        response_200 = Placement.from_dict(response.json())
 
         return response_200
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsPlacementResponse200]]:
+) -> Response[Union[Error, Placement]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,7 +60,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsPlacementResponse200]]:
+) -> Response[Union[Error, Placement]]:
     """Where every app's replicas are
 
      Ids and counts only, read after a read index (`fresh`: this node caught up with the system leader);
@@ -74,7 +74,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsPlacementResponse200]]
+        Response[Union[Error, Placement]]
     """
 
     kwargs = _get_kwargs()
@@ -89,7 +89,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsPlacementResponse200]]:
+) -> Optional[Union[Error, Placement]]:
     """Where every app's replicas are
 
      Ids and counts only, read after a read index (`fresh`: this node caught up with the system leader);
@@ -103,7 +103,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsPlacementResponse200]
+        Union[Error, Placement]
     """
 
     return sync_detailed(
@@ -114,7 +114,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsPlacementResponse200]]:
+) -> Response[Union[Error, Placement]]:
     """Where every app's replicas are
 
      Ids and counts only, read after a read index (`fresh`: this node caught up with the system leader);
@@ -128,7 +128,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsPlacementResponse200]]
+        Response[Union[Error, Placement]]
     """
 
     kwargs = _get_kwargs()
@@ -141,7 +141,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsPlacementResponse200]]:
+) -> Optional[Union[Error, Placement]]:
     """Where every app's replicas are
 
      Ids and counts only, read after a read index (`fresh`: this node caught up with the system leader);
@@ -155,7 +155,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsPlacementResponse200]
+        Union[Error, Placement]
     """
 
     return (

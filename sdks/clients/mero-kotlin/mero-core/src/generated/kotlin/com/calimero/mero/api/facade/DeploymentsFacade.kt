@@ -34,8 +34,8 @@ class DeploymentsFacade internal constructor(
         deployer: com.calimero.mero.Deployer,
         until: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): DeployerGrant200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deployerGrant(deployerGrantRequest = DeployerGrantRequest(deployer = deployer, until = until))
+    ): DeployerGranted =
+        api(passkey, null, emptySet()).signUpAndDeployments.deployerGrant(deployerBody = DeployerBody(deployer = deployer, until = until))
 
     /**
      * The deployers
@@ -48,7 +48,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun deployerList(): DeployerList200Response =
+    suspend fun deployerList(): DeployerList =
         api(null, null, emptySet()).signUpAndDeployments.deployerList()
 
     /**
@@ -65,7 +65,7 @@ class DeploymentsFacade internal constructor(
     suspend fun deployerRevoke(
         key: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeployerRevoke200Response =
+    ): DeployerRevoked =
         api(passkey, null, emptySet()).signUpAndDeployments.deployerRevoke(key = key)
 
     /**
@@ -85,8 +85,8 @@ class DeploymentsFacade internal constructor(
         name: kotlin.String,
         owner: com.calimero.mero.Deployer,
         passkey: PasskeyProvider? = null,
-    ): DeploymentCreate200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentCreate(deploymentCreateRequest = DeploymentCreateRequest(name = name, owner = owner))
+    ): DeploymentCreated =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentCreate(deploymentBody = DeploymentBody(name = name, owner = owner))
 
     /**
      * Delete a deployment
@@ -102,7 +102,7 @@ class DeploymentsFacade internal constructor(
     suspend fun delete(
         id: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentDelete200Response =
+    ): DeploymentDeleted =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentDelete(id = id)
 
     /**
@@ -118,7 +118,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun get(
         id: kotlin.String,
-    ): DeploymentGet200Response =
+    ): PublicDeployment =
         api(null, null, emptySet()).signUpAndDeployments.deploymentGet(id = id)
 
     /**
@@ -132,7 +132,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun list(): DeploymentList200Response =
+    suspend fun list(): DeploymentList =
         api(null, null, emptySet()).signUpAndDeployments.deploymentList()
 
     /**
@@ -152,8 +152,8 @@ class DeploymentsFacade internal constructor(
         `package`: kotlin.String,
         version: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentOffer(id = id, deploymentOfferRequest = DeploymentOfferRequest(app = app, `package` = `package`, version = version))
+    ): AppOffered =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentOffer(id = id, offerBody = OfferBody(app = app, `package` = `package`, version = version))
 
     /**
      * The organizations a deployment serves
@@ -168,7 +168,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun orgs(
         id: kotlin.String,
-    ): DeploymentOrgs200Response =
+    ): DeploymentOrgs =
         api(null, null, emptySet()).signUpAndDeployments.deploymentOrgs(id = id)
 
     /**
@@ -188,7 +188,7 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         name: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentSecretClear200Response =
+    ): DeploymentSecretCleared =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretClear(id = id, name = name)
 
     /**
@@ -209,8 +209,8 @@ class DeploymentsFacade internal constructor(
         name: kotlin.String,
         value: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentSecretSet200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretSetRequest = DeploymentSecretSetRequest(value = value))
+    ): DeploymentSecretSet =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretBody = DeploymentSecretBody(value = value))
 
     /**
      * A deployment's secrets
@@ -225,7 +225,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun secrets(
         id: kotlin.String,
-    ): DeploymentSecrets200Response =
+    ): DeploymentSecrets =
         api(null, null, emptySet()).signUpAndDeployments.deploymentSecrets(id = id)
 
     /**
@@ -243,7 +243,7 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         app: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
+    ): AppWithdrawn =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentWithdraw(id = id, app = app)
 
     /**
@@ -261,7 +261,7 @@ class DeploymentsFacade internal constructor(
         uses: kotlin.Long? = null,
         ttlSecs: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): SignUpInviteCreate200Response =
+    ): SignUpInviteMade =
         api(passkey, null, emptySet()).signUpAndDeployments.signUpInviteCreate(signUpInviteCreateRequest = SignUpInviteCreateRequest(uses = uses, ttlSecs = ttlSecs))
 
     /**
@@ -273,7 +273,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpInviteList(): SignUpInviteList200Response =
+    suspend fun signUpInviteList(): SignUpInviteList =
         api(null, null, emptySet()).signUpAndDeployments.signUpInviteList()
 
     /**
@@ -304,7 +304,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpPublic(): SignUpPublic200Response =
+    suspend fun signUpPublic(): SignUpPublic =
         api(null, null, emptySet()).signUpAndDeployments.signUpPublic()
 
     /**

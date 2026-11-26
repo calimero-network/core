@@ -1,4 +1,4 @@
-//! A component app's blobs (R8): the host's record of each blob the app holds, kept by
+//! A component app's blobs: the host's record of each blob the app holds, kept by
 //! references in state (host-tracked retention), and the download grants runs hand out.
 //!
 //! The bytes live in the cluster's blob store (`Node::store_blob`, spread to a majority,
@@ -11,7 +11,7 @@
 //! another app holds the same content) and logs that it did
 //! (`ComponentCmd::BlobsCollected`).
 //!
-//! The records are host-owned (D39): hidden rows of the group (`rows::CBLOB`) and, in
+//! The records are host-owned: hidden rows of the group (`rows::CBLOB`) and, in
 //! memory, an ordered map shared with runs as their view of the app's blobs.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

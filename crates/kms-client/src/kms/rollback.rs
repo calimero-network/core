@@ -1,4 +1,4 @@
-//! The node's rollback counters in mero-kms (`docs/specs/rollback-protection.md`).
+//! The node's rollback counters in mero-kms ([Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)).
 //!
 //! A v2 key release names the node (`rollbackNodeId`) and answers, sealed to
 //! the TD with the key, the cluster's epoch, the node's entry `(generation,

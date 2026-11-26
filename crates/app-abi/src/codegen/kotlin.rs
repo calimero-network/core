@@ -8,11 +8,12 @@
 //! with a hand-written serializer (`Item.serializer()`, `Page.serializer(Item.serializer())`:
 //! no compiler plugin) that follows its serde tagging (external, internal, adjacent, untagged).
 //! Each is annotated `@Serializable(with = ..)`, naming that serializer, so kotlinx's
-//! `serializer<T>()` finds it: by reflection on the companion's `serializer()`, which kotlinx's
-//! bundled R8 rules keep for `@Serializable` classes, or, for a module that applies the
-//! kotlinx.serialization compiler plugin (`serialization_plugin`), by the plugin's intrinsic,
-//! with no reflection. The plugin writes `serializer()` itself for a `@Serializable` class, so
-//! with it the file declares none (a hand-written one would clash with the plugin's).
+//! `serializer<T>()` finds it: by reflection on the companion's `serializer()`, which the keep
+//! rules kotlinx ships for Android's code shrinker keep for `@Serializable` classes, or, for a
+//! module that applies the kotlinx.serialization compiler plugin (`serialization_plugin`), by
+//! the plugin's intrinsic, with no reflection. The plugin writes `serializer()` itself for a
+//! `@Serializable` class, so with it the file declares none (a hand-written one would clash
+//! with the plugin's).
 //! A type the ABI does not describe stays its JSON: `JsonElement`, under no name of its own (a
 //! top-level alias would clash with an app type of that name in the package).
 //!

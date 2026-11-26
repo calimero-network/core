@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.file_info_response_200 import FileInfoResponse200
+from ...models.file_view import FileView
 from typing import cast
 
 
@@ -30,9 +30,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, FileInfoResponse200]]:
+) -> Optional[Union[Error, FileView]]:
     if response.status_code == 200:
-        response_200 = FileInfoResponse200.from_dict(response.json())
+        response_200 = FileView.from_dict(response.json())
 
         return response_200
 
@@ -59,7 +59,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, FileInfoResponse200]]:
+) -> Response[Union[Error, FileView]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -73,7 +73,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, FileInfoResponse200]]:
+) -> Response[Union[Error, FileView]]:
     """One sealed file
 
      Its plaintext size and SHA-256, never its key.
@@ -89,7 +89,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, FileInfoResponse200]]
+        Response[Union[Error, FileView]]
     """
 
     kwargs = _get_kwargs(
@@ -109,7 +109,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, FileInfoResponse200]]:
+) -> Optional[Union[Error, FileView]]:
     """One sealed file
 
      Its plaintext size and SHA-256, never its key.
@@ -125,7 +125,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, FileInfoResponse200]
+        Union[Error, FileView]
     """
 
     return sync_detailed(
@@ -140,7 +140,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, FileInfoResponse200]]:
+) -> Response[Union[Error, FileView]]:
     """One sealed file
 
      Its plaintext size and SHA-256, never its key.
@@ -156,7 +156,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, FileInfoResponse200]]
+        Response[Union[Error, FileView]]
     """
 
     kwargs = _get_kwargs(
@@ -174,7 +174,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, FileInfoResponse200]]:
+) -> Optional[Union[Error, FileView]]:
     """One sealed file
 
      Its plaintext size and SHA-256, never its key.
@@ -190,7 +190,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, FileInfoResponse200]
+        Union[Error, FileView]
     """
 
     return (

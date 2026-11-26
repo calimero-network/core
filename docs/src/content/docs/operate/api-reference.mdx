@@ -60,16 +60,21 @@ to the code on every CI run:
   back as a value of the schema, and a field is optional exactly when the type
   may leave it out; one the type only serializes (a Raft group's status, the
   rollback counter) is held to real values of the type;
-- every schema an operation answers whole by name (`$ref`) is one of those:
-  a named answer built with `json!` fails the build's tests
+- every JSON answer is `{}`, a plain value or a schema named after the Rust
+  type the handler serializes, never an object written inline
+  (`answers_are_named_components`), so each SDK names its type after the
+  node's; and every schema an operation answers whole by name (`$ref`) is
+  bound to that type: a named answer built with `json!` fails the build's tests
   (`every_component_answered_whole_is_a_types`);
 - the committed `openapi.json` is what the registry builds now.
 
-The other response schemas, those a handler builds inline with `json!`, are
-written in the registry from the handlers' answers and are not checked against
-them. A handler moved to a typed answer keeps its bytes: `api::golden` and the
-typed answers' own tests compare what each writes with what the `json!` it
-replaced wrote, key order included. A
+A handler moved to a typed answer keeps its bytes: `api::golden`,
+`api::e7_oracles` and the typed answers' own tests compare what each writes
+with what the `json!` it replaced wrote, key order and `null` against absent
+included. A few named schemas hold a part whose keys the node does not fix:
+a pipeline run's view (its stored record, reshaped for the reader) and the
+apps of the approval reports (`ReportApp`, still written from the handlers'
+answers). A
 value left free-form (`{}` in the schema) is one whose shape is not the API's:
 an app's metadata, `initArgs`, a method's result, an event's data, an app's
 error value, the WebAuthn options a ceremony hands to the browser, an app's ABI

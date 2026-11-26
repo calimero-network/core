@@ -13,7 +13,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{operator, operator_proof, ApiResult, OperatorProofBody};
@@ -237,13 +237,16 @@ pub(super) async fn recover_holder(
             .and_then(|a| a.iter().find(|x| x["app"] == app_id.as_str()))
             .and_then(|x| x["group"].as_u64())
             .ok_or_else(|| ApiError::internal("the import recorded no group"))?;
-        let backup = json!({
-            "name": opened.path.file_name().map(|n| n.to_string_lossy().into_owned()),
-            "index": opened.header.index,
-            "format": opened.header.format,
-            "merod": opened.header.merod,
-            "release": opened.header.release,
-        });
+        let backup = crate::node::restore::RestoredFrom {
+            name: opened
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            index: opened.header.index,
+            format: opened.header.format,
+            merod: Some(opened.header.merod.clone()),
+            release: Some(opened.header.release.clone()),
+        };
         let index = opened.header.index;
         let done = node
             .seed_with(&app_id, group, index, backup, |g| {
@@ -260,7 +263,7 @@ pub(super) async fn recover_holder(
             .await?;
         restored.push(done);
     }
-    Ok(Json(json!({ "apps": restored })))
+    Ok(Json(json!(HolderRecovered { apps: restored })))
 }
 
 /// The most recovery files one listing answers.
@@ -308,16 +311,19 @@ pub(super) async fn ops_recovery_files(
             let Ok(opened) = disk::read(&path) else {
                 continue;
             };
-            out.push(json!({
-                "name": path.file_name().map(|n| n.to_string_lossy().into_owned()),
-                "header": String::from_utf8_lossy(&opened.header_bytes),
-                "signature": hex::encode(opened.signature),
-            }));
+            out.push(RecoveryFile {
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                header: String::from_utf8_lossy(&opened.header_bytes).into_owned(),
+                signature: hex::encode(opened.signature),
+            });
         }
         Ok::<_, eyre::Report>(out)
     })
     .map_err(|e| ApiError::internal(&format!("{e:#}")))?;
-    Ok(Json(json!({ "holder": holder, "files": files })))
+    Ok(Json(json!(RecoveryFiles { holder, files })))
 }
 
 /// The most code files one recovery takes.
@@ -349,7 +355,7 @@ pub(super) async fn ops_recover(
     let out = node
         .recover_system((&b.system.file, &system), &code)
         .await?;
-    Ok(Json(out))
+    Ok(Json(json!(out)))
 }
 
 /// Restore `app_id` from recovery-disk file `r` (see [`ops_restore`]): the
@@ -458,13 +464,13 @@ async fn ops_restore_recovery(
     };
     let (old_key, new_key) = node.load_recovery_segments(&at, &app_id, &opened, &key)?;
     let index = h.index;
-    let backup = json!({
-        "name": r.file,
-        "index": index,
-        "format": h.format,
-        "merod": h.merod,
-        "release": h.release,
-    });
+    let backup = crate::node::restore::RestoredFrom {
+        name: Some(r.file.clone()),
+        index,
+        format: h.format,
+        merod: Some(h.merod.clone()),
+        release: Some(h.release.clone()),
+    };
     tokio::spawn(async move {
         let _moving = guard;
         let out = node
@@ -493,7 +499,7 @@ async fn ops_restore_recovery(
             })
         })
         .await
-        .map(Json)
+        .map(|r| Json(json!(r)))
     })
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -627,10 +633,33 @@ pub(super) async fn ops_restore(
         let group = out["group"]
             .as_u64()
             .ok_or_else(|| ApiError::internal("the restore recorded no group"))?;
-        node.seed_restore(&app_id, group, &found).await.map(Json)
+        node.seed_restore(&app_id, group, &found)
+            .await
+            .map(|r| Json(json!(r)))
     })
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?
+}
+
+/// What `POST /recover/holder` answers: each app restored from the holder's files.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct HolderRecovered {
+    apps: Vec<crate::node::restore::AppRestored>,
+}
+
+/// `GET /ops/recovery-files`: a holder and its recovery files, each with its signed header.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RecoveryFiles {
+    holder: crate::system::BackupHolder,
+    files: Vec<RecoveryFile>,
+}
+
+/// A recovery file: its name, its header (JSON text) and the node's signature over it (hex).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RecoveryFile {
+    name: String,
+    header: String,
+    signature: String,
 }
 
 /// A backup holder named in a request: `org:<id>`, `account:<id>`, and with

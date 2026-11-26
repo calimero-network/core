@@ -11,8 +11,8 @@ from typing import cast, Union
 
 if TYPE_CHECKING:
     from ..models.deployer_type_0 import DeployerType0
-    from ..models.deployment_apps_item import DeploymentAppsItem
     from ..models.deployer_type_1 import DeployerType1
+    from ..models.deployment_offer import DeploymentOffer
 
 
 T = TypeVar("T", bound="Deployment")
@@ -28,7 +28,7 @@ class Deployment:
             host (Union[None, str]):
             name (str):
             owner (Union['DeployerType0', 'DeployerType1']): An account or an organization.
-            apps (list['DeploymentAppsItem']):
+            apps (list['DeploymentOffer']):
             created_by (str):
             created_at (str):
     """
@@ -37,15 +37,15 @@ class Deployment:
     host: Union[None, str]
     name: str
     owner: Union["DeployerType0", "DeployerType1"]
-    apps: list["DeploymentAppsItem"]
+    apps: list["DeploymentOffer"]
     created_by: str
     created_at: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.deployer_type_0 import DeployerType0
-        from ..models.deployment_apps_item import DeploymentAppsItem
         from ..models.deployer_type_1 import DeployerType1
+        from ..models.deployment_offer import DeploymentOffer
 
         id = self.id
 
@@ -88,8 +88,8 @@ class Deployment:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.deployer_type_0 import DeployerType0
-        from ..models.deployment_apps_item import DeploymentAppsItem
         from ..models.deployer_type_1 import DeployerType1
+        from ..models.deployment_offer import DeploymentOffer
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -123,7 +123,7 @@ class Deployment:
         apps = []
         _apps = d.pop("apps")
         for apps_item_data in _apps:
-            apps_item = DeploymentAppsItem.from_dict(apps_item_data)
+            apps_item = DeploymentOffer.from_dict(apps_item_data)
 
             apps.append(apps_item)
 

@@ -749,9 +749,15 @@ same steps locally.
 
 The pull request and its merge-queue entry run the fast gate: `ci-checks.yml`
 with only the tests the change reaches (below), `sdks.yml` and the lints; in the
-queue, `E2E result` reports without running anything. The push to master runs the
-rest after the merge: every test in all four shards and `e2e.yml` in full, one run
-per commit. A red push opens an issue titled `master is red: <workflow>`
+queue, `E2E result` reports without running anything. A queue entry whose tree is
+exactly one its PR's CI passed on (master did not move since, nothing queued ahead
+of it or batched with it) runs no Rust job again: the PR's passing `Rust` uploads
+the tree it tested (artifact `ci-passed-tree`), and the entry's `Scope` finds it and
+marks every Rust job as not needed. Any lookup that fails, or finds no match, runs
+the entry as usual. The push to master runs the rest after the merge: the tests the
+queue left out (`not (test_filter)` on the tree the queue tested; none when the
+queue ran every test, and every test for a push no pull request merged or whose
+files cannot be listed) and `e2e.yml` in full, one run per commit. A red push opens an issue titled `master is red: <workflow>`
 (`.github/actions/report-master`, the `report-master` job) naming the commit, and
 the next green push closes it. A red master is reverted, not fixed forward. Master
 is not deployed, only a release is, and a pull request that cuts one runs
@@ -771,7 +777,8 @@ guest and fixture in `target/app-components`, built once through
 `calimero_app_build::build_in_repo_cache` into one cargo target dir;
 app-build's own test builds in `target/tmp`; the SDK's compile-fail cases in
 `target/tests/trybuild`) are cached apart, saved from master, whose push runs
-`Rust tests (1/4)`; that push runs every shard.
+`Rust tests (1/4)`; that push runs every shard (shards 2-4 stop after the restore
+when nothing is left for master to run).
 
 A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
 (`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace
@@ -783,7 +790,7 @@ crate the test guests compile from (the SDK, the app engine and their
 dependencies, which the guests build against outside cargo's graph of the
 workspace). The queue's diff is the entry against its base, so two changes that
 break each other within that graph still fail there. The push to master runs every
-test whatever the filter, so a test the filter missed fails there. In `.config/nextest.toml`, the
+test the filter left out, so a test the filter missed fails there. In `.config/nextest.toml`, the
 guest builder's tests and the SDK's compile-fail cases have a high `priority`, so
 they start first rather than leave one shard running minutes after the others. (sccache on the Actions cache was tried and dropped: with this many
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo

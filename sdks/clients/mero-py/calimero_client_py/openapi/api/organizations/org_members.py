@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
+from ...models.member_security_list import MemberSecurityList
 from ...models.org_members_detail import OrgMembersDetail
-from ...models.org_members_response_200 import OrgMembersResponse200
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -44,9 +44,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgMembersResponse200]]:
+) -> Optional[Union[Error, MemberSecurityList]]:
     if response.status_code == 200:
-        response_200 = OrgMembersResponse200.from_dict(response.json())
+        response_200 = MemberSecurityList.from_dict(response.json())
 
         return response_200
 
@@ -83,7 +83,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgMembersResponse200]]:
+) -> Response[Union[Error, MemberSecurityList]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -97,7 +97,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     detail: Union[Unset, OrgMembersDetail] = UNSET,
-) -> Response[Union[Error, OrgMembersResponse200]]:
+) -> Response[Union[Error, MemberSecurityList]]:
     r"""Members' lockout risk
 
      `detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the
@@ -115,7 +115,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgMembersResponse200]]
+        Response[Union[Error, MemberSecurityList]]
     """
 
     kwargs = _get_kwargs(
@@ -135,7 +135,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     detail: Union[Unset, OrgMembersDetail] = UNSET,
-) -> Optional[Union[Error, OrgMembersResponse200]]:
+) -> Optional[Union[Error, MemberSecurityList]]:
     r"""Members' lockout risk
 
      `detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the
@@ -153,7 +153,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgMembersResponse200]
+        Union[Error, MemberSecurityList]
     """
 
     return sync_detailed(
@@ -168,7 +168,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     detail: Union[Unset, OrgMembersDetail] = UNSET,
-) -> Response[Union[Error, OrgMembersResponse200]]:
+) -> Response[Union[Error, MemberSecurityList]]:
     r"""Members' lockout risk
 
      `detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the
@@ -186,7 +186,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgMembersResponse200]]
+        Response[Union[Error, MemberSecurityList]]
     """
 
     kwargs = _get_kwargs(
@@ -204,7 +204,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     detail: Union[Unset, OrgMembersDetail] = UNSET,
-) -> Optional[Union[Error, OrgMembersResponse200]]:
+) -> Optional[Union[Error, MemberSecurityList]]:
     r"""Members' lockout risk
 
      `detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the
@@ -222,7 +222,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgMembersResponse200]
+        Union[Error, MemberSecurityList]
     """
 
     return (

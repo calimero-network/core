@@ -1,4 +1,5 @@
-//! 64-bit integers are decimal strings in JSON events and errors (D20).
+//! 64-bit integers are decimal strings in JSON events and errors, so JavaScript reads
+//! them exactly above 2^53.
 
 use calimero_sdk::json::{i64_str, opt_u64_str, u64_str};
 use serde::{Deserialize, Serialize};

@@ -20,8 +20,8 @@ permissions:
   contents: read
 
 # Cancel superseded PR runs. Master is never cancelled and gets a run per commit:
-# its push runs every test, after a queue that ran only the tests the change
-# reaches, so a replaced pending run would leave a merged commit untested.
+# its push runs the tests the queue left out on that commit's range, so a replaced
+# pending run would leave a merged commit's remainder untested.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
@@ -40,12 +40,17 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # A queue entry reads its PR's CI runs and their `ci-passed-tree` artifacts.
+      actions: read
     outputs:
       rust: ${{ steps.decide.outputs.rust }}
       upgrade_path: ${{ steps.decide.outputs.upgrade_path }}
       standalone_apps: ${{ steps.decide.outputs.standalone_apps }}
-      # The tests `Rust tests` runs on a PR (a nextest filterset; empty runs every test).
+      # The tests a PR and its queue entry run (a nextest filterset; empty runs every test).
       test_filter: ${{ steps.decide.outputs.test_filter }}
+      # The tests `Rust tests` runs for this event: test_filter on a PR and in the queue,
+      # what the queue left out on a push to master; empty runs every test.
+      tests: ${{ steps.decide.outputs.tests }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,6 +88,7 @@ jobs:
           # push: the pushed range; merge_group: the queue entry against its base.
           FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
           TO: ${{ github.event.merge_group.head_sha || github.sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
         run: |
           set -uo pipefail
           # Every failure below leaves `files` empty, and ci-scope.py runs every
@@ -106,7 +112,55 @@ jobs:
               ;;
           esac
           [ -n "$files" ] || echo "::notice::could not list this change's files; every job runs"
-          printf '%s\n' "$files" | python3 scripts/ci-scope.py >> "$GITHUB_OUTPUT"
+          out="$RUNNER_TEMP/scope"
+          printf '%s\n' "$files" | python3 scripts/ci-scope.py > "$out"
+
+          # A queue entry whose tree is exactly one its PR's CI passed on (master did not
+          # move since, and no other entry is ahead of it or batched with it) runs nothing
+          # again: the PR's passing `Rust` uploads the tree it tested (`ci-passed-tree`).
+          # Any lookup that fails, or finds no match, runs the entry as usual.
+          if [ "$EVENT" = merge_group ] && [[ "$HEAD_REF" =~ /pr-([0-9]+)-[0-9a-f]+$ ]]; then
+            n=${BASH_REMATCH[1]}
+            reused=""
+            if tree=$(gh api "repos/$REPO/git/commits/$TO" --jq .tree.sha) \
+              && head=$(gh api "repos/$REPO/pulls/$n" --jq .head.sha) \
+              && runs=$(gh api "repos/$REPO/actions/workflows/ci-checks.yml/runs?event=pull_request&status=success&head_sha=$head&per_page=5" --jq '.workflow_runs[].id'); then
+              for run in $runs; do
+                for artifact in $(gh api "repos/$REPO/actions/runs/$run/artifacts" \
+                    --jq '.artifacts[] | select(.name == "ci-passed-tree" and (.expired | not)) | .id'); do
+                  passed=$(gh api "repos/$REPO/actions/artifacts/$artifact/zip" \
+                    | python3 -c 'import io, sys, zipfile; print(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read("tree").decode().strip())') \
+                    || continue
+                  if [ -n "$tree" ] && [ "$passed" = "$tree" ]; then reused=$run; break 2; fi
+                done
+              done
+            fi
+            if [ -n "$reused" ]; then
+              echo "::notice::tree $tree passed CI on PR #$n (run $reused); this entry runs nothing again"
+              sed -i -E 's/^(rust|upgrade_path|standalone_apps)=true$/\1=false/' "$out"
+            else
+              echo "no passing PR run on tree ${tree:-?}; the entry runs"
+            fi
+          fi
+
+          # On a push to master the queue already ran test_filter on this very tree, so
+          # the push runs the rest: `not (...)`, or none when the queue ran every test.
+          # A push no queue merged (no pull request), or whose files could not be listed,
+          # runs every test.
+          tests=$(sed -n 's/^test_filter=//p' "$out")
+          if [ "$EVENT" = push ]; then
+            if [ -z "$files" ] \
+              || ! prs=$(gh api "repos/$REPO/commits/$TO/pulls" --jq length) || [ "$prs" = 0 ]; then
+              tests=""
+            elif [ -n "$tests" ]; then
+              tests="not ($tests)"
+            else
+              tests="none()"
+            fi
+          fi
+          echo "tests=$tests" >> "$out"
+          echo "tests: ${tests:-every test}"
+          cat "$out" >> "$GITHUB_OUTPUT"
 
   # The required status check: passes only if every Rust job below passes, or was
   # skipped because `scope` found that the change cannot reach it. A failed or
@@ -130,8 +184,9 @@ jobs:
           # job -> the `scope` output that decides whether it runs
           GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
-          # A push to master runs every test and the jobs that save caches (the merge
-          # queue ran the other jobs on this tree), so there a gated job may be skipped.
+          # A push to master runs the tests the queue left out and the jobs that save
+          # caches (the queue ran the other jobs on this tree), so there a gated job may
+          # be skipped.
           jq -e --argjson gates "$GATES" --arg event "$EVENT" '
             .scope.outputs as $scope
             | to_entries | all(
@@ -139,6 +194,25 @@ jobs:
                 or (.value.result == "skipped" and ($gates[.key] // "") != ""
                     and ($scope[$gates[.key]] == "false" or $event == "push"))
               )' <<<"$NEEDS"
+
+      # What this PR run passed on (its merge commit's tree): a queue entry with exactly
+      # this tree reuses the result instead of running again (`scope`).
+      - name: Record the tree this run passed
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha > "$RUNNER_TEMP/tree"
+
+      - name: Upload it
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-passed-tree
+          path: ${{ runner.temp }}/tree
+          if-no-files-found: error
+          retention-days: 7
 
   # Master's push runs what the queue does not (every test; e2e.yml): a red push opens
   # an issue, a green one closes it (.github/actions/report-master).
@@ -298,8 +372,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push to master runs every shard with no filter: the queue ran only the
-        # tests its change reaches. Shard 1 alone saves; the build it saves is the
+        # A push to master runs every shard, on the tests the queue left out (none
+        # left: shards 2-4 stop after the restore). Shard 1 alone saves; the build it saves is the
         # whole workspace's whatever the quarter, and the test apps it saves are those
         # its tests build (the shared fixtures; a guest only another quarter uses is
         # built on a miss).
@@ -353,12 +427,14 @@ jobs:
       # and of every crate depending on them (`scope`'s test_filter: nextest `rdeps`;
       # the queue's diff is the entry against its base, so it still catches two
       # changes that break each other within that graph); a change reaching beyond
-      # the workspace's crate graph runs every test. A push to master runs every test,
-      # after the merge, and opens the red-master issue when one fails.
+      # the workspace's crate graph runs every test. A push to master runs the rest,
+      # `not (test_filter)`, on the tree the queue tested, and opens the red-master
+      # issue when one fails (`scope`'s `tests`).
       - name: Cargo test
         env:
           PARTITION: ${{ format('count:{0}/4', matrix.shard) }}
-          FILTER: ${{ github.event_name != 'push' && needs.scope.outputs.test_filter || '' }}
+          FILTER: ${{ needs.scope.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
           NEXTEST_TEST_THREADS: "8"
           # No test may run past 15 s: .config/nextest.toml's ci profile kills it at 30 s,
           # past its own listed limit for the tests over budget when the rule came in.
@@ -369,6 +445,11 @@ jobs:
           echo "$TEST_HOSTS"
           # A filtered shard may be left with no test of its own; that passes.
           echo "filter: ${FILTER:-every test}"
+          # Nothing left for master to run: shard 1 still builds, to save the caches.
+          if [ "$FILTER" = "none()" ] && [ "$SHARD" != 1 ]; then
+            echo "the merge queue ran every test this commit reaches"
+            exit 0
+          fi
           cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} ${FILTER:+-E "$FILTER" --no-tests=pass} --no-fail-fast
 
       # The doctests, in the shard that already built the libraries they link.

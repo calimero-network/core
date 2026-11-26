@@ -7,7 +7,7 @@ use crate::error::StorageError;
 use crate::store::{DefaultStore, Store};
 
 /// A counter. `add` never conflicts; `increment` reads and rewrites the key, so it
-/// serializes every call that uses it (D47). Use `env::unique_id()` for generated ids.
+/// serializes every call that uses it. Use `env::unique_id()` for generated ids.
 pub struct Counter<S: Store = DefaultStore> {
     name: KeyPath,
     store: S,

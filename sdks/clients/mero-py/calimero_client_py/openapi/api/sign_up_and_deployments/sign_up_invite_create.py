@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.sign_up_invite_create_body import SignUpInviteCreateBody
-from ...models.sign_up_invite_create_response_200 import SignUpInviteCreateResponse200
+from ...models.sign_up_invite_made import SignUpInviteMade
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, SignUpInviteCreateResponse200]]:
+) -> Optional[Union[Error, SignUpInviteMade]]:
     if response.status_code == 200:
-        response_200 = SignUpInviteCreateResponse200.from_dict(response.json())
+        response_200 = SignUpInviteMade.from_dict(response.json())
 
         return response_200
 
@@ -73,7 +73,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, SignUpInviteCreateResponse200]]:
+) -> Response[Union[Error, SignUpInviteMade]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -86,7 +86,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: SignUpInviteCreateBody,
-) -> Response[Union[Error, SignUpInviteCreateResponse200]]:
+) -> Response[Union[Error, SignUpInviteMade]]:
     """Issue a cluster sign-up invite
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -101,7 +101,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, SignUpInviteCreateResponse200]]
+        Response[Union[Error, SignUpInviteMade]]
     """
 
     kwargs = _get_kwargs(
@@ -119,7 +119,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: SignUpInviteCreateBody,
-) -> Optional[Union[Error, SignUpInviteCreateResponse200]]:
+) -> Optional[Union[Error, SignUpInviteMade]]:
     """Issue a cluster sign-up invite
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -134,7 +134,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, SignUpInviteCreateResponse200]
+        Union[Error, SignUpInviteMade]
     """
 
     return sync_detailed(
@@ -147,7 +147,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: SignUpInviteCreateBody,
-) -> Response[Union[Error, SignUpInviteCreateResponse200]]:
+) -> Response[Union[Error, SignUpInviteMade]]:
     """Issue a cluster sign-up invite
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -162,7 +162,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, SignUpInviteCreateResponse200]]
+        Response[Union[Error, SignUpInviteMade]]
     """
 
     kwargs = _get_kwargs(
@@ -178,7 +178,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: SignUpInviteCreateBody,
-) -> Optional[Union[Error, SignUpInviteCreateResponse200]]:
+) -> Optional[Union[Error, SignUpInviteMade]]:
     """Issue a cluster sign-up invite
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -193,7 +193,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, SignUpInviteCreateResponse200]
+        Union[Error, SignUpInviteMade]
     """
 
     return (

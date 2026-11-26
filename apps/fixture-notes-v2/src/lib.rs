@@ -1,4 +1,4 @@
-//! Release 2.0.0 of the notes app the consent page tests upgrade (`crates/node/tests/consent_page.rs`),
+//! Release 2.0.0 of the notes app the consent page tests upgrade (`crates/node/tests/it/consent_page.rs`),
 //! from `apps/fixture-notes-v1`: `remove` is gone, `set` now takes a title and needs a
 //! passkey confirmation, `wipe`, the public `exists` and the timer `tidy` are new, so is the
 //! `Wiped` event, and the state is at version 2 with an `archive` table.

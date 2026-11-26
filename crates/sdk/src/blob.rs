@@ -1,4 +1,4 @@
-//! Blobs (R8): a typed reference to an uploaded blob, kept in state like any value.
+//! Blobs: a typed reference to an uploaded blob, kept in state like any value.
 //!
 //! Clients upload a blob's bytes to the node (`POST /apps/{app}/blobs`) and pass its id to a
 //! method, which stores a [`BlobRef`]. The host finds every `BlobRef` in stored values and

@@ -229,7 +229,7 @@ async fn app_team(c: &Client, org: &str, package: &str) -> Value {
         .unwrap_or_else(|| panic!("no app team of {package} in {v}"))
 }
 
-/// G1: an app's access is changed by its owner, an organization admin, or
+/// An app's access is changed by its owner, an organization admin, or
 /// whoever manages its team's apps (`MANAGE_APPLICATION` there, a lead) and,
 /// for another team, that team's too; organization-wide access needs it
 /// organization-wide. A plain member never.
@@ -345,7 +345,7 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .unwrap();
 }
 
-/// G2: pending invites are listed (key, terms, creator, creation time, never
+/// Pending invites are listed (key, terms, creator, creation time, never
 /// a token) to whoever may revoke them: an admin all, a team's lead those
 /// naming only their teams, a creator their own; a revoked invite redeems no
 /// more. Revoking takes the actor's passkey.
@@ -439,7 +439,7 @@ async fn invites_are_listed_and_revoked_by_whoever_may_see_them() {
     );
 }
 
-/// G3, G9 and who installs: an admin converts an organization whose apps
+/// Converting to app teams, and who installs: an admin converts an organization whose apps
 /// use organization access into app teams in one step; everyone who reached
 /// an app keeps it, two apps make the organization shared (every app team
 /// closed), a package has one app team, and only an admin installs a new
@@ -655,7 +655,7 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
     }
 }
 
-/// G6 and the guest role: in a standalone organization (one open app team)
+/// Who invites, and the guest role: in a standalone organization (one open app team)
 /// its members invite others to the app; once the organization is shared
 /// only leads and admins do, until an admin turns on the team's default
 /// capability. Where apps have app teams, a guest reaches only the apps of

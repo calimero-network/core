@@ -1,5 +1,5 @@
-//! The bytes the API answers, held to what it answered before its answers were typed
-//! (review finding E7): each test builds an answer the way its handler does, from a fixed
+//! The bytes the API answers, held to what it answered before its answers were typed:
+//! each test builds an answer the way its handler does, from a fixed
 //! state, and compares the serialized text, key order included, with the text the
 //! `json!`-built answer produced. A typed answer that renames, drops, adds or reorders a
 //! field, or writes a number as a string, turns one red.

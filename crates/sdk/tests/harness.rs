@@ -422,7 +422,7 @@ fn team_events_reach_team_members() {
 }
 
 /// The harness runs the node's `HostCore`, so an event naming more than 1,000 accounts
-/// gets the same soft error as on a node (Ruling 43).
+/// gets the same soft error as on a node.
 #[test]
 fn an_event_names_at_most_a_thousand_accounts() {
     let mut t = app();

@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.health_response_200 import HealthResponse200
+from ...models.health import Health
 from typing import cast
 
 
@@ -23,9 +23,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[HealthResponse200]:
+) -> Optional[Health]:
     if response.status_code == 200:
-        response_200 = HealthResponse200.from_dict(response.json())
+        response_200 = Health.from_dict(response.json())
 
         return response_200
 
@@ -37,7 +37,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[HealthResponse200]:
+) -> Response[Health]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -49,7 +49,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[HealthResponse200]:
+) -> Response[Health]:
     """Node health
 
      In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release,
@@ -63,7 +63,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HealthResponse200]
+        Response[Health]
     """
 
     kwargs = _get_kwargs()
@@ -78,7 +78,7 @@ def sync_detailed(
 def sync(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[HealthResponse200]:
+) -> Optional[Health]:
     """Node health
 
      In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release,
@@ -92,7 +92,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HealthResponse200
+        Health
     """
 
     return sync_detailed(
@@ -103,7 +103,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[HealthResponse200]:
+) -> Response[Health]:
     """Node health
 
      In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release,
@@ -117,7 +117,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HealthResponse200]
+        Response[Health]
     """
 
     kwargs = _get_kwargs()
@@ -130,7 +130,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[HealthResponse200]:
+) -> Optional[Health]:
     """Node health
 
      In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release,
@@ -144,7 +144,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HealthResponse200
+        Health
     """
 
     return (

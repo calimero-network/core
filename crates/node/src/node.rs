@@ -62,8 +62,18 @@ pub use component::{
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
 /// The run view's types, which the API's OpenAPI registry names (`api::openapi`).
 #[cfg(test)]
-pub(crate) use component::{RunFileView, RunView};
+pub(crate) use component::{PartTaken, RunFileView, RunList, RunView, UploadStatus, UploadView};
 pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
+
+/// `GET /apps/{app}/pipeline-runs/{run}/receipt`: a pipeline run's receipt
+/// (`calimero_client::receipt::PipelineReceipt`) with the signature of the answering node's
+/// receipt key over it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignedPipelineReceipt {
+    receipt: serde_json::Value,
+    node: u64,
+    signature: String,
+}
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
 pub(crate) use component::{files_unavailable, upload_refusal};
@@ -218,7 +228,7 @@ pub struct Config {
     /// The operator's outbound HTTPS policy (`[outbound]` in `--settings`);
     /// `None`: `http_request` traps in every run.
     pub outbound: Option<Arc<calimero_outbound::OutboundService>>,
-    /// Where app time starts relative to this host's clock, in ms (D19), for
+    /// Where app time starts relative to this host's clock, in ms, for
     /// component apps. `0` in production; tests move a node's app clock with it.
     pub clock_offset_ms: i64,
     /// The limits of every component call and view; `None` is `Budget::call()`.
@@ -317,11 +327,11 @@ pub struct CallRequest {
     /// client's request; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host: bool,
-    /// A component app's delivered xcall (D25): which message of which source. Set only
+    /// A component app's delivered xcall: which message of which source. Set only
     /// by the source's leader; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xcall: Option<crate::component::xcall::XcallFrom>,
-    /// A component app's call made by one of its actions (D12): the action's key. Set only
+    /// A component app's call made by one of its actions: the action's key. Set only
     /// by the node's action runner; reaches `allow(action)` methods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
@@ -441,7 +451,7 @@ pub struct ViewAnswer {
     pub status: Status,
     pub result: Value,
     pub error: Value,
-    /// A component's view hit its deadline: answered `503 TIMEOUT` (D36).
+    /// A component's view hit its deadline: answered `503 TIMEOUT`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub timeout: bool,
 }
@@ -549,15 +559,16 @@ pub struct Node {
     pub system: Arc<Group<SystemMachine>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
-    /// engine for all of them, spec section 5); compiled artifacts cached under
-    /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
+    /// engine for all of them); compiled artifacts cached under
+    /// `<data_dir>/components`, each with a MAC under a key derived from K_c, checked before
+    /// one is loaded.
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepares a release's compute components at install; no run ever goes through it.
     compute_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
-    /// prepare instead of each compiling it (Ruling 44).
+    /// prepare instead of each compiling it.
     preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// How many times this node ran the engine's `prepare` (feature `testing`).
     #[cfg(feature = "testing")]
@@ -588,7 +599,7 @@ pub struct Node {
     /// App time of component apps ([`Clock`]).
     clock: Clock,
     /// Per component app group: the term this node last led it in, and its
-    /// execution counter in that term (`id_seq`, D52).
+    /// execution counter in that term (`id_seq`), the `seq` of its unique ids `term.seq.n`.
     id_seqs: Mutex<HashMap<GroupId, (u64, u64)>>,
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
@@ -596,12 +607,12 @@ pub struct Node {
     /// What each peer's replicas last said its apps used today, for the fuel cap
     /// (`component::USAGE_REFRESH`).
     peer_usage: Mutex<component::PeerUsage>,
-    /// Outbox messages this node failed to deliver as a source's leader (D29): per
+    /// Outbox messages this node failed to deliver as a source's leader: per
     /// (source app, seq), the attempts and the app time of the next one.
     xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
-    /// Actions this node is running as their app's leader, by (app, action key) (D17).
+    /// Actions this node is running as their app's leader, by (app, action key).
     actions_running: Mutex<HashSet<(String, String)>>,
-    /// When an action that timed out may run again, app time (D22).
+    /// When an action that timed out may run again, app time.
     action_retry: Mutex<HashMap<(String, String), u64>>,
     /// The action worker pool: at most `MAX_ACTION_WORKERS` runs at once.
     action_slots: Arc<tokio::sync::Semaphore>,
@@ -699,7 +710,7 @@ pub struct Node {
     auto_update_turn: tokio::sync::Mutex<()>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
-    /// Full-text search over the apps hosted here (spec section 7).
+    /// Full-text search over the apps hosted here.
     pub component_search: crate::component::search::ComponentSearch,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
@@ -811,8 +822,8 @@ impl Transport for PeerTransport {
         })
     }
 
-    /// Heartbeats of several groups in one message (`internal/raft-batch`,
-    /// B6). A peer on a release before it has no such route: the batcher then
+    /// Heartbeats of several groups in one message (`internal/raft-batch`).
+    /// A peer on a release before it has no such route: the batcher then
     /// sends each heartbeat on its own (`calimero_log::network::Batcher`).
     /// A group whose data the peer may not hold is answered here, as `send`
     /// refuses it, and never sent.
@@ -864,7 +875,7 @@ impl Transport for PeerTransport {
 
 /// What the node answers a component app's call that reaches its own commands
 /// path: a component's calls are `call_component`'s, its blobs its own host
-/// records (R8).
+/// records.
 pub const COMPONENT_REFUSES: &str =
     "this app is a component: its calls are not the node's own commands";
 
@@ -1109,7 +1120,7 @@ impl Node {
         ));
         // Compiled components live in the node's data directory, which the host can
         // write: each artifact carries a MAC under a key derived from K_c, so only this
-        // cluster's own compilations are ever loaded (S8, Ruling 38).
+        // cluster's own compilations are ever loaded.
         let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
@@ -1706,8 +1717,8 @@ impl Node {
 
     /// The registered nodes whose attested release is older than this node's own,
     /// or that could not be attested, with what each named (`None`): until there are
-    /// none, a setting only this release knows is not written, as D71 gates
-    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// none, a setting only this release knows is not written, as `base_seq` is
+    /// gated on the replicas' releases. An older node would drop the setting
     /// from what it applies, and its snapshots would bring it back to its default.
     pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
         let own = self.own_release();
@@ -2118,14 +2129,15 @@ impl Node {
     /// A pipeline run's receipt with this node's receipt key's signature over it
     /// (`calimero_client::receipt::receipt_message`), as the receipt route answers it.
     #[must_use]
-    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> serde_json::Value {
+    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> SignedPipelineReceipt {
         use ed25519_dalek::Signer;
         let message = calimero_client::receipt::receipt_message(&receipt);
-        serde_json::json!({
-            "receipt": receipt,
-            "node": self.config.node_id,
-            "signature": hex::encode(self.receipt_key.sign(&message).to_bytes()),
-        })
+        let signature = hex::encode(self.receipt_key.sign(&message).to_bytes());
+        SignedPipelineReceipt {
+            receipt,
+            node: self.config.node_id,
+            signature,
+        }
     }
 
     /// The mero-tee release this node runs, as its attestation names it.
@@ -2745,7 +2757,7 @@ impl Node {
     /// this node, newest first, at most [`calimero_outbound::MAX_AUDIT_ENTRIES`].
     /// Each node keeps the requests its own runs made, so a leader change splits
     /// an instance's requests across nodes; `partial` says a replica did not answer.
-    pub async fn outbound_log(&self, app: &AppRecord) -> Value {
+    pub async fn outbound_log(&self, app: &AppRecord) -> OutboundLog {
         let mut entries = self.outbound_audit.entries(&app.app_id);
         let mut partial = false;
         let body = json!({ "app": app.app_id });
@@ -2775,7 +2787,7 @@ impl Node {
         }
         entries.sort_by_key(|e| core::cmp::Reverse(e.at_ms));
         entries.truncate(calimero_outbound::MAX_AUDIT_ENTRIES);
-        json!({ "entries": entries, "partial": partial })
+        OutboundLog { entries, partial }
     }
 
     /// This node as the `Arc` it lives in, for work that outlives a borrowed request.
@@ -3170,7 +3182,7 @@ impl Node {
         furthest_progress(&answers, app.replicas.len())
     }
 
-    /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
+    /// A component app's xcalls, `{ pending, deadLetters }`: this node's
     /// replica's if it hosts the app, else the first replica that answers
     /// `internal/xcalls`, as [`Self::storage_stats`].
     pub async fn app_xcalls(&self, app: &AppRecord) -> Result<Value, ApiError> {
@@ -4295,4 +4307,14 @@ mod group_progress_tests {
             Some(at(None, Some(5)))
         );
     }
+}
+
+/// What `GET /apps/{app}/outbound-log` answers: the instance's outbound requests,
+/// newest first, merged from this node and each replica (`partial`: one did not answer).
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct OutboundLog {
+    /// At most `MAX_AUDIT_ENTRIES`, newest first.
+    pub entries: Vec<calimero_outbound::AuditEntry>,
+    /// A replica did not answer, so some of its runs' requests may be missing.
+    pub partial: bool,
 }

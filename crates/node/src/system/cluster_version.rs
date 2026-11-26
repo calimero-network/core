@@ -33,38 +33,38 @@ use crate::types::TeamJoin;
 pub enum Feature {
     /// `SetClusterVersion` itself.
     ClusterVersion,
-    /// `MoveApp` (#4907).
+    /// `MoveApp`.
     MoveApp,
-    /// `ScopeApps` naming one app team's `join` or `keep` (#4903): an earlier
+    /// `ScopeApps` naming one app team's `join` or `keep`: an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamJoin,
-    /// `SetOrgQuotas` (#4899).
+    /// `SetOrgQuotas`.
     OrgQuotas,
-    /// `SetPools` (#4898).
+    /// `SetPools`.
     ComputePools,
-    /// `UpdateTeam` closing a team with `close_drops_below` (#4911): an
+    /// `UpdateTeam` closing a team with `close_drops_below`: an
     /// earlier release ignores the field and keeps the rows below.
     TeamCloseDropsBelow,
-    /// `MoveApp` with `accounts_in_app_team` (#4912): an earlier release
+    /// `MoveApp` with `accounts_in_app_team`: an earlier release
     /// ignores the field and gives a moved DM's people no app-team row.
     MoveAccountsAppTeam,
-    /// `ScopeApps` with `by_release` (#4931): an earlier release judges an
+    /// `ScopeApps` with `by_release`: an earlier release judges an
     /// instance's package by its bundle and can put it on another app team.
     ScopeByRelease,
     /// `SetAllApps`, and an invite that gives every app added later
-    /// (`Invite::all_apps`) (#4914): an earlier release cannot read the
+    /// (`Invite::all_apps`): an earlier release cannot read the
     /// command and drops the invite's flag.
     AllApps,
-    /// `RestoreApp` and `FinishRestore` (#4928): an earlier release cannot
+    /// `RestoreApp` and `FinishRestore`: an earlier release cannot
     /// read them, so its replicas keep the app where it was.
     RestoreApp,
-    /// `RenameOrg` (#4913): an earlier release cannot read it, so its
+    /// `RenameOrg`: an earlier release cannot read it, so its
     /// replicas keep the old name.
     RenameOrg,
-    /// `SetTeamMembers` and `RemoveTeamMembers` (#4916): an earlier release
+    /// `SetTeamMembers` and `RemoveTeamMembers`: an earlier release
     /// cannot read them.
     TeamMembersBatch,
-    /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
+    /// `ScopeApps` naming one app team's `childTeams`: an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
     /// `SetPriceTable`: an earlier release cannot read it.
@@ -76,11 +76,11 @@ pub enum Feature {
     Pipelines,
     /// `AcquireRun` naming a pool: an earlier release ignores `pool` and places by memory.
     NamedPool,
-    /// `AttributeByRelease` (#4935): an earlier release cannot read it, so
+    /// `AttributeByRelease`: an earlier release cannot read it, so
     /// its replicas would keep judging apps by the release each bundle was
     /// first recorded from.
     AttributeByRelease,
-    /// `RequireCurrentRules` (#4940): an earlier release cannot read it, so
+    /// `RequireCurrentRules`: an earlier release cannot read it, so
     /// its replicas would keep applying later entries' flags as logged.
     CurrentRules,
     /// `SetBackupKey` and `ImportHolder`: an earlier release cannot read
@@ -231,9 +231,11 @@ pub enum Feature {
     /// entry changes shape: apply reads the logged version, so a log replays unchanged, and an
     /// earlier release, which would apply what this one refuses, holds it below the version.
     HeldTeamGrants,
-    /// An organization invite hands out only what its creator could still hand out when it is
-    /// redeemed: a creator no longer a member, below the invite's role, or no longer seeing a
-    /// team it names, gives nothing (`SystemState::redeem_org_invite`). No entry changes shape.
+    /// An invite hands out only what its creator could still hand out when it is redeemed: an
+    /// organization invite's creator no longer a member, below the invite's role, or no longer
+    /// seeing a team it names, gives nothing (`SystemState::redeem_org_invite`), and an
+    /// instance invite's creator who no longer manages the instance's grants names nobody
+    /// (`system::apps::redeem_app_invite`). No entry changes shape.
     InviteCreatorStanding,
     /// An organization's backup key is set only by those who approve its upgrades, its owner
     /// and admins (`SystemState::may_set_backup_key`), as `OwnerApprovedUpgrades` made
@@ -430,7 +432,7 @@ impl Feature {
             Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
                 "1.0.0-rc.36"
             }
-            // #5356 merged after 1.0.0-rc.37 was cut (#5368), so rc.37 does not decode
+            // Key follow-ups merged after 1.0.0-rc.37 was cut, so rc.37 does not decode
             // `then`: it rebuilds the key's statement without it and refuses the key.
             Self::PrivateReleases
             | Self::KeyFollowUps
@@ -1452,11 +1454,11 @@ mod tests {
         );
     }
 
-    /// Reproduction (B4): every node runs rc.16 and no version is logged yet,
-    /// so the gate admits a feature of rc.16 on what the nodes advertise. Were
-    /// the entry proposed then, a node on rc.15 registered before the leader
-    /// logs rc.16 would still be admitted at the logged version (`may_join`),
-    /// and reach an entry it cannot decode. The version is logged first.
+    /// A feature's entry is proposed only after the version is logged. While every node
+    /// runs rc.16 and no version is logged yet, the gate admits a feature of rc.16 on what
+    /// the nodes advertise; were the entry proposed then, a node on rc.15 registered before
+    /// the leader logs rc.16 would still be admitted at the logged version (`may_join`),
+    /// and reach an entry it cannot decode.
     #[test]
     fn a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged() {
         let mut nodes = cluster(&[RC16, RC16, RC16]);
@@ -1503,10 +1505,10 @@ mod tests {
         assert_eq!(admit(None, Some(RC15), &quotas), Admission::Admitted);
     }
 
-    /// Reproduction (B4): a system entry this node cannot decode (a later
-    /// release's command) was skipped, so the node kept serving a state the
-    /// others no longer had (a revoked API key still working there). The
-    /// group's batch now fails, which stops its Raft core on that entry.
+    /// A system entry this node cannot decode (a later release's command) fails
+    /// the group's batch, which stops its Raft core on that entry: skipped, the
+    /// node would serve a state the others no longer have (a revoked API key
+    /// still working there).
     #[test]
     fn an_entry_this_node_cannot_decode_stops_the_system_group() {
         struct NoPeers;

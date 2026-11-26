@@ -95,7 +95,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use calimero_identity::{b64url, random, RelyingParty};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
@@ -1163,7 +1163,7 @@ pub async fn create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     if body.len() > MAX_CONSENT_BODY_BYTES {
         return Err(ApiError::new(413, "TOO_LARGE", "consent request too large"));
     }
@@ -1275,7 +1275,7 @@ async fn hold(
     action: Action,
     model: Value,
     return_to: Url,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
@@ -1322,12 +1322,36 @@ async fn hold(
     let url = base
         .join(&format!("{at}/{id}"))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!({
-        "requestId": id,
-        "url": url.as_str(),
-        "expiresAt": expires_at,
-        "code": code,
-    })))
+    Ok(Json(ConsentRequestMade {
+        request_id: id,
+        url: url.as_str().to_owned(),
+        expires_at,
+        code,
+    }))
+}
+
+/// `POST /consent/requests`: the request, the page to send the person to, when it lapses and
+/// the code the page shows.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRequestMade {
+    request_id: String,
+    url: String,
+    expires_at: u64,
+    code: String,
+}
+
+/// `GET /consent/{request}/result`: the request's decision (`decidedAt` `null` while it is
+/// pending) and, once approved, what the approval made.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentResult {
+    request_id: String,
+    kind: Value,
+    status: String,
+    decided_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome: Option<Value>,
 }
 
 /// The confirmation code of request `request_id`: the page shows it, and so
@@ -3041,16 +3065,13 @@ fn app_invite_model(
 
 /// What `/result` answers for a request.
 fn result_json(id: &str, r: &ConsentRequest) -> Value {
-    let mut v = json!({
-        "requestId": id,
-        "kind": r.model["kind"],
-        "status": r.decision.label(),
-        "decidedAt": r.decision.at(),
-    });
-    if let (Some(Outcome(made)), Some(o)) = (&r.outcome, v.as_object_mut()) {
-        let _prev = o.insert("outcome".into(), made.clone());
-    }
-    v
+    json!(ConsentResult {
+        request_id: id.to_owned(),
+        kind: r.model["kind"].clone(),
+        status: r.decision.label().to_owned(),
+        decided_at: r.decision.at(),
+        outcome: r.outcome.as_ref().map(|Outcome(made)| made.clone()),
+    })
 }
 
 /// `GET /consent/{id}/result`: the decision, for the account that asked.

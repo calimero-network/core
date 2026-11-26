@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_team_list_response_200 import AppTeamListResponse200
+from ...models.app_team_list import AppTeamList
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppTeamListResponse200, Error]]:
+) -> Optional[Union[AppTeamList, Error]]:
     if response.status_code == 200:
-        response_200 = AppTeamListResponse200.from_dict(response.json())
+        response_200 = AppTeamList.from_dict(response.json())
 
         return response_200
 
@@ -57,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppTeamListResponse200, Error]]:
+) -> Response[Union[AppTeamList, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -70,7 +70,7 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppTeamListResponse200, Error]]:
+) -> Response[Union[AppTeamList, Error]]:
     """The organization's app teams
 
      A member: each app team's package, id, name, `join`, member count, default capabilities, and whether
@@ -86,7 +86,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppTeamListResponse200, Error]]
+        Response[Union[AppTeamList, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -104,7 +104,7 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppTeamListResponse200, Error]]:
+) -> Optional[Union[AppTeamList, Error]]:
     """The organization's app teams
 
      A member: each app team's package, id, name, `join`, member count, default capabilities, and whether
@@ -120,7 +120,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppTeamListResponse200, Error]
+        Union[AppTeamList, Error]
     """
 
     return sync_detailed(
@@ -133,7 +133,7 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppTeamListResponse200, Error]]:
+) -> Response[Union[AppTeamList, Error]]:
     """The organization's app teams
 
      A member: each app team's package, id, name, `join`, member count, default capabilities, and whether
@@ -149,7 +149,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppTeamListResponse200, Error]]
+        Response[Union[AppTeamList, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -165,7 +165,7 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppTeamListResponse200, Error]]:
+) -> Optional[Union[AppTeamList, Error]]:
     """The organization's app teams
 
      A member: each app team's package, id, name, `join`, member count, default capabilities, and whether
@@ -181,7 +181,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppTeamListResponse200, Error]
+        Union[AppTeamList, Error]
     """
 
     return (

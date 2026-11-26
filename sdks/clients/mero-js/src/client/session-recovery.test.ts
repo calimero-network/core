@@ -3,7 +3,7 @@
  * against stand-in cloud nodes through the real sealed channel. Synthetic data
  * only.
  *
- * Session tokens are signed by the node that issued them (core #4774): once
+ * Session tokens are signed by the node that issued them: once
  * that node is replaced or out of reach, a `401` means "refresh on any node",
  * not "signed out". A node whose release may not serve
  * the account answers `421 WRONG_NODE`: the client moves to another node.

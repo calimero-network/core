@@ -23,7 +23,7 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.DeadlinesDeadlinesInner
+import com.calimero.mero.api.models.VersionDeadline
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -39,7 +39,7 @@ import kotlinx.serialization.Contextual
 data class Deadlines (
 
     @SerialName(value = "deadlines")
-    val deadlines: kotlin.collections.List<DeadlinesDeadlinesInner>
+    val deadlines: kotlin.collections.List<VersionDeadline>
 
 ) {
 

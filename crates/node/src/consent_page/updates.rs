@@ -1,6 +1,5 @@
-//! The consent page's install and update pages (C10 of the "Apps, private services and
-//! owner-approved updates" design): what an update is in plain words, the install sheet,
-//! a change of update policy, and the node's updates page.
+//! The consent page's install and update pages: what an update is in plain words, the
+//! install sheet, a change of update policy, and the node's updates page.
 //!
 //! - **Words** ([`reason_words`], [`update_summary`], [`policy_words`]): the classifier's
 //!   verdict (`calimero_bundle::update`) and an update policy as a person reads them. The
@@ -1013,7 +1012,7 @@ pub(super) async fn open(
         OpenBody::UpdatePolicy { subject } => policy_request(node, &p, account, subject).await?,
     };
     let axum::Json(v) = super::hold(node, account.to_owned(), None, action, model, back).await?;
-    Ok(v)
+    Ok(serde_json::json!(v))
 }
 
 #[cfg(test)]

@@ -144,7 +144,7 @@ pub(super) async fn receipt(
     headers: HeaderMap,
     Path((app_id, run)): Path<(String, String)>,
     Query(q): Query<ReceiptQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<crate::node::SignedPipelineReceipt>> {
     let version = match q.version.map(u32::try_from) {
         None => RECEIPT_VERSION_SIGNED,
         Some(Ok(v)) if [RECEIPT_VERSION_SIGNED, RECEIPT_VERSION_JOBS].contains(&v) => v,

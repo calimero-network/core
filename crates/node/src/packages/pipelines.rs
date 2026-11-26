@@ -7,6 +7,7 @@ use calimero_app_host::{Abi, MethodKind};
 use calimero_pipeline::{
     canonical_json, check, compile, worst_case_cost, worst_case_fuel, Caps, Env, SpecError,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
@@ -187,8 +188,36 @@ pub fn register(
     }
 }
 
-fn spec_json(e: &SpecError) -> Value {
-    json!({ "path": e.path, "code": e.code, "message": e.message })
+fn spec_view(e: &SpecError) -> PipelineError {
+    PipelineError {
+        path: e.path.clone(),
+        code: e.code.to_owned(),
+        message: e.message.clone(),
+    }
+}
+
+/// One error in a pipeline: where (a path into it, empty for the whole), its code and what is
+/// wrong.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PipelineError {
+    pub path: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// `POST /pipelines/validate`: whether the pipeline compiles (and, against a release, checks),
+/// every error, its canonical JSON, and its worst-case fuel and cost (decimal strings).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineValidation {
+    pub ok: bool,
+    pub errors: Vec<PipelineError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case_fuel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case_cost: Option<String>,
 }
 
 impl Node {
@@ -210,15 +239,27 @@ impl Node {
         source: &[u8],
         release: Option<(&str, &PackageVersion)>,
         actor: &str,
-    ) -> Result<Value, ApiError> {
-        let failed = |errs: &[SpecError]| json!({ "ok": false, "errors": errs.iter().map(spec_json).collect::<Vec<_>>() });
+    ) -> Result<PipelineValidation, ApiError> {
+        let failed = |errs: &[SpecError]| PipelineValidation {
+            ok: false,
+            errors: errs.iter().map(spec_view).collect(),
+            pipeline: None,
+            worst_case_fuel: None,
+            worst_case_cost: None,
+        };
         let (pipeline, compiled) = match Compiled::of(source) {
             Ok(ok) => ok,
             Err(errs) => return Ok(failed(&errs)),
         };
         let canonical: Value = serde_json::from_slice(&compiled.canonical)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
-        let mut answer = json!({ "ok": true, "errors": [], "pipeline": canonical });
+        let mut answer = PipelineValidation {
+            ok: true,
+            errors: Vec::new(),
+            pipeline: Some(canonical),
+            worst_case_fuel: None,
+            worst_case_cost: None,
+        };
         let Some((signer, release)) = release else {
             return Ok(answer);
         };
@@ -255,10 +296,10 @@ impl Node {
         if let Err(errs) = check(&pipeline, &env) {
             return Ok(failed(&errs));
         }
-        answer["worstCaseFuel"] = json!(worst_case_fuel(&pipeline, &env).to_string());
+        answer.worst_case_fuel = Some(worst_case_fuel(&pipeline, &env).to_string());
         let _caught_up = self.sys_fresh().await;
         if let Some(table) = self.sys(|s| s.price_table) {
-            answer["worstCaseCost"] = json!(worst_case_cost(&pipeline, &env, &table).to_string());
+            answer.worst_case_cost = Some(worst_case_cost(&pipeline, &env, &table).to_string());
         }
         Ok(answer)
     }
@@ -371,19 +412,40 @@ impl Node {
     pub async fn release_pipelines(
         &self,
         refs: &BTreeMap<String, PipelineRef>,
-    ) -> Result<Value, ApiError> {
-        let mut out = serde_json::Map::new();
+    ) -> Result<ReleasePipelines, ApiError> {
+        let mut out = BTreeMap::new();
         for (name, r) in refs {
             let bytes = self.pipeline_json(&r.hash).await?;
             let pipeline: Value =
                 serde_json::from_slice(&bytes).map_err(|e| ApiError::internal(&e.to_string()))?;
             let _prev = out.insert(
                 name.clone(),
-                json!({ "hash": r.hash, "worstCaseFuel": r.worst_case_fuel, "modules": r.modules, "pipeline": pipeline }),
+                ReleasePipeline {
+                    hash: r.hash.clone(),
+                    worst_case_fuel: r.worst_case_fuel.clone(),
+                    modules: r.modules.clone(),
+                    pipeline,
+                },
             );
         }
-        Ok(Value::Object(out))
+        Ok(ReleasePipelines(out))
     }
+}
+
+/// `GET /packages/{package}/{version}/pipelines`: the release's pipelines by name.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReleasePipelines(BTreeMap<String, ReleasePipeline>);
+
+/// A registered pipeline: its hash, worst-case fuel (a decimal string), the module releases it
+/// pins, and its canonical JSON.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleasePipeline {
+    hash: String,
+    worst_case_fuel: String,
+    modules: BTreeMap<String, crate::system::ModulePin>,
+    pipeline: Value,
 }
 
 #[cfg(test)]

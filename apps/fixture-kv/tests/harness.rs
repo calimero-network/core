@@ -130,7 +130,7 @@ fn stamp_time_now_and_new_id_follow_the_entry() {
     let at = t.as_("owner").call("stamp", json!({})).unwrap();
     assert_eq!(at, json!("1700000005000"));
     t.advance(1_000);
-    // A view sees the last logged entry's time, not the clock (D19).
+    // A view sees the last logged entry's time, not the clock.
     let seen = t.as_("owner").view("timeNow", json!({})).unwrap();
     assert_eq!(seen, json!("1700000005000"));
     let a = t.as_("owner").call("newId", json!({})).unwrap();
@@ -315,7 +315,7 @@ fn an_action_reads_through_views_fetches_and_writes_through_its_calls() {
     let ran = t.run_started_actions();
     assert_eq!(ran.len(), 1);
     assert!(ran[0].is_ok(), "{ran:?}");
-    // An app error fails an action at once (D22).
+    // An app error fails an action at once.
     let e = t.as_("owner").action("explode", json!({})).unwrap_err();
     assert!(
         matches!(e, Failure::App { ref code, .. } if code == "BeatFailed"),
@@ -594,7 +594,7 @@ fn a_visitor_calls_only_the_public_methods_and_is_named() {
         .is_err());
 }
 
-/// C10: a write past the run's 10,000 writes is the typed `RunLimit` the app passes on, with
+/// A write past the run's 10,000 writes is the typed `RunLimit` the app passes on, with
 /// the write's number, not a trap; nothing of the run is kept, on a node and here alike.
 #[test]
 fn a_write_past_the_runs_writes_is_a_typed_error() {
@@ -613,7 +613,7 @@ fn a_write_past_the_runs_writes_is_a_typed_error() {
     assert_eq!(t.as_("owner").view("len", json!({})).unwrap(), json!(0));
 }
 
-/// C10: past the run's 1 MiB of writes, a write or an event is the typed `RunLimit` with the
+/// Past the run's 1 MiB of writes, a write or an event is the typed `RunLimit` with the
 /// bytes the run would have reached, not a trap.
 #[test]
 fn bytes_past_the_runs_mib_are_a_typed_error() {
@@ -633,7 +633,7 @@ fn bytes_past_the_runs_mib_are_a_typed_error() {
     assert_eq!(t.as_("owner").view("len", json!({})).unwrap(), json!(0));
 }
 
-/// C10: within the run's 1 MiB, a value whose log entry (JSON, values in base64) passes the
+/// Within the run's 1 MiB, a value whose log entry (JSON, values in base64) passes the
 /// log's 1 MiB is refused as a node refuses it: `HostDenied`, nothing kept.
 #[test]
 fn a_run_whose_log_entry_passes_the_cap_is_host_denied() {
@@ -658,7 +658,7 @@ fn a_run_whose_log_entry_passes_the_cap_is_host_denied() {
         .unwrap();
 }
 
-/// C10: search is the node's ranked word index, not a substring scan: a word matches whole
+/// Search is the node's ranked word index, not a substring scan: a word matches whole
 /// words only, and a note naming it in its title and body ranks first.
 #[test]
 fn search_matches_words_and_ranks_as_a_node_does() {

@@ -44,7 +44,7 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 /// The app's error enum: the variant name is the error code, its fields the error's fields.
-/// Every field is named (D63): a tuple variant is a compile error.
+/// Every field is named: a tuple variant is a compile error.
 #[proc_macro_attribute]
 pub fn error(_args: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as Item);
@@ -52,7 +52,7 @@ pub fn error(_args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 /// The app's event enum: the variant name is the event name, its fields the event data.
-/// Every field is named (D63): a tuple variant, or a tuple struct, is a compile error.
+/// Every field is named: a tuple variant, or a tuple struct, is a compile error.
 #[proc_macro_attribute]
 pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as Item);
@@ -69,7 +69,8 @@ pub fn derive_record(input: TokenStream) -> TokenStream {
 /// A serde struct's or enum's JSON shape for the ABI's `types`, read from its `#[serde(..)]`
 /// attributes: `#[derive(Serialize, Deserialize, AbiType)]`. `#[abi(plain)]` on a field (or the
 /// type) says its 64-bit integers and `Vec<u8>` travel as plain serde writes them: JSON numbers
-/// (`u64_number`, `i64_number`) and arrays of numbers (`byte_list`), not D20's strings.
+/// (`u64_number`, `i64_number`) and arrays of numbers (`byte_list`), not the
+/// decimal and base64url strings.
 #[proc_macro_derive(AbiType, attributes(serde, abi))]
 pub fn derive_abi_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_undo_body import AppUndoBody
-from ...models.app_undo_response_200 import AppUndoResponse200
 from ...models.error import Error
+from ...models.undo_done import UndoDone
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppUndoResponse200, Error]]:
+) -> Optional[Union[Error, UndoDone]]:
     if response.status_code == 200:
-        response_200 = AppUndoResponse200.from_dict(response.json())
+        response_200 = UndoDone.from_dict(response.json())
 
         return response_200
 
@@ -86,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppUndoResponse200, Error]]:
+) -> Response[Union[Error, UndoDone]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppUndoBody,
-) -> Response[Union[AppUndoResponse200, Error]]:
+) -> Response[Union[Error, UndoDone]]:
     """Undo an app's last upgrade
 
      An owner or admin of the app's organization, within a week of the upgrade (judged on the logged
@@ -129,7 +129,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppUndoResponse200, Error]]
+        Response[Union[Error, UndoDone]]
     """
 
     kwargs = _get_kwargs(
@@ -149,7 +149,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppUndoBody,
-) -> Optional[Union[AppUndoResponse200, Error]]:
+) -> Optional[Union[Error, UndoDone]]:
     """Undo an app's last upgrade
 
      An owner or admin of the app's organization, within a week of the upgrade (judged on the logged
@@ -178,7 +178,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppUndoResponse200, Error]
+        Union[Error, UndoDone]
     """
 
     return sync_detailed(
@@ -193,7 +193,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppUndoBody,
-) -> Response[Union[AppUndoResponse200, Error]]:
+) -> Response[Union[Error, UndoDone]]:
     """Undo an app's last upgrade
 
      An owner or admin of the app's organization, within a week of the upgrade (judged on the logged
@@ -222,7 +222,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppUndoResponse200, Error]]
+        Response[Union[Error, UndoDone]]
     """
 
     kwargs = _get_kwargs(
@@ -240,7 +240,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppUndoBody,
-) -> Optional[Union[AppUndoResponse200, Error]]:
+) -> Optional[Union[Error, UndoDone]]:
     """Undo an app's last upgrade
 
      An owner or admin of the app's organization, within a week of the upgrade (judged on the logged
@@ -269,7 +269,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppUndoResponse200, Error]
+        Union[Error, UndoDone]
     """
 
     return (
