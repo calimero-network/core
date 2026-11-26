@@ -3519,11 +3519,25 @@ impl SystemState {
         Ok(())
     }
 
-    /// The package and signer `release` pins an instance to, where it declares `lineage: pinned`.
+    /// The package and signer an instance running `bundle` as `release` (else the release the
+    /// bundle is recorded from, taken by `at`) is pinned to, where it declares `lineage: pinned`.
     #[must_use]
-    pub fn lineage_of(&self, release: Option<&PackageRef>) -> Option<AppLineage> {
-        let _ = release;
-        None
+    pub fn lineage_of(
+        &self,
+        release: Option<&PackageRef>,
+        bundle: &str,
+        at: u64,
+    ) -> Option<AppLineage> {
+        let r = release.or_else(|| self.governing(None, bundle, at))?;
+        let record = self.packages.get(&r.package)?;
+        let _pinned = record
+            .versions
+            .get(&r.version)
+            .filter(|v| !v.lineage.is_free())?;
+        Some(AppLineage {
+            package: r.package.clone(),
+            signer_id: record.signer_id.clone(),
+        })
     }
 
     /// Whether moving `app` to `release` keeps it on its lineage ([`AppRecord::lineage`]): a
@@ -3537,8 +3551,23 @@ impl SystemState {
         app: &AppRecord,
         release: Option<&PackageRef>,
     ) -> Result<(), Rejection> {
-        let _ = (app, release);
-        Ok(())
+        let Some(lineage) = &app.lineage else {
+            return Ok(());
+        };
+        let to = release
+            .filter(|r| r.package == lineage.package)
+            .filter(|r| {
+                self.packages
+                    .get(&r.package)
+                    .is_some_and(|p| p.signer_id == lineage.signer_id)
+            })
+            .ok_or(OUTSIDE_LINEAGE)?;
+        let semver = |r: &PackageRef| semver::Version::parse(&r.version).ok();
+        let from = app.release.as_ref().or_else(|| self.governing_release(app));
+        match (from.and_then(semver), semver(to)) {
+            (Some(from), Some(to)) if to >= from => Ok(()),
+            _ => Err(LINEAGE_OLDER_RELEASE),
+        }
     }
 
     /// The secret values of the deployment `app_id` was created from, by name,
