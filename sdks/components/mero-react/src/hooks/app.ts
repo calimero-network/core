@@ -197,16 +197,26 @@ export function useView<T = unknown>(method: string, args: unknown = {}, options
     return () => handle.close();
   }, [client, id, method, argsKey, enabled, live, intervalMs]);
 
+  // The view and arguments the live state is for: a refetch of others lands too late.
+  const liveKey = `${id}\u0000${method}\u0000${argsKey}`;
+  const liveKeyRef = useRef(liveKey);
+  liveKeyRef.current = liveKey;
   const refetchLive = useCallback(async () => {
     if (!client || !id) return;
+    const key = liveKey;
     try {
       const answer = await viewOf(client, id, method, JSON.parse(argsKey), {});
-      setWatched((prev) => ({ ...prev, data: answer.result, index: answer.index, error: null }));
+      if (liveKeyRef.current !== key) return;
+      // An answer older than the one the watch already delivered is dropped.
+      setWatched((prev) =>
+        prev.index !== null && answer.index < prev.index ? prev : { ...prev, data: answer.result, index: answer.index, error: null },
+      );
     } catch (error) {
+      if (liveKeyRef.current !== key) return;
       reportRef.current(error);
       setWatched((prev) => ({ ...prev, error: toError(error) }));
     }
-  }, [client, id, method, argsKey]);
+  }, [client, id, method, argsKey, liveKey]);
 
   if (live) {
     return {

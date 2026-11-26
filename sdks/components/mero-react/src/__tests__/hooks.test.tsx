@@ -157,6 +157,53 @@ describe('calls and views', () => {
     expect(watched[1]!.close).toHaveBeenCalled();
   });
 
+  it('useView live keeps the newest answer when a refetch lands late or for old arguments', async () => {
+    type Opts = { onAnswer: (a: unknown, i: number) => void };
+    const watched: { args: unknown; opts: Opts }[] = [];
+    const reads: ((r: { index: number; result: unknown }) => void)[] = [];
+    const client = fakeClient(
+      {
+        watchView: vi.fn((_app: string, _view: string, args: unknown, opts: Opts) => {
+          watched.push({ args, opts });
+          return { close: vi.fn() };
+        }),
+      },
+      { apps: { view: vi.fn(() => new Promise((resolve) => reads.push(resolve))) } },
+    );
+    const { result, rerender } = renderHook(({ key }) => useView<string>('get', { key }, { live: true }), {
+      wrapper: wrapper(client),
+      initialProps: { key: 'a' },
+    });
+    await waitFor(() => expect(watched).toHaveLength(1));
+    act(() => watched[0]!.opts.onAnswer('a3', 3));
+
+    // A refetch that resolves after a newer live answer does not take it back.
+    let pending: Promise<void> | undefined;
+    act(() => {
+      pending = result.current.refetch();
+    });
+    act(() => watched[0]!.opts.onAnswer('a5', 5));
+    await act(async () => {
+      reads[0]!({ index: 4, result: 'a4' });
+      await pending;
+    });
+    expect(result.current.data).toBe('a5');
+    expect(result.current.index).toBe(5);
+
+    // A refetch of the old arguments that resolves after they changed is dropped.
+    act(() => {
+      pending = result.current.refetch();
+    });
+    rerender({ key: 'b' });
+    await waitFor(() => expect(watched).toHaveLength(2));
+    act(() => watched[1]!.opts.onAnswer('b1', 1));
+    await act(async () => {
+      reads[1]!({ index: 9, result: 'a9' });
+      await pending;
+    });
+    expect(result.current.data).toBe('b1');
+  });
+
   it('useConnectionState follows the app stream', async () => {
     let listener: ((app: string, s: string) => void) | undefined;
     const client = fakeClient({
