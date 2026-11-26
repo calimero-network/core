@@ -197,7 +197,7 @@ impl Apps<'_> {
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI; `passkey` answers it (user verification `required`), without one the refusal is returned.
     ///
-    /// Retried while the node answers `503` or cannot be reached (D70), with its `idempotencyKey` (one is made when none is given).
+    /// Retried while the node answers `503` or cannot be reached, with its `idempotencyKey` (one is made when none is given).
     pub async fn call(
         self,
         app: &str,
@@ -477,7 +477,7 @@ impl Apps<'_> {
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI; `passkey` answers it (user verification `required`), without one the refusal is returned.
     ///
-    /// Retried while the node answers `503` or cannot be reached (D70), with its `idempotencyKey` (one is made when none is given).
+    /// Retried while the node answers `503` or cannot be reached, with its `idempotencyKey` (one is made when none is given).
     pub async fn method(
         self,
         app: &str,
@@ -1174,7 +1174,7 @@ impl Apps<'_> {
     ///
     /// `POST /apps/{app}/views` (`views`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
     ///
-    /// Retried while the node answers `503` or cannot be reached (D70).
+    /// Retried while the node answers `503` or cannot be reached.
     pub async fn view(
         self,
         app: &str,

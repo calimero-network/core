@@ -32,7 +32,7 @@ import kotlinx.serialization.Contextual
  * One payer's limits in place of the cluster's; a limit left out is the cluster's.
  *
  * @param maxConcurrentRuns 
- * @param computeFuel an unsigned 64-bit integer as a decimal string (D20)
+ * @param computeFuel an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param maxFileBytes 
  */
 @Serializable
@@ -42,7 +42,7 @@ data class OrgQuotas (
     @SerialName(value = "maxConcurrentRuns")
     val maxConcurrentRuns: kotlin.Long? = null,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "computeFuel")
     val computeFuel: kotlin.String? = null,
 

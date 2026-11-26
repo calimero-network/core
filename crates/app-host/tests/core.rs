@@ -1604,7 +1604,10 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let mut action = core_for(&state, &inv(InvocationKind::Action))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));
-    assert!(action.storage_get(b"k").is_err(), "no state access (D12)");
+    assert!(
+        action.storage_get(b"k").is_err(),
+        "an action has no state access"
+    );
     assert_eq!(action.action_key().unwrap(), "a.1.1.0");
     assert_eq!(
         action.action_view("company", b"{}"),

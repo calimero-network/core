@@ -311,7 +311,7 @@ def unkept_output(cl, rig, in_process):
     rec = rig.record(run)
     out = rig.output_ids(run)
     info = rig.info(out[0]) if out else {}
-    check("8 unkept output is registered, then left to R8", rec["state"] == "done" and len(out) == 1
+    check("8 unkept output is registered, then left to the blob lifecycle", rec["state"] == "done" and len(out) == 1
           and info.get("size") == VIEW_BYTES and rig.done() == before_done + 1,
           f"startUnkept on input {file8[:12]}, results {before_done}",
           f"state {rec['state']}, output {out[0][:12] if out else None} registered (size {info.get('size')}), "
@@ -401,7 +401,7 @@ def local_part(wd, compute, csv_path, policy, start, rows):
     run = subprocess.run([str(BIN / "meroctl"), "local", "compute", "run", str(compute), "--method", "redact", "--args", f"@{args}",
                           "--input", str(csv_path), "--out", str(out)], capture_output=True, text=True, check=True)
     result = json.loads(base64.b64decode(re.search(r"result \(base64\): (\S+)", run.stdout).group(1)))
-    return (out / "output-0").read_bytes(), int(result["cells"])  # a decimal string (D20)
+    return (out / "output-0").read_bytes(), int(result["cells"])  # a decimal string: exact past 2^53
 
 
 def download(cl, app, blob, grant=None, key=None):

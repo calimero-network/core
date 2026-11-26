@@ -78,7 +78,7 @@ fn parse_table(input: &DeriveInput) -> syn::Result<TableAttr> {
                 table.search = field_list(&meta)?;
                 Ok(())
             } else if meta.path.is_ident("partition") {
-                Err(meta.error("partition is reserved (D48)"))
+                Err(meta.error("partition is reserved: an app keeps one log for all its keys"))
             } else {
                 Err(meta.error("expected `key`, `unique`, `index`, `count` or `search`"))
             }

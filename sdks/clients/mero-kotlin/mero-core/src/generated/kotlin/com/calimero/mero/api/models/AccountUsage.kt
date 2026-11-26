@@ -33,13 +33,13 @@ import kotlinx.serialization.Contextual
  * `GET /auth/usage`: what the account uses against the quotas, and its developer usage today (64-bit sums as decimal strings).
  *
  * @param apps 
- * @param bundleBytes an unsigned 64-bit integer as a decimal string (D20)
+ * @param bundleBytes an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param apiKeys 
  * @param orgsOwned 
  * @param fileBytes 
  * @param quotas 
- * @param developerFuelToday an unsigned 64-bit integer as a decimal string (D20)
- * @param developerWritesToday an unsigned 64-bit integer as a decimal string (D20)
+ * @param developerFuelToday an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param developerWritesToday an unsigned 64-bit integer as a decimal string, exact past 2^53
  */
 @Serializable
 
@@ -48,7 +48,7 @@ data class AccountUsage (
     @SerialName(value = "apps")
     val apps: kotlin.Long,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "bundleBytes")
     val bundleBytes: kotlin.String,
 
@@ -64,11 +64,11 @@ data class AccountUsage (
     @SerialName(value = "quotas")
     val quotas: Quotas,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "developerFuelToday")
     val developerFuelToday: kotlin.String,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "developerWritesToday")
     val developerWritesToday: kotlin.String
 

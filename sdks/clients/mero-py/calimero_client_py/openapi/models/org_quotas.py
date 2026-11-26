@@ -18,7 +18,7 @@ class OrgQuotas:
 
     Attributes:
         max_concurrent_runs (Union[Unset, int]):
-        compute_fuel (Union[Unset, str]): an unsigned 64-bit integer as a decimal string (D20)
+        compute_fuel (Union[Unset, str]): an unsigned 64-bit integer as a decimal string, exact past 2^53
         max_file_bytes (Union[Unset, int]):
     """
 

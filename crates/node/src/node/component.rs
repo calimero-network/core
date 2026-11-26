@@ -2911,7 +2911,7 @@ impl Node {
         if migrate.is_some() {
             return Ok(refuse(
                 "MigrationsNotSupported",
-                "migrations are rebuilds (D38), not in this milestone",
+                "no migrations in this version: an upgrade swaps the code and keeps the state",
             ));
         }
         let target = match self.prepared_for(bundle).await {

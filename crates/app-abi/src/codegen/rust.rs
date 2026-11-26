@@ -204,7 +204,7 @@ impl<'a> Module<'a> {
             Type::Bool => "bool".to_owned(),
             Type::Int(int) => {
                 if nested && int.is_string() {
-                    bail!("{ty} inside another type has no JSON form (D20)");
+                    bail!("{ty} inside another type has no JSON form");
                 }
                 match int {
                     Int::U64Number => "u64".to_owned(),
@@ -218,7 +218,7 @@ impl<'a> Module<'a> {
             Type::String => "String".to_owned(),
             Type::Bytes => {
                 if nested {
-                    bail!("bytes inside another type has no JSON form (D20)");
+                    bail!("bytes inside another type has no JSON form");
                 }
                 "Vec<u8>".to_owned()
             }
@@ -988,7 +988,7 @@ mod tests {
         }))
         .unwrap();
         let err = uses_module(&[(reference(&[]), &bad)]).unwrap_err();
-        assert!(err.to_string().contains("D20"), "{err}");
+        assert!(err.to_string().contains("no JSON form"), "{err}");
     }
 
     #[test]

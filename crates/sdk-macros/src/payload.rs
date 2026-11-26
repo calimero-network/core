@@ -34,7 +34,7 @@ fn unnamed(kind: Payload, at: impl ToTokens, what: &str, name: &str) -> syn::Err
     syn::Error::new_spanned(
         at,
         format!(
-            "app {}s name every field (D63): {what} `{name}` has unnamed fields; write `{name} {{ field: Type }}`",
+            "app {}s name every field, each a JSON key: {what} `{name}` has unnamed fields; write `{name} {{ field: Type }}`",
             kind.noun()
         ),
     )
@@ -217,21 +217,24 @@ mod tests {
     }
 
     #[test]
-    fn tuple_variants_are_refused_naming_d63() {
+    fn tuple_variants_are_refused_for_their_unnamed_fields() {
         for kind in [Payload::Error, Payload::Event] {
             let item: ItemEnum =
                 parse_quote! { pub enum E { Ok { a: u32 }, Invalid(String), Gone } };
             let err = expand(kind, &item).expect_err("refused");
             let msg = err.to_string();
-            assert!(msg.contains("D63") && msg.contains("`Invalid`"), "{msg}");
+            assert!(
+                msg.contains("name every field") && msg.contains("`Invalid`"),
+                "{msg}"
+            );
         }
     }
 
     #[test]
-    fn a_tuple_struct_is_refused_naming_d63() {
+    fn a_tuple_struct_is_refused_for_its_unnamed_fields() {
         let item: Item = parse_quote! { pub struct Booked(String, u32); };
         let err = expand_item(Payload::Event, &item).expect_err("refused");
-        assert!(err.to_string().contains("D63"), "{err}");
+        assert!(err.to_string().contains("name every field"), "{err}");
         let item: Item = parse_quote! { pub struct Booked { id: String } };
         let err = expand_item(Payload::Event, &item).expect_err("refused");
         assert!(err.to_string().contains("an enum"), "{err}");
@@ -250,6 +253,6 @@ mod tests {
     fn nested_wide_integers_are_refused() {
         let item: ItemEnum = parse_quote! { pub enum E { A { xs: Vec<u64> } } };
         let err = expand(Payload::Error, &item).expect_err("refused");
-        assert!(err.to_string().contains("D20"), "{err}");
+        assert!(err.to_string().contains("JSON"), "{err}");
     }
 }

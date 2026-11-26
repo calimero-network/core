@@ -175,7 +175,7 @@ fn wide_error(outer: &Type, name: &str) -> syn::Error {
         outer,
         format!(
             "{name}{at} would reach JSON as a number that JavaScript reads exactly only up to \
-             2^53 (D20); use u32, or u64 (a decimal string in JSON)"
+             2^53; use u32, or u64 (a decimal string in JSON)"
         ),
     )
 }
@@ -211,7 +211,7 @@ pub fn check_wire(ty: &Type) -> syn::Result<()> {
                 return Err(syn::Error::new_spanned(
                     outer,
                     format!(
-                        "{what} inside {} {effect} in JSON (D20); wrap it in a Record or use a string",
+                        "{what} inside {} {effect} in JSON; wrap it in a Record or use a string",
                         compact(outer)
                     ),
                 ));
@@ -560,11 +560,11 @@ mod tests {
         ] {
             let ty: Type = ty;
             let err = check_wire(&ty).expect_err("refused");
-            assert!(err.to_string().contains("(D20)"), "{err}");
+            assert!(err.to_string().contains("in JSON; wrap it"), "{err}");
         }
         assert_eq!(
             check_wire(&parse_quote!(Vec<u64>)).unwrap_err().to_string(),
-            "u64 inside Vec<u64> would lose precision in JSON (D20); wrap it in a Record or use a string"
+            "u64 inside Vec<u64> would lose precision in JSON; wrap it in a Record or use a string"
         );
         for ty in [
             parse_quote!(u64),
@@ -590,21 +590,21 @@ mod tests {
         ] {
             let ty: Type = ty;
             let err = check_wire(&ty).expect_err("refused");
-            assert!(err.to_string().contains("2^53 (D20)"), "{err}");
+            assert!(err.to_string().contains("2^53; use u32"), "{err}");
             let err = check_wide(&ty).expect_err("refused under #[abi(plain)] too");
             assert!(err.to_string().contains("use u32, or u64"), "{err}");
         }
         assert_eq!(
             check_wire(&parse_quote!(usize)).unwrap_err().to_string(),
-            "usize would reach JSON as a number that JavaScript reads exactly only up to 2^53 \
-             (D20); use u32, or u64 (a decimal string in JSON)"
+            "usize would reach JSON as a number that JavaScript reads exactly only up to 2^53; \
+             use u32, or u64 (a decimal string in JSON)"
         );
         assert_eq!(
             check_wire(&parse_quote!(Vec<u128>))
                 .unwrap_err()
                 .to_string(),
             "u128 inside Vec<u128> would reach JSON as a number that JavaScript reads exactly \
-             only up to 2^53 (D20); use u32, or u64 (a decimal string in JSON)"
+             only up to 2^53; use u32, or u64 (a decimal string in JSON)"
         );
         check_wide(&parse_quote!(Vec<u64>)).unwrap();
         check_wide(&parse_quote!(u32)).unwrap();

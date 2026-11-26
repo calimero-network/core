@@ -21,10 +21,10 @@ class PipelineRunCost:
     strings.
 
         Attributes:
-            max_cost (str): an unsigned 64-bit integer as a decimal string (D20)
+            max_cost (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
             price_version (int):
             table (PipelineRunCostTable):
-            worst_case (str): an unsigned 64-bit integer as a decimal string (D20)
+            worst_case (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
     """
 
     max_cost: str

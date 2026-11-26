@@ -39,7 +39,7 @@ class PipelineRunStep:
             runs (Union[Unset, list[str]]):
             cached_count (Union[Unset, int]):
             cached_keys (Union[Unset, PipelineRunStepCachedKeys]):
-            cost (Union[Unset, str]): an unsigned 64-bit integer as a decimal string (D20)
+            cost (Union[Unset, str]): an unsigned 64-bit integer as a decimal string, exact past 2^53
             capped (Union[Unset, bool]):
             legacy_items (Union[Unset, int]):
             outputs (Union[Unset, list['PipelineRunOutput']]):
