@@ -8,8 +8,9 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
@@ -109,26 +110,96 @@ pub(crate) async fn join_all<T: Send + 'static>(
 pub const MAX_HEARTBEATS_PER_BATCH: usize = 1024;
 
 /// How long the first heartbeat for a peer waits for the others of the same
-/// tick before their batch goes out. openraft gives a heartbeat one
-/// `heartbeat_ms` (200 ms by default) to be answered, so this stays a small
-/// part of it.
+/// tick before their batch goes out — but only during the brief coalescing
+/// window after the engine's ticker fires ([`HeartbeatPacing`]). openraft gives
+/// a heartbeat one `heartbeat_ms` (200 ms by default) to be answered, so this
+/// stays a small part of it.
 pub const HEARTBEAT_BATCH_WINDOW: Duration = Duration::from_millis(5);
+
+/// How long after the ticker fires its groups' heartbeats the batcher keeps
+/// waiting [`HEARTBEAT_BATCH_WINDOW`] for them, so the synchronized idle burst
+/// to a peer still travels in one message. It need only cover the gap from a
+/// tick to the heartbeats it triggers reaching the batcher; outside it a lone
+/// heartbeat — a read-index confirm on a hot group's write path
+/// ([the write path](https://calimero-network.github.io/core/protocol/write-path/))
+/// — is sent at once, not held for a batch it is the only member of.
+pub const TICK_COALESCE_GRACE: Duration = Duration::from_millis(10);
 
 type Waiter = oneshot::Sender<Result<RpcResponse, String>>;
 type Queued = (GroupId, AppendEntriesRequest<TypeConfig>, Waiter);
 
+/// Decides, for a heartbeat about to wait for a batch, whether to hold it for
+/// [`HEARTBEAT_BATCH_WINDOW`] (so the ticker's idle burst coalesces per peer) or
+/// send it at once. The engine's ticker marks each firing ([`Self::mark_tick`]);
+/// a heartbeat within [`TICK_COALESCE_GRACE`] of a mark is part of that burst and
+/// waits, any other — a read-index confirm between ticks — does not. The idle
+/// heartbeats that must stay batched at scale keep their window; the write path's
+/// confirm no longer pays it.
+pub struct HeartbeatPacing {
+    epoch: Instant,
+    coalesce_until_ms: AtomicU64,
+}
+
+impl HeartbeatPacing {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+            coalesce_until_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// Called by the ticker as it fires, so the heartbeats its groups emit just
+    /// after coalesce within the batch window.
+    pub fn mark_tick(&self) {
+        self.mark_tick_at(self.now_ms());
+    }
+
+    fn mark_tick_at(&self, now_ms: u64) {
+        let until = now_ms + TICK_COALESCE_GRACE.as_millis() as u64;
+        self.coalesce_until_ms.store(until, Ordering::Relaxed);
+    }
+
+    /// The window a heartbeat should wait before its batch goes out: the batch
+    /// window during the post-tick grace, else zero (send at once).
+    #[must_use]
+    pub fn window(&self) -> Duration {
+        self.window_at(self.now_ms())
+    }
+
+    fn window_at(&self, now_ms: u64) -> Duration {
+        if now_ms < self.coalesce_until_ms.load(Ordering::Relaxed) {
+            HEARTBEAT_BATCH_WINDOW
+        } else {
+            Duration::ZERO
+        }
+    }
+}
+
+impl Default for HeartbeatPacing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One node's outbound heartbeats, gathered per peer: every group's empty
-/// append to a peer within [`HEARTBEAT_BATCH_WINDOW`] travels in one
+/// append to a peer within a tick's [`HEARTBEAT_BATCH_WINDOW`] travels in one
 /// [`Transport::send_batch`]. Everything else goes on its own.
 pub struct Batcher {
     pub(crate) transport: Arc<dyn Transport>,
+    pacing: Arc<HeartbeatPacing>,
     queues: Mutex<HashMap<NodeId, Vec<Queued>>>,
 }
 
 impl Batcher {
-    pub(crate) fn new(transport: Arc<dyn Transport>) -> Self {
+    pub(crate) fn new(transport: Arc<dyn Transport>, pacing: Arc<HeartbeatPacing>) -> Self {
         Self {
             transport,
+            pacing,
             queues: Mutex::new(HashMap::new()),
         }
     }
@@ -160,7 +231,12 @@ impl Batcher {
             let this = Arc::clone(self);
             let addr = addr.clone();
             drop(tokio::spawn(async move {
-                tokio::time::sleep(HEARTBEAT_BATCH_WINDOW).await;
+                // Wait only to coalesce the ticker's idle burst; a read-index
+                // confirm between ticks sees a zero window and goes at once.
+                let window = this.pacing.window();
+                if !window.is_zero() {
+                    tokio::time::sleep(window).await;
+                }
                 let items = this
                     .queues
                     .lock()
@@ -313,5 +389,35 @@ impl RaftNetwork<TypeConfig> for Connection {
             RpcResponse::Vote(r) => Ok(r),
             _ => Err(unexpected()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{HeartbeatPacing, HEARTBEAT_BATCH_WINDOW, TICK_COALESCE_GRACE};
+
+    #[test]
+    fn a_confirm_between_ticks_does_not_wait() {
+        let pacing = HeartbeatPacing::new();
+        // No tick has fired: a lone heartbeat (a read-index confirm) sends at
+        // once, so a write no longer pays the batch window.
+        assert_eq!(pacing.window_at(0), Duration::ZERO);
+        assert_eq!(pacing.window_at(1_000), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_tick_burst_still_coalesces_then_the_window_reopens() {
+        let grace = TICK_COALESCE_GRACE.as_millis() as u64;
+        let pacing = HeartbeatPacing::new();
+        pacing.mark_tick_at(1_000);
+        // Within the grace, the ticker's burst waits the batch window, so idle
+        // heartbeats to a peer still travel in one message.
+        assert_eq!(pacing.window_at(1_000), HEARTBEAT_BATCH_WINDOW);
+        assert_eq!(pacing.window_at(1_000 + grace - 1), HEARTBEAT_BATCH_WINDOW);
+        // At and past the grace, heartbeats send at once again.
+        assert_eq!(pacing.window_at(1_000 + grace), Duration::ZERO);
+        assert_eq!(pacing.window_at(5_000), Duration::ZERO);
     }
 }
