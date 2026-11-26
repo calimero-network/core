@@ -101,7 +101,11 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
   `error.rs`, `metrics.rs`, `consent_page.rs` and `consent_page/`, `app_host.rs` (frontends),
   `origins.rs`, `presence.rs`, `watch.rs` with `api/watches.rs` (live views: watch streams
   on `/apps/{app}/events?watch=true`, each watch's read set checked against every applied
-  diff through `AppMachine::changes_tx`).
+  diff through `AppMachine::changes_tx`, and a view that read the directory or the clock
+  re-run on every applied system entry; the holder is judged on each system entry and
+  before each frame; the new answer is pushed as `view-result` (first change at once, then
+  at most once per the watch's interval, skipped when its hash is unchanged, a bare
+  `view-changed` over `MAX_PUSHED_ANSWER_BYTES`)).
 - **Packages and releases**: `packages.rs`, `packages/pipelines.rs`, `runtime.rs`,
   `node/runtime.rs`, `report.rs`, `egress.rs`.
 - **Upgrades**: `node/cluster_version.rs`, `node/auto_updates.rs`, `node/restore_points.rs`,

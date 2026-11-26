@@ -101,12 +101,14 @@ def sync_detailed(
     """An app's events as server-sent events
 
      Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
-    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
-    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
-    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
-    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
-    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
-    watches must be added again.
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result`
+    (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a
+    watched view's answer changed (the first change at once, then at most one per the watch's interval),
+    `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event:
+    watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch
+    is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch
+    touched after `last` is sent its current answer again; a stream that is gone comes back as a new one
+    followed by `event: watch-reset` (`{}`), and its watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -152,12 +154,14 @@ def sync(
     """An app's events as server-sent events
 
      Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
-    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
-    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
-    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
-    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
-    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
-    watches must be added again.
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result`
+    (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a
+    watched view's answer changed (the first change at once, then at most one per the watch's interval),
+    `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event:
+    watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch
+    is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch
+    touched after `last` is sent its current answer again; a stream that is gone comes back as a new one
+    followed by `event: watch-reset` (`{}`), and its watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -198,12 +202,14 @@ async def asyncio_detailed(
     """An app's events as server-sent events
 
      Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
-    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
-    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
-    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
-    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
-    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
-    watches must be added again.
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result`
+    (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a
+    watched view's answer changed (the first change at once, then at most one per the watch's interval),
+    `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event:
+    watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch
+    is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch
+    touched after `last` is sent its current answer again; a stream that is gone comes back as a new one
+    followed by `event: watch-reset` (`{}`), and its watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -247,12 +253,14 @@ async def asyncio(
     """An app's events as server-sent events
 
      Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
-    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
-    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
-    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
-    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
-    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
-    watches must be added again.
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result`
+    (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a
+    watched view's answer changed (the first change at once, then at most one per the watch's interval),
+    `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event:
+    watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch
+    is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch
+    touched after `last` is sent its current answer again; a stream that is gone comes back as a new one
+    followed by `event: watch-reset` (`{}`), and its watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

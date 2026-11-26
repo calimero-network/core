@@ -699,6 +699,17 @@ impl Kv {
         Ok(found)
     }
 
+    /// The caller's role in the app's org (`env::org_role`), or `null`: a view that reads
+    /// the directory, which a system change (a promotion, a removal) changes.
+    #[app::view(subscribable)]
+    pub fn my_role(&self) -> app::Result<Option<String>> {
+        let account = match env::caller() {
+            env::Caller::Account(a) | env::Caller::ApiKey { account: a, .. } => a,
+            _ => return Ok(None),
+        };
+        Ok(env::org_role(&account).map(|r| format!("{r:?}").to_lowercase()))
+    }
+
     /// How many keys there are.
     #[app::view]
     pub fn len(&self) -> app::Result<u32> {

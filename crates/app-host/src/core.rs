@@ -335,6 +335,14 @@ impl HostCore {
         self
     }
 
+    /// Notes, while recording, that the run read the directory, a blob's metadata or the
+    /// clock ([`ReadSet::reads_system`]).
+    fn read_system(&self) {
+        if let Some(set) = self.read_set.borrow_mut().as_mut() {
+            set.system();
+        }
+    }
+
     fn give_up_read_set(&self, reason: &str) {
         if let Some(set) = self.read_set.borrow_mut().as_mut() {
             set.give_up(reason.to_owned());
@@ -757,6 +765,7 @@ impl HostCore {
 
     #[must_use]
     pub fn app_owner(&self) -> String {
+        self.read_system();
         match &self.inv.compute {
             Some(run) => run.owner.clone(),
             None => self.dir.app_owner(),
@@ -766,6 +775,7 @@ impl HostCore {
     /// The app linked under `name` (`context.linked`); none in a compute run.
     #[must_use]
     pub fn linked(&self, name: &str) -> Option<String> {
+        self.read_system();
         if self.is_compute() {
             return None;
         }
@@ -775,6 +785,7 @@ impl HostCore {
     /// The app whose unit this one is a member of (`context.unit-of`); none in a compute run.
     #[must_use]
     pub fn unit_of(&self) -> Option<String> {
+        self.read_system();
         if self.is_compute() {
             return None;
         }
@@ -786,6 +797,7 @@ impl HostCore {
     /// a compute run.
     #[must_use]
     pub fn grant_scope(&self) -> Option<String> {
+        self.read_system();
         if self.is_compute() {
             return None;
         }
@@ -799,6 +811,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org(&self) -> Option<String> {
+        self.read_system();
         if self.is_compute() {
             return None;
         }
@@ -807,6 +820,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org_role(&self, account: &str) -> Option<OrgRole> {
+        self.read_system();
         if self.is_compute() {
             return None;
         }
@@ -824,6 +838,7 @@ impl HostCore {
 
     #[must_use]
     pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
+        self.read_system();
         if self.is_compute() {
             return Vec::new();
         }
@@ -832,6 +847,7 @@ impl HostCore {
 
     #[must_use]
     pub fn in_team(&self, account: &str, team: &str) -> bool {
+        self.read_system();
         !self.is_compute() && self.dir.in_team(account, team)
     }
 
@@ -1341,6 +1357,7 @@ impl HostCore {
     /// A blob's metadata, if it is one of the app's blobs; `None` for any other id.
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
+        self.read_system();
         self.burn_bytes(id.len());
         self.may_use_blobs("blobs.info")?;
         let blob = parse_blob_id(id).and_then(|id| self.blobs.info(&id));
@@ -1579,11 +1596,13 @@ impl HostCore {
 
     #[must_use]
     pub fn wall_ms(&self) -> u64 {
+        self.read_system();
         time::wall_ms(&self.inv)
     }
 
     #[must_use]
     pub fn monotonic_ns(&self) -> u64 {
+        self.read_system();
         time::monotonic_ns(&self.inv)
     }
 

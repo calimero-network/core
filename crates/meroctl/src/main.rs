@@ -188,11 +188,11 @@ enum Cmd {
         /// A view from any replica at least this fresh, instead of the leader.
         #[arg(long, requires = "view")]
         min_index: Option<u64>,
-        /// Watch a subscribable view: print it now, then again (read at the notice's
-        /// index) each time something it read changes, one JSON line each.
+        /// Watch a subscribable view: print it now, then its new answer each time it
+        /// changes, one JSON line each.
         #[arg(long, requires = "view", conflicts_with = "min_index")]
         watch: bool,
-        /// With `--watch`: stop after this many re-reads.
+        /// With `--watch`: stop after this many updates.
         #[arg(long, requires = "watch")]
         limit: Option<usize>,
         /// Retries with the same key are answered once.
@@ -292,9 +292,10 @@ enum NetworkCmd {
 
 /// Print a command's answer as JSON. `null` is what commands that wrote
 /// their own output (streams, downloads, metrics) answer: nothing more to say.
-/// `call --view --watch`: the view now (`{ index, result }`), then again at each notice's
-/// index (`{ notice, index, result }`), one JSON line each; `{ "ended": true }` when the node
-/// drops the watch.
+/// `call --view --watch`: the view now (`{ index, result }`), then its new answer each
+/// time it changes (`{ index, result }`, `{ index, error }` for an app error, or `{ notice,
+/// index, result }` read again when the answer was too large to push), one JSON line each;
+/// `{ "ended": true, "reason" }` when the node drops the watch.
 async fn watch_view(
     client: &calimero_client::Client,
     app: &str,
@@ -302,36 +303,45 @@ async fn watch_view(
     args: Value,
     limit: Option<usize>,
 ) -> eyre::Result<()> {
+    use calimero_client::WatchNotice;
     use futures_util::StreamExt;
 
     let mut watch = client.watch(app, method, args.clone()).await?;
-    let read = |min_index| {
-        client.apps().view(
-            app,
-            method,
-            Some(args.clone()),
-            Some(ViewsRequestConsistency::Stale),
-            Some(min_index),
-        )
-    };
-    let now = read(watch.index).await?;
-    println!("{}", json!({ "index": now.index, "result": now.result }));
+    println!(
+        "{}",
+        json!({ "index": watch.index, "result": watch.answer })
+    );
     let mut reads = 0;
     while limit.is_none_or(|l| reads < l) {
-        match watch.notices.next().await {
-            Some(calimero_client::WatchNotice::Changed { index }) => {
-                let v = read(index).await?;
-                println!(
-                    "{}",
-                    json!({ "notice": index, "index": v.index, "result": v.result })
-                );
-                reads += 1;
+        let line = match watch.notices.next().await {
+            Some(WatchNotice::Answer { index, answer }) => {
+                json!({ "index": index, "result": answer })
             }
-            Some(calimero_client::WatchNotice::Ended) | None => {
+            Some(WatchNotice::Failed { index, error }) => json!({ "index": index, "error": error }),
+            Some(WatchNotice::Changed { index }) => {
+                let v = client
+                    .apps()
+                    .view(
+                        app,
+                        method,
+                        Some(args.clone()),
+                        Some(ViewsRequestConsistency::Stale),
+                        Some(index),
+                    )
+                    .await?;
+                json!({ "notice": index, "index": v.index, "result": v.result })
+            }
+            Some(WatchNotice::Ended { reason }) => {
+                println!("{}", json!({ "ended": true, "reason": reason }));
+                break;
+            }
+            None => {
                 println!("{}", json!({ "ended": true }));
                 break;
             }
-        }
+        };
+        println!("{line}");
+        reads += 1;
     }
     Ok(())
 }

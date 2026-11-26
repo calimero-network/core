@@ -2,8 +2,9 @@
 //! watches registered on it (`POST /apps/{app}/watches`), and [`Client::watch`], which
 //! keeps one watch going across reconnects.
 //!
-//! A notice carries the watch id and an entry index, never the view's result: the client
-//! re-reads the view itself, `Consistency::Stale { min_index: index }`.
+//! A frame carries the view's new answer (`view-result`), only when it differs from the
+//! last one sent; an answer too large to push comes as a bare `view-changed`, and the
+//! client re-reads the view itself, `Consistency::Stale { min_index: index }`.
 
 use std::pin::Pin;
 use std::time::Duration;
@@ -19,30 +20,39 @@ use crate::{path_segment, Client, Error, Request, Result};
 /// One SSE frame: `(id, event, data)`.
 type Frames = Pin<Box<dyn Stream<Item = (String, String, Value)> + Send>>;
 
-/// A watch the node took: its id and the index its view read at.
+/// A watch the node took: its id, the index its view read at and the answer it gave.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct WatchAdded {
     pub sub: String,
     pub index: u64,
+    #[serde(default)]
+    pub answer: Value,
 }
 
 /// What [`Client::watch`] yields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WatchNotice {
-    /// Something the view read changed at `index` (or, after a reconnect the node could not
-    /// resume, may have): read the view again at `index` or later.
+    /// The view's new answer, as of entry `index`.
+    Answer { index: u64, answer: Value },
+    /// The view now answers this app error, as of entry `index`.
+    Failed { index: u64, error: Value },
+    /// The answer changed at `index` but is too large to push: read the view again at
+    /// `index` or later.
     Changed { index: u64 },
-    /// The node dropped the watch (the caller lost access, or the view no longer reads a
-    /// bounded set); nothing follows.
-    Ended,
+    /// The node dropped the watch (`reason`: `access-lost`, `view-refused` or
+    /// `read-set-unbounded`, or `stream-lost` when the stream could not be opened again);
+    /// nothing follows.
+    Ended { reason: String },
 }
 
 /// An open watch stream.
 pub struct WatchStream {
     /// The stream's id, which watches are registered on.
     pub id: String,
-    /// The frames after the first: `view-changed` (`id` `<index>:<seq>`, data `{sub,
-    /// index}`) and `watch-ended` (data `{sub}`).
+    /// The frames after the first: `view-result` (`id` `<index>:<seq>`, data `{sub, index,
+    /// answer}` or `{sub, index, error}`), `view-changed` (data `{sub, index}`),
+    /// `watch-ended` (data `{sub, reason}`) and `watch-reset` (data `{}`: the stream asked
+    /// for is gone, its watches with it).
     pub frames: Frames,
 }
 
@@ -51,6 +61,8 @@ pub struct Watch<'a> {
     pub sub: String,
     /// The index the view read at when the watch was taken.
     pub index: u64,
+    /// The view's answer then.
+    pub answer: Value,
     pub notices: Pin<Box<dyn Stream<Item = WatchNotice> + Send + 'a>>,
 }
 
@@ -89,7 +101,8 @@ impl Client {
     }
 
     /// Watches `view(args)` on stream `stream`: the node runs the view as this client's
-    /// caller and keeps what it read.
+    /// caller and keeps what it read. `interval_ms` is how often at most the view runs
+    /// again for it (the node's default, 1 s, when `None`; clamped to 250 ms..=10 s).
     ///
     /// # Errors
     /// `NOT_SUBSCRIBABLE`, `NOT_A_VIEW`, `READ_SET_UNBOUNDED`, `TOO_MANY_WATCHES`,
@@ -100,9 +113,14 @@ impl Client {
         stream: &str,
         view: &str,
         args: Value,
+        interval_ms: Option<u64>,
     ) -> Result<WatchAdded> {
-        let req = Request::new(Method::POST, format!("apps/{}/watches", path_segment(app)))
-            .json(json!({ "stream": stream, "view": view, "args": args }));
+        let mut body = json!({ "stream": stream, "view": view, "args": args });
+        if let Some(ms) = interval_ms {
+            body["intervalMs"] = json!(ms);
+        }
+        let req =
+            Request::new(Method::POST, format!("apps/{}/watches", path_segment(app))).json(body);
         let v = self.transport.json(req).await?;
         Ok(serde_json::from_value(v).map_err(eyre::Report::from)?)
     }
@@ -121,15 +139,16 @@ impl Client {
     }
 
     /// Watches one view on a stream of its own, and keeps it going: when the connection
-    /// drops it resumes the stream (missed notices are sent again); when the node no longer
-    /// holds it, it registers the watch on a new stream and yields
-    /// [`WatchNotice::Changed`] with the index the new watch read at, so the caller re-reads.
+    /// drops it resumes the stream (missed answers are sent again); when the node no longer
+    /// holds it, it registers the watch on a new stream and yields its answer.
     ///
     /// # Errors
     /// As [`Self::watch_stream`] and [`Self::add_watch`], for the first stream and watch.
     pub async fn watch(&self, app: &str, view: &str, args: Value) -> Result<Watch<'_>> {
         let stream = self.watch_stream(app, None).await?;
-        let added = self.add_watch(app, &stream.id, view, args.clone()).await?;
+        let added = self
+            .add_watch(app, &stream.id, view, args.clone(), None)
+            .await?;
         let state = Keep {
             client: self,
             app: app.to_owned(),
@@ -148,6 +167,7 @@ impl Client {
         Ok(Watch {
             sub: added.sub,
             index: added.index,
+            answer: added.answer,
             notices: Box::pin(notices),
         })
     }
@@ -189,15 +209,29 @@ impl Keep<'_> {
             if data["sub"].as_str() != Some(self.sub.as_str()) {
                 continue;
             }
+            let index = data["index"].as_u64().unwrap_or(self.last);
             match kind.as_str() {
+                "view-result" => {
+                    self.last = self.last.max(index);
+                    return Some(match data.get("error") {
+                        Some(error) => WatchNotice::Failed {
+                            index,
+                            error: error.clone(),
+                        },
+                        None => WatchNotice::Answer {
+                            index,
+                            answer: data["answer"].clone(),
+                        },
+                    });
+                }
                 "view-changed" => {
-                    let index = data["index"].as_u64().unwrap_or(self.last);
                     self.last = self.last.max(index);
                     return Some(WatchNotice::Changed { index });
                 }
                 "watch-ended" => {
                     self.done = true;
-                    return Some(WatchNotice::Ended);
+                    let reason = data["reason"].as_str().unwrap_or_default().to_owned();
+                    return Some(WatchNotice::Ended { reason });
                 }
                 _ => {}
             }
@@ -219,19 +253,26 @@ impl Keep<'_> {
             }
             let added = self
                 .client
-                .add_watch(&self.app, &stream.id, &self.view, self.args.clone())
+                .add_watch(&self.app, &stream.id, &self.view, self.args.clone(), None)
                 .await;
             let Ok(added) = added else {
                 self.done = true;
-                return Some(WatchNotice::Ended);
+                return Some(WatchNotice::Ended {
+                    reason: "stream-lost".to_owned(),
+                });
             };
             self.stream_id = stream.id;
             self.frames = Some(stream.frames);
             self.sub = added.sub;
             self.last = self.last.max(added.index);
-            return Some(WatchNotice::Changed { index: added.index });
+            return Some(WatchNotice::Answer {
+                index: added.index,
+                answer: added.answer,
+            });
         }
         self.done = true;
-        Some(WatchNotice::Ended)
+        Some(WatchNotice::Ended {
+            reason: "stream-lost".to_owned(),
+        })
     }
 }

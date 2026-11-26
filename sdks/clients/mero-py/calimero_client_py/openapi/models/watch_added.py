@@ -11,15 +11,18 @@ T = TypeVar("T", bound="WatchAdded")
 
 @_attrs_define
 class WatchAdded:
-    """`POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at.
+    """`POST /apps/{app}/watches`: the watch's id, which the stream's frames name, the app's last entry in the state the
+    view read (a `last` to resume from) and the view's answer.
 
-    Attributes:
-        sub (str):
-        index (int):
+        Attributes:
+            sub (str):
+            index (int):
+            answer (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     """
 
     sub: str
     index: int
+    answer: Any
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -27,12 +30,15 @@ class WatchAdded:
 
         index = self.index
 
+        answer = self.answer
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "sub": sub,
                 "index": index,
+                "answer": answer,
             }
         )
 
@@ -45,9 +51,12 @@ class WatchAdded:
 
         index = d.pop("index")
 
+        answer = d.pop("answer")
+
         watch_added = cls(
             sub=sub,
             index=index,
+            answer=answer,
         )
 
         watch_added.additional_properties = d

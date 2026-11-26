@@ -677,6 +677,44 @@ fn a_view_records_what_it_read() {
     assert!(out.read_set.is_none());
 }
 
+/// Reading the directory or the clock marks the read set as depending on the system log;
+/// state reads alone do not.
+#[test]
+fn a_view_that_reads_the_directory_reads_the_system() {
+    let state = base(&[(b"a", b"1")]);
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.storage_get(b"a");
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(!set.reads_system());
+
+    let reads: [fn(&HostCore); 4] = [
+        |h| {
+            let _ = h.org();
+        },
+        |h| {
+            let _ = h.org_role("ada");
+        },
+        |h| {
+            let _ = h.in_team("ada", "t");
+        },
+        |h| {
+            let _ = h.wall_ms();
+        },
+    ];
+    for read in reads {
+        let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+        read(&host);
+        let set = host
+            .finish(Status::Ok, Vec::new(), Usage::default())
+            .read_set
+            .unwrap();
+        assert!(set.reads_system());
+    }
+}
+
 /// A cursor read to its end covers its whole range, even when the view never closed it.
 #[test]
 fn an_exhausted_cursor_covers_its_range() {

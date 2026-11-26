@@ -6,7 +6,6 @@ use crate::common;
 
 use std::time::Duration;
 
-use calimero_client::types::ViewsRequestConsistency;
 use calimero_client::{Client, WatchNotice, WatchStream};
 use calimero_identity::testing::SoftAuthenticator;
 use common::{signed_up, typed, wire, Cluster};
@@ -51,12 +50,22 @@ async fn roles(c: &Cluster, app: &str) -> (usize, usize, usize) {
     panic!("the app did not settle on two replicas");
 }
 
-/// A notice's data is exactly `{ sub, index }` and its id `<index>:<seq>`.
-fn notice_index(id: &str, data: &Value, sub: &str) -> u64 {
+/// A `view-result`'s data is exactly `{ sub, index, answer }` and its id `<index>:<seq>`:
+/// its index and answer.
+fn result_of(kind: &str, id: &str, data: &Value, sub: &str) -> (u64, Value) {
+    assert_eq!(kind, "view-result", "{data}");
+    (
+        frame_index(id, data, sub, &["answer", "index", "sub"]),
+        data["answer"].clone(),
+    )
+}
+
+/// A frame naming `sub` with exactly `keys`, whose id is `<index>:<seq>`: its index.
+fn frame_index(id: &str, data: &Value, sub: &str, keys: &[&str]) -> u64 {
     let obj = data.as_object().expect("an object");
-    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
-    keys.sort_unstable();
-    assert_eq!(keys, ["index", "sub"], "{data}");
+    let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+    got.sort_unstable();
+    assert_eq!(got, keys, "{data}");
     assert_eq!(data["sub"], sub);
     let index = data["index"].as_u64().unwrap();
     let (id_index, seq) = id.split_once(':').expect("<index>:<seq>");
@@ -135,16 +144,17 @@ async fn a_watched_view_is_noticed_on_any_node_only_when_what_it_read_changes() 
         }
         let key = format!("k-{name}");
         let w = alice
-            .add_watch(&app, &s.id, "get", json!({ "key": key }))
+            .add_watch(&app, &s.id, "get", json!({ "key": key }), None)
             .await
             .unwrap();
+        assert_eq!(w.answer, Value::Null, "{name}");
 
         // A write elsewhere is not noticed.
         let _i = set(&owner, &app, "other", "x").await;
         assert!(frames_for(&mut s, 2).await.is_empty(), "{name}");
 
-        // Writes to the key within the interval are noticed once (at most twice, if one
-        // interval boundary falls between them), naming the newest.
+        // The first write is pushed at once; the ones within the interval after it come
+        // as one more frame, with the newest answer.
         let mut last = 0;
         for v in ["1", "2", "3"] {
             last = set(&owner, &app, &key, v).await;
@@ -152,23 +162,13 @@ async fn a_watched_view_is_noticed_on_any_node_only_when_what_it_read_changes() 
         let got = frames_for(&mut s, 3).await;
         assert!(!got.is_empty() && got.len() < 3, "{name}: {got:?}");
         let (id, kind, data) = got.last().unwrap();
-        assert_eq!(kind, "view-changed");
-        let index = notice_index(id, data, &w.sub);
+        let (index, answer) = result_of(kind, id, data, &w.sub);
         assert_eq!(index, last, "{name}");
+        assert_eq!(answer, json!("3"), "{name}");
 
-        // The re-read is a plain view at that index or later.
-        let v = alice
-            .apps()
-            .view(
-                &app,
-                "get",
-                Some(json!({ "key": key })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(index),
-            )
-            .await
-            .unwrap();
-        assert_eq!(v.result, json!("3"), "{name}");
+        // The same answer again is not sent.
+        let _i = set(&owner, &app, &key, "3").await;
+        assert!(frames_for(&mut s, 2).await.is_empty(), "{name}");
 
         // Removed, it is noticed no more.
         alice.remove_watch(&app, &w.sub).await.unwrap();
@@ -187,14 +187,16 @@ async fn a_scan_is_noticed_for_writes_in_what_it_read_only() {
     }
     let mut s = alice.watch_stream(&app, None).await.unwrap();
     let all = alice
-        .add_watch(&app, &s.id, "entries", json!({}))
+        .add_watch(&app, &s.id, "entries", json!({}), None)
         .await
         .unwrap();
+    assert_eq!(all.answer, json!({ "a": "1", "b": "1" }));
     // A new entry lands in the scanned table: noticed.
     let index = set(&alice, &app, "c", "1").await;
     let (id, kind, data) = frame(&mut s, 3).await.expect("a notice");
-    assert_eq!(kind, "view-changed");
-    assert_eq!(notice_index(&id, &data, &all.sub), index);
+    let (at, answer) = result_of(&kind, &id, &data, &all.sub);
+    assert_eq!(at, index);
+    assert_eq!(answer, json!({ "a": "1", "b": "1", "c": "1" }));
     // A note is outside the entries table: not noticed.
     let _r = alice
         .apps()
@@ -220,7 +222,7 @@ async fn watches_are_refused_unless_the_caller_may_call_a_subscribable_bounded_v
 
     // Someone who cannot reach the app cannot watch it, on any stream.
     let e = bob
-        .add_watch(&app, &s.id, "get", json!({ "key": "a" }))
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
         .await
         .unwrap_err();
     assert!(
@@ -230,28 +232,34 @@ async fn watches_are_refused_unless_the_caller_may_call_a_subscribable_bounded_v
     assert!(bob.watch_stream(&app, None).await.is_err());
 
     let e = alice
-        .add_watch(&app, &s.id, "getResult", json!({ "key": "a" }))
+        .add_watch(&app, &s.id, "getResult", json!({ "key": "a" }), None)
         .await
         .unwrap_err();
     assert_eq!(code(e).as_deref(), Some("NOT_SUBSCRIBABLE"));
     let e = alice
-        .add_watch(&app, &s.id, "set", json!({ "key": "a", "value": "1" }))
+        .add_watch(
+            &app,
+            &s.id,
+            "set",
+            json!({ "key": "a", "value": "1" }),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(code(e).as_deref(), Some("NOT_A_VIEW"));
     // A view reading more keys than a read set holds is refused, not cut down.
     let e = alice
-        .add_watch(&app, &s.id, "probe", json!({ "n": 5000 }))
+        .add_watch(&app, &s.id, "probe", json!({ "n": 5000 }), None)
         .await
         .unwrap_err();
     assert_eq!(code(e).as_deref(), Some("READ_SET_UNBOUNDED"));
     let _ok = alice
-        .add_watch(&app, &s.id, "probe", json!({ "n": 10 }))
+        .add_watch(&app, &s.id, "probe", json!({ "n": 10 }), None)
         .await
         .unwrap();
     // A stream this cluster never made.
     let e = alice
-        .add_watch(&app, "1.nope", "get", json!({ "key": "a" }))
+        .add_watch(&app, "1.nope", "get", json!({ "key": "a" }), None)
         .await
         .unwrap_err();
     assert_eq!(code(e).as_deref(), Some("UNKNOWN_STREAM"));
@@ -287,26 +295,28 @@ async fn a_member_who_loses_access_gets_watch_ended_and_no_notice() {
 
     let mut stream = bob.watch_stream(&app, None).await.unwrap();
     let w = bob
-        .add_watch(&app, &stream.id, "get", json!({ "key": "a" }))
+        .add_watch(&app, &stream.id, "get", json!({ "key": "a" }), None)
         .await
         .unwrap();
     let _i = set(&alice, &app, "a", "1").await;
     let (_id, kind, _data) = frame(&mut stream, 3)
         .await
         .expect("a notice while a member");
-    assert_eq!(kind, "view-changed");
+    assert_eq!(kind, "view-result");
 
+    // The removal alone ends the watch: no write to what it read is needed.
     let _r = alice
         .orgs()
         .remove_member(&org, &bob_id, Some(&mut a))
         .await
         .unwrap();
-    let _i = set(&alice, &app, "a", "2").await;
     let got = frames_for(&mut stream, 4).await;
     assert_eq!(got.len(), 1, "{got:?}");
     let (_id, kind, data) = &got[0];
     assert_eq!(kind, "watch-ended");
-    assert_eq!(data, &json!({ "sub": w.sub }));
+    assert_eq!(data, &json!({ "sub": w.sub, "reason": "access-lost" }));
+    let _i = set(&alice, &app, "a", "2").await;
+    assert!(frames_for(&mut stream, 2).await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -318,7 +328,7 @@ async fn a_resumed_stream_gets_what_it_missed_and_a_lost_one_says_so() {
     let s = alice.watch_stream(&app, None).await.unwrap();
     let id = s.id.clone();
     let w = alice
-        .add_watch(&app, &id, "get", json!({ "key": "a" }))
+        .add_watch(&app, &id, "get", json!({ "key": "a" }), None)
         .await
         .unwrap();
     // The client goes; a write lands while it is away.
@@ -331,9 +341,8 @@ async fn a_resumed_stream_gets_what_it_missed_and_a_lost_one_says_so() {
         .await
         .unwrap();
     assert_eq!(again.id, id);
-    let (nid, kind, data) = frame(&mut again, 3).await.expect("the missed notice");
-    assert_eq!(kind, "view-changed");
-    assert_eq!(notice_index(&nid, &data, &w.sub), index);
+    let (nid, kind, data) = frame(&mut again, 3).await.expect("the missed answer");
+    assert_eq!(result_of(&kind, &nid, &data, &w.sub), (index, json!("1")));
     // Resumed after that notice: nothing is sent again.
     drop(again);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -341,12 +350,15 @@ async fn a_resumed_stream_gets_what_it_missed_and_a_lost_one_says_so() {
     assert_eq!(third.id, id);
     assert!(frames_for(&mut third, 2).await.is_empty());
 
-    // A stream the node no longer holds comes back as a new one: register again, re-read.
-    let fresh = alice
+    // A stream the node no longer holds comes back as a new one that says so: register
+    // again.
+    let mut fresh = alice
         .watch_stream(&app, Some(("1.gone", index)))
         .await
         .unwrap();
     assert_ne!(fresh.id, "1.gone");
+    let (_id, kind, data) = frame(&mut fresh, 3).await.expect("a reset");
+    assert_eq!((kind.as_str(), data), ("watch-reset", json!({})));
 
     // `Client::watch` does that by itself.
     let mut watch = alice
@@ -358,5 +370,122 @@ async fn a_resumed_stream_gets_what_it_missed_and_a_lost_one_says_so() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(n, WatchNotice::Changed { index });
+    assert_eq!(
+        n,
+        WatchNotice::Answer {
+            index,
+            answer: json!("1")
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_burst_is_one_frame_per_interval_and_a_large_answer_a_bare_notice() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let mut s = alice.watch_stream(&app, None).await.unwrap();
+    // Asked for less than the shortest interval: clamped to 250 ms.
+    let w = alice
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), Some(1))
+        .await
+        .unwrap();
+
+    // Twenty writes: the first at once, then at most one frame per 250 ms; the last frame
+    // has the last answer.
+    let started = tokio::time::Instant::now();
+    let mut last = 0;
+    for v in 0..20 {
+        last = set(&alice, &app, "a", &v.to_string()).await;
+    }
+    let spent = started.elapsed();
+    let got = frames_for(&mut s, 2).await;
+    let most = 2 + usize::try_from(spent.as_millis() / 250).unwrap();
+    assert!(!got.is_empty() && got.len() <= most, "{got:?} in {spent:?}");
+    let (id, kind, data) = got.last().unwrap();
+    assert_eq!(result_of(kind, id, data, &w.sub), (last, json!("19")));
+
+    // An answer over 64 KiB is a bare `view-changed`; the client reads it.
+    let big = "x".repeat(70 * 1024);
+    let r = alice
+        .apps()
+        .call(
+            &app,
+            "put",
+            Some(json!({ "key": "a", "value": big })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let (id, kind, data) = frame(&mut s, 3).await.expect("a notice");
+    assert_eq!(kind, "view-changed");
+    assert_eq!(frame_index(&id, &data, &w.sub, &["index", "sub"]), r.index);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_view_that_reads_the_directory_follows_system_changes() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    let token = s(
+        alice
+            .orgs()
+            .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+            .await
+            .map(wire)
+            .unwrap(),
+        "token",
+    );
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = s(bob.auth().me().await.map(wire).unwrap(), "accountId");
+    let app = kv_app(&alice, json!({ "org": org })).await;
+
+    let mut stream = bob.watch_stream(&app, None).await.unwrap();
+    let w = bob
+        .add_watch(&app, &stream.id, "myRole", json!({}), None)
+        .await
+        .unwrap();
+    assert_eq!(w.answer, json!("member"));
+    // No app entry changes: the promotion is a system change.
+    let _r = alice
+        .orgs()
+        .set_member(&org, &bob_id, typed(json!("admin")), Some(&mut a))
+        .await
+        .unwrap();
+    let (id, kind, data) = frame(&mut stream, 5).await.expect("the new role");
+    assert_eq!(result_of(&kind, &id, &data, &w.sub).1, json!("admin"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_signed_out_session_ends_its_watches() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let laptop = signed_in(&c, 1, &mut pk).await;
+    let mut stream = laptop.watch_stream(&app, None).await.unwrap();
+    let w = laptop
+        .add_watch(&app, &stream.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap();
+    let _r = laptop.auth().logout().await.unwrap();
+    let got = frames_for(&mut stream, 4).await;
+    assert_eq!(
+        got.last().map(|(_, k, d)| (k.clone(), d.clone())),
+        Some((
+            "watch-ended".to_owned(),
+            json!({ "sub": w.sub, "reason": "access-lost" })
+        )),
+        "{got:?}"
+    );
 }

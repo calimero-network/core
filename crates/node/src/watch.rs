@@ -4,10 +4,12 @@
 //! A watch belongs to a watch stream (`GET /apps/{app}/events?watch=true`), held by the
 //! node that serves that stream: a replica of the app, since every replica applies every
 //! entry's diff ([`crate::app::Changed`]). The stream's task (`api::watches`) marks the
-//! watches a change touches, and once per [`NOTICE_INTERVAL`] sends one `view-changed`
-//! notice `{ sub, index }` per marked watch, then runs the view again as its caller to
-//! learn what it reads now. Nothing here holds a view's result, a row or an argument
-//! beyond the watch's own `args`, which never leave the node.
+//! watches a change touches (and, for a view that read the directory or the clock, every
+//! system change), runs each marked view again as its caller, at once for the first change
+//! and then at most once per the watch's interval, and pushes the new answer
+//! (`view-result`) unless it is the one last sent; an answer over
+//! [`MAX_PUSHED_ANSWER_BYTES`] goes as a bare `view-changed` the client re-reads. Nothing
+//! here keeps a view's answer: only its hash, to skip a frame that would repeat it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,8 +30,18 @@ pub const MAX_WATCHES_PER_STREAM: usize = 64;
 pub const MAX_WATCHES_PER_NODE: usize = 2_048;
 /// Bytes of one watch's view arguments (they are kept for as long as the watch).
 pub const MAX_WATCH_ARGS_BYTES: usize = 4 * 1024;
-/// Notices one watch gets at most: one per interval, naming the newest change.
-pub const NOTICE_INTERVAL: Duration = Duration::from_secs(1);
+/// A watch's interval when the client names none: its view runs at most once per interval
+/// (the first change after a quiet one at once).
+pub const DEFAULT_WATCH_INTERVAL: Duration = Duration::from_millis(1_000);
+/// The shortest interval a client may ask for (`intervalMs`).
+pub const MIN_WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// The longest interval a client may ask for.
+pub const MAX_WATCH_INTERVAL: Duration = Duration::from_millis(10_000);
+/// Bytes of an answer's JSON a frame carries at most; a larger answer is sent as a bare
+/// `view-changed` the client re-reads.
+pub const MAX_PUSHED_ANSWER_BYTES: usize = 64 * 1024;
+/// How often a stream with nothing due checks whether it has outlived its client.
+pub const EXPIRY_CHECK: Duration = Duration::from_secs(1);
 /// How long a stream's watches outlive its connection, for the client to resume it.
 pub const RESUME_GRACE: Duration = Duration::from_secs(30);
 /// Frames a stream's connection buffers before notices wait for the next interval.
@@ -54,13 +66,70 @@ pub struct Holder {
 }
 
 /// What a stream sends besides its first frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Notice {
-    /// `event: view-changed`, `id: <index>:<seq>`, `data: {"sub", "index"}`.
+    /// `event: view-result`, `id: <index>:<seq>`, `data: {"sub", "index", "answer"}` (or
+    /// `"error"` in place of `"answer"` when the view answered an app error).
+    Result {
+        sub: String,
+        index: u64,
+        seq: u64,
+        answer: Result<Value, Value>,
+    },
+    /// `event: view-changed`, `id: <index>:<seq>`, `data: {"sub", "index"}`: the answer
+    /// changed but is over [`MAX_PUSHED_ANSWER_BYTES`]; the client reads it.
     Changed { sub: String, index: u64, seq: u64 },
-    /// `event: watch-ended`, `data: {"sub"}`: the watch is gone (access lost, or its
-    /// view no longer reads a bounded set).
-    Ended { sub: String },
+    /// `event: watch-ended`, `data: {"sub", "reason"}`: the watch is gone.
+    Ended { sub: String, reason: EndReason },
+    /// `event: watch-reset`, `data: {}`: the stream asked for is gone; this one holds no
+    /// watches, and the client adds its own again.
+    Reset,
+}
+
+/// Why a watch ended (`watch-ended`'s `reason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndReason {
+    /// The stream's holder may no longer call the view.
+    AccessLost,
+    /// The view now refuses the holder or no longer exists.
+    ViewRefused,
+    /// The view now reads more than a read set holds.
+    ReadSetUnbounded,
+}
+
+impl EndReason {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessLost => "access-lost",
+            Self::ViewRefused => "view-refused",
+            Self::ReadSetUnbounded => "read-set-unbounded",
+        }
+    }
+}
+
+/// A watch's interval: `interval_ms` clamped to [`MIN_WATCH_INTERVAL`]..=[`MAX_WATCH_INTERVAL`],
+/// [`DEFAULT_WATCH_INTERVAL`] when none is named.
+#[must_use]
+pub fn interval_of(interval_ms: Option<u64>) -> Duration {
+    interval_ms.map_or(DEFAULT_WATCH_INTERVAL, |ms| {
+        Duration::from_millis(ms).clamp(MIN_WATCH_INTERVAL, MAX_WATCH_INTERVAL)
+    })
+}
+
+/// The hash a frame's answer is compared by.
+#[must_use]
+pub fn answer_hash(answer: &Result<Value, Value>) -> [u8; 32] {
+    let (tag, v) = match answer {
+        Ok(v) => (b'o', v),
+        Err(v) => (b'e', v),
+    };
+    let mut h = ring::digest::Context::new(&ring::digest::SHA256);
+    h.update(&[tag]);
+    h.update(&serde_json::to_vec(v).unwrap_or_default());
+    let mut out = [0; 32];
+    out.copy_from_slice(h.finish().as_ref());
+    out
 }
 
 /// One watch: a view, its arguments and what it read last.
@@ -75,12 +144,27 @@ pub struct Watch {
     dirty: Option<u64>,
     /// The newest change that touched it (noticed or not), for a resumed stream.
     touched: u64,
+    /// At most one run of the view per interval.
+    interval: Duration,
+    /// When the view last ran for a change; `None`: the next change runs it at once.
+    last_run: Option<Instant>,
+    /// The hash of the answer the client holds (the last one sent, or the one `POST
+    /// /watches` answered); `None`: the next answer is sent whatever it is.
+    last_hash: Option<[u8; 32]>,
 }
 
 impl Watch {
-    /// A watch of `view(args)` whose read set was taken at the app's entry `since`.
+    /// A watch of `view(args)` whose read set was taken at the app's entry `since`, where
+    /// the view answered `answer`.
     #[must_use]
-    pub fn new(view: String, args: Value, read_set: ReadSet, since: u64) -> Self {
+    pub fn new(
+        view: String,
+        args: Value,
+        read_set: ReadSet,
+        since: u64,
+        interval: Duration,
+        answer: &Result<Value, Value>,
+    ) -> Self {
         Self {
             view,
             args,
@@ -88,7 +172,16 @@ impl Watch {
             since,
             dirty: None,
             touched: since,
+            interval,
+            last_run: None,
+            last_hash: Some(answer_hash(answer)),
         }
+    }
+
+    /// When its next run may start (`now` if it may start now), if it is marked.
+    fn ready_at(&self, now: Instant) -> Option<Instant> {
+        self.dirty?;
+        Some(self.last_run.map_or(now, |t| (t + self.interval).max(now)))
     }
 }
 
@@ -137,7 +230,8 @@ impl WatchStream {
     }
 
     /// Takes a client's connection; `resume_after` (the index of its `Last-Event-ID`)
-    /// marks every watch touched after it, so what it missed is sent again.
+    /// marks every watch touched after it, so its current answer is sent again at once,
+    /// even if it is the one last sent (that frame may not have arrived).
     pub fn attach(&self, out: mpsc::Sender<Notice>, resume_after: Option<u64>) {
         let mut st = self.lock();
         st.out = Some(out);
@@ -146,6 +240,8 @@ impl WatchStream {
             for w in st.watches.values_mut() {
                 if w.touched > after {
                     w.dirty = Some(w.dirty.map_or(w.touched, |d| d.max(w.touched)));
+                    w.last_run = None;
+                    w.last_hash = None;
                 }
             }
         }
@@ -206,29 +302,91 @@ impl WatchStream {
         }
     }
 
-    /// Takes the watches due a notice, clearing their marks.
-    #[must_use]
-    pub fn take_due(&self) -> Vec<Due> {
+    /// Marks every watch whose view read the directory, a blob's metadata or the clock: a
+    /// system change may have changed its answer. `index` is the app's last entry.
+    pub fn mark_system(&self, index: u64) {
         let mut st = self.lock();
-        st.watches
-            .iter_mut()
-            .filter_map(|(sub, w)| {
-                let index = w.dirty.take()?;
-                Some(Due {
-                    sub: sub.clone(),
-                    view: w.view.clone(),
-                    args: w.args.clone(),
-                    index,
-                })
-            })
-            .collect()
+        for w in st.watches.values_mut() {
+            if w.read_set.reads_system() {
+                let at = index.max(w.since);
+                w.dirty = Some(w.dirty.map_or(at, |d| d.max(at)));
+                w.touched = w.touched.max(at);
+            }
+        }
     }
 
-    /// Puts a mark back (the notice could not be sent).
-    pub fn remark(&self, sub: &str, index: u64) {
+    /// Takes the marked watches whose interval has passed since their view last ran
+    /// (clearing their marks and starting their next interval), and when the next of the
+    /// others will be.
+    #[must_use]
+    pub fn take_due(&self, now: Instant) -> (Vec<Due>, Option<Instant>) {
+        let mut st = self.lock();
+        let mut next: Option<Instant> = None;
+        let mut due = Vec::new();
+        for (sub, w) in &mut st.watches {
+            let Some(at) = w.ready_at(now) else {
+                continue;
+            };
+            if at > now {
+                next = Some(next.map_or(at, |n| n.min(at)));
+                continue;
+            }
+            let Some(index) = w.dirty.take() else {
+                continue;
+            };
+            w.last_run = Some(now);
+            due.push(Due {
+                sub: sub.clone(),
+                view: w.view.clone(),
+                args: w.args.clone(),
+                index,
+            });
+        }
+        (due, next)
+    }
+
+    /// When the next marked watch may run, if any is marked.
+    #[must_use]
+    pub fn next_due(&self) -> Option<Instant> {
+        let now = Instant::now();
+        self.lock()
+            .watches
+            .values()
+            .filter_map(|w| w.ready_at(now))
+            .min()
+    }
+
+    /// Puts a mark back (the view could not run, or its frame could not be sent); with
+    /// `resend`, the next answer is sent even if it repeats the last.
+    pub fn remark(&self, sub: &str, index: u64, resend: bool) {
         if let Some(w) = self.lock().watches.get_mut(sub) {
             w.dirty = Some(w.dirty.map_or(index, |d| d.max(index)));
+            if resend {
+                w.last_hash = None;
+            }
         }
+    }
+
+    /// Whether `answer` differs from the one the client holds; if so it becomes the one it
+    /// holds (the caller sends it).
+    #[must_use]
+    pub fn answer_changed(&self, sub: &str, answer: &Result<Value, Value>) -> bool {
+        let hash = answer_hash(answer);
+        let mut st = self.lock();
+        let Some(w) = st.watches.get_mut(sub) else {
+            return false;
+        };
+        if w.last_hash == Some(hash) {
+            return false;
+        }
+        w.last_hash = Some(hash);
+        true
+    }
+
+    /// Every watch's id.
+    #[must_use]
+    pub fn subs(&self) -> Vec<String> {
+        self.lock().watches.keys().cloned().collect()
     }
 
     /// The next notice sequence number.
@@ -395,6 +553,22 @@ mod tests {
     use super::*;
 
     fn read_set_of(state: &[(&[u8], &[u8])], key: &[u8]) -> ReadSet {
+        recorded(state, |h| {
+            let _ = h.storage_get(key).unwrap();
+        })
+    }
+
+    /// A set taken from a view that read the org.
+    fn system_read_set() -> ReadSet {
+        recorded(&[], |h| {
+            let _ = h.org();
+        })
+    }
+
+    fn recorded(
+        state: &[(&[u8], &[u8])],
+        read: impl FnOnce(&calimero_app_host::HostCore),
+    ) -> ReadSet {
         use calimero_app_host::{
             Directory, HostCore, Invocation, InvocationKind, OrgRole, Status, Usage,
         };
@@ -436,7 +610,7 @@ mod tests {
         let host = HostCore::new("a", Arc::new(state), 0, inv, Arc::new(Nobody))
             .unwrap()
             .with_read_set();
-        let _ = host.storage_get(key).unwrap();
+        read(&host);
         host.finish(Status::Ok, Vec::new(), Usage::default())
             .read_set
             .unwrap()
@@ -462,36 +636,100 @@ mod tests {
         }
     }
 
+    fn watch(rs: ReadSet, since: u64) -> Watch {
+        Watch::new(
+            "v".into(),
+            Value::Null,
+            rs,
+            since,
+            DEFAULT_WATCH_INTERVAL,
+            &Ok(Value::Null),
+        )
+    }
+
+    fn due_now(stream: &WatchStream) -> Vec<Due> {
+        stream.take_due(Instant::now()).0
+    }
+
     #[test]
     fn changes_mark_only_the_watches_they_touch_and_coalesce() {
         let watches = Watches::default();
         let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
         let rs = read_set_of(&[(b"a", b"1")], b"a");
         watches
-            .add(
-                &stream,
-                "w1".into(),
-                Watch::new("v".into(), Value::Null, rs, 5),
-                || 5,
-            )
+            .add(&stream, "w1".into(), watch(rs, 5), || 5)
             .unwrap();
         // At or before the index the set was taken at: already in what the view read.
         stream.mark(&change(5, b"a"));
-        assert!(stream.take_due().is_empty());
+        assert!(due_now(&stream).is_empty());
         stream.mark(&change(6, b"b"));
-        assert!(stream.take_due().is_empty());
+        assert!(due_now(&stream).is_empty());
+        // The first change runs at once.
         stream.mark(&change(7, b"a"));
+        let due = due_now(&stream);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].index, 7);
+        // Changes within the interval wait for it, and coalesce to the newest.
+        stream.mark(&change(8, b"a"));
         stream.mark(&change(9, b"a"));
-        let due = stream.take_due();
+        let (due, next) = stream.take_due(Instant::now());
+        assert!(due.is_empty());
+        let next = next.expect("the next run is scheduled");
+        let (due, _) = stream.take_due(next);
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].index, 9);
-        assert!(stream.take_due().is_empty());
-        // A resumed client is sent what it missed after its last id.
+        assert!(stream.take_due(next + DEFAULT_WATCH_INTERVAL).0.is_empty());
+        // A resumed client is sent what it missed after its last id, at once.
         let (tx, _rx) = mpsc::channel(1);
         stream.attach(tx, Some(8));
-        assert_eq!(stream.take_due()[0].index, 9);
+        assert_eq!(due_now(&stream)[0].index, 9);
         stream.attach(mpsc::channel(1).0, Some(9));
-        assert!(stream.take_due().is_empty());
+        assert!(stream.take_due(next + MAX_WATCH_INTERVAL).0.is_empty());
+    }
+
+    #[test]
+    fn an_answer_is_sent_only_when_it_differs_from_the_one_the_client_holds() {
+        let watches = Watches::default();
+        let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
+        watches
+            .add(&stream, "w".into(), watch(ReadSet::default(), 0), || 0)
+            .unwrap();
+        // The client holds the answer `POST /watches` gave it.
+        assert!(!stream.answer_changed("w", &Ok(Value::Null)));
+        assert!(stream.answer_changed("w", &Ok(Value::from(1))));
+        assert!(!stream.answer_changed("w", &Ok(Value::from(1))));
+        // An app error with the same JSON is a different answer.
+        assert!(stream.answer_changed("w", &Err(Value::from(1))));
+        // A frame that could not be sent is sent again even if the answer repeats.
+        stream.remark("w", 3, true);
+        assert!(stream.answer_changed("w", &Err(Value::from(1))));
+    }
+
+    #[test]
+    fn intervals_are_clamped() {
+        assert_eq!(interval_of(None), DEFAULT_WATCH_INTERVAL);
+        assert_eq!(interval_of(Some(1)), MIN_WATCH_INTERVAL);
+        assert_eq!(interval_of(Some(u64::MAX)), MAX_WATCH_INTERVAL);
+        assert_eq!(interval_of(Some(2_000)), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn system_changes_mark_only_views_that_read_the_system() {
+        let watches = Watches::default();
+        let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
+        let mut rs = read_set_of(&[], b"a");
+        watches
+            .add(&stream, "plain".into(), watch(rs.clone(), 4), || 4)
+            .unwrap();
+        rs = system_read_set();
+        watches
+            .add(&stream, "dir".into(), watch(rs, 4), || 4)
+            .unwrap();
+        stream.mark_system(4);
+        let due = due_now(&stream);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].sub, "dir");
+        assert_eq!(due[0].index, 4);
     }
 
     #[test]
@@ -501,14 +739,9 @@ mod tests {
         let rs = read_set_of(&[], b"a");
         // The task saw entry 6 before the watch was in place; the app is at 6 now.
         watches
-            .add(
-                &stream,
-                "w".into(),
-                Watch::new("v".into(), Value::Null, rs, 5),
-                || 6,
-            )
+            .add(&stream, "w".into(), watch(rs, 5), || 6)
             .unwrap();
-        assert_eq!(stream.take_due()[0].index, 6);
+        assert_eq!(due_now(&stream)[0].index, 6);
     }
 
     #[test]
@@ -516,11 +749,11 @@ mod tests {
         let watches = Watches::default();
         let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
         for i in 0..MAX_WATCHES_PER_STREAM {
-            let watch = Watch::new("v".into(), Value::Null, ReadSet::default(), 0);
-            watches.add(&stream, format!("w{i}"), watch, || 0).unwrap();
+            watches
+                .add(&stream, format!("w{i}"), watch(ReadSet::default(), 0), || 0)
+                .unwrap();
         }
-        let watch = Watch::new("v".into(), Value::Null, ReadSet::default(), 0);
-        let over = watches.add(&stream, "x".into(), watch, || 0);
+        let over = watches.add(&stream, "x".into(), watch(ReadSet::default(), 0), || 0);
         assert_eq!(over, Err(Full::Stream));
         assert_eq!(watches.total(), MAX_WATCHES_PER_STREAM);
         assert!(watches.stream_of("w3").is_some());

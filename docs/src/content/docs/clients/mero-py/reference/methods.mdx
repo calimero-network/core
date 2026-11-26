@@ -99,7 +99,7 @@ Generated from core's `docs/public/openapi.json`.
 | `upload_status(app, upload)` | `GET /apps/{app}/files/uploads/{upload}` | Where an upload is |
 | `usage(app)` | `GET /apps/{app}/usage` | An app's runs per day |
 | `view(app, method, args=…, consistency=…, min_index=…)` | `POST /apps/{app}/views` | Read with a view method. *Refusals:* `422 APP_ERROR`, `422 TRAP`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
-| `watch_add(app, stream, view, args=…)` | `POST /apps/{app}/watches` | Watch a subscribable view. *Refusals:* `400 NOT_A_VIEW`, `400 NOT_SUBSCRIBABLE`, `404 UNKNOWN_STREAM`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 READ_SET_UNBOUNDED`, `422 TRAP`, `429 TOO_MANY_WATCHES`, `503 TIMEOUT` |
+| `watch_add(app, stream, view, args=…, interval_ms=…)` | `POST /apps/{app}/watches` | Watch a subscribable view. *Refusals:* `400 NOT_A_VIEW`, `400 NOT_SUBSCRIBABLE`, `404 UNKNOWN_STREAM`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 READ_SET_UNBOUNDED`, `422 TRAP`, `429 TOO_MANY_WATCHES`, `503 TIMEOUT` |
 | `watch_remove(app, sub)` | `DELETE /apps/{app}/watches/{sub}` | Stop watching a view. *Refusals:* `404 UNKNOWN_WATCH` |
 | `xcalls(app)` | `GET /apps/{app}/xcalls` | An app's cross-app calls |
 

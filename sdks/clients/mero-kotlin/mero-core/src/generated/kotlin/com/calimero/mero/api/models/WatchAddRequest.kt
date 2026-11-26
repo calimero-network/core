@@ -34,6 +34,7 @@ import kotlinx.serialization.Contextual
  * @param stream 
  * @param view 
  * @param args Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param intervalMs 
  */
 @Serializable
 
@@ -47,7 +48,10 @@ data class WatchAddRequest (
 
     /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
     @Contextual @SerialName(value = "args")
-    val args: kotlinx.serialization.json.JsonElement? = null
+    val args: kotlinx.serialization.json.JsonElement? = null,
+
+    @SerialName(value = "intervalMs")
+    val intervalMs: kotlin.Long? = null
 
 ) {
 

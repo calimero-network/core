@@ -110,9 +110,11 @@ def sync_detailed(
 
      Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
-    carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is
-    the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4
-    KiB.
+    carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
+    read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
+    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
+    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
+    most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -150,9 +152,11 @@ def sync(
 
      Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
-    carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is
-    the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4
-    KiB.
+    carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
+    read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
+    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
+    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
+    most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -185,9 +189,11 @@ async def asyncio_detailed(
 
      Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
-    carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is
-    the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4
-    KiB.
+    carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
+    read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
+    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
+    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
+    most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -223,9 +229,11 @@ async def asyncio(
 
      Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
-    carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is
-    the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4
-    KiB.
+    carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
+    read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
+    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
+    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
+    most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

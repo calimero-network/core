@@ -177,7 +177,7 @@ public protocol APIProtocol: Sendable {
     func appSetEgress(_ input: Operations.AppSetEgress.Input) async throws -> Operations.AppSetEgress.Output
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result` (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a watched view's answer changed (the first change at once, then at most one per the watch's interval), `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event: watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is sent its current answer again; a stream that is gone comes back as a new one followed by `event: watch-reset` (`{}`), and its watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -664,7 +664,7 @@ public protocol APIProtocol: Sendable {
     func views(_ input: Operations.Views.Input) async throws -> Operations.Views.Output
     /// Watch a subscribable view
     ///
-    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. `index` is the app's last entry in the state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -2074,7 +2074,7 @@ extension APIProtocol {
     }
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result` (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a watched view's answer changed (the first change at once, then at most one per the watch's interval), `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event: watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is sent its current answer again; a stream that is gone comes back as a new one followed by `event: watch-reset` (`{}`), and its watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -3061,7 +3061,7 @@ extension APIProtocol {
     }
     /// Watch a subscribable view
     ///
-    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. `index` is the app's last entry in the state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -9626,7 +9626,7 @@ public enum Components {
                 case receipt
             }
         }
-        /// `POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at.
+        /// `POST /apps/{app}/watches`: the watch's id, which the stream's frames name, the app's last entry in the state the view read (a `last` to resume from) and the view's answer.
         ///
         /// - Remark: Generated from `#/components/schemas/WatchAdded`.
         public struct WatchAdded: Codable, Hashable, Sendable {
@@ -9634,21 +9634,29 @@ public enum Components {
             public var sub: Swift.String
             /// - Remark: Generated from `#/components/schemas/WatchAdded/index`.
             public var index: Swift.Int64
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/WatchAdded/answer`.
+            public var answer: OpenAPIRuntime.OpenAPIValueContainer
             /// Creates a new `WatchAdded`.
             ///
             /// - Parameters:
             ///   - sub:
             ///   - index:
+            ///   - answer: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
             public init(
                 sub: Swift.String,
-                index: Swift.Int64
+                index: Swift.Int64,
+                answer: OpenAPIRuntime.OpenAPIValueContainer
             ) {
                 self.sub = sub
                 self.index = index
+                self.answer = answer
             }
             public enum CodingKeys: String, CodingKey {
                 case sub
                 case index
+                case answer
             }
         }
         /// `GET /apps/{app}/xcalls`: messages waiting, and those never delivered.
@@ -23602,7 +23610,7 @@ public enum Operations {
     }
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result` (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a watched view's answer changed (the first change at once, then at most one per the watch's interval), `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event: watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is sent its current answer again; a stream that is gone comes back as a new one followed by `event: watch-reset` (`{}`), and its watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -32227,7 +32235,7 @@ public enum Operations {
     }
     /// Watch a subscribable view
     ///
-    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. `index` is the app's last entry in the state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -32273,25 +32281,31 @@ public enum Operations {
                     ///
                     /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/json/args`.
                     public var args: OpenAPIRuntime.OpenAPIValueContainer?
+                    /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/json/intervalMs`.
+                    public var intervalMs: Swift.Int64?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - stream:
                     ///   - view:
                     ///   - args: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                    ///   - intervalMs:
                     public init(
                         stream: Swift.String,
                         view: Swift.String,
-                        args: OpenAPIRuntime.OpenAPIValueContainer? = nil
+                        args: OpenAPIRuntime.OpenAPIValueContainer? = nil,
+                        intervalMs: Swift.Int64? = nil
                     ) {
                         self.stream = stream
                         self.view = view
                         self.args = args
+                        self.intervalMs = intervalMs
                     }
                     public enum CodingKeys: String, CodingKey {
                         case stream
                         case view
                         case args
+                        case intervalMs
                     }
                     public init(from decoder: any Decoder) throws {
                         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -32307,10 +32321,15 @@ public enum Operations {
                             OpenAPIRuntime.OpenAPIValueContainer.self,
                             forKey: .args
                         )
+                        self.intervalMs = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .intervalMs
+                        )
                         try decoder.ensureNoAdditionalProperties(knownKeys: [
                             "stream",
                             "view",
-                            "args"
+                            "args",
+                            "intervalMs"
                         ])
                     }
                 }

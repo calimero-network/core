@@ -28,6 +28,9 @@ pub struct ReadSet {
     /// Bytes of `ranges`' bounds.
     range_bytes: usize,
     unbounded: Option<String>,
+    /// The run read the directory (org, roles, teams, links), a blob's metadata or the clock:
+    /// what a key or range cannot describe, so a system change may change its answer.
+    reads_system: bool,
 }
 
 impl ReadSet {
@@ -35,6 +38,17 @@ impl ReadSet {
     #[must_use]
     pub fn unbounded(&self) -> Option<&str> {
         self.unbounded.as_deref()
+    }
+
+    /// Whether the run read what only the system log changes (`reads_system` above).
+    #[must_use]
+    pub fn reads_system(&self) -> bool {
+        self.reads_system
+    }
+
+    /// Records a read of the directory, a blob's metadata or the clock.
+    pub(crate) fn system(&mut self) {
+        self.reads_system = true;
     }
 
     /// The keys got, as stored keys.

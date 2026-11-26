@@ -29,10 +29,11 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * `POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at.
+ * `POST /apps/{app}/watches`: the watch's id, which the stream's frames name, the app's last entry in the state the view read (a `last` to resume from) and the view's answer.
  *
  * @param sub 
  * @param index 
+ * @param answer Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  */
 @Serializable
 
@@ -42,7 +43,11 @@ data class WatchAdded (
     val sub: kotlin.String,
 
     @SerialName(value = "index")
-    val index: kotlin.Long
+    val index: kotlin.Long,
+
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "answer")
+    val answer: kotlinx.serialization.json.JsonElement?
 
 ) {
 
