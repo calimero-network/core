@@ -290,8 +290,6 @@ enum NetworkCmd {
     Status,
 }
 
-/// Print a command's answer as JSON. `null` is what commands that wrote
-/// their own output (streams, downloads, metrics) answer: nothing more to say.
 /// `call --view --watch`: the view now (`{ index, result }`), then its new answer each
 /// time it changes (`{ index, result }`, `{ index, error }` for an app error, or `{ notice,
 /// index, result }` read again when the answer was too large to push), one JSON line each;
@@ -346,6 +344,8 @@ async fn watch_view(
     Ok(())
 }
 
+/// Print a command's answer as JSON. `null` is what commands that wrote
+/// their own output (streams, downloads, metrics) answer: nothing more to say.
 fn print(v: &Value) -> eyre::Result<()> {
     if !v.is_null() {
         println!("{}", serde_json::to_string_pretty(v)?);
