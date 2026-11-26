@@ -10,7 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use calimero_pipeline::{
-    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
+    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline, PriceTable,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult, Principal};
 use crate::app::Status;
 use crate::component::{
-    parse_hex32, CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS,
+    parse_hex32, CostCap, FanOut, PipelineStartEntry, PipelineState, RunInputRef, StepStatus,
+    INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
@@ -689,7 +690,7 @@ pub(super) async fn get(
         })
         .await?;
     match answer.result {
-        Value::Object(run) => Ok(Json(json!(PipelineRunView(run)))),
+        Value::Object(run) => Ok(Json(Value::Object(run))),
         _ => Err(ApiError::not_found("no such pipeline run")),
     }
 }
@@ -729,9 +730,7 @@ pub(super) async fn list(
             via: None,
         })
         .await?;
-    let runs: PipelineRunList =
-        serde_json::from_value(answer.result).map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!(runs)))
+    Ok(Json(answer.result))
 }
 
 /// Cancels a pipeline run: its pending steps end cancelled and its running steps' runs stop.
@@ -787,15 +786,108 @@ pub(super) struct PipelineStarted {
 }
 
 /// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped
-/// for the reader (results and file hashes only to those who handle the app's files). Its keys
-/// follow the record's, so the document leaves it open.
+/// for the reader (results and file hashes only to those who handle the app's files).
+/// The routes answer the leader's JSON as it is; this type is what the document describes
+/// and what a test holds the leader's JSON to.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(super) struct PipelineRunView(serde_json::Map<String, Value>);
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineRunView {
+    id: String,
+    pipeline: String,
+    version: String,
+    hash: String,
+    compute_bundle: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    modules: BTreeMap<String, String>,
+    owner: String,
+    inputs: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    input_files: BTreeMap<String, RunInputRef>,
+    params: BTreeMap<String, Value>,
+    caller: Caller,
+    payer: String,
+    start_ts_ms: u64,
+    state: PipelineState,
+    cancel_requested: bool,
+    fail_fast: bool,
+    stopping: bool,
+    steps: BTreeMap<String, PipelineStepView>,
+    end_ts_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<PipelineCostView>,
+    /// A decimal string, only under a cost cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost_so_far: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_of: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    limits: BTreeMap<String, Limits>,
+}
+
+/// The cost cap of a [`PipelineRunView`], its figures decimal strings.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineCostView {
+    max_cost: String,
+    price_version: u64,
+    table: PriceTable,
+    worst_case: String,
+}
+
+/// One step of a [`PipelineRunView`]; `runs`, `outputs`, `result` and `results` only when the
+/// answer is for one run, not a list.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineStepView {
+    status: StepStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runs: Option<Vec<String>>,
+    results_too_large: bool,
+    reason: Option<String>,
+    fan: FanOut,
+    finished: u32,
+    failed_items: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cached_count: Option<u32>,
+    cached_items: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cached_keys: BTreeMap<String, String>,
+    /// A decimal string, under a cost cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capped: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_items: Option<u32>,
+    cached: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outputs: Option<Vec<PipelineOutputView>>,
+    /// Null to those who may not list the app's files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    results: Option<Vec<Value>>,
+}
+
+/// A file a step made: its size and hash only to those who may list the app's files.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineOutputView {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
 
 /// `GET /apps/{app}/pipeline-runs`: the app's recent pipeline runs, newest first.
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct PipelineRunList {
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineRunList {
     runs: Vec<PipelineRunView>,
 }
 

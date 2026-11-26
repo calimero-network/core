@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.PipelineRunView
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -38,7 +39,7 @@ import kotlinx.serialization.Contextual
 data class PipelineRunList (
 
     @SerialName(value = "runs")
-    val runs: kotlin.collections.List<@Contextual kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>>
+    val runs: kotlin.collections.List<PipelineRunView>
 
 ) {
 

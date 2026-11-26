@@ -102,8 +102,8 @@ pub struct Quotas {
     /// call or an xcall delivery to any of the developer's apps is refused before it
     /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
     /// count. Checked where the call runs, against the apps' usage books, not at
-    /// apply: those live in the app groups. A decimal string in JSON; a number
-    /// is refused. Written only once every node runs a release that knows it
+    /// apply: those live in the app groups. A decimal string in JSON, so a JavaScript
+    /// client never rounds it; a number is refused. Written only once every node runs a release that knows it
     /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_developer_per_day: u64,
@@ -124,9 +124,7 @@ mod decimal_u64 {
         let s = String::deserialize(d)?;
         let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
         if !digits || (s.len() > 1 && s.starts_with('0')) {
-            return Err(D::Error::custom(format!(
-                "{s:?} is not a decimal string (D20)"
-            )));
+            return Err(D::Error::custom(format!("{s:?} is not a decimal string")));
         }
         s.parse().map_err(D::Error::custom)
     }
@@ -1648,6 +1646,50 @@ pub const RECOVERY_KEY_REQUIRED: Rejection = Rejection::new(
 pub const NOT_A_DEPLOYER: Rejection =
     Rejection::new(RejectionKind::DeployNotGranted, "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.");
 
+// Refusals more than one area answers. Each is `400 REJECTED`, the kind the
+// bare message it names was answered with; the message is what a client reads.
+
+/// A refusal: the command names an app the directory does not hold.
+pub(crate) const NO_SUCH_APP: Rejection = Rejection::new(RejectionKind::Rejected, "no such app");
+/// A refusal: the command names a deployment that does not exist.
+pub(crate) const NO_SUCH_DEPLOYMENT: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such deployment");
+/// A refusal: the command names an organization that does not exist.
+pub(crate) const NO_SUCH_ORG: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such organization");
+/// A refusal: the command names a package that is not installed.
+pub(crate) const NO_SUCH_PACKAGE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such package");
+/// A refusal: the command names a team its organization does not have.
+pub(crate) const NO_SUCH_TEAM: Rejection = Rejection::new(RejectionKind::Rejected, "no such team");
+/// A refusal: the command names an account that does not exist.
+pub(crate) const UNKNOWN_ACCOUNT: Rejection =
+    Rejection::new(RejectionKind::Rejected, "unknown account");
+/// A refusal: an organization of that id exists already.
+pub(crate) const ORG_EXISTS: Rejection =
+    Rejection::new(RejectionKind::Rejected, "organization exists");
+/// A refusal: a consent states another change than the command makes.
+pub(crate) const CONSENT_FOR_ANOTHER_CHANGE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "the consent is for another change");
+/// A refusal: an invite of that key exists already.
+pub(crate) const INVITE_EXISTS: Rejection =
+    Rejection::new(RejectionKind::Rejected, "invite exists");
+/// A refusal: an invite's redemption was spent before.
+pub(crate) const REDEMPTION_USED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "that redemption was used already");
+/// A refusal: a team's rows, or its default capabilities, set by someone who
+/// neither manages the team nor holds `MANAGE_MEMBERS` there.
+pub(crate) const MAY_NOT_MANAGE_TEAM: Rejection =
+    Rejection::new(RejectionKind::Rejected, "not allowed to manage this team");
+/// A refusal: a passkey of that credential id is registered already.
+pub(crate) const CREDENTIAL_REGISTERED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "credential already registered");
+/// A refusal: a refresh token of that id was issued already.
+pub(crate) const REFRESH_ISSUED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "refresh token already issued");
+/// A refusal: the command needs the cluster's governance, which genesis writes.
+pub(crate) const NO_GOVERNANCE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "the cluster has no governance yet");
 /// A refusal: a release is installed for an organization its installer is not a member of,
 /// or an account installs a private release for none.
 pub const NOT_AN_ORG_MEMBER: &str =
@@ -7831,10 +7873,6 @@ fn acquire_refused(code: &str, retryable: bool) -> Value {
 }
 
 impl SystemMachine {
-    fn org_mut(&mut self, org: &str) -> Result<&mut Org, &'static str> {
-        self.state.orgs.get_mut(org).ok_or("no such organization")
-    }
-
     /// Apply `cmd`, only once its proof holds ([`authorize`]): refused if it
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.

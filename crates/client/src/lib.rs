@@ -554,7 +554,7 @@ impl Client {
 
     /// One pipeline run: its state and each step's status, runs, outputs and reason.
     pub async fn pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
-        Ok(Value::Object(self.apps().pipelines_get(app, run).await?))
+        route::value(&self.apps().pipelines_get(app, run).await?)
     }
 
     /// A pipeline run's progress as typed events (metadata only): `Snapshot`, then `Run` and

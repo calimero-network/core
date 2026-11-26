@@ -2049,6 +2049,64 @@ steps:
         assert_eq!(full["steps"]["a"]["outputs"], json!([]));
     }
 
+    /// A run with every optional field set, for the answer's type to read.
+    fn full_run(p: &Pipeline) -> PipelineRun {
+        let mut run = run_of(p);
+        run.modules = BTreeMap::from([("pdf@1".to_owned(), "module-v1".to_owned())]);
+        run.input_files = BTreeMap::from([("f1".to_owned(), file_ref("f1"))]);
+        run.cost = Some(CostCap {
+            max_cost: 9,
+            price_version: 1,
+            table: calimero_pipeline::PriceTable {
+                version: 1,
+                fuel_per_vcpu_second: 1,
+                vcpu_second: 1,
+                gib_second: 1,
+                connector_gib: 1,
+                storage_gib_month: 1,
+                egress_gib: 1,
+            },
+            worst_case: 9,
+        });
+        run.cost_so_far = 3;
+        run.retry_of = Some("q".into());
+        run.limits = BTreeMap::from([("a".to_owned(), Limits::default())]);
+        run.end_ts_ms = Some(5);
+        let step = run.steps.get_mut("a").unwrap();
+        step.status = StepStatus::Succeeded;
+        step.runs = vec!["r0".into()];
+        step.run_outputs = BTreeMap::from([(0, vec![file_ref("o")])]);
+        step.run_results = BTreeMap::from([(0, Bytes(b"{}".to_vec()))]);
+        step.cached_count = 1;
+        step.cached_keys = BTreeMap::from([(0, "k".to_owned())]);
+        step.cost = 2;
+        step.capped = true;
+        step.legacy_items = 1;
+        run
+    }
+
+    fn file_ref(id: &str) -> crate::component::RunInputRef {
+        crate::component::RunInputRef {
+            id: id.into(),
+            size: 1,
+            sha256: "ab".into(),
+        }
+    }
+
+    #[test]
+    fn a_run_as_served_is_what_the_document_describes() {
+        use crate::api::pipelines::PipelineRunView;
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        for run in [run_of(&p), full_run(&p)] {
+            for (files, items) in [(true, true), (true, false), (false, true), (false, false)] {
+                let served = run_json(&run, files, items);
+                if let Err(e) = serde_json::from_value::<PipelineRunView>(served.clone()) {
+                    panic!("files={files} items={items}: {e}\n{served}");
+                }
+            }
+        }
+    }
+
     fn running_fan_out(docs: usize) -> (Pipeline, PipelineRun) {
         let p = fan_pipeline(
             "  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 3 }\n",

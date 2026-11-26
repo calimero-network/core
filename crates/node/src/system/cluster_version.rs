@@ -626,37 +626,40 @@ pub const BAD_VERSION: &str = "a cluster version is a semver release";
 /// than the active version. Judged from the entry and the state alone, so
 /// every replica decides the same.
 pub(super) fn apply(
-    s: &mut SystemState,
+    state: &mut SystemState,
     version: String,
     nodes: &BTreeMap<u64, String>,
 ) -> Result<Value, crate::system::Rejection> {
     if version.len() > MAX_RELEASE_VERSION_BYTES
         || semver::Version::parse(&version).is_err()
-        || nodes.values().any(|v| v.len() > MAX_RELEASE_VERSION_BYTES)
+        || nodes
+            .values()
+            .any(|advertised| advertised.len() > MAX_RELEASE_VERSION_BYTES)
     {
         return Err(BAD_VERSION.into());
     }
-    let registered: Vec<u64> = s
+    let registered: Vec<u64> = state
         .replica_nodes()
-        .map(|n| n.id)
-        .filter(|id| !s.removed_nodes.contains(id))
+        .map(|node| node.id)
+        .filter(|id| !state.removed_nodes.contains(id))
         .collect();
     if registered.is_empty() || !nodes.keys().copied().eq(registered.iter().copied()) {
         return Err(NOT_EVERY_NODE.into());
     }
     if nodes
         .values()
-        .any(|v| compare_versions(v, &version) == Ordering::Less)
+        .any(|advertised| compare_versions(advertised, &version) == Ordering::Less)
     {
         return Err(ABOVE_A_NODE.into());
     }
-    if s.cluster_version
+    if state
+        .cluster_version
         .as_deref()
-        .is_some_and(|c| compare_versions(&version, c) != Ordering::Greater)
+        .is_some_and(|logged| compare_versions(&version, logged) != Ordering::Greater)
     {
         return Err(NOT_FORWARD.into());
     }
-    s.cluster_version = Some(version.clone());
+    state.cluster_version = Some(version.clone());
     Ok(json!({ "clusterVersion": version }))
 }
 

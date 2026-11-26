@@ -1210,8 +1210,310 @@ pub struct PipelineRunList {
     pub extra: Map<String, Value>,
 }
 
-/// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped for the reader (results and file hashes only to those who handle the app's files). Its keys follow the record's, so the document leaves it open.
-pub type PipelineRunView = Map<String, Value>;
+/// Who started a pipeline run.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum PipelineCaller {
+    #[serde(rename = "account")]
+    Account { account: String },
+    #[serde(rename = "apiKey")]
+    ApiKey { account: String, key: String },
+    #[serde(rename = "public")]
+    Public,
+    #[serde(rename = "app")]
+    App { app: String },
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "visitor")]
+    Visitor { key: String, link: String },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunCostTable {
+    pub version: u64,
+    #[serde(rename = "fuelPerVcpuSecond")]
+    pub fuel_per_vcpu_second: u64,
+    #[serde(rename = "vcpuSecond")]
+    pub vcpu_second: u64,
+    #[serde(rename = "gibSecond")]
+    pub gib_second: u64,
+    #[serde(rename = "connectorGib")]
+    pub connector_gib: u64,
+    #[serde(rename = "storageGibMonth")]
+    pub storage_gib_month: u64,
+    #[serde(rename = "egressGib")]
+    pub egress_gib: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunCost {
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxCost")]
+    pub max_cost: String,
+    #[serde(rename = "priceVersion")]
+    pub price_version: u64,
+    pub table: PipelineRunCostTable,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "worstCase")]
+    pub worst_case: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A file a pipeline step made: its size and hash only to those who handle the app's files.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunOutput {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PipelineRunStepStatus {
+    /// `pending`.
+    Pending,
+    /// `running`.
+    Running,
+    /// `succeeded`.
+    Succeeded,
+    /// `failed`.
+    Failed,
+    /// `skipped`.
+    Skipped,
+    /// `upstreamFailed`.
+    UpstreamFailed,
+    /// `cancelled`.
+    Cancelled,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl PipelineRunStepStatus {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::UpstreamFailed => "upstreamFailed",
+            Self::Cancelled => "cancelled",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for PipelineRunStepStatus {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PipelineRunStepStatus {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "pending" => Self::Pending,
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "skipped" => Self::Skipped,
+            "upstreamFailed" => Self::UpstreamFailed,
+            "cancelled" => Self::Cancelled,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunStepFan {
+    pub total: u64,
+    pub items: u64,
+    pub batch: u64,
+    pub allowed: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One step of a pipeline run. `runs`, `outputs`, `result` and `results` come only with one run (`GET /apps/{app}/pipeline-runs/{run}`), not in the list; `result` and `results` are `null` to those who may not handle the app's files. `cost` is a decimal string, under a cost cap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunStep {
+    pub status: PipelineRunStepStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs: Option<Vec<String>>,
+    #[serde(rename = "resultsTooLarge")]
+    pub results_too_large: bool,
+    pub reason: Option<String>,
+    pub fan: PipelineRunStepFan,
+    pub finished: u64,
+    #[serde(rename = "failedItems")]
+    pub failed_items: u64,
+    #[serde(rename = "cachedCount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_count: Option<u64>,
+    #[serde(rename = "cachedItems")]
+    pub cached_items: u64,
+    #[serde(rename = "cachedKeys")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_keys: Option<BTreeMap<String, String>>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capped: Option<bool>,
+    #[serde(rename = "legacyItems")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_items: Option<u64>,
+    pub cached: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<PipelineRunOutput>>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub result: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub results: Option<Option<Vec<Value>>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunViewInputFilesValue {
+    pub id: String,
+    pub size: u64,
+    pub sha256: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PipelineRunViewState {
+    /// `running`.
+    Running,
+    /// `succeeded`.
+    Succeeded,
+    /// `succeededWithFailures`.
+    SucceededWithFailures,
+    /// `failed`.
+    Failed,
+    /// `cancelled`.
+    Cancelled,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl PipelineRunViewState {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::SucceededWithFailures => "succeededWithFailures",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for PipelineRunViewState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PipelineRunViewState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "succeededWithFailures" => Self::SucceededWithFailures,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunViewLimitsValue {
+    pub fuel: Option<u64>,
+    #[serde(rename = "memoryMib")]
+    pub memory_mib: Option<u64>,
+    #[serde(rename = "wallSecs")]
+    pub wall_secs: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineRunView {
+    pub id: String,
+    pub pipeline: String,
+    pub version: String,
+    pub hash: String,
+    #[serde(rename = "computeBundle")]
+    pub compute_bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<BTreeMap<String, String>>,
+    pub owner: String,
+    pub inputs: BTreeMap<String, Vec<String>>,
+    #[serde(rename = "inputFiles")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_files: Option<BTreeMap<String, PipelineRunViewInputFilesValue>>,
+    pub params: Map<String, Value>,
+    pub caller: PipelineCaller,
+    pub payer: String,
+    #[serde(rename = "startTsMs")]
+    pub start_ts_ms: u64,
+    pub state: PipelineRunViewState,
+    #[serde(rename = "cancelRequested")]
+    pub cancel_requested: bool,
+    #[serde(rename = "failFast")]
+    pub fail_fast: bool,
+    pub stopping: bool,
+    pub steps: BTreeMap<String, PipelineRunStep>,
+    #[serde(rename = "endTsMs")]
+    pub end_ts_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<PipelineRunCost>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "costSoFar")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_so_far: Option<String>,
+    #[serde(rename = "retryOf")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<BTreeMap<String, PipelineRunViewLimitsValue>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
 
 /// What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap, and the run it retries.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
