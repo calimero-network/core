@@ -150,7 +150,7 @@ Generated from core's `docs/public/openapi.json`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `create(name, owner, confirm=None)` | `POST /deployments` | Create a deployment. **passkey** |
+| `create(name, owner, confirm=None)` | `POST /deployments` | Create a deployment. **passkey**. *Refusals:* `409 RECOVERY_KEY_REQUIRED` |
 | `delete(id, confirm=None)` | `DELETE /deployments/{id}` | Delete a deployment. **passkey** |
 | `deployer_grant(deployer, until=…, confirm=None)` | `POST /deployers` | Grant a deployer. **passkey** |
 | `deployer_list()` | `GET /deployers` | The deployers |
@@ -167,6 +167,9 @@ Generated from core's `docs/public/openapi.json`.
 | `sign_up_invite_revoke(key, confirm=None)` | `DELETE /sign-up/invites/{key}` | Withdraw a cluster sign-up invite. **passkey** |
 | `sign_up_public()` | `GET /sign-up` | The sign-up policy |
 | `sign_up_set(policy, confirm=None)` | `POST /sign-up` | Set the sign-up policy. **passkey** |
+| `transfer_accept(id, to, confirm=None)` | `POST /deployments/{id}/transfer/accept` | Accept a deployment offered to an owner. **passkey**. *Refusals:* `403 DEPLOY_NOT_GRANTED`, `404 NO_TRANSFER`, `409 FEATURE_NOT_ACTIVE`, `409 OFFERS_NOT_USABLE`, `409 RECOVERY_KEY_REQUIRED`, `409 TRANSFER_LAPSED`, `409 TRANSFER_STALE`, `429 QUOTA_EXCEEDED` |
+| `transfer_cancel(id, confirm=None)` | `DELETE /deployments/{id}/transfer` | Cancel the offer of a deployment. **passkey**. *Refusals:* `404 NO_TRANSFER`, `409 FEATURE_NOT_ACTIVE` |
+| `transfer_offer(id, to, confirm=None)` | `POST /deployments/{id}/transfer` | Offer a deployment to another owner. **passkey**. *Refusals:* `400 SAME_OWNER`, `409 FEATURE_NOT_ACTIVE`, `409 TRANSFER_PENDING` |
 | `withdraw(id, app, confirm=None)` | `DELETE /deployments/{id}/apps/{app}` | Withdraw an offer. **passkey** |
 
 ## `client.ops`
@@ -249,7 +252,7 @@ Generated from core's `docs/public/openapi.json`.
 | `publisher_upgrade(org, package, version, migrate=…, confirm=None)` | `POST /orgs/{org}/packages/{package}/upgrade` | Upgrade every instance of a publisher's package. **passkey** |
 | `recovery_cancel(org, confirm=None)` | `POST /orgs/{org}/recovery/cancel` | Cancel an organization recovery. **passkey** |
 | `recovery_finish(org, confirm=None)` | `POST /orgs/{org}/recovery/finish` | Finish an organization recovery. **passkey**. *Refusals:* `409 RECOVERY_NOT_READY` |
-| `recovery_set(org, public_key=…, confirm=None)` | `POST /orgs/{org}/recovery` | Set the organization's recovery key. **passkey**. *Refusals:* `400 BAD_RECOVERY_KEY` |
+| `recovery_set(org, public_key=…, confirm=None)` | `POST /orgs/{org}/recovery` | Set the organization's recovery key. **passkey**. *Refusals:* `400 BAD_RECOVERY_KEY`, `409 RECOVERY_KEY_REQUIRED` |
 | `recovery_start(org, nonce, signature)` | `POST /orgs/{org}/recovery/start` | Start an organization recovery. *Refusals:* `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` |
 | `release_approval(org, version, approved=…, confirm=None)` | `POST /orgs/{org}/releases` | Approve a mero-tee release for the organization's apps. **passkey** |
 | `remove_member(org, account, confirm=None)` | `DELETE /orgs/{org}/members/{account}` | Remove a member, or leave. **passkey** |

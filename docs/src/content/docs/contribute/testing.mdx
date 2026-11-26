@@ -655,6 +655,8 @@ a case is never skipped.
 | Deployments | `deployment-used-secrets` | a deployment offering a release that uses (`uses`) another package, whose release declares a secret, and the deployment's value of that secret; the release's `uses` and the value wait for the cluster version that brings them, so they are made after the roll | the deployment's secrets as its manager reads them: the value's fingerprint, the release that declares it (`declaredBy`) and the offered app that uses it; an outsider is refused the list, and a name nothing it reaches declares is refused; a new value set on the new release | yes (since 1.0.0-rc.32) |
 | Deployments | `deployment-offer-upgrades` | a deployment offering release 1.0.0 of a package whose 1.1.0, 1.2.0 and 1.3.0 are installed too, and a customer's two instances from it; the customer's owner refused an upgrade outside the offer (`409 OUTSIDE_DEPLOYMENT`), then, the deployment offering 1.1.0, accepting it on one instance without naming a version | the deployment's offer; each instance's release and data, on the deployment; `GET /apps/{app}/update` (`available` with `source: deployment` where the instance runs another release than the offer, none where it runs the offer; `mayApprove` and `approvers` for the owner); every installed release but the offer and the one it runs refused `OUTSIDE_DEPLOYMENT` to each instance; on the new release the other instance takes the offer naming its version, the deployment offers 1.2.0 and the first instance accepts it naming none | yes (since 1.0.0-rc.33) |
 | Deployments | `deployment-named-to-customers` | a deployment offering a release, and a customer's instance from it | `GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name (names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second instance from it is named the same way | yes (since 1.0.0-rc.38) |
+| Deployments | `deployment-needs-recovery` | an organization with a recovery key, and a deployment it owns | the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns the deployment, before the passkey; on the new release rotating it succeeds, and another organization without a key is refused a deployment | yes (since 1.0.0-rc.38) |
+| Deployments | `deployment-transfer` | an account's deployment offering a release, with a customer's instance from it, handed to an organization with a recovery key: offered by the account, accepted by the organization | the organization owns it (`GET /deployments/{id}`), its offer and the customer's instance stay, the previous owner changes nothing (`403`), and the customer's `GET /apps/{app}/update` names the new owner and whom it came from; on the new release the organization offers it back and cancels the offer, and a second offer waits for none | yes (since 1.0.0-rc.38) |
 | Deployments | `deployer-grants` | the operator's deployer grants on the open cluster (`POST /ops/deployers`, signed with the operator key): an account's without an end, an organization's until a date, and an account's revoked again (`DELETE /ops/deployers/{key}`) | `GET /deployers` as the operator on every node: `deployments: open`, `deployers: operator`, no owner, and each grant (key, deployer, end, `operator`); an account refused the list and the owner's grant route, a grant without the operator's signature answered `428`; on the new release the organization's grant revoked and another account's granted | yes (since 1.0.0-rc.15, open run only) |
 | Apps | `app-state-history` | an app with 40 writes (sets, overwrites, removals) and app metadata | every entry through each node, the length, the full event history from index 0 (the event stream's replay), the app record, its storage figures and ABI; a write on the new release extends the history after the old events | yes (since 1.0.0-rc.15) |
 | Apps | `app-access-kinds` | an organization's app with each kind of grant alone: none (the owner), the organization, a named account, anyone, a team | who reads and writes each (the owner, a member, the named account, an outsider, no credential), allowed and refused as before (`anyone` admits the outsider, never a caller without an account); each instance's grants as the owner reads them; a grant added on the new release | yes (since 1.0.0-rc.33) |
@@ -825,9 +827,14 @@ no GitHub Release yet, the test `release.yml` publishes on), and a merge-queue
 entry runs none of it, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
 the builds and the scenarios for any code change, and the process suite, compute
 and the clients only for a change that reaches `merod`'s closure, the compute
-fixtures or the fault tests; `E2E result` gathers them into one check, required on
+fixtures or the fault tests. A push to master runs the clients (mero-swift's on
+macOS) only when it changes them (`sdks/clients/`, the JS workspace); the nightly,
+a release cut and a `ci:e2e` PR run them whatever changed, so a client broken by
+the node shows at the latest the next morning. `E2E result` gathers the jobs, the
+latest release's suites and the flamegraph included, into one check, required on
 PRs and in the queue, where it passes when `plan` skips everything. On master its
-`report-master` job opens or closes the red-master issue. `clients against merod
+`report-master` job opens or closes the red-master issue: `master is red: E2E` for
+a push, `master is red: E2E nightly` for the nightly. `clients against merod
 (mero-swift)` builds `merod` on macOS from the `release` cache group, which the
 nightly run saves: rust-cache keys by OS, so the Linux save never reaches it.
 
@@ -923,7 +930,7 @@ inside the Docker image (the suite starts processes, so it is copied out with
   `kv-failover`, `frozen-leader`, `orgs-and-keys`, `packages` and a 30 s
   `kv-soak`. The release and its multi-arch image are published only once it
   passes. PRs and other master pushes build no image.
-- **The latest release's image, nightly** (`e2e.yml`, jobs
+- **The latest release's image, weekly and on a release cut** (`e2e.yml`, jobs
   `Latest release image` (`release-image`) and `process suite on release V`
   (`release-process-suite`); on demand with the `release_image` input:
   `latest`, a tag of `ghcr.io/<owner>/merod` such as `prerelease`, or an
@@ -934,7 +941,9 @@ inside the Docker image (the suite starts processes, so it is copied out with
   fixtures, so a test added after the release does not fail it: every test but
   the upgrade, with a 900 s soak. A release whose commit has no
   `crates/node/tests/fault/suite.py` is reported in the summary and not run.
-  The same nightly runs every scenario at that commit, in four shards (jobs
+  It runs in Sunday's nightly (cron `23 3 * * 0`; the other nights are
+  `23 3 * * 1-6`) and on the pull request that cuts a release, where `E2E result`
+  waits for it. The same run covers every scenario at that commit, in four shards (jobs
   `scenario fixtures (release V)` (`release-fixtures`) and
   `scenarios on release V (K/4)` (`release-scenarios`)), with that commit's
   runner and fixtures. The runner is in process, so what it tests is the
@@ -952,7 +961,7 @@ python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 
 ### Flamegraphs
 
-Nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
+Weekly, in Sunday's nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
 soak)` builds `merod` with the `profiling` profile (optimized, with symbols)
 and `-C force-frame-pointers=yes`, runs the process suite's `kv-soak` for five
 minutes, and records node 1 with `perf record -g` for most of it

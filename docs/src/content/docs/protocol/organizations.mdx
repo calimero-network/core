@@ -773,6 +773,8 @@ the warning to members are the defence. Recovery never changes an account's
 passkeys: the previous owner's account and its other organizations are as they
 were. Organizations written before recovery keys hold none
 (`Org::recovery` is left out when unset) until their owner sets one.
+An organization that owns a [deployment](/protocol/governance/#deployments)
+must hold one, and cannot remove it while it does (`409 RECOVERY_KEY_REQUIRED`).
 
 Recovering the **data** after every mero-kms replica is lost is a different
 mechanism: the recovery disk and its backup keys, below.

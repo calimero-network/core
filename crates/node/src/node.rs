@@ -62,8 +62,18 @@ pub use component::{
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
 /// The run view's types, which the API's OpenAPI registry names (`api::openapi`).
 #[cfg(test)]
-pub(crate) use component::{RunFileView, RunView};
+pub(crate) use component::{PartTaken, RunFileView, RunList, RunView, UploadStatus, UploadView};
 pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
+
+/// `GET /apps/{app}/pipeline-runs/{run}/receipt`: a pipeline run's receipt
+/// (`calimero_client::receipt::PipelineReceipt`) with the signature of the answering node's
+/// receipt key over it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignedPipelineReceipt {
+    receipt: serde_json::Value,
+    node: u64,
+    signature: String,
+}
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
 pub(crate) use component::{files_unavailable, upload_refusal};
@@ -2119,14 +2129,15 @@ impl Node {
     /// A pipeline run's receipt with this node's receipt key's signature over it
     /// (`calimero_client::receipt::receipt_message`), as the receipt route answers it.
     #[must_use]
-    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> serde_json::Value {
+    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> SignedPipelineReceipt {
         use ed25519_dalek::Signer;
         let message = calimero_client::receipt::receipt_message(&receipt);
-        serde_json::json!({
-            "receipt": receipt,
-            "node": self.config.node_id,
-            "signature": hex::encode(self.receipt_key.sign(&message).to_bytes()),
-        })
+        let signature = hex::encode(self.receipt_key.sign(&message).to_bytes());
+        SignedPipelineReceipt {
+            receipt,
+            node: self.config.node_id,
+            signature,
+        }
     }
 
     /// The mero-tee release this node runs, as its attestation names it.
@@ -2746,7 +2757,7 @@ impl Node {
     /// this node, newest first, at most [`calimero_outbound::MAX_AUDIT_ENTRIES`].
     /// Each node keeps the requests its own runs made, so a leader change splits
     /// an instance's requests across nodes; `partial` says a replica did not answer.
-    pub async fn outbound_log(&self, app: &AppRecord) -> Value {
+    pub async fn outbound_log(&self, app: &AppRecord) -> OutboundLog {
         let mut entries = self.outbound_audit.entries(&app.app_id);
         let mut partial = false;
         let body = json!({ "app": app.app_id });
@@ -2776,7 +2787,7 @@ impl Node {
         }
         entries.sort_by_key(|e| core::cmp::Reverse(e.at_ms));
         entries.truncate(calimero_outbound::MAX_AUDIT_ENTRIES);
-        json!({ "entries": entries, "partial": partial })
+        OutboundLog { entries, partial }
     }
 
     /// This node as the `Arc` it lives in, for work that outlives a borrowed request.
@@ -4296,4 +4307,14 @@ mod group_progress_tests {
             Some(at(None, Some(5)))
         );
     }
+}
+
+/// What `GET /apps/{app}/outbound-log` answers: the instance's outbound requests,
+/// newest first, merged from this node and each replica (`partial`: one did not answer).
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct OutboundLog {
+    /// At most `MAX_AUDIT_ENTRIES`, newest first.
+    pub entries: Vec<calimero_outbound::AuditEntry>,
+    /// A replica did not answer, so some of its runs' requests may be missing.
+    pub partial: bool,
 }

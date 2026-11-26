@@ -11,6 +11,68 @@
 )]
 use super::*;
 
+/// What `CreateOrg` answers: the new organization, and its app team when it is made with one
+/// (the consent page's `createOrg` for a package).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgCreated {
+    pub org_id: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<TeamId>,
+}
+
+/// What redeeming an invite answers: the organization joined; for an instance invite, the
+/// instance and whether the account is a member of its organization (else a guest).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteRedeemed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+    pub org: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<bool>,
+}
+
+/// What `DeleteOrg` answers: the instances deleted with it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OrgDeleted {
+    pub apps: Vec<AppId>,
+}
+
+/// What `RenameOrg` answers.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgRenamed {
+    pub org_id: OrgId,
+    pub name: String,
+}
+
+/// What `CreateTeam` answers.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamCreated {
+    pub team_id: TeamId,
+}
+
+/// What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances
+/// deleted with them, and with `keepApps` those kept instead (`apps` then empty).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamDeleted {
+    pub teams: Vec<TeamId>,
+    pub apps: Vec<AppId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_apps: Option<Vec<AppId>>,
+}
+
+/// What `SetOrgSettings` answers: the settings after the change.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgSettingsSet {
+    pub org: OrgId,
+    pub allow_guests: bool,
+    pub allow_public_links: bool,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -533,7 +595,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 free_when_unchanged,
                 clamp_grants,
             )?;
-            Ok(json!({ "org": org }))
+            Ok(json!(InviteRedeemed {
+                app: None,
+                org,
+                member: None,
+            }))
         }
         SystemCmd::SetOrgSettings {
             org,
@@ -619,7 +685,10 @@ fn create_org(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejectio
     let _prev = state.orgs.insert(org_id.clone(), org);
     let Some(package) = app_team else {
         set_new_orgs_default(state, &org_id, capabilities);
-        return Ok(json!({ "orgId": org_id }));
+        return Ok(json!(OrgCreated {
+            org_id,
+            team_id: None
+        }));
     };
     make_app_team(state, &org_id, package, &actor, capabilities)
 }
@@ -701,7 +770,10 @@ fn make_app_team(
     match scoped {
         Ok(scope) => {
             set_new_orgs_default(state, org_id, capabilities);
-            Ok(json!({ "orgId": org_id, "teamId": scope["teams"][0]["teamId"] }))
+            Ok(json!(OrgCreated {
+                org_id: org_id.to_owned(),
+                team_id: scope["teams"][0]["teamId"].as_str().map(str::to_owned),
+            }))
         }
         Err(why) => {
             let _gone = state.orgs.remove(org_id);
@@ -733,7 +805,7 @@ fn delete_org(state: &mut SystemState, org: &str, actor: &str) -> Result<Value, 
     for app_id in &apps {
         state.remove_app(app_id);
     }
-    Ok(json!({ "apps": apps }))
+    Ok(json!(OrgDeleted { apps }))
 }
 
 /// A deleted organization's publisher keys go with it, each keeping its
@@ -765,7 +837,7 @@ fn rename_org(
     }
     org_name_fits(&name)?;
     organization.name.clone_from(&name);
-    Ok(json!({ "orgId": org, "name": name }))
+    Ok(json!(OrgRenamed { org_id: org, name }))
 }
 
 /// Set an organization's metadata: an admin's, or a holder of `MANAGE_METADATA`.
@@ -917,7 +989,7 @@ fn create_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
             default_capabilities: None,
         },
     );
-    Ok(json!({ "teamId": team_id }))
+    Ok(json!(TeamCreated { team_id }))
 }
 
 /// Who may create a team: an admin anywhere, a team's lead below it; a member
@@ -1254,9 +1326,17 @@ fn delete_team(
         app.access = app.access.without_teams(&gone);
     }
     if keep_apps {
-        return Ok(json!({ "teams": gone, "apps": [], "keptApps": apps }));
+        return Ok(json!(TeamDeleted {
+            teams: gone,
+            apps: Vec::new(),
+            kept_apps: Some(apps),
+        }));
     }
-    Ok(json!({ "teams": gone, "apps": apps }))
+    Ok(json!(TeamDeleted {
+        teams: gone,
+        apps,
+        kept_apps: None,
+    }))
 }
 
 /// Set a member's capabilities in a team (whoever manages it or holds
@@ -1470,10 +1550,10 @@ fn set_org_settings(
     if let Some(allow) = settings.allow_public_links {
         organization.allow_public_links = allow;
     }
-    Ok(json!({
-        "org": org,
-        "allowGuests": organization.allow_guests,
-        "allowPublicLinks": organization.allow_public_links,
+    Ok(json!(OrgSettingsSet {
+        allow_guests: organization.allow_guests,
+        allow_public_links: organization.allow_public_links,
+        org: org.to_owned(),
     }))
 }
 

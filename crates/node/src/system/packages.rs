@@ -11,6 +11,12 @@
 )]
 use super::*;
 
+/// What `BindPublisher` answers: the key's binding generation now.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PublisherBound {
+    pub generation: u64,
+}
+
 /// What `UninstallPackage` answers (`#Uninstalled`): the versions it removed.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Uninstalled {
@@ -552,5 +558,7 @@ fn bind_publisher(state: &mut SystemState, here: &str, cmd: SystemCmd) -> Result
             generation: generation + 1,
         },
     );
-    Ok(json!({ "generation": generation + 1 }))
+    Ok(json!(PublisherBound {
+        generation: generation + 1
+    }))
 }

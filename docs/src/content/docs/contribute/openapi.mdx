@@ -130,6 +130,8 @@ that no test checks, so the document would become less checked, not more.
 So the way to close E7 is to finish typing the answers: give each handler that
 answers `json!` a `Serialize` type and bind it to its schema, the registry's
 `every_component_answered_whole_is_a_types` test (added with the typed answers, #5387) keeping named answers typed.
+That is now done: every answer is a component named after its Rust type, and
+`answers_are_named_components` refuses a new route that writes one inline.
 The utoipa trial stays as a test while it costs nothing to keep, so a later
 version (one that reads `security` and errors from something the code states)
 can be judged against it.

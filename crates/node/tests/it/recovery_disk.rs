@@ -282,7 +282,7 @@ async fn recover_holder(
     cl: &Client,
     body: &Value,
     signed: bool,
-) -> Result<calimero_client::types::RestoreRecoverHolderResponse, calimero_client::Error> {
+) -> Result<calimero_client::types::HolderRecovered, calimero_client::Error> {
     cl.public()
         .restore_recover_holder(
             body["holder"].as_str().unwrap(),

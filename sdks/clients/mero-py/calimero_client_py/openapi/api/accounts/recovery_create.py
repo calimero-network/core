@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.confirm_only import ConfirmOnly
 from ...models.error import Error
-from ...models.recovery_create_response_200 import RecoveryCreateResponse200
+from ...models.recovery_code import RecoveryCode
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, RecoveryCreateResponse200]]:
+) -> Optional[Union[Error, RecoveryCode]]:
     if response.status_code == 200:
-        response_200 = RecoveryCreateResponse200.from_dict(response.json())
+        response_200 = RecoveryCode.from_dict(response.json())
 
         return response_200
 
@@ -73,7 +73,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, RecoveryCreateResponse200]]:
+) -> Response[Union[Error, RecoveryCode]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -86,7 +86,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[Error, RecoveryCreateResponse200]]:
+) -> Response[Union[Error, RecoveryCode]]:
     """Make a recovery code
 
      Shown once, replacing any; `412` first.
@@ -104,7 +104,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RecoveryCreateResponse200]]
+        Response[Union[Error, RecoveryCode]]
     """
 
     kwargs = _get_kwargs(
@@ -122,7 +122,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[Error, RecoveryCreateResponse200]]:
+) -> Optional[Union[Error, RecoveryCode]]:
     """Make a recovery code
 
      Shown once, replacing any; `412` first.
@@ -140,7 +140,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RecoveryCreateResponse200]
+        Union[Error, RecoveryCode]
     """
 
     return sync_detailed(
@@ -153,7 +153,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[Error, RecoveryCreateResponse200]]:
+) -> Response[Union[Error, RecoveryCode]]:
     """Make a recovery code
 
      Shown once, replacing any; `412` first.
@@ -171,7 +171,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RecoveryCreateResponse200]]
+        Response[Union[Error, RecoveryCode]]
     """
 
     kwargs = _get_kwargs(
@@ -187,7 +187,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[Error, RecoveryCreateResponse200]]:
+) -> Optional[Union[Error, RecoveryCode]]:
     """Make a recovery code
 
      Shown once, replacing any; `412` first.
@@ -205,7 +205,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RecoveryCreateResponse200]
+        Union[Error, RecoveryCode]
     """
 
     return (

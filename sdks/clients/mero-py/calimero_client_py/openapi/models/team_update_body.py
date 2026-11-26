@@ -16,7 +16,8 @@ T = TypeVar("T", bound="TeamUpdateBody")
 
 @_attrs_define
 class TeamUpdateBody:
-    """
+    """The request body of `POST /orgs/{org}/teams/{team}`.
+
     Attributes:
         name (Union[Unset, str]):
         join (Union[Unset, TeamJoin]): Open (`everyone` who reaches the parent) or restricted (`invite`) membership.

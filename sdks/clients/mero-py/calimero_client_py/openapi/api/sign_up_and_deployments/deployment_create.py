@@ -7,15 +7,15 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.deployment_create_body import DeploymentCreateBody
-from ...models.deployment_create_response_200 import DeploymentCreateResponse200
+from ...models.deployment_body import DeploymentBody
+from ...models.deployment_created import DeploymentCreated
 from ...models.error import Error
 from typing import cast
 
 
 def _get_kwargs(
     *,
-    body: DeploymentCreateBody,
+    body: DeploymentBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentCreateResponse200, Error]]:
+) -> Optional[Union[DeploymentCreated, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentCreateResponse200.from_dict(response.json())
+        response_200 = DeploymentCreated.from_dict(response.json())
 
         return response_200
 
@@ -54,6 +54,11 @@ def _parse_response(
         response_403 = Error.from_dict(response.json())
 
         return response_403
+
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
 
     if response.status_code == 412:
         response_412 = Error.from_dict(response.json())
@@ -73,7 +78,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentCreateResponse200, Error]]:
+) -> Response[Union[DeploymentCreated, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -85,27 +90,29 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-    body: DeploymentCreateBody,
-) -> Response[Union[DeploymentCreateResponse200, Error]]:
+    body: DeploymentBody,
+) -> Response[Union[DeploymentCreated, Error]]:
     """Create a deployment
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
     `details.challenge`.
 
     Args:
-        body (DeploymentCreateBody):
+        body (DeploymentBody): The request body of `POST /deployments`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentCreateResponse200, Error]]
+        Response[Union[DeploymentCreated, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -122,27 +129,29 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-    body: DeploymentCreateBody,
-) -> Optional[Union[DeploymentCreateResponse200, Error]]:
+    body: DeploymentBody,
+) -> Optional[Union[DeploymentCreated, Error]]:
     """Create a deployment
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
     `details.challenge`.
 
     Args:
-        body (DeploymentCreateBody):
+        body (DeploymentBody): The request body of `POST /deployments`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentCreateResponse200, Error]
+        Union[DeploymentCreated, Error]
     """
 
     return sync_detailed(
@@ -154,27 +163,29 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-    body: DeploymentCreateBody,
-) -> Response[Union[DeploymentCreateResponse200, Error]]:
+    body: DeploymentBody,
+) -> Response[Union[DeploymentCreated, Error]]:
     """Create a deployment
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
     `details.challenge`.
 
     Args:
-        body (DeploymentCreateBody):
+        body (DeploymentBody): The request body of `POST /deployments`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentCreateResponse200, Error]]
+        Response[Union[DeploymentCreated, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -189,27 +200,29 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-    body: DeploymentCreateBody,
-) -> Optional[Union[DeploymentCreateResponse200, Error]]:
+    body: DeploymentBody,
+) -> Optional[Union[DeploymentCreated, Error]]:
     """Create a deployment
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
     `details.challenge`.
 
     Args:
-        body (DeploymentCreateBody):
+        body (DeploymentBody): The request body of `POST /deployments`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentCreateResponse200, Error]
+        Union[DeploymentCreated, Error]
     """
 
     return (

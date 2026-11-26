@@ -513,6 +513,10 @@ pub struct AppRecord {
     /// The last upgrade tried on this app, done or failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<UpgradeRecord>,
+    /// When a person's own upgrade of it last applied after its deployment changed hands
+    /// (`SystemState::handed_over_unseen`); set only once a deployment has. Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_seen_at: Option<u64>,
     /// The deployment it was created from (`system::Deployment`), at a
     /// release that deployment offered then. Absent (a record from before,
     /// or an instance made from a release directly): none, and it is left
@@ -1519,17 +1523,27 @@ pub struct PendingAccountRecovery {
 }
 
 impl PendingAccountRecovery {
-    /// What the start answers and `/auth/me` shows: never the credential's
-    /// public key.
+    /// What the start answers and `/auth/me` shows: never the credential's public key.
     #[must_use]
-    pub fn json(&self, account: &str) -> serde_json::Value {
-        serde_json::json!({
-            "accountId": account,
-            "credentialId": self.credential.id,
-            "startedAt": self.started_at,
-            "readyAt": self.ready_at,
-        })
+    pub fn view(&self, account: &str) -> AccountRecoveryPending {
+        AccountRecoveryPending {
+            account_id: account.to_owned(),
+            credential_id: self.credential.id.clone(),
+            started_at: self.started_at,
+            ready_at: self.ready_at,
+        }
     }
+}
+
+/// An account recovery under way: the passkey it would add, when it started and when it may
+/// finish (Unix seconds).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRecoveryPending {
+    pub account_id: AccountId,
+    pub credential_id: String,
+    pub started_at: u64,
+    pub ready_at: u64,
 }
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).

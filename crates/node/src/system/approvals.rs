@@ -12,6 +12,18 @@
 )]
 use super::*;
 
+/// What `SetEgress` answers: the switch as set, the organization's own, and the instance when
+/// one was named.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EgressSet {
+    pub org: OrgId,
+    pub egress: bool,
+    pub org_egress_off: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+}
+
 /// What a release approval answers (`#ApprovedReleases`): the releases the scope approves now.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,13 +34,13 @@ pub struct ApprovedReleases {
 /// What `SetReleaseDeadline` answers (`#Deadlines`): every deadline after the change.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Deadlines {
-    pub deadlines: Vec<ReleaseDeadline>,
+    pub deadlines: Vec<VersionDeadline>,
 }
 
 /// One release deadline: `after` RFC 3339, `afterSecs` Unix seconds.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReleaseDeadline {
+pub struct VersionDeadline {
     pub version: String,
     pub after: String,
     pub after_secs: u64,
@@ -452,11 +464,12 @@ fn set_egress(
         }
     }
     let org_off = state.orgs.get(&org).is_some_and(|o| o.egress_off);
-    let mut out = json!({ "org": org, "egress": egress, "orgEgressOff": org_off });
-    if let Some(app_id) = app {
-        out["app"] = json!(app_id);
-    }
-    Ok(out)
+    Ok(json!(EgressSet {
+        org,
+        egress,
+        org_egress_off: org_off,
+        app,
+    }))
 }
 
 /// What a `SetEgress` consent states (`org:<org> / __set_egress`): the instance, or `null`

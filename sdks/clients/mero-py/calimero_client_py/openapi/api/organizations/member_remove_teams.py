@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.member_remove_teams_body import MemberRemoveTeamsBody
 from ...models.member_remove_teams_response_200 import MemberRemoveTeamsResponse200
+from ...models.team_ids_body import TeamIdsBody
 from typing import cast
 
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     org: str,
     account: str,
     *,
-    body: MemberRemoveTeamsBody,
+    body: TeamIdsBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -97,7 +97,7 @@ def sync_detailed(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberRemoveTeamsBody,
+    body: TeamIdsBody,
 ) -> Response[Union[Error, MemberRemoveTeamsResponse200]]:
     """Remove a member from several teams, or leave them
 
@@ -110,7 +110,7 @@ def sync_detailed(
     Args:
         org (str):
         account (str):
-        body (MemberRemoveTeamsBody):
+        body (TeamIdsBody): The request body of `DELETE /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -138,7 +138,7 @@ def sync(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberRemoveTeamsBody,
+    body: TeamIdsBody,
 ) -> Optional[Union[Error, MemberRemoveTeamsResponse200]]:
     """Remove a member from several teams, or leave them
 
@@ -151,7 +151,7 @@ def sync(
     Args:
         org (str):
         account (str):
-        body (MemberRemoveTeamsBody):
+        body (TeamIdsBody): The request body of `DELETE /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -174,7 +174,7 @@ async def asyncio_detailed(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberRemoveTeamsBody,
+    body: TeamIdsBody,
 ) -> Response[Union[Error, MemberRemoveTeamsResponse200]]:
     """Remove a member from several teams, or leave them
 
@@ -187,7 +187,7 @@ async def asyncio_detailed(
     Args:
         org (str):
         account (str):
-        body (MemberRemoveTeamsBody):
+        body (TeamIdsBody): The request body of `DELETE /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -213,7 +213,7 @@ async def asyncio(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberRemoveTeamsBody,
+    body: TeamIdsBody,
 ) -> Optional[Union[Error, MemberRemoveTeamsResponse200]]:
     """Remove a member from several teams, or leave them
 
@@ -226,7 +226,7 @@ async def asyncio(
     Args:
         org (str):
         account (str):
-        body (MemberRemoveTeamsBody):
+        body (TeamIdsBody): The request body of `DELETE /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -83,11 +83,25 @@ pub enum RejectionKind {
     UndoNotAsNamed,
     /// `409 UNDO_RELEASE_GONE`: [`super::UNDO_RELEASE_GONE`].
     UndoReleaseGone,
+    /// `409 RECOVERY_KEY_REQUIRED`: [`super::RECOVERY_KEY_REQUIRED`].
+    RecoveryKeyRequired,
+    /// `409 TRANSFER_PENDING`: [`super::TRANSFER_PENDING`].
+    TransferPending,
+    /// `409 TRANSFER_LAPSED`: [`super::TRANSFER_LAPSED`].
+    TransferLapsed,
+    /// `404 NO_TRANSFER`: [`super::NO_TRANSFER`].
+    NoTransfer,
+    /// `403 FORBIDDEN`: [`super::NOT_HANDING_OVER`].
+    NotHandingOver,
+    /// `409 TRANSFER_STALE`: [`super::TRANSFER_STALE`].
+    TransferStale,
+    /// `409 OFFERS_NOT_USABLE`: [`super::OFFERS_NOT_USABLE`].
+    OffersNotUsable,
 }
 
 impl RejectionKind {
     /// Every kind, for reading one back from its code.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 41] = [
         Self::Rejected,
         Self::QuotaExceeded,
         Self::ReleaseDeadline,
@@ -122,6 +136,13 @@ impl RejectionKind {
         Self::UndoStale,
         Self::UndoNotAsNamed,
         Self::UndoReleaseGone,
+        Self::RecoveryKeyRequired,
+        Self::TransferPending,
+        Self::TransferLapsed,
+        Self::NoTransfer,
+        Self::NotHandingOver,
+        Self::TransferStale,
+        Self::OffersNotUsable,
     ];
 
     /// The code the API answers it with, and `apply`'s answer carries.
@@ -162,6 +183,13 @@ impl RejectionKind {
             Self::UndoStale => "UNDO_STALE",
             Self::UndoNotAsNamed => "UNDO_NOT_AS_NAMED",
             Self::UndoReleaseGone => "UNDO_RELEASE_GONE",
+            Self::RecoveryKeyRequired => "RECOVERY_KEY_REQUIRED",
+            Self::TransferPending => "TRANSFER_PENDING",
+            Self::TransferLapsed => "TRANSFER_LAPSED",
+            Self::NoTransfer => "NO_TRANSFER",
+            Self::NotHandingOver => "FORBIDDEN",
+            Self::TransferStale => "TRANSFER_STALE",
+            Self::OffersNotUsable => "OFFERS_NOT_USABLE",
         }
     }
 
@@ -174,8 +202,9 @@ impl RejectionKind {
             | Self::DeployNotGranted
             | Self::CannotGrantUnheld
             | Self::TeamNotSeen
-            | Self::InviteCreatorLacks => 403,
-            Self::UndeclaredSecret | Self::NotFound => 404,
+            | Self::InviteCreatorLacks
+            | Self::NotHandingOver => 403,
+            Self::UndeclaredSecret | Self::NotFound | Self::NoTransfer => 404,
             Self::QuotaExceeded => 429,
             Self::ReleaseDeadline
             | Self::PersonalOrgExists
@@ -199,7 +228,12 @@ impl RejectionKind {
             | Self::UndoWindowPassed
             | Self::UndoStale
             | Self::UndoNotAsNamed
-            | Self::UndoReleaseGone => 409,
+            | Self::UndoReleaseGone
+            | Self::RecoveryKeyRequired
+            | Self::TransferPending
+            | Self::TransferLapsed
+            | Self::TransferStale
+            | Self::OffersNotUsable => 409,
         }
     }
 
@@ -383,7 +417,7 @@ mod tests {
     /// `node::rejected` answered for it when it matched the message.
     #[test]
     fn each_named_refusal_keeps_its_status_and_code() {
-        let named: [(&Rejection, u16, &str); 29] = [
+        let named: [(&Rejection, u16, &str); 36] = [
             (&system::NOT_A_DEPLOYER, 403, "DEPLOY_NOT_GRANTED"),
             (&system::PERSONAL_ORG_EXISTS, 409, "PERSONAL_ORG_EXISTS"),
             (&system::GUESTS_NOT_ALLOWED, 409, "GUESTS_NOT_ALLOWED"),
@@ -425,6 +459,13 @@ mod tests {
             (&system::UNDO_STALE, 409, "UNDO_STALE"),
             (&system::UNDO_NOT_AS_NAMED, 409, "UNDO_NOT_AS_NAMED"),
             (&system::UNDO_RELEASE_GONE, 409, "UNDO_RELEASE_GONE"),
+            (&system::RECOVERY_KEY_REQUIRED, 409, "RECOVERY_KEY_REQUIRED"),
+            (&system::TRANSFER_PENDING, 409, "TRANSFER_PENDING"),
+            (&system::TRANSFER_LAPSED, 409, "TRANSFER_LAPSED"),
+            (&system::NO_TRANSFER, 404, "NO_TRANSFER"),
+            (&system::NOT_HANDING_OVER, 403, "FORBIDDEN"),
+            (&system::TRANSFER_STALE, 409, "TRANSFER_STALE"),
+            (&system::OFFERS_NOT_USABLE, 409, "OFFERS_NOT_USABLE"),
         ];
         for (refused, status, code) in named {
             let api = crate::node::rejected(refused);

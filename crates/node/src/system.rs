@@ -36,8 +36,41 @@ mod routing;
 mod sign_up;
 mod updates;
 
-pub use approvals::{egress_args, ApprovedReleases, Deadlines, OutboundApproved, ReleaseDeadline};
-pub use packages::Uninstalled;
+pub use accounts::SessionsRevoked;
+pub use approvals::{
+    egress_args, ApprovedReleases, Deadlines, EgressSet, OutboundApproved, VersionDeadline,
+};
+pub use deployments::{
+    AppOffered, AppWithdrawn, ClusterOwnerNamed, DeployerGranted, DeployerRevoked,
+    DeploymentAccepted, DeploymentDeleted, DeploymentMade, DeploymentOffered,
+    DeploymentSecretCleared, DeploymentSecretSet, DeploymentTransferCancelled, GovernanceSet,
+};
+pub use orgs::{
+    InviteRedeemed, OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted,
+};
+pub use packages::{PublisherBound, Uninstalled};
+pub use recovery::{RecoveryFinished, RecoveryStarted};
+
+/// What `ScopeApps` answers: the organization's mode after, and each package's app team.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppTeamsScoped {
+    pub mode: crate::types::OrgMode,
+    pub teams: Vec<ScopedTeam>,
+}
+
+/// One package's app team in [`AppTeamsScoped`]: whether it was made, the instances moved onto
+/// it, the rows added, how it is joined now and how many lost it by a close.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedTeam {
+    pub package: String,
+    pub team_id: TeamId,
+    pub created: bool,
+    pub apps: Vec<AppId>,
+    pub added: usize,
+    pub join: Option<TeamJoin>,
+    pub dropped: usize,
+}
 pub use rejection::{Rejection, RejectionKind};
 pub use sign_up::InviteKeyAnswer;
 pub use updates::PolicyView;
@@ -1349,6 +1382,38 @@ pub struct Deployment {
     pub apps: BTreeMap<String, Offer>,
     pub created_by: AccountId,
     pub created_at: u64,
+    /// An offer to hand it to another owner, waiting for that owner's acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<PendingTransfer>,
+    /// Its last hand-over: its customers' next update sheet names the new owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transferred: Option<Transferred>,
+}
+
+/// A deployment offered to `to` ([`SystemCmd::OfferDeployment`]), accepted before
+/// [`TRANSFER_TTL_SECS`] after `offered_at`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTransfer {
+    pub to: Deployer,
+    pub offered_by: AccountId,
+    pub offered_at: u64,
+}
+
+impl PendingTransfer {
+    /// Whether it may still be accepted at `at`, the accepting command's own time.
+    #[must_use]
+    pub const fn live(&self, at: u64) -> bool {
+        at <= self.offered_at.saturating_add(TRANSFER_TTL_SECS)
+    }
+}
+
+/// Whom a deployment came from, and when it changed hands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transferred {
+    pub from: Deployer,
+    pub at: u64,
 }
 
 /// One app a deployment offers: the release new instances of it run.
@@ -1363,6 +1428,46 @@ pub struct Offer {
 
 /// How many deployments one owner keeps.
 pub const MAX_DEPLOYMENTS_PER_OWNER: usize = 16;
+
+/// How long an offer of a deployment to another owner waits for its acceptance: 7 days.
+pub const TRANSFER_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Why a second offer of a deployment is refused while one waits.
+pub const TRANSFER_PENDING: Rejection = Rejection::new(
+    RejectionKind::TransferPending,
+    "this deployment is offered to another owner already; cancel that offer first",
+);
+
+/// Why an acceptance is refused past [`TRANSFER_TTL_SECS`].
+pub const TRANSFER_LAPSED: Rejection = Rejection::new(
+    RejectionKind::TransferLapsed,
+    "the offer of this deployment lapsed; ask its owner to offer it again",
+);
+
+/// Why an acceptance or a cancel finds nothing to act on.
+pub const NO_TRANSFER: Rejection = Rejection::new(
+    RejectionKind::NoTransfer,
+    "this deployment is not offered to that owner",
+);
+
+/// Why a manager who is not its organization's owner or an admin may not offer a deployment
+/// to another owner ([`SystemState::hands_over`]).
+pub const NOT_HANDING_OVER: Rejection =
+    Rejection::new(RejectionKind::NotHandingOver, "an organization's deployment is offered to another owner by the organization's owner or an admin");
+
+/// Why an acceptance is refused while the receiver may not use a release the deployment
+/// offers: the offer would stop serving its customers ([`SystemState::offer_serves`]).
+pub const OFFERS_NOT_USABLE: Rejection = Rejection::new(
+    RejectionKind::OffersNotUsable,
+    "the receiver may not use every release this deployment offers; install them for it first",
+);
+
+/// Why an acceptance is refused once whoever offered the deployment may no longer hand it
+/// over (removed, their role lowered, or the organization recovered by another owner).
+pub const TRANSFER_STALE: Rejection = Rejection::new(
+    RejectionKind::TransferStale,
+    "whoever offered this deployment may no longer hand it over; ask its owner to offer it again",
+);
 
 /// How many deployments a cluster keeps.
 pub const MAX_DEPLOYMENTS: usize = 10_000;
@@ -1526,6 +1631,14 @@ impl DeployerGrant {
         self.until.is_none_or(|until| now < until)
     }
 }
+
+/// Why an organization without a recovery key may not own a deployment, nor remove its key
+/// while it owns one ([`SystemState::keeps_recoverable`]); the API answers it `409
+/// RECOVERY_KEY_REQUIRED` (`node::rejected`).
+pub const RECOVERY_KEY_REQUIRED: Rejection = Rejection::new(
+    RejectionKind::RecoveryKeyRequired,
+    "an organization that owns a deployment holds a recovery key, so a lost passkey never locks the deployment: set one first, and rotate it rather than remove it",
+);
 
 /// What an install is refused with where deployments are granted and the
 /// installer holds no live grant; the API answers it `403
@@ -2862,6 +2975,70 @@ impl SystemState {
         }
     }
 
+    /// Whether `owner` itself holds a live deployer grant at `now`, or deployments are open:
+    /// what a deployment's receiver needs ([`SystemCmd::AcceptDeployment`]).
+    #[must_use]
+    pub fn granted(&self, owner: &Deployer, now: u64) -> bool {
+        self.governance().deployments == Deployments::Open
+            || self
+                .deployers
+                .get(&owner.key())
+                .is_some_and(|g| g.live(now))
+    }
+
+    /// Whether the recovery rule judges an entry: its `flag` says so, or the logged version
+    /// brings [`cluster_version::Feature::DeploymentNeedsRecovery`].
+    #[must_use]
+    pub fn recovery_rule(&self, flag: bool) -> bool {
+        flag || self.cluster_brings(cluster_version::Feature::DeploymentNeedsRecovery)
+    }
+
+    /// Whether `owner` may own a deployment under the recovery rule (`flag` as in
+    /// [`Self::recovery_rule`]): an organization holds a recovery key, so a lost passkey
+    /// never locks its deployments; an account always may.
+    #[must_use]
+    pub fn keeps_recoverable(&self, owner: &Deployer, flag: bool) -> bool {
+        let Deployer::Org(o) = owner else {
+            return true;
+        };
+        !self.recovery_rule(flag) || self.orgs.get(o).is_some_and(|o| o.recovery.is_some())
+    }
+
+    /// Whether `org`'s recovery key may be removed under the recovery rule (`flag` as in
+    /// [`Self::recovery_rule`]): not while it owns a deployment.
+    #[must_use]
+    pub fn may_remove_recovery(&self, org: &str, flag: bool) -> bool {
+        let owner = Deployer::Org(org.to_owned());
+        !self.recovery_rule(flag) || !self.deployments.values().any(|d| d.owner == owner)
+    }
+
+    /// Whether `app`'s deployment changed hands since a person last saw its owner: since the
+    /// instance was created or a person's own upgrade of it applied after a hand-over
+    /// (`AppRecord::owner_seen_at`). Times are whole seconds, so the same second counts as after.
+    #[must_use]
+    pub fn handed_over_unseen(&self, app: &AppRecord) -> bool {
+        self.transferred_at(app)
+            .is_some_and(|at| at >= app.owner_seen_at.unwrap_or(app.created_at))
+    }
+
+    /// When `app`'s deployment last changed hands, if it ever did.
+    #[must_use]
+    pub fn transferred_at(&self, app: &AppRecord) -> Option<u64> {
+        let d = self.deployments.get(app.deployment.as_ref()?)?;
+        d.transferred.as_ref().map(|t| t.at)
+    }
+
+    /// Whether `actor` may hand `owner`'s deployment to another owner: the account itself,
+    /// or an owner or admin of the organization (more than managing it, which
+    /// `MANAGE_APPLICATION` gives).
+    #[must_use]
+    pub fn hands_over(&self, owner: &Deployer, actor: &str) -> bool {
+        match owner {
+            Deployer::Account(a) => a == actor,
+            Deployer::Org(o) => self.is_org_admin(o, actor),
+        }
+    }
+
     /// `owner`'s kind (`account` or `org`) and its name, `None` once it is gone.
     #[must_use]
     pub fn deployer_named(&self, owner: &Deployer) -> (&'static str, Option<String>) {
@@ -2872,12 +3049,20 @@ impl SystemState {
     }
 
     /// Deployment `id` as a customer is shown it: names are not unique, so never its
-    /// name alone, but with its id and its owner (`{ id, name, owner: { kind, name } }`).
+    /// name alone, but with its id and its owner (`{ id, name, owner: { kind, name } }`),
+    /// and, once it changed hands, whom it came from and when (`transferred`).
     #[must_use]
     pub fn deployment_shown(&self, id: &str) -> Option<Value> {
         let d = self.deployments.get(id)?;
         let (kind, name) = self.deployer_named(&d.owner);
-        Some(json!({ "id": d.id, "name": d.name, "owner": { "kind": kind, "name": name } }))
+        let mut shown =
+            json!({ "id": d.id, "name": d.name, "owner": { "kind": kind, "name": name } });
+        if let Some(t) = &d.transferred {
+            let (kind, name) = self.deployer_named(&t.from);
+            shown["transferred"] =
+                json!({ "from": { "kind": kind, "name": name }, "at": rfc3339(t.at) });
+        }
+        Some(shown)
     }
 
     /// Whether the cluster's sign-up policy lets an account in with `invite`
@@ -3061,7 +3246,8 @@ impl SystemState {
     }
 
     /// Whether `deployer` is an account or organization that exists.
-    fn exists(&self, deployer: &Deployer) -> bool {
+    #[must_use]
+    pub fn exists(&self, deployer: &Deployer) -> bool {
         match deployer {
             Deployer::Account(a) => self.accounts.contains_key(a),
             Deployer::Org(o) => self.orgs.contains_key(o),
@@ -4471,15 +4657,15 @@ impl SystemState {
                 None => {}
             }
             let join = o.teams.get(&team_id).map(|t| t.join);
-            report.push(json!({
-                "package": plan.package,
-                "teamId": team_id,
-                "created": created,
-                "apps": plan.instances,
-                "added": added,
-                "join": join,
-                "dropped": dropped,
-            }));
+            report.push(ScopedTeam {
+                package: plan.package.clone(),
+                team_id: team_id.clone(),
+                created,
+                apps: plan.instances.clone(),
+                added,
+                join,
+                dropped,
+            });
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
                     a.access = a.access.onto_team(team_id.clone());
@@ -4519,7 +4705,10 @@ impl SystemState {
             .orgs
             .get(org)
             .map_or(crate::types::OrgMode::Legacy, Org::mode);
-        Ok(json!({ "mode": mode, "teams": report }))
+        Ok(json!(AppTeamsScoped {
+            mode,
+            teams: report
+        }))
     }
 
     /// [`SystemCmd::MoveApp`], judged and applied as one step: every rule is
@@ -4831,14 +5020,14 @@ impl SystemState {
                 revoked = before - self.invites.len();
             }
         }
-        Ok(json!({
-            "appId": app_id,
-            "from": from,
-            "org": to_org,
-            "grants": access,
-            "created": created,
-            "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
-            "revokedInvites": revoked,
+        Ok(json!(AppMoved {
+            app_id: app_id.to_owned(),
+            from,
+            org: to_org.to_owned(),
+            grants: access,
+            created,
+            added: joins.into_iter().map(|(m, _)| m).collect(),
+            revoked_invites: revoked as u64,
         }))
     }
 
@@ -4963,11 +5152,11 @@ impl SystemState {
 
     /// The deadlines as the read APIs show them, oldest release first.
     #[must_use]
-    pub fn deadlines_json(&self) -> Vec<ReleaseDeadline> {
+    pub fn deadlines_json(&self) -> Vec<VersionDeadline> {
         let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
         out.sort_by(|a, b| compare_versions(a.0, b.0));
         out.into_iter()
-            .map(|(r, after)| ReleaseDeadline {
+            .map(|(r, after)| VersionDeadline {
                 version: r.clone(),
                 after: rfc3339(*after),
                 after_secs: *after,
@@ -5529,6 +5718,9 @@ impl SystemCmd {
             Self::AddPackageOrigin { .. } => Area::Packages,
             Self::RemovePackageOrigin { .. } => Area::Packages,
             Self::DeleteDeployment { .. } => Area::Deployments,
+            Self::OfferDeployment { .. }
+            | Self::AcceptDeployment { .. }
+            | Self::CancelDeploymentTransfer { .. } => Area::Deployments,
             Self::SetDeploymentSecret { .. } => Area::Deployments,
             Self::ClearDeploymentSecret { .. } => Area::Deployments,
             Self::SetOutboundApproval { .. } => Area::Approvals,
@@ -5932,6 +6124,20 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
 /// What a person consents to when moving an app to another organization
 /// (`<app> / __move`).
 #[must_use]
+/// What `POST /apps/{app}/move` answers: where the app went, its access there, whether an app
+/// team was made, the accounts brought in and the invites revoked.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMoved {
+    app_id: String,
+    from: String,
+    org: String,
+    grants: crate::types::Access,
+    created: bool,
+    added: Vec<String>,
+    revoked_invites: u64,
+}
+
 pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }
@@ -6868,6 +7074,10 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// An organization owns a deployment only with a recovery key
+        /// ([`SystemState::keeps_recoverable`]); absent in an earlier entry.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deployment_needs_recovery: bool,
     },
     /// Offer `package@version`, installed already, as `app` in `deployment`,
     /// adding the entry or moving it to another release of its package
@@ -6916,6 +7126,36 @@ pub enum SystemCmd {
     RemovePackageOrigin {
         package: String,
         origin: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of `deployment` offers it to `to`, another owner
+    /// (`deployment:{id} / __offer_deployment / { to }`); one offer waits at a time.
+    OfferDeployment {
+        deployment: String,
+        to: Deployer,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of `to` accepts the offer of `deployment` to it made at `offered_at`
+    /// (`deployment:{id} / __accept_deployment / { to, offeredAt }`): `to` becomes its
+    /// owner, and the previous owner's secret values are dropped.
+    AcceptDeployment {
+        deployment: String,
+        to: Deployer,
+        offered_at: u64,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of either side drops the offer of `deployment`
+    /// (`deployment:{id} / __cancel_deployment_transfer / {}`).
+    CancelDeploymentTransfer {
+        deployment: String,
         actor: AccountId,
         #[serde(default)]
         consent: Value,
@@ -7445,6 +7685,10 @@ pub enum SystemCmd {
         at: u64,
         actor: AccountId,
         consent: Value,
+        /// The key of an organization that owns a deployment is not removed
+        /// ([`SystemState::keeps_recoverable`]); absent in an earlier entry.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deployment_needs_recovery: bool,
     },
     /// Start handing `org` to `account`: `signature` is the recovery key's
     /// ([`calimero_identity::recovery::sign_recovery`]) over `org`, `account`
@@ -7850,5 +8094,7 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod queue_tests;
 
+#[cfg(test)]
+mod answer_tests;
 #[cfg(test)]
 mod tests;

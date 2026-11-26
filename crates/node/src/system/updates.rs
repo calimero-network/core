@@ -649,7 +649,8 @@ impl SystemState {
         members_stay: bool,
     ) -> Result<(), Rejection> {
         let (policy, _) = self.upgrade_policy_of(app);
-        if policy.auto_apply != AutoApply::NoDestinations {
+        // A new owner's first update reaches the person on a sheet that names it.
+        if policy.auto_apply != AutoApply::NoDestinations || self.handed_over_unseen(app) {
             return Err(AUTO_UPDATE_REFUSED);
         }
         let (Some(to), Some(class)) = (to, class) else {

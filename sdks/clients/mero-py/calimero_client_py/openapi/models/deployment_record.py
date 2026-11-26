@@ -6,13 +6,17 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
 from typing import cast
 from typing import cast, Union
+from typing import Union
 
 if TYPE_CHECKING:
-    from ..models.deployer_type_0 import DeployerType0
     from ..models.deployer_type_1 import DeployerType1
+    from ..models.deployer_type_0 import DeployerType0
+    from ..models.deployment_record_transfer import DeploymentRecordTransfer
     from ..models.deployment_record_apps import DeploymentRecordApps
+    from ..models.deployment_record_transferred import DeploymentRecordTransferred
 
 
 T = TypeVar("T", bound="DeploymentRecord")
@@ -30,6 +34,8 @@ class DeploymentRecord:
             apps (DeploymentRecordApps):
             created_by (str):
             created_at (int):
+            transfer (Union[Unset, DeploymentRecordTransfer]):
+            transferred (Union[Unset, DeploymentRecordTransferred]):
     """
 
     id: str
@@ -38,12 +44,16 @@ class DeploymentRecord:
     apps: "DeploymentRecordApps"
     created_by: str
     created_at: int
+    transfer: Union[Unset, "DeploymentRecordTransfer"] = UNSET
+    transferred: Union[Unset, "DeploymentRecordTransferred"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.deployer_type_0 import DeployerType0
         from ..models.deployer_type_1 import DeployerType1
+        from ..models.deployer_type_0 import DeployerType0
+        from ..models.deployment_record_transfer import DeploymentRecordTransfer
         from ..models.deployment_record_apps import DeploymentRecordApps
+        from ..models.deployment_record_transferred import DeploymentRecordTransferred
 
         id = self.id
 
@@ -61,6 +71,14 @@ class DeploymentRecord:
 
         created_at = self.created_at
 
+        transfer: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.transfer, Unset):
+            transfer = self.transfer.to_dict()
+
+        transferred: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.transferred, Unset):
+            transferred = self.transferred.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -73,14 +91,20 @@ class DeploymentRecord:
                 "createdAt": created_at,
             }
         )
+        if transfer is not UNSET:
+            field_dict["transfer"] = transfer
+        if transferred is not UNSET:
+            field_dict["transferred"] = transferred
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.deployer_type_0 import DeployerType0
         from ..models.deployer_type_1 import DeployerType1
+        from ..models.deployer_type_0 import DeployerType0
+        from ..models.deployment_record_transfer import DeploymentRecordTransfer
         from ..models.deployment_record_apps import DeploymentRecordApps
+        from ..models.deployment_record_transferred import DeploymentRecordTransferred
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -110,6 +134,20 @@ class DeploymentRecord:
 
         created_at = d.pop("createdAt")
 
+        _transfer = d.pop("transfer", UNSET)
+        transfer: Union[Unset, DeploymentRecordTransfer]
+        if isinstance(_transfer, Unset):
+            transfer = UNSET
+        else:
+            transfer = DeploymentRecordTransfer.from_dict(_transfer)
+
+        _transferred = d.pop("transferred", UNSET)
+        transferred: Union[Unset, DeploymentRecordTransferred]
+        if isinstance(_transferred, Unset):
+            transferred = UNSET
+        else:
+            transferred = DeploymentRecordTransferred.from_dict(_transferred)
+
         deployment_record = cls(
             id=id,
             name=name,
@@ -117,6 +155,8 @@ class DeploymentRecord:
             apps=apps,
             created_by=created_by,
             created_at=created_at,
+            transfer=transfer,
+            transferred=transferred,
         )
 
         deployment_record.additional_properties = d

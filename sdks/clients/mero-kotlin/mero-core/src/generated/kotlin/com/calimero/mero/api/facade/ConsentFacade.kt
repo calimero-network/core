@@ -30,7 +30,7 @@ class ConsentFacade internal constructor(
      */
     suspend fun pageCreate(
         consentRequest: com.calimero.mero.ConsentRequest,
-    ): ConsentPageCreate200Response =
+    ): ConsentRequestMade =
         api(null, null, emptySet()).consent.consentPageCreate(comCalimeroMeroConsentRequest = consentRequest)
 
     /**
@@ -46,6 +46,6 @@ class ConsentFacade internal constructor(
      */
     suspend fun pageResult(
         request: kotlin.String,
-    ): ConsentPageResult200Response =
+    ): ConsentResult =
         api(null, null, emptySet()).consent.consentPageResult(request = request)
 }

@@ -75,6 +75,8 @@ mod backup_keys;
 mod calls;
 mod deployments;
 mod deprecation;
+#[cfg(test)]
+mod e7_oracles;
 mod exports;
 mod files;
 #[cfg(test)]
@@ -133,7 +135,8 @@ use {
     backup_keys::{BackupKeyBody, OpsBackupKeyBody},
     calls::{EventsQuery, IntentBody, MethodBody, PresenceBody, RunsQuery, ViewBody},
     deployments::{
-        ClusterOwnerBody, DeployerBody, DeploymentBody, DeploymentSecretBody, OfferBody,
+        ClusterOwnerBody, DeployerBody, DeploymentBody, DeploymentSecretBody,
+        DeploymentTransferBody, OfferBody,
     },
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
@@ -1335,20 +1338,38 @@ fn session_answer(
 
 // ---------------------------------------------------------------- public
 
-async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
+async fn health(State(node): State<Arc<Node>>) -> Json<Health> {
     let s = node.system.status();
-    Json(json!({
-        "ok": true,
-        "node": node.config.node_id,
-        "systemLeader": s.leader,
-        "release": node.config.release,
+    Json(Health {
+        ok: true,
+        node: node.config.node_id,
+        system_leader: s.leader,
+        release: node.config.release.clone(),
         // The newest cluster version this build supports: what the system
         // leader raises the cluster version by (`system::cluster_version`).
-        "clusterVersion": node.advertises(),
+        cluster_version: node.advertises(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
-        "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
-    }))
+        rollback_epoch: node
+            .checkpoints
+            .as_ref()
+            .and_then(|c| c.status())
+            .map(|s| s.epoch),
+    })
+}
+
+/// `GET /health`, in the clear: the node, the system group's leader (`null`: none known), its
+/// release, the newest cluster version it supports and the cluster's rollback epoch (`null`: a
+/// node without a rollback counter).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Health {
+    ok: bool,
+    node: u64,
+    system_leader: Option<u64>,
+    release: String,
+    cluster_version: String,
+    rollback_epoch: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -2421,7 +2442,7 @@ async fn scope_report(
     org: Option<&str>,
     q: &PageQuery,
     limit: usize,
-) -> Value {
+) -> AppsReport {
     // A peer is attested once and its release kept (`Node::release_of_node`),
     // so this contacts a node only the first time, at most
     // `PLACEMENT_RELEASE_WAIT` each.
@@ -2468,25 +2489,55 @@ async fn scope_report(
                 .and_then(|o| s.approved_for(o)),
         };
         let scope = match org {
-            Some(o) if s.orgs.get(o).is_some_and(|o| s.acts_personal(o)) => {
-                json!({ "kind": "org", "org": o, "personal": true })
-            }
-            Some(o) => json!({ "kind": "org", "org": o }),
-            None => json!({ "kind": "account" }),
+            Some(o) => AppScope::Org {
+                org: o.to_owned(),
+                personal: s
+                    .orgs
+                    .get(o)
+                    .is_some_and(|o| s.acts_personal(o))
+                    .then_some(true),
+            },
+            None => AppScope::Account,
         };
-        json!({
-            "scope": scope,
-            "governance": s.governance(),
-            "approvedReleases": report::approved_releases(approved),
-            "clusterReleases": report::cluster_releases(&releases, approved),
-            "apps": apps,
-            "next": next,
-        })
+        AppsReport {
+            scope,
+            governance: s.governance(),
+            approved_releases: report::approved_releases(approved),
+            cluster_releases: report::cluster_releases(&releases, approved),
+            apps,
+            next,
+        }
     });
-    if let Some(apps) = out["apps"].as_array_mut() {
-        with_last_writes(node, apps).await;
-    }
+    with_last_writes(node, &mut out.apps).await;
     out
+}
+
+/// `GET /orgs/{org}/apps` and `GET /auth/apps`: a page of one approval scope's apps, with the
+/// scope's approved releases and the releases the cluster's nodes run.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppsReport {
+    scope: AppScope,
+    governance: crate::system::Governance,
+    approved_releases: Option<Vec<String>>,
+    cluster_releases: Vec<report::ClusterRelease>,
+    apps: Vec<Value>,
+    next: Option<String>,
+}
+
+/// The scope whose approvals cover an app: an organization (`personal: true` for its owner's
+/// personal one), or the account's own apps.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum AppScope {
+    /// An organization's apps.
+    Org {
+        org: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personal: Option<bool>,
+    },
+    /// The account's own apps, wherever they are.
+    Account,
 }
 
 /// `409`: a write that only this release, or a newer one, understands, refused while

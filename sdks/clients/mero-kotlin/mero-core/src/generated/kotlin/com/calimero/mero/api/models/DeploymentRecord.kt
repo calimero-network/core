@@ -24,6 +24,8 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.DeploymentRecordAppsValue
+import com.calimero.mero.api.models.DeploymentRecordTransfer
+import com.calimero.mero.api.models.DeploymentRecordTransferred
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -38,6 +40,8 @@ import kotlinx.serialization.Contextual
  * @param apps 
  * @param createdBy 
  * @param createdAt 
+ * @param transfer 
+ * @param transferred 
  */
 @Serializable
 
@@ -59,7 +63,13 @@ data class DeploymentRecord (
     val createdBy: kotlin.String,
 
     @SerialName(value = "createdAt")
-    val createdAt: kotlin.Long
+    val createdAt: kotlin.Long,
+
+    @SerialName(value = "transfer")
+    val transfer: DeploymentRecordTransfer? = null,
+
+    @SerialName(value = "transferred")
+    val transferred: DeploymentRecordTransferred? = null
 
 ) {
 

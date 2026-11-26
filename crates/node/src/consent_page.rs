@@ -95,7 +95,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use calimero_identity::{b64url, random, RelyingParty};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
@@ -1163,7 +1163,7 @@ pub async fn create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     if body.len() > MAX_CONSENT_BODY_BYTES {
         return Err(ApiError::new(413, "TOO_LARGE", "consent request too large"));
     }
@@ -1275,7 +1275,7 @@ async fn hold(
     action: Action,
     model: Value,
     return_to: Url,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
@@ -1322,12 +1322,36 @@ async fn hold(
     let url = base
         .join(&format!("{at}/{id}"))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!({
-        "requestId": id,
-        "url": url.as_str(),
-        "expiresAt": expires_at,
-        "code": code,
-    })))
+    Ok(Json(ConsentRequestMade {
+        request_id: id,
+        url: url.as_str().to_owned(),
+        expires_at,
+        code,
+    }))
+}
+
+/// `POST /consent/requests`: the request, the page to send the person to, when it lapses and
+/// the code the page shows.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRequestMade {
+    request_id: String,
+    url: String,
+    expires_at: u64,
+    code: String,
+}
+
+/// `GET /consent/{request}/result`: the request's decision (`decidedAt` `null` while it is
+/// pending) and, once approved, what the approval made.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentResult {
+    request_id: String,
+    kind: Value,
+    status: String,
+    decided_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome: Option<Value>,
 }
 
 /// The confirmation code of request `request_id`: the page shows it, and so
@@ -2003,19 +2027,40 @@ enum Part {
 /// The sheet's fact naming the deployment an instance comes from
 /// ([`crate::system::SystemState::deployment_shown`]): its name and owner, then its id.
 fn offered_by(d: &Value) -> Value {
-    let kind = if d["owner"]["kind"] == "org" {
+    json!({
+        "title": format!(
+            "Offered by {}, run by {}.",
+            d["name"].as_str().unwrap_or_default(),
+            party(&d["owner"])
+        ),
+        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
+    })
+}
+
+/// The sheet's warning that a customer's deployment changed hands since they last
+/// approved anything for the instance.
+fn taken_over(d: &Value) -> Value {
+    json!({
+        "title": format!("{} has a new owner", d["name"].as_str().unwrap_or_default()),
+        "detail": format!(
+            "Now run by {}, who took it over from {}. They choose this app's updates from now on.",
+            party(&d["owner"]),
+            party(&d["transferred"]["from"])
+        ),
+    })
+}
+
+/// An owner as `deployment_shown` names it (`{ kind, name }`), in words.
+fn party(who: &Value) -> String {
+    let kind = if who["kind"] == "org" {
         "organization"
     } else {
         "account"
     };
-    let owner = d["owner"]["name"].as_str().map_or_else(
+    who["name"].as_str().map_or_else(
         || format!("an {kind} no longer on this cluster"),
         |n| format!("the {kind} {n}"),
-    );
-    json!({
-        "title": format!("Offered by {}, run by {owner}.", d["name"].as_str().unwrap_or_default()),
-        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
-    })
+    )
 }
 
 async fn upgrade_request(
@@ -2203,7 +2248,7 @@ async fn upgrade_request(
             members_move,
         )
     });
-    let model = json!({
+    let mut model = json!({
         "kind": "upgrade",
         "update": update,
         "scope": {
@@ -2236,6 +2281,9 @@ async fn upgrade_request(
         "notes": notes,
         "upgrade": sheet,
     });
+    if let (true, Some(d)) = (node.sys(|s| s.handed_over_unseen(&app)), &shown) {
+        model["takenOver"] = taken_over(d);
+    }
     let action = if step == updates::ApprovalStep::First {
         Action::ApproveFirst {
             from: BTreeMap::from([(app_id.clone(), app.bundle.clone())]),
@@ -3041,16 +3089,13 @@ fn app_invite_model(
 
 /// What `/result` answers for a request.
 fn result_json(id: &str, r: &ConsentRequest) -> Value {
-    let mut v = json!({
-        "requestId": id,
-        "kind": r.model["kind"],
-        "status": r.decision.label(),
-        "decidedAt": r.decision.at(),
-    });
-    if let (Some(Outcome(made)), Some(o)) = (&r.outcome, v.as_object_mut()) {
-        let _prev = o.insert("outcome".into(), made.clone());
-    }
-    v
+    json!(ConsentResult {
+        request_id: id.to_owned(),
+        kind: r.model["kind"].clone(),
+        status: r.decision.label().to_owned(),
+        decided_at: r.decision.at(),
+        outcome: r.outcome.as_ref().map(|Outcome(made)| made.clone()),
+    })
 }
 
 /// `GET /consent/{id}/result`: the decision, for the account that asked.
@@ -3188,11 +3233,19 @@ pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> R
     })
 }
 
-/// A POST from a page must come from the node's own origins (or none named,
-/// as a non-browser client sends): no other site posts a decision.
+/// A POST from a page must come from the node's own origins: no other site
+/// posts a decision. Only the page's own script posts here, and a browser
+/// names the origin of a `fetch` POST; one that names none passes only as the
+/// browser's own same-origin request (`Sec-Fetch-Site: same-origin`).
 fn same_origin(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
+    let refused = || ApiError::forbidden("not from this node's consent page");
     let Some(origin) = headers.get(header::ORIGIN) else {
-        return Ok(());
+        let fetch_site = headers.get("sec-fetch-site").map(HeaderValue::as_bytes);
+        return if fetch_site == Some(b"same-origin".as_slice()) {
+            Ok(())
+        } else {
+            Err(refused())
+        };
     };
     let origin = origin.to_str().unwrap_or_default();
     if relying_party(node)
@@ -3202,7 +3255,7 @@ fn same_origin(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
     {
         Ok(())
     } else {
-        Err(ApiError::forbidden("not from this node's consent page"))
+        Err(refused())
     }
 }
 
@@ -3881,6 +3934,15 @@ mod tests {
         assert_eq!(
             offered_by(&shown(json!({ "kind": "account", "name": null })))["title"],
             "Offered by acme, run by an account no longer on this cluster."
+        );
+        let mut d = shown(json!({ "kind": "org", "name": "Globex" }));
+        d["transferred"] = json!({ "from": { "kind": "account", "name": "dev" }, "at": "x" });
+        assert_eq!(
+            taken_over(&d),
+            json!({
+                "title": "acme has a new owner",
+                "detail": "Now run by the organization Globex, who took it over from the account dev. They choose this app's updates from now on.",
+            })
         );
     }
 

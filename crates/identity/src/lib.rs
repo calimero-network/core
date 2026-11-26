@@ -329,6 +329,46 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_ceremony_made_in_a_cross_origin_frame() {
+        const OURS: &str = "http://localhost:3000";
+        // (crossOrigin, topOrigin, accepted): a top-level page on our origin,
+        // or an older browser that names neither, is accepted; a ceremony a
+        // frame on another site ran is not.
+        let cases: [(Option<bool>, Option<&str>, bool); 6] = [
+            (Some(false), None, true),
+            (None, None, true),
+            (Some(false), Some(OURS), true),
+            (Some(true), None, false),
+            (Some(true), Some("https://evil.example"), false),
+            (None, Some("https://evil.example"), false),
+        ];
+        let refused = Err(Error::Mismatch("cross-origin frame"));
+        for (cross, top, accepted) in cases {
+            let case = format!("crossOrigin {cross:?}, topOrigin {top:?}");
+            let mut auth = SoftAuthenticator::new("localhost", OURS);
+            auth.set_frame(cross, top);
+            let challenge = random::<32>();
+            let reg = verify_registration(&rp(), &challenge, &auth.register(&challenge));
+            assert_eq!(reg.is_ok(), accepted, "registration, {case}: {reg:?}");
+            if !accepted {
+                assert_eq!(reg.map(|_| ()), refused, "registration, {case}");
+            }
+
+            // The assertion, from a passkey registered on a top-level page.
+            let mut auth = SoftAuthenticator::new("localhost", OURS);
+            let challenge = random::<32>();
+            let cred = verify_registration(&rp(), &challenge, &auth.register(&challenge)).unwrap();
+            auth.set_frame(cross, top);
+            let a = auth.assert(&[6; 32]);
+            let got = verify_assertion(&rp(), &[6; 32], &cred, &a);
+            assert_eq!(got.is_ok(), accepted, "assertion, {case}: {got:?}");
+            if !accepted {
+                assert_eq!(got.map(|_| ()), refused, "assertion, {case}");
+            }
+        }
+    }
+
+    #[test]
     fn refuses_a_replayed_counter() {
         let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
         let challenge = random::<32>();

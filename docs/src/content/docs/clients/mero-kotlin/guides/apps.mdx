@@ -46,9 +46,9 @@ The organization's owner and admins decide how updates apply
 step-up:
 
 ```kotlin
-client.orgs.policySet(org = orgId, policy = Explicit(OrgPolicySetRequestPolicy(
-    secondApprover = true, autoApply = OrgPolicySetRequestPolicy.AutoApply.NEVER, holdHours = 24)))
-// or apps.policySet(app = appId, policy = Explicit(AppPolicySetRequestPolicy(…))) for one app;
+client.orgs.policySet(org = orgId, policy = Explicit(UpgradePolicyBodyPolicy(
+    secondApprover = true, autoApply = UpgradePolicyBodyPolicy.AutoApply.NEVER, holdHours = 24)))
+// or apps.policySet(app = appId, policy = Explicit(UpgradePolicyBodyPolicy(…))) for one app;
 // Explicit(null) drops it
 client.apps.approveUpgrade(app = appId, version = "1.1.0")          // the first of two
 otherAdmin.apps.upgrade(app = appId, version = "1.1.0")             // another owner or admin's client

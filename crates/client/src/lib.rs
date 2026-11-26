@@ -29,7 +29,7 @@ pub use files::ExportedFile;
 pub use generated::{routes, types};
 pub use route::OperatorSigner;
 pub use transport::{Body, Credential, Request, Transport};
-use types::AppAttestationResponseReplicasItem;
+use types::ReplicaAttestation;
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]
@@ -241,10 +241,8 @@ impl Client {
         let mut governance: Option<attest::Governance> = None;
         for r in answer.replicas {
             let (node, doc) = match r {
-                AppAttestationResponseReplicasItem::Attestation { node, attestation } => {
-                    (node, attestation)
-                }
-                AppAttestationResponseReplicasItem::Error { node, error } => {
+                ReplicaAttestation::Attestation { node, attestation } => (node, attestation),
+                ReplicaAttestation::Error { node, error } => {
                     return Err(eyre::eyre!("replica {node} gave no attestation: {error}").into());
                 }
             };
@@ -431,7 +429,7 @@ impl Client {
         let me = self.auth().me().await?;
         me.orgs
             .iter()
-            .find(|o| o.personal == Some(true))
+            .find(|o| o.personal)
             .map(|o| o.org_id.clone())
             .ok_or_else(|| {
                 Error::Transport(eyre::eyre!("the account has no personal organization"))
@@ -647,7 +645,8 @@ impl Client {
 
     /// The app's recent pipeline runs, newest first.
     pub async fn pipeline_runs(&self, app: &str) -> Result<Value> {
-        Ok(Value::Object(self.apps().pipelines_list(app, None).await?))
+        let runs = self.apps().pipelines_list(app, None).await?;
+        serde_json::to_value(runs).map_err(|e| Error::Transport(e.into()))
     }
 
     /// Starts a new run of an ended pipeline run's pipeline, release, inputs and params; `body` is

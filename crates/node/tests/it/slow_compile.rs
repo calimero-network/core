@@ -112,7 +112,8 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
         "the async worker ticked {during} times in {WATCH:?} while an install compiled, \
          a free thread {free}: the install blocked it"
     );
-    let installed = installed.expect("the release installs once it compiles");
+    let installed = serde_json::to_value(installed.expect("the release installs once it compiles"))
+        .expect("serializes");
     assert_eq!(installed["package"], "com.test.slow-compile");
 }
 

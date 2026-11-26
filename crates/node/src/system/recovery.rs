@@ -12,6 +12,23 @@
 use super::*;
 use crate::proof::verify_consent;
 
+/// What an organization recovery's start answers: when it started and when it may finish
+/// (Unix seconds).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryStarted {
+    pub started_at: u64,
+    pub ready_at: u64,
+}
+
+/// What an organization recovery's finish answers: the organization and the owners it replaced.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryFinished {
+    pub org: OrgId,
+    pub previous_owners: Vec<AccountId>,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -364,17 +381,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             public_key,
             at,
             actor,
+            deployment_needs_recovery,
             ..
-        } => {
-            let recovery = public_key.map(|key| recovery_key_of(key, at)).transpose()?;
-            let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
-            if organization.role(&actor) != Some(OrgRole::Owner) {
-                return Err(OWNER_ONLY_RECOVERY.into());
-            }
-            // A new key, or none: a recovery under way ends with the old one.
-            organization.recovery = recovery;
-            Ok(Value::Null)
-        }
+        } => set_recovery_key(
+            state,
+            &org,
+            public_key,
+            at,
+            &actor,
+            deployment_needs_recovery,
+        ),
         SystemCmd::StartRecovery {
             org, account, at, ..
         } => start_recovery(state, &org, account, at),
@@ -468,7 +484,7 @@ fn start_account_recovery(
         started_at: at,
         ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
     };
-    let out = pending.json(&account);
+    let out = json!(pending.view(&account));
     let _prev = state.account_recoveries.insert(account, pending);
     Ok(out)
 }
@@ -541,6 +557,31 @@ fn finish_account_recovery(
     }))
 }
 
+/// Set (or, with none, remove) an organization's recovery key: its owner's, and never
+/// removed while the organization owns a deployment that needs one. A new key, or none,
+/// ends a recovery under way with the old one.
+fn set_recovery_key(
+    state: &mut SystemState,
+    org: &str,
+    public_key: Option<String>,
+    at: u64,
+    actor: &str,
+    deployment_needs_recovery: bool,
+) -> Result<Value, Rejection> {
+    let keeps_key =
+        public_key.is_none() && !state.may_remove_recovery(org, deployment_needs_recovery);
+    let recovery = public_key.map(|key| recovery_key_of(key, at)).transpose()?;
+    let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
+    if organization.role(actor) != Some(OrgRole::Owner) {
+        return Err(OWNER_ONLY_RECOVERY.into());
+    }
+    if keeps_key {
+        return Err(RECOVERY_KEY_REQUIRED);
+    }
+    organization.recovery = recovery;
+    Ok(Value::Null)
+}
+
 /// Start an organization's recovery for an account not its owner, under its
 /// recovery key, one at a time.
 fn start_recovery(
@@ -565,7 +606,10 @@ fn start_recovery(
         started_at: at,
         ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
     };
-    let out = json!({ "startedAt": pending.started_at, "readyAt": pending.ready_at });
+    let out = json!(RecoveryStarted {
+        started_at: pending.started_at,
+        ready_at: pending.ready_at,
+    });
     recovery.pending = Some(pending);
     Ok(out)
 }
@@ -636,7 +680,10 @@ fn finish_recovery(
             app.owner.clone_from(&actor);
         }
     }
-    Ok(json!({ "org": org, "previousOwners": previous }))
+    Ok(json!(RecoveryFinished {
+        org,
+        previous_owners: previous,
+    }))
 }
 
 /// Every row `account` holds in the organization and its teams.

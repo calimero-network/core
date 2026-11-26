@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.all_apps_body import AllAppsBody
 from ...models.error import Error
-from ...models.org_all_apps_body import OrgAllAppsBody
 from ...models.org_all_apps_response_200 import OrgAllAppsResponse200
 from typing import cast
 
@@ -16,7 +16,7 @@ from typing import cast
 def _get_kwargs(
     org: str,
     *,
-    body: OrgAllAppsBody,
+    body: AllAppsBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -99,7 +99,7 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgAllAppsBody,
+    body: AllAppsBody,
 ) -> Response[Union[Error, OrgAllAppsResponse200]]:
     """Give a member every app added later
 
@@ -111,7 +111,7 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgAllAppsBody):
+        body (AllAppsBody): The request body of `POST /orgs/{org}/all-apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -137,7 +137,7 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgAllAppsBody,
+    body: AllAppsBody,
 ) -> Optional[Union[Error, OrgAllAppsResponse200]]:
     """Give a member every app added later
 
@@ -149,7 +149,7 @@ def sync(
 
     Args:
         org (str):
-        body (OrgAllAppsBody):
+        body (AllAppsBody): The request body of `POST /orgs/{org}/all-apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -170,7 +170,7 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgAllAppsBody,
+    body: AllAppsBody,
 ) -> Response[Union[Error, OrgAllAppsResponse200]]:
     """Give a member every app added later
 
@@ -182,7 +182,7 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgAllAppsBody):
+        body (AllAppsBody): The request body of `POST /orgs/{org}/all-apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -206,7 +206,7 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgAllAppsBody,
+    body: AllAppsBody,
 ) -> Optional[Union[Error, OrgAllAppsResponse200]]:
     """Give a member every app added later
 
@@ -218,7 +218,7 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgAllAppsBody):
+        body (AllAppsBody): The request body of `POST /orgs/{org}/all-apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

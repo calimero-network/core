@@ -27,12 +27,14 @@ pub(super) use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeState;
 pub use self::compute::JOB_POLL;
 #[cfg(test)]
-pub(crate) use self::compute::{RunFileView, RunView};
+pub(crate) use self::compute::{RunFileView, RunList, RunView};
 pub(crate) use self::compute::{PIPELINE_VIEW, RUN_VIEW};
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
+#[cfg(test)]
+pub(crate) use self::uploads::{PartTaken, UploadStatus, UploadView};
 pub(crate) use self::uploads::{UploadOp, Uploads};
 #[cfg(test)]
 pub(crate) use self::{files::files_unavailable, uploads::refusal as upload_refusal};

@@ -7,10 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.account_recovery_pending import AccountRecoveryPending
 from ...models.account_recovery_start_body import AccountRecoveryStartBody
-from ...models.account_recovery_start_response_200 import (
-    AccountRecoveryStartResponse200,
-)
 from ...models.error import Error
 from typing import cast
 
@@ -36,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AccountRecoveryStartResponse200, Error]]:
+) -> Optional[Union[AccountRecoveryPending, Error]]:
     if response.status_code == 200:
-        response_200 = AccountRecoveryStartResponse200.from_dict(response.json())
+        response_200 = AccountRecoveryPending.from_dict(response.json())
 
         return response_200
 
@@ -65,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AccountRecoveryStartResponse200, Error]]:
+) -> Response[Union[AccountRecoveryPending, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -78,7 +76,7 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: AccountRecoveryStartBody,
-) -> Response[Union[AccountRecoveryStartResponse200, Error]]:
+) -> Response[Union[AccountRecoveryPending, Error]]:
     """Spend the recovery code
 
      Logs the new passkey as pending; it may finish the recovery once `readyAt` passed (72 h). `401` for
@@ -94,7 +92,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AccountRecoveryStartResponse200, Error]]
+        Response[Union[AccountRecoveryPending, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -112,7 +110,7 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: AccountRecoveryStartBody,
-) -> Optional[Union[AccountRecoveryStartResponse200, Error]]:
+) -> Optional[Union[AccountRecoveryPending, Error]]:
     """Spend the recovery code
 
      Logs the new passkey as pending; it may finish the recovery once `readyAt` passed (72 h). `401` for
@@ -128,7 +126,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AccountRecoveryStartResponse200, Error]
+        Union[AccountRecoveryPending, Error]
     """
 
     return sync_detailed(
@@ -141,7 +139,7 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: AccountRecoveryStartBody,
-) -> Response[Union[AccountRecoveryStartResponse200, Error]]:
+) -> Response[Union[AccountRecoveryPending, Error]]:
     """Spend the recovery code
 
      Logs the new passkey as pending; it may finish the recovery once `readyAt` passed (72 h). `401` for
@@ -157,7 +155,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AccountRecoveryStartResponse200, Error]]
+        Response[Union[AccountRecoveryPending, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -173,7 +171,7 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: AccountRecoveryStartBody,
-) -> Optional[Union[AccountRecoveryStartResponse200, Error]]:
+) -> Optional[Union[AccountRecoveryPending, Error]]:
     """Spend the recovery code
 
      Logs the new passkey as pending; it may finish the recovery once `readyAt` passed (72 h). `401` for
@@ -189,7 +187,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AccountRecoveryStartResponse200, Error]
+        Union[AccountRecoveryPending, Error]
     """
 
     return (

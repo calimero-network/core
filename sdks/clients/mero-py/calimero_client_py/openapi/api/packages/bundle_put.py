@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.bundle_put_response_200 import BundlePutResponse200
+from ...models.bundle_stored import BundleStored
 from ...models.error import Error
 from ...types import File, FileTypes
 from io import BytesIO
@@ -35,9 +35,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[BundlePutResponse200, Error]]:
+) -> Optional[Union[BundleStored, Error]]:
     if response.status_code == 200:
-        response_200 = BundlePutResponse200.from_dict(response.json())
+        response_200 = BundleStored.from_dict(response.json())
 
         return response_200
 
@@ -89,7 +89,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[BundlePutResponse200, Error]]:
+) -> Response[Union[BundleStored, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -102,7 +102,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Response[Union[BundlePutResponse200, Error]]:
+) -> Response[Union[BundleStored, Error]]:
     """Upload a raw component
 
      A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles`
@@ -118,7 +118,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[BundlePutResponse200, Error]]
+        Response[Union[BundleStored, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -136,7 +136,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Optional[Union[BundlePutResponse200, Error]]:
+) -> Optional[Union[BundleStored, Error]]:
     """Upload a raw component
 
      A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles`
@@ -152,7 +152,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[BundlePutResponse200, Error]
+        Union[BundleStored, Error]
     """
 
     return sync_detailed(
@@ -165,7 +165,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Response[Union[BundlePutResponse200, Error]]:
+) -> Response[Union[BundleStored, Error]]:
     """Upload a raw component
 
      A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles`
@@ -181,7 +181,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[BundlePutResponse200, Error]]
+        Response[Union[BundleStored, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -197,7 +197,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Optional[Union[BundlePutResponse200, Error]]:
+) -> Optional[Union[BundleStored, Error]]:
     """Upload a raw component
 
      A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles`
@@ -213,7 +213,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[BundlePutResponse200, Error]
+        Union[BundleStored, Error]
     """
 
     return (

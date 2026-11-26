@@ -12,8 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use calimero_sealed::server::LowOrder;
 use calimero_sealed::wrap::{wrap_export, ExportWrap};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use super::files::files_gate;
 use super::{parse_blob_id, ApiResult};
@@ -98,7 +97,7 @@ pub async fn export(
     headers: HeaderMap,
     Path((app_id, id)): Path<(String, String)>,
     Json(body): Json<ExportBody>,
-) -> ApiResult {
+) -> ApiResult<Json<FileExport>> {
     let (app, account) = files_gate(&node, &headers, &app_id, false).await?;
     let recipient = recipient_key(&body.recipient)?;
     if !node.export_limits.take(&account) {
@@ -128,15 +127,15 @@ pub async fn export(
             ApiError::internal(&e.to_string())
         }
     })?;
-    Ok(Json(json!({
-        "app": app.app_id,
-        "id": file_id,
-        "size": size,
-        "sha256": hex::encode(&seal.sha256.0),
-        "segments": seal.segments,
-        "ephemeral": hex::encode(ephemeral),
-        "wrapped": hex::encode(wrapped),
-    })))
+    Ok(Json(FileExport {
+        app: app.app_id,
+        id: file_id,
+        size,
+        sha256: hex::encode(&seal.sha256.0),
+        segments: seal.segments,
+        ephemeral: hex::encode(ephemeral),
+        wrapped: hex::encode(wrapped),
+    }))
 }
 
 /// Segment `k` of a sealed file's ciphertext, raw: from this node's store, else a replica's.
@@ -155,6 +154,19 @@ pub async fn segment(
         .ok_or_else(|| ApiError::new(404, NO_SUCH_SEGMENT, "the file has no such segment"))?;
     let bytes = node.segment_from(hash, &node.other_replicas(&app)).await?;
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
+}
+
+/// What `POST /apps/{app}/files/{id}/export` answers: the file's size, plaintext SHA-256 and
+/// segments, and its data key wrapped to the recipient (`ephemeral`, `wrapped`).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileExport {
+    app: String,
+    id: String,
+    size: u64,
+    sha256: String,
+    segments: Vec<String>,
+    ephemeral: String,
+    wrapped: String,
 }
 
 #[cfg(test)]

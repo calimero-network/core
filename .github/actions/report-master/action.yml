@@ -4,7 +4,8 @@ description: >
   the fast checks (a PR's reachable tests); the push to master runs every test and
   e2e.yml after the merge. A red push opens (or comments on) the issue, naming the
   commit and its pull request, which is reverted rather than fixed forward; the
-  next green push closes it. Runs on a push to master only.
+  next green push closes it. Runs on master only: a push, or e2e.yml's nightly (its own
+  issue, `E2E nightly`, closed by the next green nightly).
 
 inputs:
   needs:

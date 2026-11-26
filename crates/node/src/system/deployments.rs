@@ -11,6 +11,101 @@
 )]
 use super::*;
 
+/// What `SetDeploymentsGranted` answers: the cluster's governance after.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GovernanceSet {
+    pub governance: Governance,
+}
+
+/// What `SetClusterOwner` answers: the owner named.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClusterOwnerNamed {
+    pub owner: Deployer,
+}
+
+/// What `GrantDeployer` answers: the grant's key, whom it names and its terms.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeployerGranted {
+    pub key: String,
+    pub deployer: Deployer,
+    pub grant: DeployerGrant,
+}
+
+/// What `RevokeDeployer` answers: the key of the grant withdrawn.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeployerRevoked {
+    pub key: String,
+}
+
+/// What `CreateDeployment` answers: its id and record.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentMade {
+    pub id: String,
+    pub deployment: Deployment,
+}
+
+/// What `OfferApp` answers: the offer now in force.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppOffered {
+    pub deployment: String,
+    pub app: String,
+    pub offer: Offer,
+}
+
+/// What `WithdrawApp` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppWithdrawn {
+    pub deployment: String,
+    pub app: String,
+}
+
+/// What `DeleteDeployment` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentDeleted {
+    pub deployment: String,
+}
+
+/// What `OfferDeployment` answers: the offer as logged.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentOffered {
+    pub deployment: String,
+    pub transfer: PendingTransfer,
+}
+
+/// What `AcceptDeployment` answers: its new and previous owner, and the secret names dropped.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentAccepted {
+    pub deployment: String,
+    pub owner: Deployer,
+    pub from: Deployer,
+    pub secrets_dropped: Vec<String>,
+}
+
+/// What `CancelDeploymentTransfer` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentTransferCancelled {
+    pub deployment: String,
+}
+
+/// What `SetDeploymentSecret` answers: never the value, its fingerprint.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentSecretSet {
+    pub deployment: String,
+    pub name: String,
+    pub fingerprint: String,
+    pub set_by: String,
+    pub set_at: u64,
+}
+
+/// What `ClearDeploymentSecret` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentSecretCleared {
+    pub deployment: String,
+    pub name: String,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -80,6 +175,21 @@ const STILL_OFFERS: Rejection = Rejection::new(
 const INSTANCE_EXISTS: Rejection = Rejection::new(
     RejectionKind::Rejected,
     "an instance created from this deployment still exists",
+);
+/// An offer of a deployment to the owner it has.
+const OWNS_IT_ALREADY: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "the deployment is that owner's already",
+);
+/// An acceptance by someone who does not act for the owner it is offered to.
+const NOT_THE_RECEIVER: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization",
+);
+/// A cancellation by someone who acts for neither end of the offer.
+const NOT_AN_END_OF_THE_OFFER: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an offer of a deployment is cancelled by a manager of its owner or of the owner it is offered to",
 );
 /// A secret's name outside `A-Z`, `0-9` and `_`, or not starting with a letter.
 const BAD_SECRET_NAME: Rejection = Rejection::new(
@@ -160,6 +270,49 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             deployment,
             "__withdraw_app",
             &|args| args["app"] == json!(app),
+        ),
+        SystemCmd::OfferDeployment {
+            deployment,
+            to,
+            actor,
+            consent,
+            ..
+        } => manager_consent(
+            proofs,
+            actor,
+            consent,
+            deployment,
+            "__offer_deployment",
+            &|args| args["to"] == json!(to),
+        ),
+        // Bound to the one offer the receiver saw: a cancelled and repeated offer needs a
+        // new acceptance.
+        SystemCmd::AcceptDeployment {
+            deployment,
+            to,
+            offered_at,
+            actor,
+            consent,
+            ..
+        } => manager_consent(
+            proofs,
+            actor,
+            consent,
+            deployment,
+            "__accept_deployment",
+            &|args| args["to"] == json!(to) && args["offeredAt"] == json!(offered_at),
+        ),
+        SystemCmd::CancelDeploymentTransfer {
+            deployment,
+            actor,
+            consent,
+        } => manager_consent(
+            proofs,
+            actor,
+            consent,
+            deployment,
+            "__cancel_deployment_transfer",
+            &|_| true,
         ),
         SystemCmd::DeleteDeployment {
             deployment,
@@ -281,7 +434,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             state.grants_deployers(&actor)?;
             let key = deployer.key();
             let _gone = state.deployers.remove(&key).ok_or(NO_SUCH_GRANT)?;
-            Ok(json!({ "key": key }))
+            Ok(json!(DeployerRevoked { key }))
         }
         SystemCmd::SetDeploymentsGranted { .. } => {
             let governance = state.governance.as_mut().ok_or(NO_GOVERNANCE)?;
@@ -289,17 +442,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 return Err(GRANTED_ALREADY);
             }
             governance.deployments = Deployments::Granted;
-            Ok(json!({ "governance": governance }))
+            Ok(json!(GovernanceSet {
+                governance: governance.clone()
+            }))
         }
         SystemCmd::SetClusterOwner { owner, .. } => set_cluster_owner(state, owner),
-        SystemCmd::CreateDeployment {
-            id,
-            name,
-            owner,
-            actor,
-            at,
-            ..
-        } => create_deployment(state, id, name, owner, actor, at),
+        cmd @ SystemCmd::CreateDeployment { .. } => create_deployment(state, cmd),
         SystemCmd::OfferApp {
             deployment,
             app,
@@ -315,6 +463,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             ..
         } => withdraw_app(state, deployment, app, &actor),
+        SystemCmd::OfferDeployment {
+            deployment,
+            to,
+            actor,
+            at,
+            ..
+        } => offer_deployment(state, deployment, to, actor, at),
+        cmd @ SystemCmd::AcceptDeployment { .. } => accept_deployment(state, cmd),
+        SystemCmd::CancelDeploymentTransfer {
+            deployment, actor, ..
+        } => cancel_deployment_transfer(state, deployment, &actor),
         SystemCmd::DeleteDeployment {
             deployment, actor, ..
         } => delete_deployment(state, deployment, &actor),
@@ -365,7 +524,11 @@ fn grant_deployer(
         granted_by: actor,
     };
     let _prev = state.deployers.insert(key.clone(), grant.clone());
-    Ok(json!({ "key": key, "deployer": deployer, "grant": grant }))
+    Ok(json!(DeployerGranted {
+        key,
+        deployer,
+        grant
+    }))
 }
 
 /// Name the cluster's owner, once, where the owner grants deployers.
@@ -380,19 +543,26 @@ fn set_cluster_owner(state: &mut SystemState, owner: Deployer) -> Result<Value, 
         return Err(NO_SUCH_ACCOUNT_OR_ORG);
     }
     state.cluster_owner = Some(owner.clone());
-    Ok(json!({ "owner": owner }))
+    Ok(json!(ClusterOwnerNamed { owner }))
 }
 
-/// Create a deployment: by someone who acts for its owner and may deploy,
-/// under a new id and a name that fit, within the bounds per owner and in all.
-fn create_deployment(
-    state: &mut SystemState,
-    id: String,
-    name: String,
-    owner: Deployer,
-    actor: AccountId,
-    at: u64,
-) -> Result<Value, Rejection> {
+/// Create a deployment: by someone who acts for its owner and may deploy, an
+/// organization owner holding a recovery key where that is required, under a new id
+/// and a name that fit, within the bounds per owner and in all.
+fn create_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejection> {
+    let SystemCmd::CreateDeployment {
+        id,
+        name,
+        owner,
+        actor,
+        at,
+        deployment_needs_recovery,
+        ..
+    } = cmd
+    else {
+        // SAFETY: `apply` sends only a `CreateDeployment` here.
+        unreachable!("create_deployment applies a CreateDeployment")
+    };
     if !state.accounts.contains_key(&actor) {
         return Err(UNKNOWN_ACCOUNT);
     }
@@ -406,6 +576,9 @@ fn create_deployment(
     }
     if !state.may_deploy(&actor, at) {
         return Err(NOT_A_DEPLOYER);
+    }
+    if !state.keeps_recoverable(&owner, deployment_needs_recovery) {
+        return Err(RECOVERY_KEY_REQUIRED);
     }
     if state.deployments.contains_key(&id) {
         return Err(DEPLOYMENT_EXISTS);
@@ -429,8 +602,13 @@ fn create_deployment(
         apps: BTreeMap::new(),
         created_by: actor,
         created_at: at,
+        transfer: None,
+        transferred: None,
     };
-    let out = json!({ "id": id, "deployment": deployment });
+    let out = json!(DeploymentMade {
+        id: id.clone(),
+        deployment: deployment.clone(),
+    });
     let _prev = state.deployments.insert(id, deployment);
     Ok(out)
 }
@@ -488,7 +666,11 @@ fn offer_app(
         added_by: actor,
         added_at: at,
     };
-    let out = json!({ "deployment": deployment, "app": app, "offer": offer });
+    let out = json!(AppOffered {
+        deployment: deployment.clone(),
+        app: app.clone(),
+        offer: offer.clone(),
+    });
     if let Some(record) = state.deployments.get_mut(&deployment) {
         let _prev = record.apps.insert(app, offer);
     }
@@ -514,7 +696,148 @@ fn withdraw_app(
     if let Some(record) = state.deployments.get_mut(&deployment) {
         let _gone = record.apps.remove(&app);
     }
-    Ok(json!({ "deployment": deployment, "app": app }))
+    Ok(json!(AppWithdrawn { deployment, app }))
+}
+
+/// Offer a deployment to another owner: a manager who may hand it over, to an
+/// account or organization that exists and is not its owner, while no offer is live.
+fn offer_deployment(
+    state: &mut SystemState,
+    deployment: String,
+    to: Deployer,
+    actor: AccountId,
+    at: u64,
+) -> Result<Value, Rejection> {
+    let record = managed_deployment(state, &deployment, &actor)?;
+    if !state.hands_over(&record.owner, &actor) {
+        return Err(NOT_HANDING_OVER);
+    }
+    if !state.exists(&to) {
+        return Err(NO_SUCH_ACCOUNT_OR_ORG);
+    }
+    if to == record.owner {
+        return Err(OWNS_IT_ALREADY);
+    }
+    if record.transfer.as_ref().is_some_and(|offer| offer.live(at)) {
+        return Err(TRANSFER_PENDING);
+    }
+    let transfer = PendingTransfer {
+        to,
+        offered_by: actor,
+        offered_at: at,
+    };
+    let out = json!(DeploymentOffered {
+        deployment: deployment.clone(),
+        transfer: transfer.clone(),
+    });
+    if let Some(record) = state.deployments.get_mut(&deployment) {
+        record.transfer = Some(transfer);
+    }
+    Ok(out)
+}
+
+/// Accept the live offer of a deployment the receiver saw, while whoever made it may
+/// still hand it over: the receiver a deployer holding what it needs, every offer still
+/// serving under its new owner. The previous owner's secret values stay theirs: an
+/// offer the new owner makes could otherwise declare a name and send its value to a
+/// host of its own.
+fn accept_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejection> {
+    let SystemCmd::AcceptDeployment {
+        deployment,
+        to,
+        offered_at,
+        actor,
+        at,
+        ..
+    } = cmd
+    else {
+        // SAFETY: `apply` sends only an `AcceptDeployment` here.
+        unreachable!("accept_deployment applies an AcceptDeployment")
+    };
+    let record = state
+        .deployments
+        .get(&deployment)
+        .ok_or(NO_SUCH_DEPLOYMENT)?;
+    if !state.acts_for(&to, &actor) {
+        return Err(NOT_THE_RECEIVER);
+    }
+    let offer = record
+        .transfer
+        .as_ref()
+        .filter(|offer| offer.to == to && offer.offered_at == offered_at)
+        .ok_or(NO_TRANSFER)?;
+    if !state.hands_over(&record.owner, &offer.offered_by) {
+        return Err(TRANSFER_STALE);
+    }
+    if !offer.live(at) {
+        return Err(TRANSFER_LAPSED);
+    }
+    if !state.granted(&to, at) {
+        return Err(NOT_A_DEPLOYER);
+    }
+    if !state.keeps_recoverable(&to, true) {
+        return Err(RECOVERY_KEY_REQUIRED);
+    }
+    if state
+        .deployments
+        .values()
+        .filter(|other| other.owner == to)
+        .count()
+        >= MAX_DEPLOYMENTS_PER_OWNER
+    {
+        return Err(Rejection::quota("deployments per owner"));
+    }
+    let theirs = Deployment {
+        owner: to.clone(),
+        ..record.clone()
+    };
+    let serves = |app_offer| {
+        state
+            .offered_release(app_offer)
+            .is_none_or(|release| state.offer_serves(&theirs, release))
+    };
+    if !record.apps.values().all(serves) {
+        return Err(OFFERS_NOT_USABLE);
+    }
+    let from = record.owner.clone();
+    let dropped: Vec<String> = state
+        .deployment_secrets
+        .remove(&deployment)
+        .map(|held| held.into_keys().collect())
+        .unwrap_or_default();
+    let out = json!(DeploymentAccepted {
+        deployment: deployment.clone(),
+        owner: to.clone(),
+        from: from.clone(),
+        secrets_dropped: dropped,
+    });
+    if let Some(record) = state.deployments.get_mut(&deployment) {
+        record.owner = to;
+        record.transfer = None;
+        record.transferred = Some(Transferred { from, at });
+    }
+    Ok(out)
+}
+
+/// Cancel a deployment's offer: whoever acts for its owner or for the owner it is
+/// offered to.
+fn cancel_deployment_transfer(
+    state: &mut SystemState,
+    deployment: String,
+    actor: &str,
+) -> Result<Value, Rejection> {
+    let record = state
+        .deployments
+        .get(&deployment)
+        .ok_or(NO_SUCH_DEPLOYMENT)?;
+    let offer = record.transfer.as_ref().ok_or(NO_TRANSFER)?;
+    if !state.acts_for(&record.owner, actor) && !state.acts_for(&offer.to, actor) {
+        return Err(NOT_AN_END_OF_THE_OFFER);
+    }
+    if let Some(record) = state.deployments.get_mut(&deployment) {
+        record.transfer = None;
+    }
+    Ok(json!(DeploymentTransferCancelled { deployment }))
 }
 
 /// Delete a deployment that offers nothing and no instance came from, with
@@ -537,7 +860,7 @@ fn delete_deployment(
     }
     let _gone = state.deployments.remove(&deployment);
     let _secrets = state.deployment_secrets.remove(&deployment);
-    Ok(json!({ "deployment": deployment }))
+    Ok(json!(DeploymentDeleted { deployment }))
 }
 
 /// Set a deployment's secret: a well-formed name a release it offers (or,
@@ -573,12 +896,12 @@ fn set_deployment_secret(
         set_at: at,
     };
     // What the routes answer of it: never the value.
-    let out = json!({
-        "deployment": deployment,
-        "name": name,
-        "fingerprint": secret.fingerprint,
-        "setBy": secret.set_by,
-        "setAt": at,
+    let out = json!(DeploymentSecretSet {
+        deployment: deployment.clone(),
+        name: name.clone(),
+        fingerprint: secret.fingerprint.clone(),
+        set_by: secret.set_by.clone(),
+        set_at: at,
     });
     let _prev = state
         .deployment_secrets
@@ -624,5 +947,5 @@ fn clear_deployment_secret(
     {
         let _empty = state.deployment_secrets.remove(&deployment);
     }
-    Ok(json!({ "deployment": deployment, "name": name }))
+    Ok(json!(DeploymentSecretCleared { deployment, name }))
 }

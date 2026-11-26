@@ -11,6 +11,12 @@
 )]
 use super::*;
 
+/// What `RevokeAllSessions` answers: how many sessions ended.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionsRevoked {
+    pub revoked: usize,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -340,7 +346,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
         } => remove_passkey(state, &account, &credential_id, now),
         SystemCmd::RevokeAllSessions { actor, now } => {
             let revoked = state.revoke_account_sessions(&actor, now);
-            Ok(json!({ "revoked": revoked }))
+            Ok(json!(SessionsRevoked { revoked }))
         }
         SystemCmd::RefreshReused { hash, now } => {
             let reused = state

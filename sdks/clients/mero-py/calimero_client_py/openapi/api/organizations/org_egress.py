@@ -7,9 +7,9 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.egress_set import EgressSet
 from ...models.error import Error
 from ...models.org_egress_body import OrgEgressBody
-from ...models.org_egress_response_200 import OrgEgressResponse200
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgEgressResponse200]]:
+) -> Optional[Union[EgressSet, Error]]:
     if response.status_code == 200:
-        response_200 = OrgEgressResponse200.from_dict(response.json())
+        response_200 = EgressSet.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgEgressResponse200]]:
+) -> Response[Union[EgressSet, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -95,7 +95,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: OrgEgressBody,
-) -> Response[Union[Error, OrgEgressResponse200]]:
+) -> Response[Union[EgressSet, Error]]:
     """Turn the organization's egress off or on
 
      `egress: false` turns egress off for every app of the organization: from each app's next outbound
@@ -118,7 +118,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgEgressResponse200]]
+        Response[Union[EgressSet, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -138,7 +138,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: OrgEgressBody,
-) -> Optional[Union[Error, OrgEgressResponse200]]:
+) -> Optional[Union[EgressSet, Error]]:
     """Turn the organization's egress off or on
 
      `egress: false` turns egress off for every app of the organization: from each app's next outbound
@@ -161,7 +161,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgEgressResponse200]
+        Union[EgressSet, Error]
     """
 
     return sync_detailed(
@@ -176,7 +176,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: OrgEgressBody,
-) -> Response[Union[Error, OrgEgressResponse200]]:
+) -> Response[Union[EgressSet, Error]]:
     """Turn the organization's egress off or on
 
      `egress: false` turns egress off for every app of the organization: from each app's next outbound
@@ -199,7 +199,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgEgressResponse200]]
+        Response[Union[EgressSet, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -217,7 +217,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: OrgEgressBody,
-) -> Optional[Union[Error, OrgEgressResponse200]]:
+) -> Optional[Union[EgressSet, Error]]:
     """Turn the organization's egress off or on
 
      `egress: false` turns egress off for every app of the organization: from each app's next outbound
@@ -240,7 +240,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgEgressResponse200]
+        Union[EgressSet, Error]
     """
 
     return (

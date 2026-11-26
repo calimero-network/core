@@ -33,7 +33,7 @@ async fn org_members(
     headers: HeaderMap,
     Path(org): Path<String>,
     Query(q): Query<MembersQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<MemberSecurityList>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     if q.detail.as_deref() != Some("security") {
@@ -56,39 +56,135 @@ async fn org_members(
             ));
         }
         let used = session_use(s, now);
-        let members: Vec<Value> = o
+        let members = o
             .members
             .iter()
             .filter(|(m, _)| o.sees_member(&account, m))
             .map(|(m, role)| {
                 let acc = s.accounts.get(m);
                 let passkeys = acc.map_or(0, |a| a.passkeys.len());
-                json!({
-                    "account": m,
-                    "name": o
+                MemberSecurity {
+                    account: m.clone(),
+                    name: o
                         .member_metadata
                         .get(m)
                         .and_then(|v| v.get("name"))
-                        .and_then(Value::as_str),
-                    "role": role,
-                    "teams": o
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    role: *role,
+                    teams: o
                         .teams
                         .keys()
                         .filter(|t| o.in_team(m, t))
-                        .collect::<Vec<_>>(),
-                    "passkeys": if passkeys >= PASSKEYS_COUNTED {
-                        json!(format!("{PASSKEYS_COUNTED}+"))
+                        .cloned()
+                        .collect(),
+                    passkeys: if passkeys >= PASSKEYS_COUNTED {
+                        PasskeyCount::AtLeast(format!("{PASSKEYS_COUNTED}+"))
                     } else {
-                        json!(passkeys)
+                        PasskeyCount::Exactly(passkeys)
                     },
-                    "recoveryCode": s.recovery_keys.values().any(|a| a == m),
-                    "lastActiveDay": last_active(s, m, &used).and_then(utc_day),
-                    "sessions": used.get(m.as_str()).map_or(0, |u| u.0),
-                })
+                    recovery_code: s.recovery_keys.values().any(|a| a == m),
+                    last_active_day: last_active(s, m, &used).and_then(utc_day),
+                    sessions: used.get(m.as_str()).map_or(0, |u| u.0),
+                }
             })
             .collect();
-        Ok(Json(json!({ "orgId": org, "members": members })))
+        Ok(Json(MemberSecurityList {
+            org_id: org.clone(),
+            members,
+        }))
     })
+}
+
+/// `GET /orgs/{org}/members?detail=security`: each member the caller sees, with what tells
+/// whether their account is safe.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MemberSecurityList {
+    org_id: String,
+    members: Vec<MemberSecurity>,
+}
+
+/// One member of [`MemberSecurityList`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MemberSecurity {
+    account: String,
+    name: Option<String>,
+    role: OrgRole,
+    teams: Vec<String>,
+    passkeys: PasskeyCount,
+    recovery_code: bool,
+    last_active_day: Option<String>,
+    sessions: usize,
+}
+
+/// How many passkeys an account has: a number below [`PASSKEYS_COUNTED`], else `"3+"`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum PasskeyCount {
+    Exactly(usize),
+    AtLeast(String),
+}
+
+/// `GET /orgs/{org}/usage`: the apps billed to it, its developer usage today (decimal strings)
+/// and the cluster's quotas.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OrgUsage {
+    apps: usize,
+    developer_fuel_today: String,
+    developer_writes_today: String,
+    quotas: crate::system::Quotas,
+}
+
+/// `POST /orgs/{org}/invites`: the invite's token, answered once.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct InviteMade {
+    token: String,
+}
+
+/// `GET /orgs/{org}/invites`.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct InviteList {
+    invites: Vec<InviteView>,
+}
+
+/// A pending invite as its list shows it, never its token.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct InviteView {
+    invite_key: String,
+    role: OrgRole,
+    teams: Vec<String>,
+    uses_left: u32,
+    expires_at: u64,
+    expired: bool,
+    created_by: Option<String>,
+    created_at: Option<u64>,
+    all_apps: bool,
+}
+
+/// `GET /orgs/{org}/app-teams`: the organization's mode and its app teams.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppTeamList {
+    mode: crate::types::OrgMode,
+    app_teams: Vec<AppTeamRow>,
+}
+
+/// One app team of [`AppTeamList`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppTeamRow {
+    package: String,
+    team_id: String,
+    name: String,
+    join: TeamJoin,
+    member_count: usize,
+    default_capabilities: Option<u32>,
+    member: bool,
+    manages: bool,
 }
 
 #[derive(Deserialize)]
@@ -1178,7 +1274,7 @@ pub(crate) async fn create_invite(
             teams_seen: true,
         })
         .await?;
-    Ok(Json(json!({ "token": token })))
+    Ok(Json(json!(InviteMade { token })))
 }
 
 #[derive(Deserialize)]
@@ -1294,18 +1390,18 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
 
 /// An organization invite as its list shows it: its key and terms, never a
 /// token (the log never had one).
-fn invite_json(key: &str, inv: &Invite, now: u64) -> Value {
-    json!({
-        "inviteKey": key,
-        "role": inv.role,
-        "teams": inv.teams,
-        "usesLeft": inv.uses_left,
-        "expiresAt": inv.expires_at,
-        "expired": inv.expires_at <= now,
-        "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
-        "createdAt": (inv.created_at != 0).then_some(inv.created_at),
-        "allApps": inv.all_apps,
-    })
+fn invite_json(key: &str, inv: &Invite, now: u64) -> InviteView {
+    InviteView {
+        invite_key: key.to_owned(),
+        role: inv.role,
+        teams: inv.teams.clone(),
+        uses_left: inv.uses_left,
+        expires_at: inv.expires_at,
+        expired: inv.expires_at <= now,
+        created_by: (!inv.created_by.is_empty()).then(|| inv.created_by.clone()),
+        created_at: (inv.created_at != 0).then_some(inv.created_at),
+        all_apps: inv.all_apps,
+    }
 }
 
 /// The organization's pending invites the caller may see and revoke
@@ -1316,7 +1412,7 @@ async fn invite_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<InviteList>> {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
@@ -1324,13 +1420,13 @@ async fn invite_list(
     let v = node
         .sys(|s| {
             s.orgs.get(&org)?.role(&account)?;
-            let invites: Vec<Value> = s
+            let invites = s
                 .invites
                 .iter()
                 .filter(|(_, i)| i.org == org && s.sees_invite(i, &account))
                 .map(|(k, i)| invite_json(k, i, now))
                 .collect();
-            Some(json!({ "invites": invites }))
+            Some(InviteList { invites })
         })
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     Ok(Json(v))
@@ -1389,7 +1485,7 @@ async fn app_team_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<AppTeamList>> {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
@@ -1397,7 +1493,7 @@ async fn app_team_list(
         .sys(|s| {
             let o = s.orgs.get(&org)?;
             let role = o.role(&account)?;
-            let teams: Vec<Value> = o
+            let app_teams = o
                 .teams
                 .values()
                 .filter_map(|t| Some((t.app_package()?, t)))
@@ -1408,19 +1504,22 @@ async fn app_team_list(
                         .keys()
                         .filter(|m| o.in_team(m, &t.team_id))
                         .count();
-                    json!({
-                        "package": package,
-                        "teamId": t.team_id,
-                        "name": t.name,
-                        "join": t.join,
-                        "memberCount": count,
-                        "defaultCapabilities": t.default_capabilities,
-                        "member": o.in_team(&account, &t.team_id),
-                        "manages": o.manages_team(&account, &t.team_id),
-                    })
+                    AppTeamRow {
+                        package: package.to_owned(),
+                        team_id: t.team_id.clone(),
+                        name: t.name.clone(),
+                        join: t.join,
+                        member_count: count,
+                        default_capabilities: t.default_capabilities,
+                        member: o.in_team(&account, &t.team_id),
+                        manages: o.manages_team(&account, &t.team_id),
+                    }
                 })
                 .collect();
-            Some(json!({ "mode": o.mode(), "appTeams": teams }))
+            Some(AppTeamList {
+                mode: o.mode(),
+                app_teams,
+            })
         })
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     Ok(Json(v))
@@ -1506,7 +1605,7 @@ async fn org_usage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<OrgUsage>> {
     let account = signed_in(&node, &headers).await?.account()?;
     node.sys_fresh().await;
     let (role, apps, quotas) = node.sys(|s| {
@@ -1529,12 +1628,12 @@ async fn org_usage(
         Some(_) => {}
     }
     let today = node.developer_usage_today(&org).await;
-    Ok(Json(json!({
-        "apps": apps,
-        "developerFuelToday": today.fuel.to_string(),
-        "developerWritesToday": today.writes.to_string(),
-        "quotas": quotas,
-    })))
+    Ok(Json(OrgUsage {
+        apps,
+        developer_fuel_today: today.fuel.to_string(),
+        developer_writes_today: today.writes.to_string(),
+        quotas,
+    }))
 }
 
 /// An organization's apps, what they run and who upgraded them, the
@@ -1553,9 +1652,9 @@ async fn org_apps(
     if !member {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(
-        scope_report(&node, &p, &account, Some(&org), &q, limit).await,
-    ))
+    Ok(Json(json!(
+        scope_report(&node, &p, &account, Some(&org), &q, limit).await
+    )))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -1597,4 +1696,140 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         )
         .route("/invites/{token}/redeem", post(invite_redeem))
         .route("/orgs/{org}/settings", post(org_settings))
+}
+
+/// The typed answers write the bytes the `json!` they replaced wrote: each
+/// test keeps the replaced expression and compares the serialized text, key order included.
+#[cfg(test)]
+mod answer_tests {
+    use serde::Serialize;
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    fn same<T: Serialize>(typed: &T, before: &Value) {
+        assert_eq!(
+            serde_json::to_string(typed).expect("serializes"),
+            serde_json::to_string(before).expect("serializes")
+        );
+    }
+
+    #[test]
+    fn an_invite_answers_as_before() {
+        let with: Invite = serde_json::from_value(json!({
+            "org": "o1", "role": "member", "teams": ["t1"], "expiresAt": 100, "usesLeft": 2,
+            "createdBy": "alice", "createdAt": 7, "allApps": true
+        }))
+        .expect("an invite");
+        let without: Invite = serde_json::from_value(json!({
+            "org": "o1", "role": "admin", "teams": [], "expiresAt": 5, "usesLeft": 1
+        }))
+        .expect("an invite");
+        for (inv, now) in [(&with, 99), (&without, 10)] {
+            let key = "k";
+            let before = json!({
+                "inviteKey": key,
+                "role": inv.role,
+                "teams": inv.teams,
+                "usesLeft": inv.uses_left,
+                "expiresAt": inv.expires_at,
+                "expired": inv.expires_at <= now,
+                "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
+                "createdAt": (inv.created_at != 0).then_some(inv.created_at),
+                "allApps": inv.all_apps,
+            });
+            same(&invite_json(key, inv, now), &before);
+            same(
+                &InviteList {
+                    invites: vec![invite_json(key, inv, now)],
+                },
+                &json!({ "invites": [before] }),
+            );
+        }
+        same(
+            &InviteMade {
+                token: "inv_t".to_owned(),
+            },
+            &json!({ "token": "inv_t" }),
+        );
+    }
+
+    #[test]
+    fn members_usage_and_app_teams_answer_as_before() {
+        for (passkeys, shown, name, day) in [
+            (2_usize, json!(2), Some("Al"), Some("2026-11-24")),
+            (5, json!("3+"), None, None),
+        ] {
+            let typed = MemberSecurityList {
+                org_id: "o1".to_owned(),
+                members: vec![MemberSecurity {
+                    account: "alice".to_owned(),
+                    name: name.map(str::to_owned),
+                    role: OrgRole::Admin,
+                    teams: vec!["t1".to_owned()],
+                    passkeys: if passkeys >= PASSKEYS_COUNTED {
+                        PasskeyCount::AtLeast(format!("{PASSKEYS_COUNTED}+"))
+                    } else {
+                        PasskeyCount::Exactly(passkeys)
+                    },
+                    recovery_code: true,
+                    last_active_day: day.map(str::to_owned),
+                    sessions: 3,
+                }],
+            };
+            let member = json!({
+                "account": "alice",
+                "name": name,
+                "role": OrgRole::Admin,
+                "teams": ["t1"],
+                "passkeys": shown,
+                "recoveryCode": true,
+                "lastActiveDay": day,
+                "sessions": 3,
+            });
+            same(&typed, &json!({ "orgId": "o1", "members": [member] }));
+        }
+        let quotas = crate::system::Quotas::default();
+        same(
+            &OrgUsage {
+                apps: 4,
+                developer_fuel_today: 18_446_744_073_709_551_615_u64.to_string(),
+                developer_writes_today: 0_u64.to_string(),
+                quotas: quotas.clone(),
+            },
+            &json!({
+                "apps": 4,
+                "developerFuelToday": 18_446_744_073_709_551_615_u64.to_string(),
+                "developerWritesToday": 0_u64.to_string(),
+                "quotas": quotas,
+            }),
+        );
+        for caps in [Some(3), None] {
+            same(
+                &AppTeamList {
+                    mode: crate::types::OrgMode::Shared,
+                    app_teams: vec![AppTeamRow {
+                        package: "p1".to_owned(),
+                        team_id: "t1".to_owned(),
+                        name: "P1".to_owned(),
+                        join: TeamJoin::Invite,
+                        member_count: 2,
+                        default_capabilities: caps,
+                        member: true,
+                        manages: false,
+                    }],
+                },
+                &json!({ "mode": crate::types::OrgMode::Shared, "appTeams": [json!({
+                    "package": "p1",
+                    "teamId": "t1",
+                    "name": "P1",
+                    "join": TeamJoin::Invite,
+                    "memberCount": 2,
+                    "defaultCapabilities": caps,
+                    "member": true,
+                    "manages": false,
+                })] }),
+            );
+        }
+    }
 }

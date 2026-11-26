@@ -11,6 +11,8 @@ import tarfile
 import urllib.parse
 from pathlib import Path
 
+import ed25519_sign
+from rv2 import b64url
 from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
                           signed_ops, subset, until)
 from upgrade_path import case
@@ -241,6 +243,104 @@ class DeploymentNamedToCustomers(DeepCase):
         cass = person(w, "cass")
         s["apps"].append(cass.raw("post", "apps", {"name": "named-2", "deployment": s["deployment"],
                                                    "package": OFFERED, "org": s["org"]})["appId"])
+        self.check(w, s)
+
+
+def _recovery_key(seed: bytes) -> str:
+    return b64url(ed25519_sign.public_key(seed))
+
+
+@case
+class DeploymentNeedsRecovery(DeepCase):
+    name = "deployment-needs-recovery"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = "an organization with a recovery key, and a deployment it owns"
+    verifies = ("the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns "
+                "the deployment, before the passkey; on the new release rotating it succeeds, and another "
+                "organization without a key is refused a deployment")
+
+    def populate(self, w):
+        ruth = person(w, "ruth")
+        org = new_org(ruth, "Recoverable Deployer Org")
+        ruth.raw("post", f"orgs/{org}/recovery", {"publicKey": _recovery_key(b"\x11" * 32)})
+        d = ruth.raw("post", "deployments", {"name": "ruth-labs", "owner": {"org": org}})["id"]
+        return {"org": org, "deployment": d, "key": _recovery_key(b"\x11" * 32)}
+
+    def check(self, w, s):
+        ruth = person(w, "ruth")
+        eq((ruth.get(f"orgs/{s['org']}").get("recovery") or {}).get("publicKey"), s["key"],
+           "the deploying organization's recovery key")
+        eq(ruth.get(f"deployments/{s['deployment']}").get("owner", {}).get("kind"), "org", "the org's deployment")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": None},
+                                                         approve=False),
+                "removing the recovery key of an organization that owns a deployment")
+
+    def exercise(self, w, s):
+        ruth = person(w, "ruth")
+        s["key"] = _recovery_key(b"\x12" * 32)
+        ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": s["key"]})
+        bare = new_org(ruth, "Keyless Deployer Org")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", "deployments", {"name": "keyless",
+                                                                                 "owner": {"org": bare}},
+                                                         approve=False),
+                "a deployment of an organization without a recovery key")
+        self.check(w, s)
+
+
+@case
+class DeploymentTransfer(DeepCase):
+    name = "deployment-transfer"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = ("an account's deployment offering a release, with a customer's instance from it, handed to an "
+             "organization with a recovery key: offered by the account, accepted by the organization")
+    verifies = ("the organization owns it (`GET /deployments/{id}`), its offer and the customer's instance stay, the "
+                "previous owner changes nothing (`403`), and the "
+                "customer's `GET /apps/{app}/update` names the new owner and whom it came from; on the new release "
+                "the organization offers it back and cancels the offer, and a second offer waits for none")
+
+    def populate(self, w):
+        tess, uma, vik = people(w, "tess", "uma", "vik")
+        install(tess, w, "kv-o-1.0.0.mpk")
+        d = tess.raw("post", "deployments", {"name": "tess-labs", "owner": {"account": tess.id}})["id"]
+        tess.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        customer = new_org(vik, "Transfer Customer Org")
+        app = vik.raw("post", "apps", {"name": "moved-1", "deployment": d, "package": OFFERED,
+                                       "org": customer})["appId"]
+        receiver = new_org(uma, "Transfer Receiver Org")
+        uma.raw("post", f"orgs/{receiver}/recovery", {"publicKey": _recovery_key(b"\x13" * 32)})
+        to = {"org": receiver}
+        tess.raw("post", f"deployments/{d}/transfer", {"to": to})
+        uma.raw("post", f"deployments/{d}/transfer/accept", {"to": to})
+        return {"deployment": d, "app": app, "receiver": receiver}
+
+    def check(self, w, s):
+        tess, uma, vik = people(w, "tess", "uma", "vik")
+        d = s["deployment"]
+        got = vik.get(f"deployments/{d}")
+        eq(got.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the new owner")
+        eq([(o["app"], o["version"]) for o in got.get("apps", [])], [("kv", "1.0.0")], "the offer stays")
+        eq(vik.get(f"apps/{s['app']}").get("deployment"), d, "the customer's instance stays on it")
+        shown = vik.get(f"apps/{s['app']}/update").get("deployment") or {}
+        eq(shown.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the update names the new owner")
+        eq((shown.get("transferred") or {}).get("from"), {"kind": "account", "name": "tess"},
+           "the update names whom it came from")
+        refused("FORBIDDEN", lambda: tess.raw("post", f"deployments/{d}/apps",
+                                              {"app": "kv", "package": OFFERED, "version": "1.0.0"}, approve=False),
+                "the previous owner offering in it")
+        eq([x.get("id") for x in uma.get("deployments").get("deployments", [])], [d], "the receiver manages it")
+
+    def exercise(self, w, s):
+        tess, uma = people(w, "tess", "uma")
+        d = s["deployment"]
+        uma.raw("post", f"deployments/{d}/transfer", {"to": {"account": tess.id}})
+        refused("TRANSFER_PENDING", lambda: uma.raw("post", f"deployments/{d}/transfer",
+                                                     {"to": {"account": tess.id}}, approve=False),
+                "a second offer while one waits")
+        eq([x.get("id") for x in tess.get("deployments").get("offered", [])], [d], "the offer waits for tess")
+        uma.raw("delete", f"deployments/{d}/transfer", {})
+        eq(tess.get("deployments").get("offered", []), [], "the cancelled offer")
         self.check(w, s)
 
 

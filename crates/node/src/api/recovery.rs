@@ -51,7 +51,7 @@ async fn recovery_create(
             consent: c.consent,
         })
         .await?;
-    Ok(Json(json!({ "code": code })))
+    Ok(Json(json!(RecoveryCode { code })))
 }
 
 /// Remove the account's recovery code, approved with a passkey (412 first).
@@ -157,9 +157,9 @@ async fn account_recovery_begin(
         &passkeys::cluster_tag(&node),
         None,
     );
-    Ok(Json(json!({
-        "challengeId": id,
-        "options": {
+    Ok(Json(json!(super::auth::PasskeyChallenge {
+        challenge_id: id,
+        options: json!({
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
             "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
@@ -168,7 +168,7 @@ async fn account_recovery_begin(
             "timeout": 60000,
             "attestation": "none",
             "authenticatorSelection": { "residentKey": "required", "userVerification": "required" },
-        }
+        }),
     })))
 }
 
@@ -433,6 +433,12 @@ async fn recovery_set(
             )
         })?;
     }
+    // Only a removal is judged by the rule; a rotation asks no node anything.
+    let needs_recovery =
+        body.public_key.is_none() && super::deployments::deployment_needs_recovery(&node).await;
+    if body.public_key.is_none() && !node.sys(|s| s.may_remove_recovery(&org, needs_recovery)) {
+        return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+    }
     let args = json!({ "publicKey": body.public_key });
     let consent = org_consent(&node, &p, &org, "__set_recovery_key", &args, body.confirm).await?;
     let _ok = node
@@ -442,6 +448,7 @@ async fn recovery_set(
             at: recovery_now(&node),
             actor,
             consent,
+            deployment_needs_recovery: needs_recovery,
         })
         .await?;
     Ok(Json(json!({})))
@@ -587,4 +594,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/orgs/{org}/recovery/start", post(recovery_start))
         .route("/orgs/{org}/recovery/cancel", post(recovery_cancel))
         .route("/orgs/{org}/recovery/finish", post(recovery_finish))
+}
+
+/// `POST /auth/recovery`: the account's recovery code, shown once.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RecoveryCode {
+    code: String,
 }

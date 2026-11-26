@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_delegate_body import AppDelegateBody
-from ...models.app_delegate_response_200 import AppDelegateResponse200
+from ...models.delegation_made import DelegationMade
 from ...models.error import Error
 from typing import cast
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppDelegateResponse200, Error]]:
+) -> Optional[Union[DelegationMade, Error]]:
     if response.status_code == 200:
-        response_200 = AppDelegateResponse200.from_dict(response.json())
+        response_200 = DelegationMade.from_dict(response.json())
 
         return response_200
 
@@ -88,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppDelegateResponse200, Error]]:
+) -> Response[Union[DelegationMade, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -103,7 +103,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppDelegateBody,
-) -> Response[Union[AppDelegateResponse200, Error]]:
+) -> Response[Union[DelegationMade, Error]]:
     r"""Let an app call another as you
 
      The methods of `target` that the release `app` runs lists for `target`'s package in its signed
@@ -129,7 +129,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppDelegateResponse200, Error]]
+        Response[Union[DelegationMade, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -151,7 +151,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppDelegateBody,
-) -> Optional[Union[AppDelegateResponse200, Error]]:
+) -> Optional[Union[DelegationMade, Error]]:
     r"""Let an app call another as you
 
      The methods of `target` that the release `app` runs lists for `target`'s package in its signed
@@ -177,7 +177,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppDelegateResponse200, Error]
+        Union[DelegationMade, Error]
     """
 
     return sync_detailed(
@@ -194,7 +194,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppDelegateBody,
-) -> Response[Union[AppDelegateResponse200, Error]]:
+) -> Response[Union[DelegationMade, Error]]:
     r"""Let an app call another as you
 
      The methods of `target` that the release `app` runs lists for `target`'s package in its signed
@@ -220,7 +220,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppDelegateResponse200, Error]]
+        Response[Union[DelegationMade, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -240,7 +240,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppDelegateBody,
-) -> Optional[Union[AppDelegateResponse200, Error]]:
+) -> Optional[Union[DelegationMade, Error]]:
     r"""Let an app call another as you
 
      The methods of `target` that the release `app` runs lists for `target`'s package in its signed
@@ -266,7 +266,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppDelegateResponse200, Error]
+        Union[DelegationMade, Error]
     """
 
     return (

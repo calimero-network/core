@@ -27,8 +27,8 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
-import com.calimero.mero.api.models.ConsentPageCreate200Response
-import com.calimero.mero.api.models.ConsentPageResult200Response
+import com.calimero.mero.api.models.ConsentRequestMade
+import com.calimero.mero.api.models.ConsentResult
 import com.calimero.mero.api.models.Error
 
 import kotlinx.serialization.SerialName
@@ -64,7 +64,7 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
      * Ask the account&#39;s owner to approve
      * From an app&#39;s frontend: an instance of a release or a deployment&#39;s offer (&#x60;install&#x60;: the install sheet, what gets created, where data can go and that updates wait for an approval; &#x60;outcome&#x60; names the &#x60;appId&#x60; and its &#x60;links&#x60;), an update policy (&#x60;updatePolicy&#x60;, an owner or admin of the organization), the node&#39;s updates page (&#x60;updates&#x60;, at &#x60;/updates/{request}&#x60;: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations&#39; policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member&#39;s removal, role, teams or capabilities, an invite&#39;s revocation, an organization&#39;s name, its deletion, defaults or all-apps grants, approved on the node&#39;s own consent page (&#x60;url&#x60;), which takes the passkey. What the approval made (&#x60;orgId&#x60;, an invite&#39;s &#x60;token&#x60;, the &#x60;org&#x60; joined, a rename&#39;s &#x60;{ orgId, name }&#x60;, a deletion&#39;s &#x60;apps&#x60;) is in &#x60;/consent/{request}/result&#x60;&#39;s &#x60;outcome&#x60;. 64 KiB at most.  **Who:** a passkey session (an API key is refused).
      * @param comCalimeroMeroConsentRequest 
-     * @return ConsentPageCreate200Response
+     * @return ConsentRequestMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -73,11 +73,11 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun consentPageCreate(comCalimeroMeroConsentRequest: com.calimero.mero.ConsentRequest) : ConsentPageCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun consentPageCreate(comCalimeroMeroConsentRequest: com.calimero.mero.ConsentRequest) : ConsentRequestMade = withContext(Dispatchers.IO) {
         val localVarResponse = consentPageCreateWithHttpInfo(comCalimeroMeroConsentRequest = comCalimeroMeroConsentRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ConsentPageCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ConsentRequestMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -96,16 +96,16 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
      * Ask the account&#39;s owner to approve
      * From an app&#39;s frontend: an instance of a release or a deployment&#39;s offer (&#x60;install&#x60;: the install sheet, what gets created, where data can go and that updates wait for an approval; &#x60;outcome&#x60; names the &#x60;appId&#x60; and its &#x60;links&#x60;), an update policy (&#x60;updatePolicy&#x60;, an owner or admin of the organization), the node&#39;s updates page (&#x60;updates&#x60;, at &#x60;/updates/{request}&#x60;: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations&#39; policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member&#39;s removal, role, teams or capabilities, an invite&#39;s revocation, an organization&#39;s name, its deletion, defaults or all-apps grants, approved on the node&#39;s own consent page (&#x60;url&#x60;), which takes the passkey. What the approval made (&#x60;orgId&#x60;, an invite&#39;s &#x60;token&#x60;, the &#x60;org&#x60; joined, a rename&#39;s &#x60;{ orgId, name }&#x60;, a deletion&#39;s &#x60;apps&#x60;) is in &#x60;/consent/{request}/result&#x60;&#39;s &#x60;outcome&#x60;. 64 KiB at most.  **Who:** a passkey session (an API key is refused).
      * @param comCalimeroMeroConsentRequest 
-     * @return ApiResponse<ConsentPageCreate200Response?>
+     * @return ApiResponse<ConsentRequestMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun consentPageCreateWithHttpInfo(comCalimeroMeroConsentRequest: com.calimero.mero.ConsentRequest) : ApiResponse<ConsentPageCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun consentPageCreateWithHttpInfo(comCalimeroMeroConsentRequest: com.calimero.mero.ConsentRequest) : ApiResponse<ConsentRequestMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = consentPageCreateRequestConfig(comCalimeroMeroConsentRequest = comCalimeroMeroConsentRequest)
 
-        return@withContext request<com.calimero.mero.ConsentRequest, ConsentPageCreate200Response>(
+        return@withContext request<com.calimero.mero.ConsentRequest, ConsentRequestMade>(
             localVariableConfig
         )
     }
@@ -138,7 +138,7 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
      * What became of a consent request
      * &#x60;decidedAt&#x60; (Unix seconds) is &#x60;null&#x60; while it is pending. &#x60;outcome&#x60;, once approved, is what the approval made: &#x60;{ orgId }&#x60; for &#x60;createOrg&#x60; (with &#x60;teamId&#x60;, the asking app&#39;s own team the organization starts with, when an app&#39;s frontend asked on a cluster that makes it), &#x60;{ token }&#x60; for &#x60;createInvite&#x60;, &#x60;{ org }&#x60; for &#x60;acceptInvite&#x60;, &#x60;{ orgId, name }&#x60; for &#x60;renameOrg&#x60;, &#x60;{ apps }&#x60; (the apps deleted) for &#x60;deleteOrg&#x60;; absent for the other kinds.  **Who:** a passkey session (an API key is refused).
      * @param request 
-     * @return ConsentPageResult200Response
+     * @return ConsentResult
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -147,11 +147,11 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun consentPageResult(request: kotlin.String) : ConsentPageResult200Response = withContext(Dispatchers.IO) {
+    suspend fun consentPageResult(request: kotlin.String) : ConsentResult = withContext(Dispatchers.IO) {
         val localVarResponse = consentPageResultWithHttpInfo(request = request)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ConsentPageResult200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ConsentResult
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -170,16 +170,16 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
      * What became of a consent request
      * &#x60;decidedAt&#x60; (Unix seconds) is &#x60;null&#x60; while it is pending. &#x60;outcome&#x60;, once approved, is what the approval made: &#x60;{ orgId }&#x60; for &#x60;createOrg&#x60; (with &#x60;teamId&#x60;, the asking app&#39;s own team the organization starts with, when an app&#39;s frontend asked on a cluster that makes it), &#x60;{ token }&#x60; for &#x60;createInvite&#x60;, &#x60;{ org }&#x60; for &#x60;acceptInvite&#x60;, &#x60;{ orgId, name }&#x60; for &#x60;renameOrg&#x60;, &#x60;{ apps }&#x60; (the apps deleted) for &#x60;deleteOrg&#x60;; absent for the other kinds.  **Who:** a passkey session (an API key is refused).
      * @param request 
-     * @return ApiResponse<ConsentPageResult200Response?>
+     * @return ApiResponse<ConsentResult?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun consentPageResultWithHttpInfo(request: kotlin.String) : ApiResponse<ConsentPageResult200Response?> = withContext(Dispatchers.IO) {
+    suspend fun consentPageResultWithHttpInfo(request: kotlin.String) : ApiResponse<ConsentResult?> = withContext(Dispatchers.IO) {
         val localVariableConfig = consentPageResultRequestConfig(request = request)
 
-        return@withContext request<Unit, ConsentPageResult200Response>(
+        return@withContext request<Unit, ConsentResult>(
             localVariableConfig
         )
     }

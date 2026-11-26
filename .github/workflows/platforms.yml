@@ -6,7 +6,7 @@ name: Platforms
 # (MACOS_BINARIES). This builds exactly that set, runs each binary, and starts
 # a development cluster with them:
 #
-#   - nightly on master, opening (or updating) an issue on failure;
+#   - weekly on master, opening (or updating) an issue on failure;
 #   - on a PR into master labelled `ci:platforms`, and on dispatch.
 #
 # There is no Windows lane: nodes run on Linux TDX hosts only.
@@ -15,7 +15,9 @@ name: Platforms
 
 on:
   schedule:
-    - cron: "37 2 * * *" # nightly, off the hour
+    # Weekly, off the hour: release.yml builds macOS from every release cut itself, so
+    # this only catches drift between cuts; it holds a macOS runner for about an hour.
+    - cron: "37 2 * * 0"
   workflow_dispatch:
     inputs:
       nightly:
@@ -75,7 +77,7 @@ jobs:
           if [ "$EVENT" != pull_request ] || [ "$LABELLED" = true ]; then
             run=true
           else
-            echo "::notice::macOS runs nightly on master; label the PR ci:platforms to run it here."
+            echo "::notice::macOS runs weekly on master and at every release cut; label the PR ci:platforms to run it here."
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
@@ -177,7 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           # One issue per branch (a dispatched nightly on another branch gets its own).
-          title="Nightly platform build is failing"
+          title="Weekly platform build is failing"
           if [ "$REF_NAME" != master ]; then
             title="$title on $REF_NAME"
           fi
@@ -185,7 +187,7 @@ jobs:
           issue=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
             --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$failed" ]; then
-            body=$(printf 'The nightly macOS run on %s failed: %s\n\n%s\n' "$SHA" "$RUN_URL" "$failed")
+            body=$(printf 'The weekly macOS run on %s failed: %s\n\n%s\n' "$SHA" "$RUN_URL" "$failed")
             if [ -n "$issue" ]; then
               gh issue comment "$issue" --body "$body"
             else
