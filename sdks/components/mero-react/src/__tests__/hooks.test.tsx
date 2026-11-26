@@ -38,6 +38,7 @@ import {
   useSubscription,
   useUploadBlob,
   useView,
+  useConnectionState,
 } from '../hooks';
 import { useMero } from '../context';
 import { memorySessionStore } from '../storage';
@@ -108,6 +109,74 @@ describe('calls and views', () => {
       await result.current.exec.execute('x');
     });
     expect(result.current.mero.isAuthenticated).toBe(false);
+  });
+
+  it('useView with live watches the view, updates on each answer and closes on unmount', async () => {
+    type Opts = { onAnswer: (a: unknown, i: number) => void; onEnded?: (r?: string) => void; onError?: (e: unknown) => void; intervalMs?: number };
+    const watched: { app: string; view: string; args: unknown; opts: Opts; close: ReturnType<typeof vi.fn> }[] = [];
+    const client = fakeClient({
+      watchView: vi.fn((app: string, view: string, args: unknown, opts: Opts) => {
+        const close = vi.fn();
+        watched.push({ app, view, args, opts, close });
+        return { close };
+      }),
+    });
+    const { result, rerender, unmount } = renderHook(
+      ({ key }) => useView<string>('get', { key }, { live: true, intervalMs: 500 }),
+      { wrapper: wrapper(client), initialProps: { key: 'a' } },
+    );
+    await waitFor(() => expect(watched).toHaveLength(1));
+    expect(watched[0]).toMatchObject({ app: 'app-1', view: 'get', args: { key: 'a' } });
+    expect(watched[0]!.opts.intervalMs).toBe(500);
+    expect(result.current.loading).toBe(true);
+    expect(client.apps.view).not.toHaveBeenCalled();
+
+    act(() => watched[0]!.opts.onAnswer('one', 3));
+    expect(result.current.data).toBe('one');
+    expect(result.current.index).toBe(3);
+    act(() => watched[0]!.opts.onAnswer('two', 4));
+    expect(result.current.data).toBe('two');
+
+    // An app error answer is the hook's error; the next answer clears it.
+    act(() => watched[0]!.opts.onError?.(new AppError('nope', { error: { code: 'NotFound' } })));
+    expect(result.current.error).toBeInstanceOf(AppError);
+    expect(result.current.data).toBe('two');
+    act(() => watched[0]!.opts.onAnswer('three', 5));
+    expect(result.current.error).toBeNull();
+
+    // Equal arguments keep the watch; new ones replace it.
+    rerender({ key: 'a' });
+    expect(watched).toHaveLength(1);
+    rerender({ key: 'b' });
+    await waitFor(() => expect(watched).toHaveLength(2));
+    expect(watched[0]!.close).toHaveBeenCalled();
+
+    act(() => watched[1]!.opts.onEnded?.('access-lost'));
+    expect(result.current.ended).toBe('access-lost');
+    unmount();
+    expect(watched[1]!.close).toHaveBeenCalled();
+  });
+
+  it('useConnectionState follows the app stream', async () => {
+    let listener: ((app: string, s: string) => void) | undefined;
+    const client = fakeClient({
+      watches: {
+        state: vi.fn(() => 'idle'),
+        onState: vi.fn((l: (app: string, s: string) => void) => {
+          listener = l;
+          return () => (listener = undefined);
+        }),
+      },
+    });
+    const { result, unmount } = renderHook(() => useConnectionState(), { wrapper: wrapper(client) });
+    expect(result.current).toBe('idle');
+    await waitFor(() => expect(listener).toBeDefined());
+    act(() => listener!('other-app', 'open'));
+    expect(result.current).toBe('idle');
+    act(() => listener!('app-1', 'reconnecting'));
+    expect(result.current).toBe('reconnecting');
+    unmount();
+    expect(listener).toBeUndefined();
   });
 
   it('useView reads, and reads again when the arguments change', async () => {

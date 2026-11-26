@@ -24,6 +24,8 @@ export type {
   UpdatesHost,
 } from './updates.js';
 export { newVisitorSeed, publicLinkKey, Visitor } from './visitor.js';
+export { ViewWatches } from './watches.js';
+export type { WatchConnectionState, WatchEndReason, WatchHandle, WatchHost, WatchViewOptions } from './watches.js';
 export { jobKeyBinding, receiptMessage, reportMessage, verifyAppCluster, verifyJobReports, verifyPipelineReceipt, verifyReceiptKey } from './receipts.js';
 export type { AttestedCluster, CachedRun, FileRef, JobAttestationDoc, JobEvidence, JobOutput, PipelineReceipt, ReportFields, StepReceipt, StepRunProof, ReceiptAnswer, ReceiptKeyDoc } from './receipts.js';
 export type { ExportErrorCode, ExportedFile, FileSink } from './files.js';

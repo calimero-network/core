@@ -2,7 +2,7 @@ export { useMero } from '../context';
 export { NotConnectedError, NoAppError } from './internal';
 export type { MutationOptions, AsyncState, ResourceState } from './internal';
 
-export { useApp, useExecute, useView, useAppAbi } from './app';
+export { useApp, useExecute, useView, useAppAbi, useConnectionState } from './app';
 export type { CallOptions, ViewOptions, UseViewOptions, UseViewResult } from './app';
 
 export { useSubscription, followEvents } from './events';

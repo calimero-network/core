@@ -156,6 +156,20 @@ for await (const { id, kind, data } of client.events(app, 0, ac.signal)) {
 ac.abort(); // ends the stream within a few hundred milliseconds
 ```
 
+## Live views
+
+A view the app marks `#[app::view(subscribable)]` can be watched: its answer arrives at once, then again whenever what it read changes, at most once per `intervalMs` (250 ms to 10 s, default 1 s). Every watch of an app shares one stream, which reconnects and re-adds its watches on its own.
+
+```ts
+const watch = client.watchView<string | null>(app, 'get', { key: 'a' }, {
+  onAnswer: (value, index) => render(value),
+  onEnded: (reason) => console.warn('watch ended', reason), // access lost, ...
+  intervalMs: 500,
+});
+watch.close();
+client.watches.state(app); // 'idle' | 'connecting' | 'open' | 'reconnecting'
+```
+
 ## Blobs
 
 ```ts

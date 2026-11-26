@@ -9,13 +9,15 @@
  * and the passkey prompt answers it.
  */
 
-import { useCallback } from 'react';
-import type { CalimeroClient, CallResult, ViewResult } from '@calimero-network/mero-js';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CalimeroClient, CallResult, ViewResult, WatchConnectionState } from '@calimero-network/mero-js';
+import { describeError } from '../errors';
 import { useMero } from '../context';
 import {
   confirmWith,
   NoAppError,
   NotConnectedError,
+  toError,
   useAppId,
   useAsyncAction,
   useResource,
@@ -129,34 +131,121 @@ export interface UseViewOptions extends ViewOptions {
   appId?: string | null;
   /** Do not read while false. Default true. */
   enabled?: boolean;
+  /**
+   * Watch the view (one marked `#[app::view(subscribable)]`): the answer updates on its
+   * own when what the view read changes, over the app's shared watch stream, instead of
+   * being read once.
+   */
+  live?: boolean;
+  /** With `live`: at most one update per interval, in ms (the node clamps it to 250 ms–10 s). */
+  intervalMs?: number;
 }
 
 export interface UseViewResult<T> extends ResourceState<T | undefined> {
   /** The log index the answer reflects. */
   index: number | null;
+  /** With `live`: why the node ended the watch (access lost, ...); no update follows. */
+  ended: string | null;
 }
 
+interface LiveState {
+  data: unknown;
+  index: number | null;
+  loading: boolean;
+  error: Error | null;
+  ended: string | null;
+}
+
+const NOT_LIVE: LiveState = { data: undefined, index: null, loading: false, error: null, ended: null };
+
 /**
- * A view's answer, read again when the method or its arguments change. Pair it
- * with `useSubscription` and call `refetch` on the events that matter.
+ * A view's answer, read again when the method or its arguments change. With `live`, it
+ * is watched and updates on its own; otherwise pair it with `useSubscription` and call
+ * `refetch` on the events that matter.
  */
 export function useView<T = unknown>(method: string, args: unknown = {}, options: UseViewOptions = {}): UseViewResult<T> {
   const client = useSignedInClient();
+  const { reportError } = useMero();
   const id = useAppId(options.appId);
   const argsKey = JSON.stringify(args ?? {});
-  const { stale, minIndex, enabled = true } = options;
+  const { stale, minIndex, enabled = true, live = false, intervalMs } = options;
 
   const resource = useResource<ViewResult | null>(
-    client && id && enabled ? () => viewOf(client, id, method, JSON.parse(argsKey), { stale, minIndex }) : null,
+    client && id && enabled && !live ? () => viewOf(client, id, method, JSON.parse(argsKey), { stale, minIndex }) : null,
     null,
-    [client, id, method, argsKey, stale, minIndex, enabled],
+    [client, id, method, argsKey, stale, minIndex, enabled, live],
   );
 
+  const [watched, setWatched] = useState<LiveState>(NOT_LIVE);
+  const reportRef = useRef(reportError);
+  reportRef.current = reportError;
+  useEffect(() => {
+    if (!live || !client || !id || !enabled) {
+      setWatched(NOT_LIVE);
+      return;
+    }
+    setWatched({ ...NOT_LIVE, loading: true });
+    const handle = client.watchView(id, method, JSON.parse(argsKey), {
+      intervalMs,
+      onAnswer: (answer, index) => setWatched({ data: answer, index, loading: false, error: null, ended: null }),
+      onError: (error) => {
+        reportRef.current(error);
+        setWatched((prev) => ({ ...prev, loading: false, error: toError(error) }));
+      },
+      onEnded: (reason) => setWatched((prev) => ({ ...prev, loading: false, ended: reason ?? 'ended' })),
+    });
+    return () => handle.close();
+  }, [client, id, method, argsKey, enabled, live, intervalMs]);
+
+  const refetchLive = useCallback(async () => {
+    if (!client || !id) return;
+    try {
+      const answer = await viewOf(client, id, method, JSON.parse(argsKey), {});
+      setWatched((prev) => ({ ...prev, data: answer.result, index: answer.index, error: null }));
+    } catch (error) {
+      reportRef.current(error);
+      setWatched((prev) => ({ ...prev, error: toError(error) }));
+    }
+  }, [client, id, method, argsKey]);
+
+  if (live) {
+    return {
+      data: watched.data as T | undefined,
+      index: watched.index,
+      loading: watched.loading,
+      error: watched.error,
+      failure: watched.error ? describeError(watched.error) : null,
+      refetch: refetchLive,
+      ended: watched.ended,
+    };
+  }
   return {
     ...resource,
     data: resource.data ? (resource.data.result as T) : undefined,
     index: resource.data ? resource.data.index : null,
+    ended: null,
   };
+}
+
+/**
+ * How the app's watch stream stands (`idle` with no live view, `connecting`, `open`,
+ * `reconnecting`), for a "reconnecting…" hint beside live views.
+ */
+export function useConnectionState(appId?: string | null): WatchConnectionState {
+  const client = useSignedInClient();
+  const id = useAppId(appId);
+  const [state, setState] = useState<WatchConnectionState>(() => (client && id ? client.watches.state(id) : 'idle'));
+  useEffect(() => {
+    if (!client || !id) {
+      setState('idle');
+      return;
+    }
+    setState(client.watches.state(id));
+    return client.watches.onState((app, next) => {
+      if (app === id) setState(next);
+    });
+  }, [client, id]);
+  return state;
 }
 
 /** The app's ABI (methods, events, errors), as the node reports it. */

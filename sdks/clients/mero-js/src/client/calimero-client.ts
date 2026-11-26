@@ -37,6 +37,7 @@ import { passkeyConfirm, type PasskeyConfirmOptions } from '../runtime/passkey.j
 import { exportFile, exportFileTo, type ExportedFile, type FileSink } from './files.js';
 import { signRecovery } from './recovery-key.js';
 import { Updates } from './updates.js';
+import { ViewWatches, type WatchHandle, type WatchHost, type WatchViewOptions } from './watches.js';
 import { verifyAppCluster, verifyPipelineReceipt, type AttestedCluster, type PipelineReceipt, type ReceiptAnswer } from './receipts.js';
 import {
   CONSENT_STORAGE_KEY,
@@ -453,6 +454,12 @@ export class CalimeroClient {
   readonly updates: Updates;
 
   /**
+   * Live views: every app's watch stream, shared by {@link watchView}; `state(app)` and
+   * `onState(listener)` tell how each stream's connection stands.
+   */
+  readonly watches: ViewWatches;
+
+  /**
    * A client for the Calimero Cloud cluster named `cluster`: its node list read
    * from the public node directory, those in `zone` first, each group in
    * weighted-random order. The directory only picks which nodes to try: each is
@@ -560,6 +567,7 @@ export class CalimeroClient {
     this.packages = routes.packages;
     this.deployments = routes.deployments;
     this.updates = new Updates(this);
+    this.watches = new ViewWatches(this as unknown as WatchHost);
   }
 
   /** A generated method's answer, as the type this class has always answered. */
@@ -979,6 +987,16 @@ export class CalimeroClient {
   /** Committed events from index `from`, then live, until `signal` aborts. */
   events(app: string, from = 0, signal?: AbortSignal): AsyncGenerator<NodeEvent> {
     return this.transport.events(routePath('apps/{app}/events', { app }), { query: { from }, signal });
+  }
+
+  /**
+   * Watches view `view` of `app` (one marked `#[app::view(subscribable)]`): `onAnswer` gets
+   * its answer at once, then each time what it read changes, at most once per `intervalMs`,
+   * until `close()` or `signal`. Every watch of an app shares one stream, which reconnects
+   * and re-adds its watches on its own.
+   */
+  watchView<T = unknown>(app: string, view: string, args: unknown, options: WatchViewOptions<T>): WatchHandle {
+    return this.watches.watch<T>(app, view, args, options);
   }
 
   // ---------------------------------------------------------------- presence
