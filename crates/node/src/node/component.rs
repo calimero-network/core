@@ -2140,8 +2140,9 @@ impl Node {
     /// name is `UnknownMethod`; `init` and timers are never reached this way
     /// (`WrongKind`); a `confirm` method never runs as a view (`ConfirmNotAView`)
     /// and a call to one needs a consent; only views run as views (`NotAView`);
-    /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`) and
-    /// the System caller only `allowSystem` ones (`Forbidden`).
+    /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`),
+    /// the System caller only `allowSystem` ones and only an action's own views and
+    /// calls (`from_action`) reach `allowAction` ones (`Forbidden`).
     ///
     /// The ABI is the one of the bundle the app group runs
     /// ([`Self::running_bundle`]), not the directory's record of it, which an
@@ -2155,9 +2156,10 @@ impl Node {
         caller: &Caller,
         view: bool,
         consented: bool,
+        from_action: bool,
     ) -> Result<(), ApiError> {
         let prepared = self.prepared_for(&self.running_bundle(app)).await?;
-        abi_check(&prepared, method, caller, view, consented, false)
+        abi_check(&prepared, method, caller, view, consented, from_action)
     }
 
     /// The bundle `app` runs: the app group's own record on this replica, else (this
@@ -2199,8 +2201,15 @@ impl Node {
         self.refuse_while_restoring(&app).await?;
         app.require_app_component()?;
         if !came_keyed {
-            self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                false,
+                req.consent.is_some(),
+                req.action.is_some(),
+            )
+            .await?;
         }
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
@@ -2320,7 +2329,14 @@ impl Node {
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        abi_check(
+            &prepared,
+            &req.method,
+            &req.caller,
+            true,
+            false,
+            req.action.is_some(),
+        )?;
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
         let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
@@ -3037,6 +3053,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             strong: true,
             min_index: 0,
             via: None,
+            action: Some(self.key.clone()),
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await }) {
@@ -3375,6 +3392,7 @@ impl NodeXcall {
             strong: true,
             min_index: 0,
             via,
+            action: None,
         };
         let (node, searches) = (Arc::clone(&self.node), self.searches.clone());
         Ok(Box::pin(async move {

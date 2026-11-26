@@ -5103,6 +5103,7 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             strong: false,
             min_index: at,
             via: None,
+            action: None,
         })
         .await
         .unwrap();

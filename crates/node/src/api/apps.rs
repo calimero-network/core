@@ -1922,6 +1922,7 @@ async fn app_secrets(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?
         .result;

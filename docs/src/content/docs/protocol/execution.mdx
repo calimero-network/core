@@ -467,7 +467,7 @@ Code: `component/action.rs`.
 - Apply records it pending (`rows::CACT ‖ id`, `ActionsHead::pending`, at most `MAX_PENDING_ACTIONS`) with the starter's `Caller` and the entry time.
 - `Node::run_actions` runs pending ones from the leader's timer poll, at most `MAX_ACTION_WORKERS` at once (the `action_slots` semaphore).
 - `attempt_action` runs on a blocking thread with `kind = action`, `Budget::action` and a monotonic clock from the start.
-- `NodeAction` serves `view` (`Node::view`, strong) and `call` (`call_component` with the key derived from the action's key, method, arguments and occurrence and `CallRequest::action`, which alone reaches `allow(action)` methods).
+- `NodeAction` serves `view` (`Node::view`, strong, with `ViewRequest::action`) and `call` (`call_component` with the key derived from the action's key, method, arguments and occurrence and `CallRequest::action`); the action's key in either is what alone reaches `allow(action)` methods, and only the node's action runner sets it.
 - The end is `componentActionEnd`; a timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`.
 - `ActionFailed` is an event with an `Accounts` audience.
 - An end another leader logged first changes nothing.

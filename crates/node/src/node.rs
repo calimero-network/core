@@ -442,6 +442,10 @@ pub struct ViewRequest {
     /// A synchronous `xcall_view` made as the person, as [`CallRequest::via`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// A component app's view made by one of its actions, as [`CallRequest::action`]: set only
+    /// by the node's action runner; peers pass it along on `internal/view`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3837,8 +3841,15 @@ impl Node {
             && req.method != component::PIPELINE_VIEW
             && req.method != SECRETS_VIEW
         {
-            self.abi_gate(&app, &req.method, &req.caller, true, false)
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                true,
+                false,
+                req.action.is_some(),
+            )
+            .await?;
         }
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
