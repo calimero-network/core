@@ -1714,6 +1714,15 @@ fn redeem_app_invite(
         return Err(INVITE_EXPIRED.into());
     }
     let app = state.apps.get(&invite.app).ok_or(super::APP_INVITE_GONE)?;
+    // From the logged version that brings it, an instance invite gives only what its creator
+    // could still give, as an organization invite: one whose creator no longer manages the
+    // instance's grants (removed, demoted, out of its team, or unknown) names nobody, so a
+    // manager who lost the instance cannot hand it out through invites made before.
+    if state.cluster_brings(super::cluster_version::Feature::InviteCreatorStanding)
+        && !state.manages_grants(app, &invite.created_by)
+    {
+        return Err(super::INVITE_CREATOR_LACKS);
+    }
     // A member of its organization is named on it (a member grant); anyone else is a
     // guest, only while the instance takes guests.
     let member = state
@@ -1724,7 +1733,11 @@ fn redeem_app_invite(
     if !member && !state.guests_allowed(app) {
         return Err(super::GUESTS_NOT_ALLOWED);
     }
-    let answer = json!({ "app": app.app_id, "org": app.org, "member": member });
+    let answer = json!(super::InviteRedeemed {
+        app: Some(app.app_id.clone()),
+        org: app.org.clone(),
+        member: Some(member),
+    });
     // Named already: nothing changes, and the use is left for someone else.
     if app.access.names(&account) {
         return Ok(answer);

@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_prices_get_response_200 import OpsPricesGetResponse200
+from ...models.price_table_view import PriceTableView
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsPricesGetResponse200]]:
+) -> Optional[Union[Error, PriceTableView]]:
     if response.status_code == 200:
-        response_200 = OpsPricesGetResponse200.from_dict(response.json())
+        response_200 = PriceTableView.from_dict(response.json())
 
         return response_200
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsPricesGetResponse200]]:
+) -> Response[Union[Error, PriceTableView]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,7 +60,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsPricesGetResponse200]]:
+) -> Response[Union[Error, PriceTableView]]:
     """The price table
 
      In micro-units of the billing currency; `{}` until one is set.
@@ -72,7 +72,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsPricesGetResponse200]]
+        Response[Union[Error, PriceTableView]]
     """
 
     kwargs = _get_kwargs()
@@ -87,7 +87,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsPricesGetResponse200]]:
+) -> Optional[Union[Error, PriceTableView]]:
     """The price table
 
      In micro-units of the billing currency; `{}` until one is set.
@@ -99,7 +99,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsPricesGetResponse200]
+        Union[Error, PriceTableView]
     """
 
     return sync_detailed(
@@ -110,7 +110,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsPricesGetResponse200]]:
+) -> Response[Union[Error, PriceTableView]]:
     """The price table
 
      In micro-units of the billing currency; `{}` until one is set.
@@ -122,7 +122,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsPricesGetResponse200]]
+        Response[Union[Error, PriceTableView]]
     """
 
     kwargs = _get_kwargs()
@@ -135,7 +135,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsPricesGetResponse200]]:
+) -> Optional[Union[Error, PriceTableView]]:
     """The price table
 
      In micro-units of the billing currency; `{}` until one is set.
@@ -147,7 +147,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsPricesGetResponse200]
+        Union[Error, PriceTableView]
     """
 
     return (

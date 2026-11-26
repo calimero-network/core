@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_receipt_key_response_200 import OpsReceiptKeyResponse200
+from ...models.receipt_key import ReceiptKey
 from typing import cast
 
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsReceiptKeyResponse200]]:
+) -> Optional[Union[Error, ReceiptKey]]:
     if response.status_code == 200:
-        response_200 = OpsReceiptKeyResponse200.from_dict(response.json())
+        response_200 = ReceiptKey.from_dict(response.json())
 
         return response_200
 
@@ -57,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsReceiptKeyResponse200]]:
+) -> Response[Union[Error, ReceiptKey]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -70,7 +70,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsReceiptKeyResponse200]]:
+) -> Response[Union[Error, ReceiptKey]]:
     """A node's receipt key
 
      **Who:** the ops token.
@@ -83,7 +83,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsReceiptKeyResponse200]]
+        Response[Union[Error, ReceiptKey]]
     """
 
     kwargs = _get_kwargs(
@@ -101,7 +101,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsReceiptKeyResponse200]]:
+) -> Optional[Union[Error, ReceiptKey]]:
     """A node's receipt key
 
      **Who:** the ops token.
@@ -114,7 +114,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsReceiptKeyResponse200]
+        Union[Error, ReceiptKey]
     """
 
     return sync_detailed(
@@ -127,7 +127,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsReceiptKeyResponse200]]:
+) -> Response[Union[Error, ReceiptKey]]:
     """A node's receipt key
 
      **Who:** the ops token.
@@ -140,7 +140,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsReceiptKeyResponse200]]
+        Response[Union[Error, ReceiptKey]]
     """
 
     kwargs = _get_kwargs(
@@ -156,7 +156,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsReceiptKeyResponse200]]:
+) -> Optional[Union[Error, ReceiptKey]]:
     """A node's receipt key
 
      **Who:** the ops token.
@@ -169,7 +169,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsReceiptKeyResponse200]
+        Union[Error, ReceiptKey]
     """
 
     return (

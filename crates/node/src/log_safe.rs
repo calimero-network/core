@@ -1,7 +1,7 @@
 //! What an always-on log line may say about an error whose words are not the node's.
 //!
 //! `merod run` logs at INFO, and on a fleet node every line ships to the
-//! operator's log store (review finding F6). An error's words can quote what it
+//! operator's log store. An error's words can quote what it
 //! failed on: serde_json's `invalid type: string "alice@example.com", expected
 //! u64` quotes the input, a peer's error quotes its answer, an upstream's quotes
 //! its body. A log line names such an error by what the node knows of it (a

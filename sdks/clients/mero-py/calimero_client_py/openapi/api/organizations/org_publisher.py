@@ -8,15 +8,15 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.org_publisher_body import OrgPublisherBody
-from ...models.org_publisher_response_200 import OrgPublisherResponse200
+from ...models.publisher_body import PublisherBody
+from ...models.publisher_bound import PublisherBound
 from typing import cast
 
 
 def _get_kwargs(
     org: str,
     *,
-    body: OrgPublisherBody,
+    body: PublisherBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgPublisherResponse200]]:
+) -> Optional[Union[Error, PublisherBound]]:
     if response.status_code == 200:
-        response_200 = OrgPublisherResponse200.from_dict(response.json())
+        response_200 = PublisherBound.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgPublisherResponse200]]:
+) -> Response[Union[Error, PublisherBound]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -94,8 +94,8 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgPublisherBody,
-) -> Response[Union[Error, OrgPublisherResponse200]]:
+    body: PublisherBody,
+) -> Response[Union[Error, PublisherBound]]:
     """Bind a package signing key
 
      The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION`
@@ -108,14 +108,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgPublisherBody):
+        body (PublisherBody): The request body of `POST /orgs/{org}/publishers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgPublisherResponse200]]
+        Response[Union[Error, PublisherBound]]
     """
 
     kwargs = _get_kwargs(
@@ -134,8 +134,8 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgPublisherBody,
-) -> Optional[Union[Error, OrgPublisherResponse200]]:
+    body: PublisherBody,
+) -> Optional[Union[Error, PublisherBound]]:
     """Bind a package signing key
 
      The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION`
@@ -148,14 +148,14 @@ def sync(
 
     Args:
         org (str):
-        body (OrgPublisherBody):
+        body (PublisherBody): The request body of `POST /orgs/{org}/publishers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgPublisherResponse200]
+        Union[Error, PublisherBound]
     """
 
     return sync_detailed(
@@ -169,8 +169,8 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgPublisherBody,
-) -> Response[Union[Error, OrgPublisherResponse200]]:
+    body: PublisherBody,
+) -> Response[Union[Error, PublisherBound]]:
     """Bind a package signing key
 
      The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION`
@@ -183,14 +183,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgPublisherBody):
+        body (PublisherBody): The request body of `POST /orgs/{org}/publishers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgPublisherResponse200]]
+        Response[Union[Error, PublisherBound]]
     """
 
     kwargs = _get_kwargs(
@@ -207,8 +207,8 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgPublisherBody,
-) -> Optional[Union[Error, OrgPublisherResponse200]]:
+    body: PublisherBody,
+) -> Optional[Union[Error, PublisherBound]]:
     """Bind a package signing key
 
      The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION`
@@ -221,14 +221,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgPublisherBody):
+        body (PublisherBody): The request body of `POST /orgs/{org}/publishers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgPublisherResponse200]
+        Union[Error, PublisherBound]
     """
 
     return (

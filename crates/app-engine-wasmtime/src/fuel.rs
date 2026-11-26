@@ -1,4 +1,4 @@
-//! Host calls pay their fuel where they happen (C7, `calimero_app_host`'s fuel table).
+//! Host calls pay their fuel where they happen (`calimero_app_host`'s fuel table).
 //!
 //! Every host function that does work is linked through a wrapper that holds the store: it
 //! takes [`FUEL_HOST_CALL`] out of the run's fuel before the call looks at anything, runs

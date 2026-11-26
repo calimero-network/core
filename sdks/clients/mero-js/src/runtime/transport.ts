@@ -262,7 +262,7 @@ export function queryString(query: RequestOptions['query']): string {
  * repeats by itself: a sign-in or sign-up is started again by its caller (with
  * the passkey), and a refresh moves through the nodes in
  * {@link NodeTransport.refresh}. A node answers them `421 WRONG_NODE` before
- * it spends the challenge or the refresh token (core #4774).
+ * it spends the challenge or the refresh token.
  */
 function ceremony(path: string): boolean {
   return path === 'auth/refresh' || path.startsWith('auth/passkey/') || RECOVERY_CEREMONIES.has(path);
@@ -805,7 +805,7 @@ export class NodeTransport implements Transport {
     if (!current) throw new Error('no session to refresh');
     let session: CalimeroSession | undefined;
     // A node that may not serve the account answers `421 WRONG_NODE` before it
-    // spends the refresh token (core #4774), so the same token goes to the next
+    // spends the refresh token, so the same token goes to the next
     // node (`send` moved there already): once per node, at most.
     for (let tried = 1; session === undefined; tried++) {
       try {

@@ -38,7 +38,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use calimero_client::types::{
-    OutboundSelection, OutboundSelectionManifest, TeamJoin, ViewsRequestConsistency, ViewsResponse,
+    OutboundSelection, OutboundSelectionManifest, TeamJoin, ViewResult, ViewsRequestConsistency,
 };
 use calimero_client::{Client, Error as ClientError, Request, Session};
 use calimero_identity::testing::SoftAuthenticator;
@@ -163,8 +163,8 @@ pub fn build_app(dir: &Path) -> Result<Vec<u8>, String> {
 }
 
 /// The bytes of a file a scenario names, made first when it is a fixture that is missing:
-/// `<CORE_WASM_DIR>/<crate>.wasm` (that app's component), or a random `static/generated/blob-<N>mib.bin` (what
-/// `apps/blobs/scripts/gen-blob-fixtures.sh` makes; random, so no node holds it already).
+/// `<CORE_WASM_DIR>/<crate>.wasm` (that app's component), or `static/generated/blob-<N>mib.bin`, `N` MiB
+/// of random bytes made here (random, so no node holds it already).
 pub fn fixture(path: &Path) -> Result<Vec<u8>, String> {
     if let Ok(b) = std::fs::read(path) {
         return Ok(b);
@@ -1850,7 +1850,7 @@ impl<'a> Runner<'a> {
         cl: &Client,
         step: &Map<String, Value>,
         args: Value,
-    ) -> Result<ViewsResponse, Box<ClientError>> {
+    ) -> Result<ViewResult, Box<ClientError>> {
         let (consistency, min_index) = if truthy(step.get("stale")) {
             let min_index = step
                 .get("min_index")

@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.pipelines_list_response_200 import PipelinesListResponse200
+from ...models.pipeline_run_list import PipelineRunList
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PipelinesListResponse200]]:
+) -> Optional[Union[Error, PipelineRunList]]:
     if response.status_code == 200:
-        response_200 = PipelinesListResponse200.from_dict(response.json())
+        response_200 = PipelineRunList.from_dict(response.json())
 
         return response_200
 
@@ -73,7 +73,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PipelinesListResponse200]]:
+) -> Response[Union[Error, PipelineRunList]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -87,7 +87,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
-) -> Response[Union[Error, PipelinesListResponse200]]:
+) -> Response[Union[Error, PipelineRunList]]:
     """An app's pipeline runs
 
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
@@ -104,7 +104,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PipelinesListResponse200]]
+        Response[Union[Error, PipelineRunList]]
     """
 
     kwargs = _get_kwargs(
@@ -124,7 +124,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
-) -> Optional[Union[Error, PipelinesListResponse200]]:
+) -> Optional[Union[Error, PipelineRunList]]:
     """An app's pipeline runs
 
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
@@ -141,7 +141,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PipelinesListResponse200]
+        Union[Error, PipelineRunList]
     """
 
     return sync_detailed(
@@ -156,7 +156,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
-) -> Response[Union[Error, PipelinesListResponse200]]:
+) -> Response[Union[Error, PipelineRunList]]:
     """An app's pipeline runs
 
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
@@ -173,7 +173,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PipelinesListResponse200]]
+        Response[Union[Error, PipelineRunList]]
     """
 
     kwargs = _get_kwargs(
@@ -191,7 +191,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
-) -> Optional[Union[Error, PipelinesListResponse200]]:
+) -> Optional[Union[Error, PipelineRunList]]:
     """An app's pipeline runs
 
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
@@ -208,7 +208,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PipelinesListResponse200]
+        Union[Error, PipelineRunList]
     """
 
     return (

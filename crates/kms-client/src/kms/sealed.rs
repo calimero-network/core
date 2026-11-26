@@ -51,7 +51,7 @@ const REQUEST_DOMAIN: &[u8] = b"mero-kms/sealed-get-key/v1";
 const SEAL_DOMAIN: &[u8] = b"mero-kms/sealed-key/v1";
 
 // Version 2: a release that carries the node's rollback counters
-// (`docs/specs/rollback-protection.md`). Only the domains differ, and what is
+// ([Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)). Only the domains differ, and what is
 // committed to or sealed.
 const ATTEST_DOMAIN_V2: &[u8] = b"mero-kms/attest-transport-key/v2";
 const REQUEST_DOMAIN_V2: &[u8] = b"mero-kms/sealed-get-key/v2";

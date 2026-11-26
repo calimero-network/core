@@ -74,8 +74,7 @@ memory, built from the table's records and the ABI's `state.search`
   it re-reads just those; otherwise it rebuilds from a full scan of the
   records. A field is indexed from its first 64 KiB of text.
 - Indexes are derived data. They are never replicated, never written to disk,
-  and rebuilt after a restart or when the app moves to this node. Indexes that
-  survive a restart are not done yet.
+  and rebuilt after a restart or when the app moves to this node.
 - Only views search. A call cannot, so node-local derived data never steers a
   write.
 

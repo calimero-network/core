@@ -22,8 +22,8 @@ from calimero_client_py.openapi.api.organizations import org_create, org_set_mem
 from calimero_client_py.openapi.api.ops import ops_set_replicas
 from calimero_client_py.openapi.models import (
     IntentsBody,
-    OrgCreateBody,
-    OrgSetMemberBody,
+    OrgBody,
+    MemberBody,
     OpsSetReplicasBody,
 )
 from calimero_client_py.sealed import error_from
@@ -125,7 +125,7 @@ def challenge_details(challenge=b"the node's challenge"):
 def test_a_generated_call_goes_through_the_native_channel():
     native = Native(answer(200, {"orgId": "o1"}))
     api = client_on(native).api()
-    r = org_create.sync_detailed(client=api, body=OrgCreateBody(name="Acme"))
+    r = org_create.sync_detailed(client=api, body=OrgBody(name="Acme"))
     assert r.status_code == 200
     assert json.loads(r.content) == {"orgId": "o1"}
     (sent,) = native.sent
@@ -160,7 +160,7 @@ def test_a_confirm_required_is_answered_with_the_passkey_and_the_body_kept():
         refusal(412, "CONFIRM_REQUIRED", challenge_details()),
         answer(200, {}),
     )
-    body = OrgSetMemberBody.from_dict({"account": "acc", "role": "admin"})
+    body = MemberBody.from_dict({"account": "acc", "role": "admin"})
     r = org_set_member.sync_detailed(
         "o1", client=client_on(native).api(passkey), body=body
     )
@@ -182,7 +182,7 @@ def test_a_confirm_required_is_answered_with_the_passkey_and_the_body_kept():
 
 def test_a_confirm_required_without_a_passkey_is_the_answer():
     native = Native(refusal(412, "CONFIRM_REQUIRED", challenge_details()))
-    body = OrgSetMemberBody.from_dict({"account": "acc", "role": "admin"})
+    body = MemberBody.from_dict({"account": "acc", "role": "admin"})
     r = org_set_member.sync_detailed("o1", client=client_on(native).api(), body=body)
     assert r.status_code == 412
     assert len(native.sent) == 1
@@ -190,7 +190,7 @@ def test_a_confirm_required_without_a_passkey_is_the_answer():
 
 def test_any_other_answer_is_returned_as_it_came():
     native = Native(refusal(404, "NOT_FOUND"))
-    body = OrgSetMemberBody.from_dict({"account": "acc", "role": "admin"})
+    body = MemberBody.from_dict({"account": "acc", "role": "admin"})
     r = org_set_member.sync_detailed(
         "o1", client=client_on(native).api(SoftPasskey()), body=body
     )
@@ -308,9 +308,7 @@ def test_the_async_calls_run_on_the_same_channel():
     api = client_on(native).api()
 
     async def go():
-        return await org_create.asyncio_detailed(
-            client=api, body=OrgCreateBody(name="Acme")
-        )
+        return await org_create.asyncio_detailed(client=api, body=OrgBody(name="Acme"))
 
     r = asyncio.run(go())
     assert r.status_code == 200
@@ -319,9 +317,7 @@ def test_the_async_calls_run_on_the_same_channel():
 
 def test_a_typed_answer_is_parsed_by_the_generated_models():
     native = Native(answer(200, {"orgId": "o1"}))
-    parsed = org_create.sync(
-        client=client_on(native).api(), body=OrgCreateBody(name="A")
-    )
+    parsed = org_create.sync(client=client_on(native).api(), body=OrgBody(name="A"))
     assert parsed.org_id == "o1"
 
 

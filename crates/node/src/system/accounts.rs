@@ -9,6 +9,12 @@
 )]
 use super::*;
 
+/// What `RevokeAllSessions` answers: how many sessions ended.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionsRevoked {
+    pub revoked: usize,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
@@ -353,7 +359,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             acc.passkeys.retain(|c| c.id != credential_id);
             let _gone = acc.passkey_times.remove(&credential_id);
             let _prev = s.credentials.remove(&credential_id);
-            // A removed device keeps no session (Xil's review, issue 5).
+            // A removed device keeps no session.
             let sessions: BTreeSet<String> = s
                 .refresh
                 .values()
@@ -367,7 +373,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
         }
         SystemCmd::RevokeAllSessions { actor, now } => {
             let n = s.revoke_account_sessions(&actor, now);
-            Ok(json!({ "revoked": n }))
+            Ok(json!(SessionsRevoked { revoked: n }))
         }
         SystemCmd::RefreshReused { hash, now } => {
             let rec = s

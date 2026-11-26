@@ -1,5 +1,5 @@
 //! A node refuses a store older than its rollback counter has seen
-//! (`calimero_node::rollback`, `docs/specs/rollback-protection.md`).
+//! (`calimero_node::rollback`, [Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)).
 //!
 //! The host's attack, as a host does it: stop the node, copy its data
 //! directory, let it run on, stop it, put the copy back, start it again.

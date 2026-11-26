@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.confirm_only import ConfirmOnly
 from ...models.error import Error
-from ...models.org_delete_response_200 import OrgDeleteResponse200
+from ...models.org_deleted import OrgDeleted
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgDeleteResponse200]]:
+) -> Optional[Union[Error, OrgDeleted]]:
     if response.status_code == 200:
-        response_200 = OrgDeleteResponse200.from_dict(response.json())
+        response_200 = OrgDeleted.from_dict(response.json())
 
         return response_200
 
@@ -76,7 +76,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgDeleteResponse200]]:
+) -> Response[Union[Error, OrgDeleted]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -90,7 +90,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[Error, OrgDeleteResponse200]]:
+) -> Response[Union[Error, OrgDeleted]]:
     """Delete an organization
 
      With its teams, invites and apps; the owner. `apps`: the apps deleted with it.
@@ -109,7 +109,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgDeleteResponse200]]
+        Response[Union[Error, OrgDeleted]]
     """
 
     kwargs = _get_kwargs(
@@ -129,7 +129,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[Error, OrgDeleteResponse200]]:
+) -> Optional[Union[Error, OrgDeleted]]:
     """Delete an organization
 
      With its teams, invites and apps; the owner. `apps`: the apps deleted with it.
@@ -148,7 +148,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgDeleteResponse200]
+        Union[Error, OrgDeleted]
     """
 
     return sync_detailed(
@@ -163,7 +163,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[Error, OrgDeleteResponse200]]:
+) -> Response[Union[Error, OrgDeleted]]:
     """Delete an organization
 
      With its teams, invites and apps; the owner. `apps`: the apps deleted with it.
@@ -182,7 +182,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgDeleteResponse200]]
+        Response[Union[Error, OrgDeleted]]
     """
 
     kwargs = _get_kwargs(
@@ -200,7 +200,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[Error, OrgDeleteResponse200]]:
+) -> Optional[Union[Error, OrgDeleted]]:
     """Delete an organization
 
      With its teams, invites and apps; the owner. `apps`: the apps deleted with it.
@@ -219,7 +219,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgDeleteResponse200]
+        Union[Error, OrgDeleted]
     """
 
     return (

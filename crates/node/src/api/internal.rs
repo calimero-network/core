@@ -252,7 +252,7 @@ fn admit_raft(
 ) -> Result<(), ApiError> {
     // openraft takes the sender an RPC names on trust, and a follower takes
     // an append from any node with a higher term: the sender must be the
-    // caller, and a member of the group (F4).
+    // caller, and a member of the group.
     if rpc.sender() != Some(caller.node) {
         return Err(ApiError::forbidden(
             "a Raft message names another node than the one that sent it",
@@ -304,8 +304,8 @@ struct RaftItem {
     rpc: calimero_log::RpcRequest,
 }
 
-/// Heartbeats of several groups from one peer (`PeerTransport::send_batch`,
-/// B6), answered in order. Each item passes the checks a message alone does
+/// Heartbeats of several groups from one peer (`PeerTransport::send_batch`),
+/// answered in order. Each item passes the checks a message alone does
 /// ([`admit_raft`]) and only a heartbeat (an append with no entries) travels
 /// in one; an item that fails is answered with its error, and the others
 /// still go to their groups.

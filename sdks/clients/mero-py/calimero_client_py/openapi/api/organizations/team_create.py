@@ -8,15 +8,15 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.team_create_body import TeamCreateBody
-from ...models.team_create_response_200 import TeamCreateResponse200
+from ...models.team_body import TeamBody
+from ...models.team_created import TeamCreated
 from typing import cast
 
 
 def _get_kwargs(
     org: str,
     *,
-    body: TeamCreateBody,
+    body: TeamBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, TeamCreateResponse200]]:
+) -> Optional[Union[Error, TeamCreated]]:
     if response.status_code == 200:
-        response_200 = TeamCreateResponse200.from_dict(response.json())
+        response_200 = TeamCreated.from_dict(response.json())
 
         return response_200
 
@@ -66,7 +66,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, TeamCreateResponse200]]:
+) -> Response[Union[Error, TeamCreated]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -79,8 +79,8 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: TeamCreateBody,
-) -> Response[Union[Error, TeamCreateResponse200]]:
+    body: TeamBody,
+) -> Response[Union[Error, TeamCreated]]:
     """Create a team
 
      An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds
@@ -91,14 +91,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (TeamCreateBody):
+        body (TeamBody): The request body of `POST /orgs/{org}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, TeamCreateResponse200]]
+        Response[Union[Error, TeamCreated]]
     """
 
     kwargs = _get_kwargs(
@@ -117,8 +117,8 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: TeamCreateBody,
-) -> Optional[Union[Error, TeamCreateResponse200]]:
+    body: TeamBody,
+) -> Optional[Union[Error, TeamCreated]]:
     """Create a team
 
      An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds
@@ -129,14 +129,14 @@ def sync(
 
     Args:
         org (str):
-        body (TeamCreateBody):
+        body (TeamBody): The request body of `POST /orgs/{org}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, TeamCreateResponse200]
+        Union[Error, TeamCreated]
     """
 
     return sync_detailed(
@@ -150,8 +150,8 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: TeamCreateBody,
-) -> Response[Union[Error, TeamCreateResponse200]]:
+    body: TeamBody,
+) -> Response[Union[Error, TeamCreated]]:
     """Create a team
 
      An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds
@@ -162,14 +162,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (TeamCreateBody):
+        body (TeamBody): The request body of `POST /orgs/{org}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, TeamCreateResponse200]]
+        Response[Union[Error, TeamCreated]]
     """
 
     kwargs = _get_kwargs(
@@ -186,8 +186,8 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: TeamCreateBody,
-) -> Optional[Union[Error, TeamCreateResponse200]]:
+    body: TeamBody,
+) -> Optional[Union[Error, TeamCreated]]:
     """Create a team
 
      An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds
@@ -198,14 +198,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (TeamCreateBody):
+        body (TeamBody): The request body of `POST /orgs/{org}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, TeamCreateResponse200]
+        Union[Error, TeamCreated]
     """
 
     return (

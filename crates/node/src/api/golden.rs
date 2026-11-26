@@ -1,5 +1,5 @@
-//! The bytes the API answers, held to what it answered before its answers were typed
-//! (review finding E7): each test builds an answer the way its handler does, from a fixed
+//! The bytes the API answers, held to what it answered before its answers were typed:
+//! each test builds an answer the way its handler does, from a fixed
 //! state, and compares the serialized text, key order included, with the text the
 //! `json!`-built answer produced. A typed answer that renames, drops, adds or reorders a
 //! field, or writes a number as a string, turns one red.
@@ -134,7 +134,7 @@ fn a_package_answers_as_before() {
     let p = package();
     assert_eq!(
         text(&packages::package_json(&s, &p, "alice", true)),
-        r#"{"package":"p1","signerId":"did:key:z6Mk","owner":"alice","latest":"1.2.0","versions":[{"version":"1.0.0","mpk":"h1","size":100,"source":"upload","services":{"app":"c1"},"components":"app","metadata":{"title":"One"},"outbound":["https://api.example.com/"],"installedBy":"alice","installedAt":5},{"version":"1.2.0","mpk":"h2","size":200,"source":"registry","services":{},"components":"computeOnly","metadata":null,"outbound":[],"installedBy":"bob","installedAt":6}]}"#
+        r#"{"package":"p1","signerId":"did:key:z6Mk","owner":"alice","latest":"1.2.0","versions":[{"version":"1.0.0","mpk":"h1","size":100,"source":"upload","services":{"app":"c1"},"components":"app","metadata":{"title":"One"},"outbound":["https://api.example.com/"],"installedBy":"alice","installedAt":5,"orgs":[]},{"version":"1.2.0","mpk":"h2","size":200,"source":"registry","services":{},"components":"computeOnly","metadata":null,"outbound":[],"installedBy":"bob","installedAt":6,"orgs":[]}]}"#
     );
     assert!(packages::package_json(&s, &p, "carol", false).is_none());
 }

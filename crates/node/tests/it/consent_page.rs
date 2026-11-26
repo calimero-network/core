@@ -202,7 +202,17 @@ impl Page {
         c: &Cluster,
         key: &mut SoftAuthenticator,
     ) -> ((u16, Value), Value) {
-        let (code, asked) = self.post("approve", json!({})).await;
+        self.approve_with(c, key, json!({})).await
+    }
+
+    /// [`Self::approve`] with `body`'s fields (a chosen `org`) on both posts.
+    async fn approve_with(
+        &self,
+        c: &Cluster,
+        key: &mut SoftAuthenticator,
+        body: Value,
+    ) -> ((u16, Value), Value) {
+        let (code, asked) = self.post("approve", body.clone()).await;
         assert_eq!(code, 412, "{asked}");
         assert_eq!(asked["error"], "CONFIRM_REQUIRED");
         let d = &asked["details"];
@@ -210,12 +220,9 @@ impl Page {
         let args = challenge_args(c, id);
         let challenge = calimero_identity::from_b64url(d["challenge"].as_str().unwrap()).unwrap();
         let assertion = key.assert(&challenge);
-        let answer = self
-            .post(
-                "approve",
-                json!({ "confirm": { "challengeId": id, "assertion": assertion } }),
-            )
-            .await;
+        let mut confirm = body;
+        confirm["confirm"] = json!({ "challengeId": id, "assertion": assertion });
+        let answer = self.post("approve", confirm).await;
         (answer, args)
     }
 }
@@ -412,13 +419,19 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "/code",
         ],
     );
-    // The update's class, policy and approval (C10), apart from the sheet's snapshot.
+    // The update's class, policy and approval, apart from the sheet's snapshot.
     let mut snapshot = snapshot;
     let update = snapshot
         .as_object_mut()
         .and_then(|o| o.remove("update"))
         .unwrap();
     assert_eq!(update["approval"]["step"], "only", "{update}");
+    let offered_by = snapshot.as_object_mut().and_then(|o| o.remove("offeredBy"));
+    assert_eq!(
+        offered_by,
+        Some(Value::Null),
+        "from no deployment, offered by no one"
+    );
     assert_eq!(update["policy"]["source"], "default", "{update}");
     assert!(update["class"].is_string(), "{update}");
     // The confirmation code: the same in the create answer and the model,
@@ -459,6 +472,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": home },
         "headline": "Upgrade Notes from 1.0.0 to 2.0.0",
         "title": "Update notes to version 2.0.0",
+        // From no deployment: none named.
+        "deployment": null,
         "points": [
             "notes moves from version 1.0.0 to 2.0.0, for everyone who uses it.",
             "Until you approve, nothing changes: it keeps running 1.0.0.",
@@ -1965,7 +1980,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
 }
 
 /// The organization routes these tests call, over the client's sealed
-/// transport (the hand-written methods are gone, #5012).
+/// transport (the hand-written methods are gone).
 #[allow(
     clippy::result_large_err,
     reason = "the client's own error, passed through for the test to read its status"
@@ -3647,6 +3662,27 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(u["available"]["version"], "2.0.0", "{u}");
     assert_eq!(u["available"]["source"], "deployment", "{u}");
     assert_eq!(u["mayApprove"], json!(true), "{u}");
+    // Names are not unique: the deployment comes with its id and its owner.
+    let named = json!({ "id": d, "name": "acme", "owner": { "kind": "account", "name": "dev" } });
+    assert_eq!(u["deployment"], named, "{u}");
+
+    // A second instance from the offer: the install sheet names the deployment the same way.
+    let made = ask(
+        &carol_app,
+        &back,
+        "install",
+        json!({ "package": PACKAGE, "name": "notes-2", "deployment": d, "org": globex }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["kind"], "install", "{model}");
+    assert_eq!(model["deployment"], named, "{model}");
+    let offered_by = json!({
+        "title": "Offered by acme, run by the account dev.",
+        "detail": format!("Deployment {d}"),
+    });
+    assert_eq!(model["offeredBy"], offered_by, "{model}");
     let u = bob_app
         .transport()
         .json(Request::new(Method::GET, format!("apps/{inst}/update")))
@@ -3688,6 +3724,8 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     let model = page.model().await;
     assert_eq!(model["kind"], "upgrade", "{model}");
     assert_eq!(model["upgrade"]["to"]["version"], "2.0.0", "{model}");
+    assert_eq!(model["deployment"], named, "{model}");
+    assert_eq!(model["offeredBy"], offered_by, "{model}");
     let mut carol_page = SoftAuthenticator::with_key(&carol_in_app, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut carol_page).await;
     assert_eq!(code, 200, "{done}");
@@ -3699,7 +3737,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(moved["deployment"], json!(d), "{moved}");
 }
 
-/// C5: where a unit may send data is computed over the app and every app it created, and
+/// Where a unit may send data is computed over the app and every app it created, and
 /// only destinations are reported: an empty list means no data leaves Calimero, and an
 /// external endpoint, a TEE (here NEAR AI) included, is a destination like any other. The
 /// capability card, `GET /apps/{app}/egress`, `GET /apps/{app}/update` (with the
@@ -3796,6 +3834,8 @@ async fn a_units_destinations_are_judged_over_its_members() {
 
     // The update moves the store to a release that adds a destination: red.
     let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
+    // From no deployment: named as none, not left out.
+    assert_eq!(update.get("deployment"), Some(&json!(null)), "{update}");
     let available = &update["available"];
     assert_eq!(available["version"], "2.0.0", "{update}");
     assert_eq!(available["class"], "red", "{update}");
@@ -3878,7 +3918,7 @@ async fn a_units_destinations_are_judged_over_its_members() {
     );
 }
 
-/// C8: an organization's owner sets a policy that asks for a second approver, with a
+/// An organization's owner sets a policy that asks for a second approver, with a
 /// passkey; a red update (a release adding a destination) then waits: the owner's upgrade
 /// is refused before any passkey (`409 SECOND_APPROVAL_REQUIRED`), the owner logs the first
 /// approval with their own passkey, `GET /apps/{app}/update` and `GET /orgs/{org}/updates`
@@ -4083,7 +4123,7 @@ async fn a_red_update_waits_for_a_second_approver() {
     assert_eq!(update["pendingApprovals"], json!([]), "spent: {update}");
 }
 
-/// C10, screen 1: an app's frontend asks to create an instance of its release, and the node's
+/// The install sheet: an app's frontend asks to create an instance of its release, and the node's
 /// install sheet shows what gets created (the app and the apps its release creates, with their
 /// versions), where data can go over the whole unit, and that updates wait for an approval.
 /// The person's passkey on the page creates it as `POST /apps` does, and the app reads the new
@@ -4210,7 +4250,154 @@ async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
     assert_eq!(egress["destinations"], json!([AI]), "{egress}");
 }
 
-/// C10, screens 2, 3 and 5: an update's sheet says its class in plain words. A green one
+/// A person in Acme and Globex installs from a frontend that names no organization. A release
+/// private to Acme alone is created in Acme with no choice, as a named `org`; one private to
+/// both, or the operator's catalog, offers both by name, and the choice reaches the install as
+/// `org` under the passkey; no choice, or one they are not in, is refused before the passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_install_sheet_offers_the_organizations_a_release_is_for() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let org = |v: Value| v["orgId"].as_str().unwrap().to_owned();
+    let acme = org(alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let globex = org(alice
+        .orgs()
+        .create("Globex", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let bobco = org(bob
+        .orgs()
+        .create("Bobco", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[38; 32]);
+    let release = |package: &str| {
+        release_of(
+            package,
+            "1.0.0",
+            &kv_wasm(),
+            &publisher,
+            &Declares::default(),
+        )
+        .0
+    };
+    let (acme_only, both, catalog) = ("com.test.acme", "com.test.both", "com.test.catalog");
+    let _ = alice
+        .packages()
+        .upload(release(acme_only), Some(acme.as_str()))
+        .await
+        .unwrap();
+    for o in [&acme, &globex] {
+        let _ = alice
+            .packages()
+            .upload(release(both), Some(o.as_str()))
+            .await
+            .unwrap();
+    }
+    let _ = ops.ops().package_upload(release(catalog)).await.unwrap();
+
+    // Each sheet's passkey goes on from the last one's counter.
+    let (page, mut key) = install_sheet_naming_no_org(&c, &alice_key, acme_only).await;
+    let model = page.model().await;
+    let install = &model["install"];
+    assert_eq!(install["org"], json!(acme), "{model}");
+    assert_eq!(install["orgName"], "Acme", "{model}");
+    assert!(install["chooseOrg"].is_null(), "{model}");
+    assert_eq!(install["privateTo"], "Private to Acme", "{model}");
+    assert_eq!(
+        model["points"][0], "notes is created for you in Acme: Notes 1.0.0.",
+        "{model}"
+    );
+    let (code, refused) = page.post("approve", json!({ "org": globex })).await;
+    assert_eq!(code, 400, "nothing to choose: {refused}");
+    let ((code, done), args) = page.approve(&c, &mut key).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["org"], json!(acme), "{args}");
+    let app = done["result"]["appId"].as_str().unwrap();
+    let made = get(&alice, &format!("apps/{app}")).await.unwrap();
+    assert_eq!(made["org"], json!(acme), "{made}");
+
+    let offered = json!([
+        { "orgId": acme, "name": "Acme", "point": "notes is created for you in Acme: Notes 1.0.0." },
+        { "orgId": globex, "name": "Globex", "point": "notes is created for you in Globex: Notes 1.0.0." },
+    ]);
+    for (package, private_to) in [
+        (both, json!("Private to Acme and Globex")),
+        (catalog, Value::Null),
+    ] {
+        let (page, next) = install_sheet_naming_no_org(&c, &key, package).await;
+        key = next;
+        let model = page.model().await;
+        assert_eq!(model["install"]["chooseOrg"], offered, "{package}: {model}");
+        assert!(model["install"]["org"].is_null(), "{package}: {model}");
+        assert_eq!(
+            model["install"]["privateTo"], private_to,
+            "{package}: {model}"
+        );
+        for (body, code) in [
+            (json!({}), "ORG_REQUIRED"),
+            (json!({ "org": bobco }), "NOT_FOUND"),
+        ] {
+            let (status, refused) = page.post("approve", body.clone()).await;
+            assert_eq!(
+                refused["error"], code,
+                "{package} {body}: {status} {refused}"
+            );
+        }
+        let ((code, done), args) = page
+            .approve_with(&c, &mut key, json!({ "org": globex }))
+            .await;
+        assert_eq!(code, 200, "{package}: {done}");
+        assert_eq!(
+            args["org"],
+            json!(globex),
+            "the passkey signs the choice: {args}"
+        );
+        let app = done["result"]["appId"].as_str().unwrap();
+        let made = get(&alice, &format!("apps/{app}")).await.unwrap();
+        assert_eq!(made["org"], json!(globex), "{package}: {made}");
+    }
+}
+
+/// An install sheet for `package`, asked for by its frontend signed in as `key`'s account
+/// and naming no organization; with the passkey on the page's origin.
+async fn install_sheet_naming_no_org(
+    c: &Cluster,
+    key: &SoftAuthenticator,
+    package: &str,
+) -> (Page, SoftAuthenticator) {
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(package)
+    );
+    let in_app = c.client(1);
+    let mut in_app_passkey = SoftAuthenticator::with_key(key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
+    let made = ask(
+        &in_app,
+        &format!("{app_origin}/1.0.0/"),
+        "install",
+        json!({ "package": package, "version": "1.0.0", "name": "notes" }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page_key = SoftAuthenticator::with_key(&in_app_passkey, "localhost", &origin(&url));
+    (Page::new(&url), page_key)
+}
+
+/// The update sheets: an update's sheet says its class in plain words. A green one
 /// (nothing changes where data goes) is "Update with passkey" / "Not now"; a red one adding a
 /// destination names it and leads with keeping the current version. Once the organization's
 /// policy (set on the page) asks for a second approver, the owner's red sheet is "Approve (1 of
@@ -4482,8 +4669,8 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
     assert_eq!(after["updates"]["pending"], json!([]), "{after}");
 }
 
-/// C8's unit fixture: alice's organization holds `notes` on `PACKAGE@1.0.0`, which
-/// created `store` on `com.test.c8-kv@0.1.0`. `PACKAGE@2.0.0` ships the same WASM and
+/// A unit red only through its member: alice's organization holds `notes` on
+/// `PACKAGE@1.0.0`, which created `store` on `com.test.c8-kv@0.1.0`. `PACKAGE@2.0.0` ships the same WASM and
 /// destinations (its own move is green) but takes the store to `0.1.1`, which adds a
 /// telemetry host: the unit's update is red only through its member. Answers the
 /// organization, `notes` and `store`.
@@ -4534,7 +4721,7 @@ async fn unit_red_through_its_member(
     (org, notes, store)
 }
 
-/// C8 and C10: a unit's page is judged on the unit, not its instance alone. A unit red
+/// A unit's page is judged on the unit, not its instance alone. A unit red
 /// only because a member adds a destination, in an organization whose policy asks for a
 /// second approver, gets a page whose step is the first of two approvals, as `upgrade-unit`
 /// needs one; the instance's own (green) move needs one approval.
@@ -4860,11 +5047,11 @@ async fn an_unclassified_update_waits_for_every_node_on_the_release_that_decodes
     );
 }
 
-/// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A
+/// A unit's run is judged once, under its instance's policy, so it moves whole. A
 /// member whose own policy asks for a second approver, in a unit whose instance's does
-/// not, moves with the unit on its one approval (it used to be refused at apply after the
-/// instance had moved, leaving the unit half upgraded); upgraded alone, the member's own
-/// policy still holds.
+/// not, moves with the unit on its one approval and is never refused at apply after the
+/// instance has moved, which would leave the unit half upgraded; upgraded alone, the
+/// member's own policy still holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_unit_moves_whole_under_its_instances_policy() {
     let c = Cluster::start(3).await;

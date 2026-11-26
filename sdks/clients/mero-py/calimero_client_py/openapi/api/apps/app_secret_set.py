@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_secret_set_body import AppSecretSetBody
-from ...models.app_secret_set_response_200 import AppSecretSetResponse200
 from ...models.error import Error
+from ...models.secret_set import SecretSet
 from typing import cast
 
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppSecretSetResponse200, Error]]:
+) -> Optional[Union[Error, SecretSet]]:
     if response.status_code == 200:
-        response_200 = AppSecretSetResponse200.from_dict(response.json())
+        response_200 = SecretSet.from_dict(response.json())
 
         return response_200
 
@@ -88,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppSecretSetResponse200, Error]]:
+) -> Response[Union[Error, SecretSet]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -103,7 +103,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Response[Union[AppSecretSetResponse200, Error]]:
+) -> Response[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
      Attached by the node only where the secret's binding says (its host, header or body field), never
@@ -127,7 +127,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppSecretSetResponse200, Error]]
+        Response[Union[Error, SecretSet]]
     """
 
     kwargs = _get_kwargs(
@@ -149,7 +149,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Optional[Union[AppSecretSetResponse200, Error]]:
+) -> Optional[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
      Attached by the node only where the secret's binding says (its host, header or body field), never
@@ -173,7 +173,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppSecretSetResponse200, Error]
+        Union[Error, SecretSet]
     """
 
     return sync_detailed(
@@ -190,7 +190,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Response[Union[AppSecretSetResponse200, Error]]:
+) -> Response[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
      Attached by the node only where the secret's binding says (its host, header or body field), never
@@ -214,7 +214,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppSecretSetResponse200, Error]]
+        Response[Union[Error, SecretSet]]
     """
 
     kwargs = _get_kwargs(
@@ -234,7 +234,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Optional[Union[AppSecretSetResponse200, Error]]:
+) -> Optional[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
      Attached by the node only where the secret's binding says (its host, header or body field), never
@@ -258,7 +258,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppSecretSetResponse200, Error]
+        Union[Error, SecretSet]
     """
 
     return (

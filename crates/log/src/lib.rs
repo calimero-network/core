@@ -162,7 +162,7 @@ pub struct Proposed {
 }
 
 /// A snapshot of a group's Raft status.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     pub group: GroupId,
     pub leader: Option<NodeId>,
@@ -176,11 +176,11 @@ pub struct Status {
     /// the group restarts it from the disk ([`RESTART_FIRST`]). Not
     /// serialized, nor `restarts`: the node's API answers a status in the
     /// shape clients know, and reports these as metrics.
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     pub stopped: Option<String>,
     /// How many times this node tried to restart the group's core since the
     /// group started here (a try that re-applies the failing batch fails too).
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     pub restarts: u64,
 }
 
@@ -397,7 +397,7 @@ impl<M: Machine> Group<M> {
     /// it answers `NotLeader` with the current leader (the caller forwards, as an
     /// append from a deposed node would make it), and never builds with a term
     /// it does not lead: ids made from another node's term could collide with that
-    /// leader's (D52).
+    /// leader's, since a component's unique ids are `term.seq.n`.
     async fn led_term(&self) -> Result<Leadership, WriteError> {
         {
             let m = self.raft().metrics();

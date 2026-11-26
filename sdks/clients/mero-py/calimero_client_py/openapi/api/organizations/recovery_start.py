@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.recovery_start_body import RecoveryStartBody
-from ...models.recovery_start_response_200 import RecoveryStartResponse200
+from ...models.recovery_started import RecoveryStarted
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, RecoveryStartResponse200]]:
+) -> Optional[Union[Error, RecoveryStarted]]:
     if response.status_code == 200:
-        response_200 = RecoveryStartResponse200.from_dict(response.json())
+        response_200 = RecoveryStarted.from_dict(response.json())
 
         return response_200
 
@@ -71,7 +71,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, RecoveryStartResponse200]]:
+) -> Response[Union[Error, RecoveryStarted]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -85,7 +85,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: RecoveryStartBody,
-) -> Response[Union[Error, RecoveryStartResponse200]]:
+) -> Response[Union[Error, RecoveryStarted]]:
     """Start an organization recovery
 
      The recovery seed's signature handing the organization to the caller.
@@ -94,14 +94,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (RecoveryStartBody):
+        body (RecoveryStartBody): The request body of `POST /orgs/{org}/recovery/start`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RecoveryStartResponse200]]
+        Response[Union[Error, RecoveryStarted]]
     """
 
     kwargs = _get_kwargs(
@@ -121,7 +121,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: RecoveryStartBody,
-) -> Optional[Union[Error, RecoveryStartResponse200]]:
+) -> Optional[Union[Error, RecoveryStarted]]:
     """Start an organization recovery
 
      The recovery seed's signature handing the organization to the caller.
@@ -130,14 +130,14 @@ def sync(
 
     Args:
         org (str):
-        body (RecoveryStartBody):
+        body (RecoveryStartBody): The request body of `POST /orgs/{org}/recovery/start`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RecoveryStartResponse200]
+        Union[Error, RecoveryStarted]
     """
 
     return sync_detailed(
@@ -152,7 +152,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: RecoveryStartBody,
-) -> Response[Union[Error, RecoveryStartResponse200]]:
+) -> Response[Union[Error, RecoveryStarted]]:
     """Start an organization recovery
 
      The recovery seed's signature handing the organization to the caller.
@@ -161,14 +161,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (RecoveryStartBody):
+        body (RecoveryStartBody): The request body of `POST /orgs/{org}/recovery/start`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RecoveryStartResponse200]]
+        Response[Union[Error, RecoveryStarted]]
     """
 
     kwargs = _get_kwargs(
@@ -186,7 +186,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: RecoveryStartBody,
-) -> Optional[Union[Error, RecoveryStartResponse200]]:
+) -> Optional[Union[Error, RecoveryStarted]]:
     """Start an organization recovery
 
      The recovery seed's signature handing the organization to the caller.
@@ -195,14 +195,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (RecoveryStartBody):
+        body (RecoveryStartBody): The request body of `POST /orgs/{org}/recovery/start`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RecoveryStartResponse200]
+        Union[Error, RecoveryStarted]
     """
 
     return (

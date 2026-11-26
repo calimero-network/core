@@ -17,7 +17,7 @@ on it, so a change here runs mero-design's and mero-charts' CI too.
 
 - `src/`: one `.tsx` per icon, `IconBase.tsx`, and `index.ts` that exports them all.
 - `raw/chunky.svg`: the source artwork.
-- `tools/`: `scripts/build-icons.mjs` and `svgo.config.json`, from the design
+- `tools/`: `tools/scripts/build-icons.mjs` and `tools/svgo.config.json`, from the design
   system's first icon pass (see below).
 - `test/`: vitest; every exported icon renders an `<svg>` at its `size`.
 - `sdk.json`: how core's CI treats this SDK (`scripts/sdks.py`).

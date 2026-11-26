@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.blob_upload_response_200 import BlobUploadResponse200
+from ...models.blob_stored import BlobStored
 from ...models.error import Error
 from ...types import File, FileTypes
 from ...types import UNSET, Unset
@@ -56,9 +56,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[BlobUploadResponse200, Error]]:
+) -> Optional[Union[BlobStored, Error]]:
     if response.status_code == 200:
-        response_200 = BlobUploadResponse200.from_dict(response.json())
+        response_200 = BlobStored.from_dict(response.json())
 
         return response_200
 
@@ -95,7 +95,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[BlobUploadResponse200, Error]]:
+) -> Response[Union[BlobStored, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -113,7 +113,7 @@ def sync_detailed(
         File,
     ],
     sealed: Union[Unset, bool] = UNSET,
-) -> Response[Union[BlobUploadResponse200, Error]]:
+) -> Response[Union[BlobStored, Error]]:
     """Upload a blob
 
      A plain blob, stored with the request's `Content-Type`, which a component app's download answers
@@ -135,7 +135,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[BlobUploadResponse200, Error]]
+        Response[Union[BlobStored, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -160,7 +160,7 @@ def sync(
         File,
     ],
     sealed: Union[Unset, bool] = UNSET,
-) -> Optional[Union[BlobUploadResponse200, Error]]:
+) -> Optional[Union[BlobStored, Error]]:
     """Upload a blob
 
      A plain blob, stored with the request's `Content-Type`, which a component app's download answers
@@ -182,7 +182,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[BlobUploadResponse200, Error]
+        Union[BlobStored, Error]
     """
 
     return sync_detailed(
@@ -202,7 +202,7 @@ async def asyncio_detailed(
         File,
     ],
     sealed: Union[Unset, bool] = UNSET,
-) -> Response[Union[BlobUploadResponse200, Error]]:
+) -> Response[Union[BlobStored, Error]]:
     """Upload a blob
 
      A plain blob, stored with the request's `Content-Type`, which a component app's download answers
@@ -224,7 +224,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[BlobUploadResponse200, Error]]
+        Response[Union[BlobStored, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -247,7 +247,7 @@ async def asyncio(
         File,
     ],
     sealed: Union[Unset, bool] = UNSET,
-) -> Optional[Union[BlobUploadResponse200, Error]]:
+) -> Optional[Union[BlobStored, Error]]:
     """Upload a blob
 
      A plain blob, stored with the request's `Content-Type`, which a component app's download answers
@@ -269,7 +269,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[BlobUploadResponse200, Error]
+        Union[BlobStored, Error]
     """
 
     return (

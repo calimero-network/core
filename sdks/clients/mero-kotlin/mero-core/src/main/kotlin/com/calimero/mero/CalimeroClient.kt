@@ -14,7 +14,7 @@ import com.calimero.mero.api.infrastructure.Serializer
 import com.calimero.mero.api.models.AppCreateRequest
 import com.calimero.mero.api.models.ExportsExportRequest
 import com.calimero.mero.api.models.IntentsRequest
-import com.calimero.mero.api.models.RecoveryStartRequest
+import com.calimero.mero.api.models.RecoveryStartBody
 import com.calimero.mero.api.models.ViewsRequest
 import com.calimero.mero.crypto.DeviceSigner
 import com.calimero.mero.crypto.Hex
@@ -1360,7 +1360,7 @@ class CalimeroClient(
         val account = me().accountId
         val nonce = b64url(randomBytes(16))
         val signature = signRecovery(seed, org, account, nonce)
-        val request = RecoveryStartRequest(nonce = nonce, signature = signature)
+        val request = RecoveryStartBody(nonce = nonce, signature = signature)
         return wire.decodeFromJsonElement(RecoveryTimes.serializer(), raw(defaultApi.organizations.recoveryStartRequestConfig(org, request)))
     }
 

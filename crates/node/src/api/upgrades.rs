@@ -717,11 +717,11 @@ async fn run_upgrade(
             restore_point,
         })
         .await?;
-    Ok(Json(json!({
-        "index": applied.index,
-        "status": applied.status,
-        "error": applied.error,
-        "compute": has_compute,
+    Ok(Json(json!(UpgradeApplied {
+        index: applied.index,
+        status: applied.status,
+        error: applied.error,
+        compute: has_compute,
     })))
 }
 
@@ -1982,17 +1982,102 @@ pub(crate) async fn update_view(
             a["approvedBy"] = json!(by);
         }
     }
-    json!({
-        "app": app.app_id,
-        "running": running.map(|r| json!({ "package": r.package, "version": r.version })),
-        "available": available,
-        "unit": !app.links.is_empty(),
-        "mayApprove": may_approve,
-        "approvers": approvers,
-        "policy": { "autoApply": policy.auto_apply, "holdHours": policy.hold_hours,
-            "secondApprover": policy.second_approver, "source": source },
-        "pendingApprovals": pending,
+    json!(UpdateView {
+        app: app.app_id.clone(),
+        running: running.map(|r| ReleaseRef {
+            package: r.package,
+            version: r.version,
+        }),
+        available,
+        unit: !app.links.is_empty(),
+        may_approve,
+        approvers: approvers.to_owned(),
+        policy: PolicyInForce {
+            auto_apply: policy.auto_apply,
+            hold_hours: policy.hold_hours,
+            second_approver: policy.second_approver,
+            source: source.to_owned(),
+        },
+        pending_approvals: pending,
+        deployment: app
+            .deployment
+            .as_ref()
+            .and_then(|d| node.sys(|s| s.deployment_shown(d))),
     })
+}
+
+/// What `POST /apps/{app}/upgrade` answers: the app log's entry, how it ended, the app's error
+/// (`null` when it ended `ok`) and whether the release ships a compute component.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct UpgradeApplied {
+    index: u64,
+    status: crate::app::Status,
+    error: Value,
+    compute: bool,
+}
+
+/// `GET /apps/{app}/update`: the release the instance runs, the update available to it (with
+/// the classifier's verdict), who may approve it, the policy in force and the live first
+/// approvals.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UpdateView {
+    app: String,
+    running: Option<ReleaseRef>,
+    available: Option<Value>,
+    unit: bool,
+    may_approve: bool,
+    approvers: String,
+    policy: PolicyInForce,
+    pending_approvals: Vec<PendingApprovalView>,
+    deployment: Option<Value>,
+}
+
+/// A release: its package and version.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ReleaseRef {
+    package: String,
+    version: String,
+}
+
+/// The update policy an instance follows, and where it comes from.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PolicyInForce {
+    auto_apply: crate::types::AutoApply,
+    hold_hours: u32,
+    second_approver: bool,
+    source: String,
+}
+
+/// A first approval of a red update waiting for its second (`#PendingApproval`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PendingApprovalView {
+    app: String,
+    package: String,
+    version: String,
+    targets: BTreeMap<String, crate::types::RunTarget>,
+    by: String,
+    at: u64,
+    expires_at: u64,
+    class: calimero_bundle::update::Class,
+    reasons: Vec<calimero_bundle::update::Reason>,
+}
+
+/// `GET /apps/{app}/egress`: where the instance's unit may send data now (`destinations`,
+/// `members`), and whether its egress switch is on.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EgressView {
+    #[serde(flatten)]
+    unit: crate::egress::UnitEgress,
+    app: String,
+    egress: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    off_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
 }
 
 /// Whether `account` may be shown the releases `app`'s members move to with its update to
@@ -2034,7 +2119,7 @@ pub(super) fn pending_approvals(
     s: &SystemState,
     app: &crate::types::AppRecord,
     now: u64,
-) -> Vec<Value> {
+) -> Vec<PendingApprovalView> {
     let Some(o) = s.orgs.get(&app.org) else {
         return Vec::new();
     };
@@ -2051,18 +2136,21 @@ pub(super) fn pending_approvals(
 /// A first approval `p` of `approved` as the API answers it (the `PendingApproval`
 /// schema): `pendingApprovals` lists these, and `POST /apps/{app}/upgrade-approvals`
 /// answers the one it logged.
-pub(super) fn approval_json(approved: &str, p: &crate::types::PendingApproval) -> Value {
-    json!({
-        "app": approved,
-        "package": p.package,
-        "version": p.version,
-        "targets": p.targets,
-        "by": p.by,
-        "at": p.at,
-        "expiresAt": p.at.saturating_add(crate::types::MAX_APPROVAL_AGE_SECS),
-        "class": p.class.class,
-        "reasons": p.class.reasons,
-    })
+pub(super) fn approval_json(
+    approved: &str,
+    p: &crate::types::PendingApproval,
+) -> PendingApprovalView {
+    PendingApprovalView {
+        app: approved.to_owned(),
+        package: p.package.clone(),
+        version: p.version.clone(),
+        targets: p.targets.clone(),
+        by: p.by.clone(),
+        at: p.at,
+        expires_at: p.at.saturating_add(crate::types::MAX_APPROVAL_AGE_SECS),
+        class: p.class.class,
+        reasons: p.class.reasons.clone(),
+    }
 }
 
 /// The app `app_id` for whoever `GET /apps/{app}` admits (`principal`, `within`,
@@ -2100,22 +2188,21 @@ async fn app_egress(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<EgressView>> {
     let (app, _p) = readable_app(&node, &headers, &app_id).await?;
     let placed = crate::egress::instance_unit(&node, &app).await?;
-    let mut out = placed.as_ref().map_or_else(
-        || json!({ "destinations": [], "members": {} }),
-        crate::egress::describe,
-    );
-    out["app"] = json!(app.app_id);
+    let described = placed
+        .as_ref()
+        .map_or_else(crate::egress::UnitEgress::default, crate::egress::describe);
     // The egress switch, over the destinations: off, none of them is reached.
     let off = node.sys(|s| s.egress_off(&app));
-    out["egress"] = json!(if off.is_some() { "off" } else { "on" });
-    if let Some(by) = off {
-        out["offBy"] = json!(by.wire());
-        out["summary"] = json!(crate::egress::NO_EGRESS);
-    }
-    Ok(Json(out))
+    Ok(Json(EgressView {
+        unit: described,
+        app: app.app_id.clone(),
+        egress: if off.is_some() { "off" } else { "on" }.to_owned(),
+        off_by: off.map(|by| by.wire().to_owned()),
+        summary: off.map(|_| crate::egress::NO_EGRESS.to_owned()),
+    }))
 }
 
 pub(super) fn routes() -> Router<Arc<Node>> {

@@ -272,8 +272,8 @@ from .openapi.models import AccountProofProveBody
 from .openapi.models import AccountRecoveryBeginBody
 from .openapi.models import AccountRecoveryFinishBody
 from .openapi.models import AccountRecoveryStartBody
-from .openapi.models import AccountSetBackupKeyBody
 from .openapi.models import AliasSetBody
+from .openapi.models import AllAppsBody
 from .openapi.models import ApikeyCreateBody
 from .openapi.models import AppAccessBody
 from .openapi.models import AppApproveUpgradeBody
@@ -281,19 +281,18 @@ from .openapi.models import AppCreateBody
 from .openapi.models import AppDelegateBody
 from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
-from .openapi.models import AppMetadataBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
-from .openapi.models import AppPolicySetBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppSetEgressBody
-from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
 from .openapi.models import AppUndoBody
 from .openapi.models import AppUnlinkBody
 from .openapi.models import AppUpgradeBody
 from .openapi.models import AppUpgradeUnitBody
 from .openapi.models import AttestationPurpose
+from .openapi.models import BackupKeyBody
+from .openapi.models import CapabilitiesBody
 from .openapi.models import ConfirmOnly
 from .openapi.models import ConsentPageCreateBodyType0
 from .openapi.models import ConsentPageCreateBodyType1
@@ -317,21 +316,18 @@ from .openapi.models import ConsentPageCreateBodyType6
 from .openapi.models import ConsentPageCreateBodyType7
 from .openapi.models import ConsentPageCreateBodyType8
 from .openapi.models import ConsentPageCreateBodyType9
-from .openapi.models import DeployerGrantBody
-from .openapi.models import DeploymentCreateBody
-from .openapi.models import DeploymentOfferBody
-from .openapi.models import DeploymentSecretSetBody
+from .openapi.models import DeployerBody
+from .openapi.models import DeploymentBody
+from .openapi.models import DeploymentSecretBody
 from .openapi.models import ExportsExportBody
 from .openapi.models import IntentsBody
-from .openapi.models import InviteCreateBody
+from .openapi.models import InviteBody
 from .openapi.models import LoginBeginBody
 from .openapi.models import LoginFinishBody
-from .openapi.models import MemberMetadataBody
-from .openapi.models import MemberRemoveTeamsBody
-from .openapi.models import MemberSetTeamsBody
+from .openapi.models import MemberBody
+from .openapi.models import MetadataBody
+from .openapi.models import OfferBody
 from .openapi.models import OpsClusterOwnerBody
-from .openapi.models import OpsDeployerGrantBody
-from .openapi.models import OpsOrgUpgradeBody
 from .openapi.models import OpsOutboundBody
 from .openapi.models import OpsPackageInstallBody
 from .openapi.models import OpsPoolsSetBody
@@ -346,19 +342,11 @@ from .openapi.models import OpsSetReplicasBody
 from .openapi.models import OpsSignUpInviteCreateBody
 from .openapi.models import OpsSignUpSetBody
 from .openapi.models import OpsUpgradeBody
-from .openapi.models import OrgAllAppsBody
-from .openapi.models import OrgCapabilitiesBody
-from .openapi.models import OrgCreateBody
+from .openapi.models import OrgBody
 from .openapi.models import OrgEgressBody
 from .openapi.models import OrgMembersDetail
-from .openapi.models import OrgMetadataBody
 from .openapi.models import OrgOutboundApprovalBody
-from .openapi.models import OrgPolicySetBody
-from .openapi.models import OrgPublisherBody
 from .openapi.models import OrgReleaseApprovalBody
-from .openapi.models import OrgRenameBody
-from .openapi.models import OrgSetBackupKeyBody
-from .openapi.models import OrgSetMemberBody
 from .openapi.models import OrgSettingsBody
 from .openapi.models import OrgUpgradeBody
 from .openapi.models import OrgUpgradeRetryBody
@@ -374,20 +362,26 @@ from .openapi.models import PipelinesValidateBody
 from .openapi.models import PresencePublishBody
 from .openapi.models import ProofOnly
 from .openapi.models import PublicLinkCreateBody
+from .openapi.models import PublisherBody
 from .openapi.models import PublisherUpgradeBody
 from .openapi.models import QuotaChanges
-from .openapi.models import RecoverySetBody
+from .openapi.models import RecoveryKeyBody
 from .openapi.models import RecoveryStartBody
 from .openapi.models import RefreshBody
 from .openapi.models import RegisterBeginBody
 from .openapi.models import RegisterFinishBody
+from .openapi.models import RenameOrgBody
 from .openapi.models import RestoreRecoverHolderBody
+from .openapi.models import ScopeAppsBody
 from .openapi.models import SignUpInviteCreateBody
 from .openapi.models import SignUpSetBody
-from .openapi.models import TeamCreateBody
+from .openapi.models import TeamBody
 from .openapi.models import TeamDeleteBody
-from .openapi.models import TeamSetMemberBody
+from .openapi.models import TeamIdsBody
+from .openapi.models import TeamMemberBody
+from .openapi.models import TeamRowsBody
 from .openapi.models import TeamUpdateBody
+from .openapi.models import UpgradePolicyBody
 from .openapi.models import UploadBeginBody
 from .openapi.models import ViewsBody
 from ._facade import UNSET, Group, Operation
@@ -562,7 +556,7 @@ _APP_LIST = Operation(
 _APP_METADATA = Operation(
     _app_metadata,
     "app_metadata",
-    body=AppMetadataBody,
+    body=MetadataBody,
     answer="json",
 )
 _APP_METHOD = Operation(
@@ -645,7 +639,7 @@ _APP_POLICY = Operation(
 _APP_POLICY_SET = Operation(
     _app_policy_set,
     "app_policy_set",
-    body=AppPolicySetBody,
+    body=UpgradePolicyBody,
     answer="json",
     confirm=True,
 )
@@ -823,7 +817,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppAbiResponse200
+        Returns: AppAbi
         """
         return self._run(_APP_ABI, (app,), {}, None)
 
@@ -855,7 +849,7 @@ class Apps(Group):
             unit: body `unit`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppApproveUpgradeResponse200
+        Returns: ApprovalLogged
         """
         return self._run(
             _APP_APPROVE_UPGRADE,
@@ -876,7 +870,7 @@ class Apps(Group):
             app: path
             nonce: query
 
-        Returns: AppAttestationResponse200
+        Returns: AppAttestations
         """
         return self._run(_APP_ATTESTATION, (app,), {"nonce": nonce}, None)
 
@@ -891,7 +885,7 @@ class Apps(Group):
             app: path
             id: path
 
-        Returns: BlobDeleteResponse200
+        Returns: Logged
         """
         return self._run(
             _BLOB_DELETE,
@@ -936,7 +930,7 @@ class Apps(Group):
             app: path
             id: path
 
-        Returns: BlobInfoResponse200
+        Returns: BlobView
         """
         return self._run(
             _BLOB_INFO,
@@ -958,7 +952,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: BlobListResponse200
+        Returns: BlobList
         """
         return self._run(_BLOB_LIST, (app,), {}, None)
 
@@ -973,7 +967,7 @@ class Apps(Group):
             app: path
             id: path
 
-        Returns: BlobRevokeResponse200
+        Returns: Logged
         """
         return self._run(
             _BLOB_REVOKE,
@@ -1000,7 +994,7 @@ class Apps(Group):
             body: the raw bytes
             content_type: the body's media type
 
-        Returns: BlobUploadResponse200
+        Returns: BlobStored
         """
         return self._run(
             _BLOB_UPLOAD, (app,), {"sealed": sealed}, body, content_type=content_type
@@ -1020,7 +1014,7 @@ class Apps(Group):
             idempotency_key: body `idempotencyKey`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: IntentsResponse200
+        Returns: IntentResult
         """
         return self._run(
             _INTENTS,
@@ -1064,7 +1058,7 @@ class Apps(Group):
             metadata: body `metadata`
             deployment: body `deployment`
 
-        Returns: AppCreateResponse200
+        Returns: AppCreated
         """
         return self._run(
             _APP_CREATE,
@@ -1097,7 +1091,7 @@ class Apps(Group):
             target: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppDelegateResponse200
+        Returns: DelegationMade
         """
         return self._run(
             _APP_DELEGATE,
@@ -1120,7 +1114,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppDelegationsResponse200
+        Returns: Delegations
         """
         return self._run(_APP_DELEGATIONS, (app,), {}, None)
 
@@ -1134,7 +1128,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppDeleteResponse200
+        Returns: AppDeleted
         """
         return self._run(_APP_DELETE, (app,), {}, None)
 
@@ -1148,7 +1142,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppEgressResponse200
+        Returns: EgressView
         """
         return self._run(_APP_EGRESS, (app,), {}, None)
 
@@ -1164,7 +1158,7 @@ class Apps(Group):
             id: path
             recipient: body `recipient`
 
-        Returns: ExportsExportResponse200
+        Returns: FileExport
         """
         return self._run(
             _EXPORTS_EXPORT,
@@ -1212,7 +1206,7 @@ class Apps(Group):
             app: path
             id: path
 
-        Returns: FileInfoResponse200
+        Returns: FileView
         """
         return self._run(
             _FILE_INFO,
@@ -1232,7 +1226,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: FilesListResponse200
+        Returns: FileList
         """
         return self._run(_FILES_LIST, (app,), {}, None)
 
@@ -1247,7 +1241,7 @@ class Apps(Group):
             app: path
             body: the raw bytes
 
-        Returns: FilesUploadResponse200
+        Returns: FileStored
         """
         return self._run(_FILES_UPLOAD, (app,), {}, body)
 
@@ -1281,7 +1275,7 @@ class Apps(Group):
             scope: body `scope`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppInviteCreateResponse200
+        Returns: AppInviteMade
         """
         return self._run(
             _APP_INVITE_CREATE,
@@ -1301,7 +1295,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppInviteListResponse200
+        Returns: AppInviteList
         """
         return self._run(_APP_INVITE_LIST, (app,), {}, None)
 
@@ -1343,7 +1337,7 @@ class Apps(Group):
             body_app: body `app`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppLinkResponse200
+        Returns: LinkRow
         """
         return self._run(
             _APP_LINK,
@@ -1366,7 +1360,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppLinksResponse200
+        Returns: AppLinkList
         """
         return self._run(_APP_LINKS, (app,), {}, None)
 
@@ -1381,7 +1375,7 @@ class Apps(Group):
             package: query
             bundle: query
 
-        Returns: AppListResponse200
+        Returns: AppList
         """
         return self._run(_APP_LIST, (), {"package": package, "bundle": bundle}, None)
 
@@ -1426,7 +1420,7 @@ class Apps(Group):
             min_index: body `minIndex`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppMethodResponse200
+        Returns: MethodResult
         """
         return self._run(
             _APP_METHOD,
@@ -1457,7 +1451,7 @@ class Apps(Group):
             bring_members: body `bringMembers`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppMoveResponse200
+        Returns: AppMoved
         """
         return self._run(
             _APP_MOVE,
@@ -1477,7 +1471,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppOpenapiResponse200
+        Returns: AppOpenApi
         """
         return self._run(_APP_OPENAPI, (app,), {}, None)
 
@@ -1491,7 +1485,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppOutboundLogResponse200
+        Returns: OutboundLog
         """
         return self._run(_APP_OUTBOUND_LOG, (app,), {}, None)
 
@@ -1507,7 +1501,7 @@ class Apps(Group):
             run: path
             version: query
 
-        Returns: PipelineReceiptReceiptResponse200
+        Returns: SignedPipelineReceipt
         """
         return self._run(
             _PIPELINE_RECEIPT_RECEIPT,
@@ -1530,7 +1524,7 @@ class Apps(Group):
             app: path
             run: path
 
-        Returns: PipelinesCancelResponse200
+        Returns: PipelineCancelled
         """
         return self._run(
             _PIPELINES_CANCEL,
@@ -1558,7 +1552,7 @@ class Apps(Group):
             counts: body `counts`
             params: body `params`
 
-        Returns: PipelinesEstimateRunResponse200
+        Returns: RunEstimate
         """
         return self._run(
             _PIPELINES_ESTIMATE_RUN,
@@ -1581,7 +1575,7 @@ class Apps(Group):
             app: path
             run: path
 
-        Returns: PipelinesGetResponse200
+        Returns: PipelineRunView
         """
         return self._run(
             _PIPELINES_GET,
@@ -1604,7 +1598,7 @@ class Apps(Group):
             app: path
             limit: query
 
-        Returns: PipelinesListResponse200
+        Returns: PipelineRunList
         """
         return self._run(_PIPELINES_LIST, (app,), {"limit": limit}, None)
 
@@ -1621,7 +1615,7 @@ class Apps(Group):
             limits: body `limits`
             max_cost: body `maxCost`
 
-        Returns: PipelinesRetryResponse200
+        Returns: PipelineStarted
         """
         return self._run(
             _PIPELINES_RETRY,
@@ -1647,7 +1641,7 @@ class Apps(Group):
             params: body `params`
             max_cost: body `maxCost`
 
-        Returns: PipelinesStartResponse200
+        Returns: PipelineStarted
         """
         return self._run(
             _PIPELINES_START,
@@ -1671,7 +1665,7 @@ class Apps(Group):
             package: body `package`
             version: body `version`
 
-        Returns: PipelinesValidateResponse200
+        Returns: PipelineValidation
         """
         return self._run(
             _PIPELINES_VALIDATE,
@@ -1722,7 +1716,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: PresenceGetResponse200
+        Returns: PresenceList
         """
         return self._run(_PRESENCE_GET, (app,), {}, None)
 
@@ -1758,7 +1752,7 @@ class Apps(Group):
             rate_per_minute: body `ratePerMinute`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: PublicLinkCreateResponse200
+        Returns: PublicLinkMade
         """
         return self._run(
             _PUBLIC_LINK_CREATE,
@@ -1778,7 +1772,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: PublicLinkListResponse200
+        Returns: PublicLinks
         """
         return self._run(_PUBLIC_LINK_LIST, (app,), {}, None)
 
@@ -1841,7 +1835,7 @@ class Apps(Group):
             app: path
             run: path
 
-        Returns: AppRunLogsResponse200
+        Returns: RunLogs
         """
         return self._run(
             _APP_RUN_LOGS,
@@ -1865,7 +1859,7 @@ class Apps(Group):
             limit: query
             before: query
 
-        Returns: AppRunsResponse200
+        Returns: RunList
         """
         return self._run(_APP_RUNS, (app,), {"limit": limit, "before": before}, None)
 
@@ -1881,7 +1875,7 @@ class Apps(Group):
             name: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppSecretClearResponse200
+        Returns: SecretCleared
         """
         return self._run(
             _APP_SECRET_CLEAR,
@@ -1907,7 +1901,7 @@ class Apps(Group):
             value: body `value`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppSecretSetResponse200
+        Returns: SecretSet
         """
         return self._run(
             _APP_SECRET_SET,
@@ -1930,7 +1924,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppSecretsResponse200
+        Returns: AppSecrets
         """
         return self._run(_APP_SECRETS, (app,), {}, None)
 
@@ -1946,7 +1940,7 @@ class Apps(Group):
             egress: body `egress`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppSetEgressResponse200
+        Returns: EgressSet
         """
         return self._run(
             _APP_SET_EGRESS, (app,), {}, {"egress": egress}, confirm=confirm
@@ -1962,7 +1956,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppStorageResponse200
+        Returns: AppStorage
         """
         return self._run(_APP_STORAGE, (app,), {}, None)
 
@@ -2016,7 +2010,7 @@ class Apps(Group):
             app: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppUndoResponse200
+        Returns: UndoDone
         """
         return self._run(_APP_UNDO, (app,), {}, {}, confirm=confirm)
 
@@ -2030,7 +2024,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppUndoViewResponse200
+        Returns: UndoView
         """
         return self._run(_APP_UNDO_VIEW, (app,), {}, None)
 
@@ -2062,14 +2056,14 @@ class Apps(Group):
     def update(self, *, app):
         """Whether an update is available for an app (`GET /apps/{app}/update`, `app_update`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
 
-        Returns: AppUpdateResponse200
+        Returns: UpdateView
         """
         return self._run(_APP_UPDATE, (app,), {}, None)
 
@@ -2099,7 +2093,7 @@ class Apps(Group):
             migrate: body `migrate`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppUpgradeResponse200
+        Returns: UpgradeApplied
         """
         return self._run(
             _APP_UPGRADE,
@@ -2165,7 +2159,7 @@ class Apps(Group):
             app: path
             size: body `size`
 
-        Returns: UploadBeginResponse200
+        Returns: UploadView
         """
         return self._run(_UPLOAD_BEGIN, (app,), {}, {"size": size})
 
@@ -2180,7 +2174,7 @@ class Apps(Group):
             app: path
             upload: path
 
-        Returns: UploadCompleteResponse200
+        Returns: FileStored
         """
         return self._run(
             _UPLOAD_COMPLETE,
@@ -2205,7 +2199,7 @@ class Apps(Group):
             k: path
             body: the raw bytes
 
-        Returns: UploadPartResponse200
+        Returns: PartTaken
         """
         return self._run(
             _UPLOAD_PART,
@@ -2227,7 +2221,7 @@ class Apps(Group):
             app: path
             upload: path
 
-        Returns: UploadStatusResponse200
+        Returns: UploadStatus
         """
         return self._run(
             _UPLOAD_STATUS,
@@ -2249,7 +2243,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppUsageResponse200
+        Returns: AppUsage
         """
         return self._run(_APP_USAGE, (app,), {}, None)
 
@@ -2267,7 +2261,7 @@ class Apps(Group):
             consistency: body `consistency`
             min_index: body `minIndex`
 
-        Returns: ViewsResponse200
+        Returns: ViewResult
         """
         return self._run(
             _VIEWS,
@@ -2291,7 +2285,7 @@ class Apps(Group):
         Args:
             app: path
 
-        Returns: AppXcallsResponse200
+        Returns: XcallsReport
         """
         return self._run(_APP_XCALLS, (app,), {}, None)
 
@@ -2346,7 +2340,7 @@ _ACCOUNT_RECOVERY_START = Operation(
 _ACCOUNT_SET_BACKUP_KEY = Operation(
     _account_set_backup_key,
     "account_set_backup_key",
-    body=AccountSetBackupKeyBody,
+    body=BackupKeyBody,
     answer="json",
     confirm=True,
 )
@@ -2495,7 +2489,7 @@ class Auth(Group):
             after: query
             limit: query
 
-        Returns: AccountAppsResponse200
+        Returns: AppsReport
         """
         return self._run(_ACCOUNT_APPS, (), {"after": after, "limit": limit}, None)
 
@@ -2537,7 +2531,7 @@ class Auth(Group):
         Args:
             code: body `code`
 
-        Returns: AccountRecoveryBeginResponse200
+        Returns: PasskeyChallenge
         """
         return self._run(_ACCOUNT_RECOVERY_BEGIN, (), {}, {"code": code})
 
@@ -2584,7 +2578,7 @@ class Auth(Group):
             code: body `code`
             registration: body `registration`
 
-        Returns: AccountRecoveryStartResponse200
+        Returns: AccountRecoveryPending
         """
         return self._run(
             _ACCOUNT_RECOVERY_START,
@@ -2620,7 +2614,7 @@ class Auth(Group):
         Args:
             after: query
 
-        Returns: ActivityListResponse200
+        Returns: ActivityList
         """
         return self._run(_ACTIVITY_LIST, (), {"after": after}, None)
 
@@ -2644,7 +2638,7 @@ class Auth(Group):
         Args:
             alias: path
 
-        Returns: AliasGetResponse200
+        Returns: AliasView
         """
         return self._run(_ALIAS_GET, (alias,), {}, None)
 
@@ -2653,7 +2647,7 @@ class Auth(Group):
 
         **Who:** signed in (a session or an API key).
 
-        Returns: AliasListResponse200
+        Returns: AliasList
         """
         return self._run(_ALIAS_LIST, (), {}, None)
 
@@ -2700,7 +2694,7 @@ class Auth(Group):
             then: body `then`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: ApikeyCreateResponse200
+        Returns: ApiKeyMade
         """
         return self._run(
             _APIKEY_CREATE,
@@ -2724,7 +2718,7 @@ class Auth(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: ApikeyListResponse200
+        Returns: ApiKeyList
         """
         return self._run(_APIKEY_LIST, (), {}, None)
 
@@ -2751,7 +2745,7 @@ class Auth(Group):
         Args:
             origin: body `origin`
 
-        Returns: LoginBeginResponse200
+        Returns: PasskeyChallenge
         """
         return self._run(_LOGIN_BEGIN, (), {}, {"origin": origin})
 
@@ -2786,7 +2780,7 @@ class Auth(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: LogoutAllResponse200
+        Returns: SessionsRevoked
         """
         return self._run(_LOGOUT_ALL, (), {}, None)
 
@@ -2797,7 +2791,7 @@ class Auth(Group):
 
         **Who:** signed in (a session or an API key).
 
-        Returns: MeResponse200
+        Returns: AccountView
         """
         return self._run(_ME, (), {}, None)
 
@@ -2808,7 +2802,7 @@ class Auth(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: PasskeyAddBeginResponse200
+        Returns: PasskeyChallenge
         """
         return self._run(_PASSKEY_ADD_BEGIN, (), {}, None)
 
@@ -2824,7 +2818,7 @@ class Auth(Group):
             registration: body `registration`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: PasskeyAddFinishResponse200
+        Returns: PasskeyAdded
         """
         return self._run(
             _PASSKEY_ADD_FINISH,
@@ -2872,7 +2866,7 @@ class Auth(Group):
         Args:
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: RecoveryCreateResponse200
+        Returns: RecoveryCode
         """
         return self._run(_RECOVERY_CREATE, (), {}, {}, confirm=confirm)
 
@@ -2914,7 +2908,7 @@ class Auth(Group):
             origin: body `origin`
             invite: body `invite`
 
-        Returns: RegisterBeginResponse200
+        Returns: PasskeyChallenge
         """
         return self._run(
             _REGISTER_BEGIN, (), {}, {"name": name, "origin": origin, "invite": invite}
@@ -2970,7 +2964,7 @@ class Auth(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: SessionsListResponse200
+        Returns: SessionList
         """
         return self._run(_SESSIONS_LIST, (), {}, None)
 
@@ -2981,7 +2975,7 @@ class Auth(Group):
 
         **Who:** signed in (a session or an API key).
 
-        Returns: UsageResponse200
+        Returns: AccountUsage
         """
         return self._run(_USAGE, (), {}, None)
 
@@ -3036,7 +3030,7 @@ class Consent(Group):
         Args:
             body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType16, ConsentPageCreateBodyType17, ConsentPageCreateBodyType18, ConsentPageCreateBodyType19, ConsentPageCreateBodyType2, ConsentPageCreateBodyType20, ConsentPageCreateBodyType21, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
 
-        Returns: ConsentPageCreateResponse200
+        Returns: ConsentRequestMade
         """
         return self._run(_CONSENT_PAGE_CREATE, (), {}, body)
 
@@ -3050,7 +3044,7 @@ class Consent(Group):
         Args:
             request: path
 
-        Returns: ConsentPageResultResponse200
+        Returns: ConsentResult
         """
         return self._run(_CONSENT_PAGE_RESULT, (request,), {}, None)
 
@@ -3058,7 +3052,7 @@ class Consent(Group):
 _DEPLOYMENT_CREATE = Operation(
     _deployment_create,
     "deployment_create",
-    body=DeploymentCreateBody,
+    body=DeploymentBody,
     answer="json",
     confirm=True,
 )
@@ -3070,11 +3064,7 @@ _DEPLOYMENT_DELETE = Operation(
     confirm=True,
 )
 _DEPLOYER_GRANT = Operation(
-    _deployer_grant,
-    "deployer_grant",
-    body=DeployerGrantBody,
-    answer="json",
-    confirm=True,
+    _deployer_grant, "deployer_grant", body=DeployerBody, answer="json", confirm=True
 )
 _DEPLOYER_LIST = Operation(
     _deployer_list,
@@ -3098,11 +3088,7 @@ _DEPLOYMENT_LIST = Operation(
     answer="json",
 )
 _DEPLOYMENT_OFFER = Operation(
-    _deployment_offer,
-    "deployment_offer",
-    body=DeploymentOfferBody,
-    answer="json",
-    confirm=True,
+    _deployment_offer, "deployment_offer", body=OfferBody, answer="json", confirm=True
 )
 _DEPLOYMENT_ORGS = Operation(
     _deployment_orgs,
@@ -3120,7 +3106,7 @@ _DEPLOYMENT_SECRET_CLEAR = Operation(
 _DEPLOYMENT_SECRET_SET = Operation(
     _deployment_secret_set,
     "deployment_secret_set",
-    body=DeploymentSecretSetBody,
+    body=DeploymentSecretBody,
     answer="json",
     confirm=True,
 )
@@ -3183,7 +3169,7 @@ class Deployments(Group):
             owner: body `owner`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentCreateResponse200
+        Returns: DeploymentCreated
         """
         return self._run(
             _DEPLOYMENT_CREATE, (), {}, {"name": name, "owner": owner}, confirm=confirm
@@ -3198,7 +3184,7 @@ class Deployments(Group):
             id: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentDeleteResponse200
+        Returns: DeploymentDeleted
         """
         return self._run(_DEPLOYMENT_DELETE, (id,), {}, {}, confirm=confirm)
 
@@ -3214,7 +3200,7 @@ class Deployments(Group):
             until: body `until`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeployerGrantResponse200
+        Returns: DeployerGranted
         """
         return self._run(
             _DEPLOYER_GRANT,
@@ -3231,7 +3217,7 @@ class Deployments(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: DeployerListResponse200
+        Returns: DeployerList
         """
         return self._run(_DEPLOYER_LIST, (), {}, None)
 
@@ -3244,7 +3230,7 @@ class Deployments(Group):
             key: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeployerRevokeResponse200
+        Returns: DeployerRevoked
         """
         return self._run(_DEPLOYER_REVOKE, (key,), {}, {}, confirm=confirm)
 
@@ -3258,7 +3244,7 @@ class Deployments(Group):
         Args:
             id: path
 
-        Returns: DeploymentGetResponse200
+        Returns: PublicDeployment
         """
         return self._run(_DEPLOYMENT_GET, (id,), {}, None)
 
@@ -3269,7 +3255,7 @@ class Deployments(Group):
 
         **Who:** signed in (a session or an API key).
 
-        Returns: DeploymentListResponse200
+        Returns: DeploymentList
         """
         return self._run(_DEPLOYMENT_LIST, (), {}, None)
 
@@ -3285,7 +3271,7 @@ class Deployments(Group):
             version: body `version`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentOfferResponse200
+        Returns: AppOffered
         """
         return self._run(
             _DEPLOYMENT_OFFER,
@@ -3305,7 +3291,7 @@ class Deployments(Group):
         Args:
             id: path
 
-        Returns: DeploymentOrgsResponse200
+        Returns: DeploymentOrgs
         """
         return self._run(_DEPLOYMENT_ORGS, (id,), {}, None)
 
@@ -3321,7 +3307,7 @@ class Deployments(Group):
             name: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentSecretClearResponse200
+        Returns: DeploymentSecretCleared
         """
         return self._run(
             _DEPLOYMENT_SECRET_CLEAR,
@@ -3347,7 +3333,7 @@ class Deployments(Group):
             value: body `value`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentSecretSetResponse200
+        Returns: DeploymentSecretSet
         """
         return self._run(
             _DEPLOYMENT_SECRET_SET,
@@ -3370,7 +3356,7 @@ class Deployments(Group):
         Args:
             id: path
 
-        Returns: DeploymentSecretsResponse200
+        Returns: DeploymentSecrets
         """
         return self._run(_DEPLOYMENT_SECRETS, (id,), {}, None)
 
@@ -3384,7 +3370,7 @@ class Deployments(Group):
             ttl_secs: body `ttlSecs`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: SignUpInviteCreateResponse200
+        Returns: SignUpInviteMade
         """
         return self._run(
             _SIGN_UP_INVITE_CREATE,
@@ -3399,7 +3385,7 @@ class Deployments(Group):
 
         **Who:** an account holder (a passkey session not bound to an app's frontend).
 
-        Returns: SignUpInviteListResponse200
+        Returns: SignUpInviteList
         """
         return self._run(_SIGN_UP_INVITE_LIST, (), {}, None)
 
@@ -3423,7 +3409,7 @@ class Deployments(Group):
 
         **Who:** anyone.
 
-        Returns: SignUpPublicResponse200
+        Returns: SignUpPublic
         """
         return self._run(_SIGN_UP_PUBLIC, (), {}, None)
 
@@ -3452,7 +3438,7 @@ class Deployments(Group):
             app: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: DeploymentWithdrawResponse200
+        Returns: AppWithdrawn
         """
         return self._run(
             _DEPLOYMENT_WITHDRAW,
@@ -3500,7 +3486,7 @@ _OPS_CLUSTER_OWNER = Operation(
 _OPS_DEPLOYER_GRANT = Operation(
     _ops_deployer_grant,
     "ops_deployer_grant",
-    body=OpsDeployerGrantBody,
+    body=DeployerBody,
     answer="json",
     operator=True,
 )
@@ -3540,7 +3526,7 @@ _OPS_METRICS = Operation(
 _OPS_ORG_UPGRADE = Operation(
     _ops_org_upgrade,
     "ops_org_upgrade",
-    body=OpsOrgUpgradeBody,
+    body=OrgUpgradeBody,
     answer="json",
     operator=True,
 )
@@ -3753,7 +3739,7 @@ class Ops(Group):
             after: query
             limit: query
 
-        Returns: OpsAppsResponse200
+        Returns: OpsApps
         """
         return self._run(_OPS_APPS, (), {"after": after, "limit": limit}, None)
 
@@ -3767,7 +3753,7 @@ class Ops(Group):
         Args:
             all_: query
 
-        Returns: OpsBackupResponse200
+        Returns: BackupWritten
         """
         return self._run(_OPS_BACKUP, (), {"all_": all_}, None)
 
@@ -3789,7 +3775,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsClusterResponse200
+        Returns: ClusterIdentity
         """
         return self._run(_OPS_CLUSTER, (), {}, None)
 
@@ -3804,7 +3790,7 @@ class Ops(Group):
             owner: body `owner`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsClusterOwnerResponse200
+        Returns: ClusterOwnerNamed
         """
         return self._run(
             _OPS_CLUSTER_OWNER, (), {}, {"owner": owner}, operator_proof=operator_proof
@@ -3822,7 +3808,7 @@ class Ops(Group):
             until: body `until`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsDeployerGrantResponse200
+        Returns: DeployerGranted
         """
         return self._run(
             _OPS_DEPLOYER_GRANT,
@@ -3841,7 +3827,7 @@ class Ops(Group):
             key: path
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsDeployerRevokeDeleteResponse200
+        Returns: DeployerRevoked
         """
         return self._run(
             _OPS_DEPLOYER_REVOKE_DELETE, (key,), {}, {}, operator_proof=operator_proof
@@ -3858,7 +3844,7 @@ class Ops(Group):
             key: path
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsDeployerRevokePostResponse200
+        Returns: DeployerRevoked
         """
         return self._run(
             _OPS_DEPLOYER_REVOKE_POST, (key,), {}, {}, operator_proof=operator_proof
@@ -3874,7 +3860,7 @@ class Ops(Group):
         Args:
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsDeploymentsGrantedResponse200
+        Returns: GovernanceSet
         """
         return self._run(
             _OPS_DEPLOYMENTS_GRANTED, (), {}, {}, operator_proof=operator_proof
@@ -3890,7 +3876,7 @@ class Ops(Group):
         Args:
             id: path
 
-        Returns: ForwardRef('OpsJobNodeAttestationResponse200Type0') | ForwardRef('OpsJobNodeAttestationResponse200Type1')
+        Returns: ForwardRef('JobNodeVerdictType0') | ForwardRef('JobNodeVerdictType1')
         """
         return self._run(_OPS_JOB_NODE_ATTESTATION, (id,), {}, None)
 
@@ -3954,7 +3940,7 @@ class Ops(Group):
             after: query
             limit: query
 
-        Returns: OpsOrgsResponse200
+        Returns: OpsOrgs
         """
         return self._run(_OPS_ORGS, (), {"after": after, "limit": limit}, None)
 
@@ -3990,7 +3976,7 @@ class Ops(Group):
             package: body `package`
             version: body `version`
 
-        Returns: OpsPackageInstallResponse200
+        Returns: PackageInstalled
         """
         return self._run(
             _OPS_PACKAGE_INSTALL, (), {}, {"package": package, "version": version}
@@ -4001,7 +3987,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsPackageListResponse200
+        Returns: PackageList
         """
         return self._run(_OPS_PACKAGE_LIST, (), {}, None)
 
@@ -4025,7 +4011,7 @@ class Ops(Group):
         Args:
             body: the raw bytes
 
-        Returns: OpsPackageUploadResponse200
+        Returns: PackageInstalled
         """
         return self._run(_OPS_PACKAGE_UPLOAD, (), {}, body)
 
@@ -4057,7 +4043,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsPlacementResponse200
+        Returns: Placement
         """
         return self._run(_OPS_PLACEMENT, (), {}, None)
 
@@ -4068,7 +4054,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsPoolsGetResponse200
+        Returns: OpsPools
         """
         return self._run(_OPS_POOLS_GET, (), {}, None)
 
@@ -4096,7 +4082,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsPricesGetResponse200
+        Returns: PriceTableView
         """
         return self._run(_OPS_PRICES_GET, (), {}, None)
 
@@ -4203,7 +4189,7 @@ class Ops(Group):
         Args:
             id: path
 
-        Returns: OpsReceiptKeyResponse200
+        Returns: ReceiptKey
         """
         return self._run(_OPS_RECEIPT_KEY, (id,), {}, None)
 
@@ -4218,7 +4204,7 @@ class Ops(Group):
             system: body `system`
             code: body `code`
 
-        Returns: OpsRecoverResponse200
+        Returns: SystemRecovered
         """
         return self._run(_OPS_RECOVER, (), {}, {"system": system, "code": code})
 
@@ -4232,7 +4218,7 @@ class Ops(Group):
         Args:
             holder: query
 
-        Returns: OpsRecoveryFilesResponse200
+        Returns: RecoveryFiles
         """
         return self._run(_OPS_RECOVERY_FILES, (), {"holder": holder}, None)
 
@@ -4337,7 +4323,7 @@ class Ops(Group):
             id: path
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsRemoveNodeResponse200
+        Returns: NodeRemoved
         """
         return self._run(_OPS_REMOVE_NODE, (id,), {}, {}, operator_proof=operator_proof)
 
@@ -4354,7 +4340,7 @@ class Ops(Group):
             recovery: body `recovery`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsRestoreResponse200
+        Returns: AppRestored
         """
         return self._run(
             _OPS_RESTORE,
@@ -4371,7 +4357,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsServedResponse200
+        Returns: ServedOrigins
         """
         return self._run(_OPS_SERVED, (), {}, None)
 
@@ -4408,7 +4394,7 @@ class Ops(Group):
             replicas: body `replicas`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsSetReplicasResponse200
+        Returns: ReplicasSet
         """
         return self._run(
             _OPS_SET_REPLICAS,
@@ -4446,7 +4432,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsSignUpInviteListResponse200
+        Returns: SignUpInviteList
         """
         return self._run(_OPS_SIGN_UP_INVITE_LIST, (), {}, None)
 
@@ -4514,7 +4500,7 @@ class Ops(Group):
 
         **Who:** the ops token.
 
-        Returns: OpsStatusResponse200
+        Returns: OpsStatus
         """
         return self._run(_OPS_STATUS, (), {}, None)
 
@@ -4544,7 +4530,7 @@ class Ops(Group):
             migrate: body `migrate`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: OpsUpgradeResponse200
+        Returns: UpgradeApplied
         """
         return self._run(
             _OPS_UPGRADE,
@@ -4562,7 +4548,7 @@ class Ops(Group):
 
 
 _ORG_ALL_APPS = Operation(
-    _org_all_apps, "org_all_apps", body=OrgAllAppsBody, answer="json", confirm=True
+    _org_all_apps, "org_all_apps", body=AllAppsBody, answer="json", confirm=True
 )
 _APP_TEAM_LIST = Operation(
     _app_team_list,
@@ -4571,11 +4557,7 @@ _APP_TEAM_LIST = Operation(
     answer="json",
 )
 _APP_TEAMS_SCOPE = Operation(
-    _app_teams_scope,
-    "app_teams_scope",
-    body=AppTeamsScopeBody,
-    answer="json",
-    confirm=True,
+    _app_teams_scope, "app_teams_scope", body=ScopeAppsBody, answer="json", confirm=True
 )
 _ORG_APPS = Operation(
     _org_apps,
@@ -4592,14 +4574,14 @@ _ORG_BACKUP_KEY = Operation(
 _ORG_CAPABILITIES = Operation(
     _org_capabilities,
     "org_capabilities",
-    body=OrgCapabilitiesBody,
+    body=CapabilitiesBody,
     answer="json",
     confirm=True,
 )
 _ORG_CREATE = Operation(
     _org_create,
     "org_create",
-    body=OrgCreateBody,
+    body=OrgBody,
     answer="json",
 )
 _ORG_DELETE = Operation(
@@ -4615,7 +4597,7 @@ _ORG_GET = Operation(
     answer="json",
 )
 _INVITE_CREATE = Operation(
-    _invite_create, "invite_create", body=InviteCreateBody, answer="json", confirm=True
+    _invite_create, "invite_create", body=InviteBody, answer="json", confirm=True
 )
 _INVITE_LIST = Operation(
     _invite_list,
@@ -4635,20 +4617,20 @@ _INVITE_REVOKE = Operation(
 _MEMBER_METADATA = Operation(
     _member_metadata,
     "member_metadata",
-    body=MemberMetadataBody,
+    body=MetadataBody,
     answer="json",
 )
 _MEMBER_REMOVE_TEAMS = Operation(
     _member_remove_teams,
     "member_remove_teams",
-    body=MemberRemoveTeamsBody,
+    body=TeamIdsBody,
     answer="json",
     confirm=True,
 )
 _MEMBER_SET_TEAMS = Operation(
     _member_set_teams,
     "member_set_teams",
-    body=MemberSetTeamsBody,
+    body=TeamRowsBody,
     answer="json",
     confirm=True,
 )
@@ -4661,7 +4643,7 @@ _ORG_MEMBERS = Operation(
 _ORG_METADATA = Operation(
     _org_metadata,
     "org_metadata",
-    body=OrgMetadataBody,
+    body=MetadataBody,
     answer="json",
 )
 _ORG_OUTBOUND_APPROVAL = Operation(
@@ -4680,12 +4662,12 @@ _ORG_POLICY = Operation(
 _ORG_POLICY_SET = Operation(
     _org_policy_set,
     "org_policy_set",
-    body=OrgPolicySetBody,
+    body=UpgradePolicyBody,
     answer="json",
     confirm=True,
 )
 _ORG_PUBLISHER = Operation(
-    _org_publisher, "org_publisher", body=OrgPublisherBody, answer="json", confirm=True
+    _org_publisher, "org_publisher", body=PublisherBody, answer="json", confirm=True
 )
 _PUBLISHER_UPGRADE = Operation(
     _publisher_upgrade,
@@ -4701,7 +4683,7 @@ _RECOVERY_FINISH = Operation(
     _recovery_finish, "recovery_finish", body=ConfirmOnly, answer="json", confirm=True
 )
 _RECOVERY_SET = Operation(
-    _recovery_set, "recovery_set", body=RecoverySetBody, answer="json", confirm=True
+    _recovery_set, "recovery_set", body=RecoveryKeyBody, answer="json", confirm=True
 )
 _RECOVERY_START = Operation(
     _recovery_start,
@@ -4724,21 +4706,17 @@ _ORG_REMOVE_MEMBER = Operation(
     confirm=True,
 )
 _ORG_RENAME = Operation(
-    _org_rename, "org_rename", body=OrgRenameBody, answer="json", confirm=True
+    _org_rename, "org_rename", body=RenameOrgBody, answer="json", confirm=True
 )
 _ORG_SET_BACKUP_KEY = Operation(
     _org_set_backup_key,
     "org_set_backup_key",
-    body=OrgSetBackupKeyBody,
+    body=BackupKeyBody,
     answer="json",
     confirm=True,
 )
 _ORG_SET_MEMBER = Operation(
-    _org_set_member,
-    "org_set_member",
-    body=OrgSetMemberBody,
-    answer="json",
-    confirm=True,
+    _org_set_member, "org_set_member", body=MemberBody, answer="json", confirm=True
 )
 _ORG_SETTINGS = Operation(
     _org_settings, "org_settings", body=OrgSettingsBody, answer="json", confirm=True
@@ -4746,7 +4724,7 @@ _ORG_SETTINGS = Operation(
 _TEAM_CREATE = Operation(
     _team_create,
     "team_create",
-    body=TeamCreateBody,
+    body=TeamBody,
     answer="json",
 )
 _TEAM_DELETE = Operation(
@@ -4768,7 +4746,7 @@ _TEAM_REMOVE_MEMBER = Operation(
 _TEAM_SET_MEMBER = Operation(
     _team_set_member,
     "team_set_member",
-    body=TeamSetMemberBody,
+    body=TeamMemberBody,
     answer="json",
     confirm=True,
 )
@@ -4845,7 +4823,7 @@ class Orgs(Group):
         Args:
             org: path
 
-        Returns: AppTeamListResponse200
+        Returns: AppTeamList
         """
         return self._run(_APP_TEAM_LIST, (org,), {}, None)
 
@@ -4862,7 +4840,7 @@ class Orgs(Group):
             shared: body `shared`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: AppTeamsScopeResponse200
+        Returns: AppTeamsScoped
         """
         return self._run(
             _APP_TEAMS_SCOPE,
@@ -4884,7 +4862,7 @@ class Orgs(Group):
             after: query
             limit: query
 
-        Returns: OrgAppsResponse200
+        Returns: AppsReport
         """
         return self._run(_ORG_APPS, (org,), {"after": after, "limit": limit}, None)
 
@@ -4940,7 +4918,7 @@ class Orgs(Group):
             recovery_key: body `recoveryKey`
             capabilities: body `capabilities`
 
-        Returns: OrgCreateResponse200
+        Returns: OrgCreated
         """
         return self._run(
             _ORG_CREATE,
@@ -4960,7 +4938,7 @@ class Orgs(Group):
             org: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgDeleteResponse200
+        Returns: OrgDeleted
         """
         return self._run(_ORG_DELETE, (org,), {}, {}, confirm=confirm)
 
@@ -4976,7 +4954,7 @@ class Orgs(Group):
             egress: body `egress`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgEgressResponse200
+        Returns: EgressSet
         """
         return self._run(_ORG_EGRESS, (org,), {}, {"egress": egress}, confirm=confirm)
 
@@ -5022,7 +5000,7 @@ class Orgs(Group):
             capabilities: body `capabilities`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: InviteCreateResponse200
+        Returns: InviteMade
         """
         return self._run(
             _INVITE_CREATE,
@@ -5049,7 +5027,7 @@ class Orgs(Group):
         Args:
             org: path
 
-        Returns: InviteListResponse200
+        Returns: InviteList
         """
         return self._run(_INVITE_LIST, (org,), {}, None)
 
@@ -5063,7 +5041,7 @@ class Orgs(Group):
         Args:
             token: path
 
-        Returns: InviteRedeemResponse200
+        Returns: InviteRedeemed
         """
         return self._run(_INVITE_REDEEM, (token,), {}, None)
 
@@ -5177,7 +5155,7 @@ class Orgs(Group):
             org: path
             detail: query
 
-        Returns: OrgMembersResponse200
+        Returns: MemberSecurityList
         """
         return self._run(
             _ORG_MEMBERS,
@@ -5273,7 +5251,7 @@ class Orgs(Group):
             signature: body `signature`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgPublisherResponse200
+        Returns: PublisherBound
         """
         return self._run(
             _ORG_PUBLISHER,
@@ -5336,7 +5314,7 @@ class Orgs(Group):
             org: path
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: RecoveryFinishResponse200
+        Returns: RecoveryFinished
         """
         return self._run(_RECOVERY_FINISH, (org,), {}, {}, confirm=confirm)
 
@@ -5370,7 +5348,7 @@ class Orgs(Group):
             nonce: body `nonce`
             signature: body `signature`
 
-        Returns: RecoveryStartResponse200
+        Returns: RecoveryStarted
         """
         return self._run(
             _RECOVERY_START, (org,), {}, {"nonce": nonce, "signature": signature}
@@ -5436,7 +5414,7 @@ class Orgs(Group):
             name: body `name`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgRenameResponse200
+        Returns: OrgRenamed
         """
         return self._run(_ORG_RENAME, (org,), {}, {"name": name}, confirm=confirm)
 
@@ -5496,7 +5474,7 @@ class Orgs(Group):
             allow_public_links: body `allowPublicLinks`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OrgSettingsResponse200
+        Returns: OrgSettingsSet
         """
         return self._run(
             _ORG_SETTINGS,
@@ -5519,7 +5497,7 @@ class Orgs(Group):
             parent: body `parent`
             join: body `join`
 
-        Returns: TeamCreateResponse200
+        Returns: TeamCreated
         """
         return self._run(
             _TEAM_CREATE, (org,), {}, {"name": name, "parent": parent, "join": join}
@@ -5538,7 +5516,7 @@ class Orgs(Group):
             keep_apps: body `keepApps`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: TeamDeleteResponse200
+        Returns: TeamDeleted
         """
         return self._run(
             _TEAM_DELETE,
@@ -5683,7 +5661,7 @@ class Orgs(Group):
             org: path
             after: query
 
-        Returns: OrgUpdatesResponse200
+        Returns: OrgUpdates
         """
         return self._run(_ORG_UPDATES, (org,), {"after": after}, None)
 
@@ -5789,7 +5767,7 @@ class Orgs(Group):
         Args:
             org: path
 
-        Returns: OrgUsageResponse200
+        Returns: OrgUsage
         """
         return self._run(_ORG_USAGE, (org,), {}, None)
 
@@ -5879,7 +5857,7 @@ class Packages(Group):
         Args:
             body: the raw bytes
 
-        Returns: BundlePutResponse200
+        Returns: BundleStored
         """
         return self._run(_BUNDLE_PUT, (), {}, body)
 
@@ -5895,7 +5873,7 @@ class Packages(Group):
             version: path
             service: query
 
-        Returns: PackageCapabilitiesResponse200
+        Returns: CapabilityCard
         """
         return self._run(
             _PACKAGE_CAPABILITIES,
@@ -5924,7 +5902,7 @@ class Packages(Group):
     def install(self, *, package, version, org=UNSET):
         """Install a release from the registry (`POST /packages/install`, `package_install`).
 
-        For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+        For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
 
         **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -5933,7 +5911,7 @@ class Packages(Group):
             version: body `version`
             org: body `org`
 
-        Returns: PackageInstallResponse200
+        Returns: PackageInstalled
         """
         return self._run(
             _PACKAGE_INSTALL,
@@ -5949,7 +5927,7 @@ class Packages(Group):
 
         **Who:** signed in (a session or an API key).
 
-        Returns: PackageListResponse200
+        Returns: PackageList
         """
         return self._run(_PACKAGE_LIST, (), {}, None)
 
@@ -5987,7 +5965,7 @@ class Packages(Group):
         Args:
             package: path
 
-        Returns: OriginsListResponse200
+        Returns: OriginList
         """
         return self._run(_ORIGINS_LIST, (package,), {}, None)
 
@@ -6001,7 +5979,7 @@ class Packages(Group):
             origin: body `origin`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
-        Returns: OriginsRemoveResponse200
+        Returns: OriginRemoved
         """
         return self._run(
             _ORIGINS_REMOVE, (package,), {}, {"origin": origin}, confirm=confirm
@@ -6018,7 +5996,7 @@ class Packages(Group):
             package: path
             version: path
 
-        Returns: PackagePipelinesResponse200
+        Returns: ReleasePipelines
         """
         return self._run(
             _PACKAGE_PIPELINES,
@@ -6055,7 +6033,7 @@ class Packages(Group):
             org: query
             body: the raw bytes
 
-        Returns: PackageUploadResponse200
+        Returns: PackageInstalled
         """
         return self._run(_PACKAGE_UPLOAD, (), {"org": org}, body)
 
@@ -6151,7 +6129,7 @@ class Public(Group):
 
         **Who:** anyone.
 
-        Returns: HealthResponse200
+        Returns: Health
         """
         return self._run(_HEALTH, (), {}, None)
 
@@ -6165,7 +6143,7 @@ class Public(Group):
         Args:
             signer: path
 
-        Returns: PublisherBindingResponse200
+        Returns: PublisherBinding
         """
         return self._run(_PUBLISHER_BINDING, (signer,), {}, None)
 
@@ -6176,7 +6154,7 @@ class Public(Group):
 
         **Who:** anyone.
 
-        Returns: ReleasesPublicResponse200
+        Returns: ClusterReleases
         """
         return self._run(_RELEASES_PUBLIC, (), {}, None)
 
@@ -6196,7 +6174,7 @@ class Public(Group):
             code: body `code`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
-        Returns: RestoreRecoverHolderResponse200
+        Returns: HolderRecovered
         """
         return self._run(
             _RESTORE_RECOVER_HOLDER,

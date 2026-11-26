@@ -12,8 +12,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use super::{holder, operator, ApiResult};
 use crate::error::ApiError;
@@ -84,18 +83,29 @@ pub(super) async fn ops_receipt_key(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(id): Path<u64>,
-) -> ApiResult {
+) -> ApiResult<Json<ReceiptKey>> {
     operator(&node, &headers)?;
     let issuer = node
         .session_issuer(id, false)
         .await
         .ok_or_else(|| ApiError::not_found("no attested node with that id"))?;
-    Ok(Json(json!({
-        "node": id,
-        "key": hex::encode(issuer.key),
-        "release": issuer.release,
-        "attestedAt": issuer.at,
-    })))
+    Ok(Json(ReceiptKey {
+        node: id,
+        key: hex::encode(issuer.key),
+        release: issuer.release,
+        attested_at: issuer.at,
+    }))
+}
+
+/// `GET /ops/nodes/{id}/receipt-key`: the receipt key this node holds for node `id`, the
+/// release it attested (`null`: unknown) and when.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReceiptKey {
+    node: u64,
+    key: String,
+    release: Option<String>,
+    attested_at: u64,
 }
 
 #[cfg(test)]

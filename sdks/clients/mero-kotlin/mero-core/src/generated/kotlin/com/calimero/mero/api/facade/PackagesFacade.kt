@@ -30,7 +30,7 @@ class PackagesFacade internal constructor(
      */
     suspend fun bundlePut(
         body: kotlin.ByteArray,
-    ): BundlePut200Response =
+    ): BundleStored =
         api(null, null, emptySet()).packages.bundlePut(body = body)
 
     /**
@@ -68,7 +68,7 @@ class PackagesFacade internal constructor(
      */
     suspend fun originsList(
         `package`: kotlin.String,
-    ): OriginsList200Response =
+    ): OriginList =
         api(null, null, emptySet()).packages.originsList(`package` = `package`)
 
     /**
@@ -86,7 +86,7 @@ class PackagesFacade internal constructor(
         `package`: kotlin.String,
         origin: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): OriginsRemove200Response =
+    ): OriginRemoved =
         api(passkey, null, emptySet()).packages.originsRemove(`package` = `package`, originsRemoveRequest = OriginsRemoveRequest(origin = origin))
 
     /**
@@ -104,7 +104,7 @@ class PackagesFacade internal constructor(
         `package`: kotlin.String,
         version: kotlin.String,
         service: kotlin.String? = null,
-    ): PackageCapabilities200Response =
+    ): CapabilityCard =
         api(null, null, emptySet()).packages.packageCapabilities(`package` = `package`, version = version, service = service)
 
     /**
@@ -126,7 +126,7 @@ class PackagesFacade internal constructor(
     /**
      * Install a release from the registry
      *
-     * For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+     * For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
      *
      * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      *
@@ -138,7 +138,7 @@ class PackagesFacade internal constructor(
         `package`: kotlin.String,
         version: kotlin.String,
         org: kotlin.String? = null,
-    ): OpsPackageInstall200Response =
+    ): PackageInstalled =
         api(null, null, emptySet()).packages.packageInstall(packageInstallRequest = PackageInstallRequest(`package` = `package`, version = version, org = org))
 
     /**
@@ -152,7 +152,7 @@ class PackagesFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun list(): PackageList200Response =
+    suspend fun list(): PackageList =
         api(null, null, emptySet()).packages.packageList()
 
     /**
@@ -169,7 +169,7 @@ class PackagesFacade internal constructor(
     suspend fun pipelines(
         `package`: kotlin.String,
         version: kotlin.String,
-    ): kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue> =
+    ): kotlin.collections.Map<kotlin.String, ReleasePipeline> =
         api(null, null, emptySet()).packages.packagePipelines(`package` = `package`, version = version)
 
     /**
@@ -202,7 +202,7 @@ class PackagesFacade internal constructor(
     suspend fun upload(
         body: kotlin.ByteArray,
         org: kotlin.String? = null,
-    ): OpsPackageInstall200Response =
+    ): PackageInstalled =
         api(null, null, emptySet()).packages.packageUpload(body = body, org = org)
 
     /**

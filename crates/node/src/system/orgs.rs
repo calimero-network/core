@@ -9,6 +9,68 @@
 )]
 use super::*;
 
+/// What `CreateOrg` answers: the new organization, and its app team when it is made with one
+/// (the consent page's `createOrg` for a package).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgCreated {
+    pub org_id: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<TeamId>,
+}
+
+/// What redeeming an invite answers: the organization joined; for an instance invite, the
+/// instance and whether the account is a member of its organization (else a guest).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteRedeemed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+    pub org: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<bool>,
+}
+
+/// What `DeleteOrg` answers: the instances deleted with it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OrgDeleted {
+    pub apps: Vec<AppId>,
+}
+
+/// What `RenameOrg` answers.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgRenamed {
+    pub org_id: OrgId,
+    pub name: String,
+}
+
+/// What `CreateTeam` answers.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamCreated {
+    pub team_id: TeamId,
+}
+
+/// What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances
+/// deleted with them, and with `keepApps` those kept instead (`apps` then empty).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamDeleted {
+    pub teams: Vec<TeamId>,
+    pub apps: Vec<AppId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_apps: Option<Vec<AppId>>,
+}
+
+/// What `SetOrgSettings` answers: the settings after the change.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgSettingsSet {
+    pub org: OrgId,
+    pub allow_guests: bool,
+    pub allow_public_links: bool,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
@@ -345,7 +407,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             };
             let Some(package) = app_team else {
                 set_default(s);
-                return Ok(json!({ "orgId": org_id }));
+                return Ok(json!(OrgCreated {
+                    org_id,
+                    team_id: None
+                }));
             };
             // The package's app team, as `ScopeApps` makes one for a package
             // with no instances here yet: open (standalone), the creator its
@@ -370,7 +435,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             match scoped {
                 Ok(v) => {
                     set_default(s);
-                    Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] }))
+                    Ok(json!(OrgCreated {
+                        org_id,
+                        team_id: v["teams"][0]["teamId"].as_str().map(str::to_owned),
+                    }))
                 }
                 Err(why) => {
                     let _gone = s.orgs.remove(&org_id);
@@ -415,7 +483,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             for a in &apps {
                 s.remove_app(a);
             }
-            Ok(json!({ "apps": apps }))
+            Ok(json!(OrgDeleted { apps }))
         }
         SystemCmd::RenameOrg {
             org, name, actor, ..
@@ -426,7 +494,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             }
             org_name_fits(&name)?;
             o.name.clone_from(&name);
-            Ok(json!({ "orgId": org, "name": name }))
+            Ok(json!(OrgRenamed { org_id: org, name }))
         }
         SystemCmd::SetOrgMetadata {
             org,
@@ -578,7 +646,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     default_capabilities: None,
                 },
             );
-            Ok(json!({ "teamId": team_id }))
+            Ok(json!(TeamCreated { team_id }))
         }
         SystemCmd::SetTeamMember {
             org,
@@ -663,7 +731,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             }
             // An app team (`metadata.app.package` at the top) installs an
             // app in the organization: only an admin makes, changes or
-            // drops one, and a package has one app team here (G9).
+            // drops one, and a package has one app team here.
             let current = o.teams.get(&team).ok_or("no such team")?;
             let parent_after = parent.clone().unwrap_or_else(|| current.parent.clone());
             let package_before = current.app_package().map(str::to_owned);
@@ -782,9 +850,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 a.access = a.access.without_teams(&gone);
             }
             if keep_apps {
-                return Ok(json!({ "teams": gone, "apps": [], "keptApps": apps }));
+                return Ok(json!(TeamDeleted {
+                    teams: gone,
+                    apps: Vec::new(),
+                    kept_apps: Some(apps),
+                }));
             }
-            Ok(json!({ "teams": gone, "apps": apps }))
+            Ok(json!(TeamDeleted {
+                teams: gone,
+                apps,
+                kept_apps: None,
+            }))
         }
         SystemCmd::SetCapabilities {
             org,
@@ -980,7 +1056,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 free_when_unchanged,
                 clamp_grants,
             )?;
-            Ok(json!({ "org": org }))
+            Ok(json!(InviteRedeemed {
+                app: None,
+                org,
+                member: None,
+            }))
         }
         SystemCmd::SetOrgSettings {
             org,
@@ -1003,10 +1083,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             if let Some(allow) = settings.allow_public_links {
                 o.allow_public_links = allow;
             }
-            Ok(json!({
-                "org": org,
-                "allowGuests": o.allow_guests,
-                "allowPublicLinks": o.allow_public_links,
+            Ok(json!(OrgSettingsSet {
+                allow_guests: o.allow_guests,
+                allow_public_links: o.allow_public_links,
+                org,
             }))
         }
         SystemCmd::RevokeInvite {

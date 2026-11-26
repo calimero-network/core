@@ -1,4 +1,5 @@
-//! Time and randomness as the app sees them (spec section 5, D16, D19).
+//! Time and randomness as the app sees them. See
+//! [Time and randomness](https://calimero-network.github.io/core/protocol/execution/#time-and-randomness).
 
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;

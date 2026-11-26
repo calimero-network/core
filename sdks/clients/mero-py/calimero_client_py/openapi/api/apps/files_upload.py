@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.files_upload_response_200 import FilesUploadResponse200
+from ...models.file_stored import FileStored
 from ...types import File, FileTypes
 from io import BytesIO
 from typing import cast
@@ -38,9 +38,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, FilesUploadResponse200]]:
+) -> Optional[Union[Error, FileStored]]:
     if response.status_code == 200:
-        response_200 = FilesUploadResponse200.from_dict(response.json())
+        response_200 = FileStored.from_dict(response.json())
 
         return response_200
 
@@ -77,7 +77,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, FilesUploadResponse200]]:
+) -> Response[Union[Error, FileStored]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -91,7 +91,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Response[Union[Error, FilesUploadResponse200]]:
+) -> Response[Union[Error, FileStored]]:
     """Upload a sealed file
 
      Up to 16 MiB in one request; the owner and the organization's members.
@@ -107,7 +107,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, FilesUploadResponse200]]
+        Response[Union[Error, FileStored]]
     """
 
     kwargs = _get_kwargs(
@@ -127,7 +127,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Optional[Union[Error, FilesUploadResponse200]]:
+) -> Optional[Union[Error, FileStored]]:
     """Upload a sealed file
 
      Up to 16 MiB in one request; the owner and the organization's members.
@@ -143,7 +143,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, FilesUploadResponse200]
+        Union[Error, FileStored]
     """
 
     return sync_detailed(
@@ -158,7 +158,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Response[Union[Error, FilesUploadResponse200]]:
+) -> Response[Union[Error, FileStored]]:
     """Upload a sealed file
 
      Up to 16 MiB in one request; the owner and the organization's members.
@@ -174,7 +174,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, FilesUploadResponse200]]
+        Response[Union[Error, FileStored]]
     """
 
     kwargs = _get_kwargs(
@@ -192,7 +192,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Optional[Union[Error, FilesUploadResponse200]]:
+) -> Optional[Union[Error, FileStored]]:
     """Upload a sealed file
 
      Up to 16 MiB in one request; the owner and the organization's members.
@@ -208,7 +208,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, FilesUploadResponse200]
+        Union[Error, FileStored]
     """
 
     return (

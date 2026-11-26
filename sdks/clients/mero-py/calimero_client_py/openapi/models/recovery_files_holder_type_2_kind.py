@@ -1,0 +1,8 @@
+from enum import Enum
+
+
+class RecoveryFilesHolderType2Kind(str, Enum):
+    OPERATOR = "operator"
+
+    def __str__(self) -> str:
+        return str(self.value)

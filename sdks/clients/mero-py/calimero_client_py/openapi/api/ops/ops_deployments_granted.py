@@ -8,9 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_deployments_granted_response_200 import (
-    OpsDeploymentsGrantedResponse200,
-)
+from ...models.governance_set import GovernanceSet
 from ...models.proof_only import ProofOnly
 from typing import cast
 
@@ -36,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsDeploymentsGrantedResponse200]]:
+) -> Optional[Union[Error, GovernanceSet]]:
     if response.status_code == 200:
-        response_200 = OpsDeploymentsGrantedResponse200.from_dict(response.json())
+        response_200 = GovernanceSet.from_dict(response.json())
 
         return response_200
 
@@ -70,7 +68,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsDeploymentsGrantedResponse200]]:
+) -> Response[Union[Error, GovernanceSet]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -83,7 +81,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Response[Union[Error, OpsDeploymentsGrantedResponse200]]:
+) -> Response[Union[Error, GovernanceSet]]:
     """Require deployer grants
 
      From now on only granted deployers install; once.
@@ -101,7 +99,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsDeploymentsGrantedResponse200]]
+        Response[Union[Error, GovernanceSet]]
     """
 
     kwargs = _get_kwargs(
@@ -119,7 +117,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Optional[Union[Error, OpsDeploymentsGrantedResponse200]]:
+) -> Optional[Union[Error, GovernanceSet]]:
     """Require deployer grants
 
      From now on only granted deployers install; once.
@@ -137,7 +135,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsDeploymentsGrantedResponse200]
+        Union[Error, GovernanceSet]
     """
 
     return sync_detailed(
@@ -150,7 +148,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Response[Union[Error, OpsDeploymentsGrantedResponse200]]:
+) -> Response[Union[Error, GovernanceSet]]:
     """Require deployer grants
 
      From now on only granted deployers install; once.
@@ -168,7 +166,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsDeploymentsGrantedResponse200]]
+        Response[Union[Error, GovernanceSet]]
     """
 
     kwargs = _get_kwargs(
@@ -184,7 +182,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Optional[Union[Error, OpsDeploymentsGrantedResponse200]]:
+) -> Optional[Union[Error, GovernanceSet]]:
     """Require deployer grants
 
      From now on only granted deployers install; once.
@@ -202,7 +200,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsDeploymentsGrantedResponse200]
+        Union[Error, GovernanceSet]
     """
 
     return (

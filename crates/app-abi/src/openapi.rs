@@ -358,7 +358,8 @@ impl Ctx {
         json!({ "type": "object", "properties": props, "required": required })
     }
 
-    /// The JSON Schema of `ty` as it travels in JSON (D20).
+    /// The JSON Schema of `ty` as it travels in JSON: 64-bit integers as decimal
+    /// strings, bytes as base64url.
     fn schema(&mut self, ty: &Type) -> Value {
         match ty {
             Type::Unit => json!({ "type": "null" }),

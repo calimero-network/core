@@ -90,6 +90,7 @@ details[open] > summary::after { transform: translateY(.1rem) rotate(-135deg); }
 .pill { font-size: .72rem; font-weight: 650; padding: .2rem .5rem; border-radius: 999px; white-space: nowrap; }
 .pill-ok { background: var(--ok-bg); color: var(--ok); }
 .pill-warn { background: var(--warn-bg); color: var(--warn); }
+.pill-plain { background: var(--soft); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); margin-left: .5rem; vertical-align: .1em; white-space: normal; overflow-wrap: anywhere; }
 .details-body { padding: 0 1.1rem 1.1rem; font-size: .9rem; }
 .details-body > section { padding-top: 1rem; border-top: 1px solid var(--line); }
 .details-body > section + section { margin-top: 1rem; }
@@ -193,3 +194,5 @@ a.v { color: var(--link); }
 .policy-form label { display: inline-flex; align-items: center; gap: .35rem; }
 .policy-form select, .policy-form input[type="number"] { font: inherit; padding: .3rem .4rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--card); color: var(--fg); }
 .policy-form input[type="number"] { width: 4.5rem; }
+.choose-org { display: block; width: 100%; font: inherit; min-height: 2.9rem; padding: .55rem .75rem; margin-bottom: .4rem; border: 1px solid var(--line); border-radius: .9rem; background: var(--card); color: var(--fg); }
+.choose-org:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }

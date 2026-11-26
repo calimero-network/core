@@ -31,8 +31,9 @@ openApiGenerate {
     packageName.set("com.calimero.mero.api")
     apiPackage.set("com.calimero.mero.api.apis")
     modelPackage.set("com.calimero.mero.api.models")
-    // Tags become the API classes (AppsApi, AccountsApi, OrganizationsApi, ...). Inline request
-    // and answer schemas are named after their operation (InviteCreateRequest, ...).
+    // Tags become the API classes (AppsApi, AccountsApi, OrganizationsApi, ...). A schema the node
+    // names is named after the node's type (InviteBody, MemberSecurityList, ...); one still inline is
+    // named after its operation.
     generateApiDocumentation.set(false)
     generateModelDocumentation.set(false)
     generateApiTests.set(false)

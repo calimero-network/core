@@ -95,7 +95,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use calimero_identity::{b64url, random, RelyingParty};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
@@ -1163,7 +1163,7 @@ pub async fn create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     if body.len() > MAX_CONSENT_BODY_BYTES {
         return Err(ApiError::new(413, "TOO_LARGE", "consent request too large"));
     }
@@ -1275,7 +1275,7 @@ async fn hold(
     action: Action,
     model: Value,
     return_to: Url,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
@@ -1322,12 +1322,36 @@ async fn hold(
     let url = base
         .join(&format!("{at}/{id}"))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!({
-        "requestId": id,
-        "url": url.as_str(),
-        "expiresAt": expires_at,
-        "code": code,
-    })))
+    Ok(Json(ConsentRequestMade {
+        request_id: id,
+        url: url.as_str().to_owned(),
+        expires_at,
+        code,
+    }))
+}
+
+/// `POST /consent/requests`: the request, the page to send the person to, when it lapses and
+/// the code the page shows.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRequestMade {
+    request_id: String,
+    url: String,
+    expires_at: u64,
+    code: String,
+}
+
+/// `GET /consent/{request}/result`: the request's decision (`decidedAt` `null` while it is
+/// pending) and, once approved, what the approval made.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentResult {
+    request_id: String,
+    kind: Value,
+    status: String,
+    decided_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome: Option<Value>,
 }
 
 /// The confirmation code of request `request_id`: the page shows it, and so
@@ -2000,6 +2024,24 @@ enum Part {
     Member,
 }
 
+/// The sheet's fact naming the deployment an instance comes from
+/// ([`crate::system::SystemState::deployment_shown`]): its name and owner, then its id.
+fn offered_by(d: &Value) -> Value {
+    let kind = if d["owner"]["kind"] == "org" {
+        "organization"
+    } else {
+        "account"
+    };
+    let owner = d["owner"]["name"].as_str().map_or_else(
+        || format!("an {kind} no longer on this cluster"),
+        |n| format!("the {kind} {n}"),
+    );
+    json!({
+        "title": format!("Offered by {}, run by {owner}.", d["name"].as_str().unwrap_or_default()),
+        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
+    })
+}
+
 async fn upgrade_request(
     node: &Node,
     p: &Principal,
@@ -2164,6 +2206,10 @@ async fn upgrade_request(
             "Until you approve, nothing changes: it keeps running {old}."
         )),
     ];
+    let shown = app
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
         points.push(json!(destinations_point(c, !app.links.is_empty())));
@@ -2196,6 +2242,8 @@ async fn upgrade_request(
         "attention": attention,
         "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
+        "deployment": shown,
+        "offeredBy": shown.as_ref().map(offered_by),
         "publisher": {
             "name": author,
             "signer": to.signer,
@@ -3017,16 +3065,13 @@ fn app_invite_model(
 
 /// What `/result` answers for a request.
 fn result_json(id: &str, r: &ConsentRequest) -> Value {
-    let mut v = json!({
-        "requestId": id,
-        "kind": r.model["kind"],
-        "status": r.decision.label(),
-        "decidedAt": r.decision.at(),
-    });
-    if let (Some(Outcome(made)), Some(o)) = (&r.outcome, v.as_object_mut()) {
-        let _prev = o.insert("outcome".into(), made.clone());
-    }
-    v
+    json!(ConsentResult {
+        request_id: id.to_owned(),
+        kind: r.model["kind"].clone(),
+        status: r.decision.label().to_owned(),
+        decided_at: r.decision.at(),
+        outcome: r.outcome.as_ref().map(|Outcome(made)| made.clone()),
+    })
 }
 
 /// `GET /consent/{id}/result`: the decision, for the account that asked.
@@ -3361,6 +3406,42 @@ fn redirect(r: &ConsentRequest, id: &str, result: &str) -> String {
 struct ApproveBody {
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// The organization chosen on an install sheet that offered a choice (`chooseOrg`).
+    #[serde(default)]
+    org: Option<String>,
+}
+
+/// `req` with the organization chosen on its install sheet: one the account is a member of,
+/// asked for exactly when the sheet offered a choice, so the passkey signs it as `org`.
+fn with_chosen_org(
+    node: &Node,
+    mut req: ConsentRequest,
+    org: Option<String>,
+) -> Result<ConsentRequest, ApiError> {
+    let offered = req.model["install"]["chooseOrg"].is_array();
+    let account = req.account.clone();
+    match (&mut req.action, org) {
+        (Action::Install { install, .. }, Some(org)) if offered => {
+            if !node.sys(|s| s.member_of(&org, &account)) {
+                return Err(ApiError::not_found("no such organization"));
+            }
+            install.org = Some(org);
+        }
+        (Action::Install { .. }, None) if offered => {
+            return Err(ApiError::bad_request(
+                crate::api::apps::ORG_REQUIRED,
+                "choose the organization this is for",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                "this request has no organization to choose",
+            ));
+        }
+        _ => {}
+    }
+    Ok(req)
 }
 
 /// The facts the page showed, checked again before the passkey is asked and
@@ -3474,7 +3555,10 @@ fn still_current(node: &Node, req: &ConsentRequest) -> Result<(), ApiError> {
 /// approval, written as the request's account, and where to go next.
 async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiError> {
     let body: ApproveBody = if body.is_empty() {
-        ApproveBody { confirm: None }
+        ApproveBody {
+            confirm: None,
+            org: None,
+        }
     } else {
         serde_json::from_slice(body)
             .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?
@@ -3490,6 +3574,7 @@ async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiEr
     }
     let (sys_index, _caught_up) = node.sys_fresh_index().await;
     still_current(node, &req)?;
+    let req = with_chosen_org(node, req, body.org)?;
     let confirmed = body.confirm.is_some();
     // One approval at a time: the passkey's answer is taken once.
     if confirmed {
@@ -3803,6 +3888,22 @@ fn decline(node: &Node, id: &str) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deployment_is_named_with_its_id_and_its_owner() {
+        let shown = |owner: Value| json!({ "id": "d1", "name": "acme", "owner": owner });
+        assert_eq!(
+            offered_by(&shown(json!({ "kind": "org", "name": "Acme Labs" }))),
+            json!({
+                "title": "Offered by acme, run by the organization Acme Labs.",
+                "detail": "Deployment d1",
+            })
+        );
+        assert_eq!(
+            offered_by(&shown(json!({ "kind": "account", "name": null })))["title"],
+            "Offered by acme, run by an account no longer on this cluster."
+        );
+    }
 
     fn request(account: &str, expires_at: u64) -> ConsentRequest {
         ConsentRequest {

@@ -1,6 +1,6 @@
 //! The Rust `uses` client `calimero-app-abi` generates (its golden kitchen-sink client) compiles
 //! against this SDK, and its described types implement `AbiType`, so an app may take or answer
-//! them in its own methods (D20).
+//! them in its own methods.
 
 #![cfg(not(target_arch = "wasm32"))]
 

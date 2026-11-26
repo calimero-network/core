@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.recovery_set_body import RecoverySetBody
+from ...models.recovery_key_body import RecoveryKeyBody
 from ...models.recovery_set_response_200 import RecoverySetResponse200
 from typing import cast
 
@@ -16,7 +16,7 @@ from typing import cast
 def _get_kwargs(
     org: str,
     *,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -89,7 +89,7 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Response[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
@@ -102,7 +102,7 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -128,7 +128,7 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Optional[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
@@ -141,7 +141,7 @@ def sync(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -162,7 +162,7 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Response[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
@@ -175,7 +175,7 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -199,7 +199,7 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Optional[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
@@ -212,7 +212,7 @@ async def asyncio(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -8,15 +8,15 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.org_rename_body import OrgRenameBody
-from ...models.org_rename_response_200 import OrgRenameResponse200
+from ...models.org_renamed import OrgRenamed
+from ...models.rename_org_body import RenameOrgBody
 from typing import cast
 
 
 def _get_kwargs(
     org: str,
     *,
-    body: OrgRenameBody,
+    body: RenameOrgBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgRenameResponse200]]:
+) -> Optional[Union[Error, OrgRenamed]]:
     if response.status_code == 200:
-        response_200 = OrgRenameResponse200.from_dict(response.json())
+        response_200 = OrgRenamed.from_dict(response.json())
 
         return response_200
 
@@ -86,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgRenameResponse200]]:
+) -> Response[Union[Error, OrgRenamed]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -99,8 +99,8 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgRenameBody,
-) -> Response[Union[Error, OrgRenameResponse200]]:
+    body: RenameOrgBody,
+) -> Response[Union[Error, OrgRenamed]]:
     """Rename an organization
 
      The owner or an admin, to a name that fits as a new organization's would; `412` first.
@@ -110,14 +110,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgRenameBody):
+        body (RenameOrgBody): The request body of `POST /orgs/{org}/name`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgRenameResponse200]]
+        Response[Union[Error, OrgRenamed]]
     """
 
     kwargs = _get_kwargs(
@@ -136,8 +136,8 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgRenameBody,
-) -> Optional[Union[Error, OrgRenameResponse200]]:
+    body: RenameOrgBody,
+) -> Optional[Union[Error, OrgRenamed]]:
     """Rename an organization
 
      The owner or an admin, to a name that fits as a new organization's would; `412` first.
@@ -147,14 +147,14 @@ def sync(
 
     Args:
         org (str):
-        body (OrgRenameBody):
+        body (RenameOrgBody): The request body of `POST /orgs/{org}/name`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgRenameResponse200]
+        Union[Error, OrgRenamed]
     """
 
     return sync_detailed(
@@ -168,8 +168,8 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgRenameBody,
-) -> Response[Union[Error, OrgRenameResponse200]]:
+    body: RenameOrgBody,
+) -> Response[Union[Error, OrgRenamed]]:
     """Rename an organization
 
      The owner or an admin, to a name that fits as a new organization's would; `412` first.
@@ -179,14 +179,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgRenameBody):
+        body (RenameOrgBody): The request body of `POST /orgs/{org}/name`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgRenameResponse200]]
+        Response[Union[Error, OrgRenamed]]
     """
 
     kwargs = _get_kwargs(
@@ -203,8 +203,8 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgRenameBody,
-) -> Optional[Union[Error, OrgRenameResponse200]]:
+    body: RenameOrgBody,
+) -> Optional[Union[Error, OrgRenamed]]:
     """Rename an organization
 
      The owner or an admin, to a name that fits as a new organization's would; `412` first.
@@ -214,14 +214,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgRenameBody):
+        body (RenameOrgBody): The request body of `POST /orgs/{org}/name`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgRenameResponse200]
+        Union[Error, OrgRenamed]
     """
 
     return (
