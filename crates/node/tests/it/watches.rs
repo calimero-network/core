@@ -810,6 +810,82 @@ fn phone_stream_of(c: &Cluster, sub: &str) -> String {
         .expect("the watch's stream")
 }
 
+/// A view that reads who called it is run for each caller: one caller's answer never
+/// reaches another's watch, even when the same change re-runs both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn watchers_of_a_view_that_reads_the_caller_each_get_their_own_answer() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a, bob, carol, org, app) = org_on_one_node(&c).await;
+    let mut bs = bob.watch_stream(&app, None).await.unwrap();
+    let mut cs = carol.watch_stream(&app, None).await.unwrap();
+    let wb = bob
+        .add_watch(&app, &bs.id, "myRole", json!({}), None)
+        .await
+        .unwrap();
+    let wc = carol
+        .add_watch(&app, &cs.id, "myRole", json!({}), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (wb.answer.clone(), wc.answer),
+        (json!("member"), json!("member"))
+    );
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .orgs()
+        .set_member(&org, &bob_id, typed(json!("admin")), Some(&mut a))
+        .await
+        .unwrap();
+    let (id, kind, data) = frame(&mut bs, 5).await.expect("Bob's new role");
+    assert_eq!(result_of(&kind, &id, &data, &wb.sub).1, json!("admin"));
+    // A new app is an entry nobody classified: every view that read the system runs
+    // again, Bob's and Carol's at the same state. Neither answer changed.
+    let before = runs(&c, reruns);
+    let _other = kv_app(&alice, json!({})).await;
+    assert!(frames_for(&mut cs, 3).await.is_empty());
+    assert!(frames_for(&mut bs, 1).await.is_empty());
+    assert!(runs(&c, reruns) >= before + 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_watches_cannot_exceed_a_streams_cap_and_large_arguments_are_refused() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let s = alice.watch_stream(&app, None).await.unwrap();
+    let max = calimero_node::watch::MAX_WATCHES_PER_STREAM;
+    let (alice, app, id) = (&alice, &app, &s.id);
+    let tries = (0..max + 16).map(|i| async move {
+        alice
+            .add_watch(app, id, "get", json!({ "key": format!("k{i}") }), None)
+            .await
+    });
+    let got = futures_util::future::join_all(tries).await;
+    let ok = got.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(ok, max);
+    for e in got.into_iter().filter_map(Result::err) {
+        assert_eq!(code(e).as_deref(), Some("TOO_MANY_WATCHES"));
+    }
+    let held: usize = c
+        .nodes
+        .iter()
+        .flatten()
+        .map(|r| r.node.watches.total())
+        .sum();
+    assert_eq!(held, max);
+
+    let big = "x".repeat(calimero_node::watch::MAX_WATCH_ARGS_BYTES);
+    let s2 = alice.watch_stream(app, None).await.unwrap();
+    let e = alice
+        .add_watch(app, &s2.id, "get", json!({ "key": big }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(code(e).as_deref(), Some("ARGS_TOO_LARGE"));
+}
+
 /// One caller cannot hold every watch stream a node serves: past its own share it is
 /// refused, and someone else still opens one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -829,4 +905,47 @@ async fn one_caller_cannot_take_every_watch_stream_of_a_node() {
     };
     assert_eq!(code(e).as_deref(), Some("RATE_LIMITED"));
     let _s = bob.watch_stream(&app, None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_api_key_ends_its_watches() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let made = alice
+        .auth()
+        .apikey_create(
+            typed(json!({ "label": "ci", "apps": [app] })),
+            Some(&mut pk),
+        )
+        .await
+        .unwrap();
+    let machine = c.client(0);
+    machine.use_api_key(&made.key).await;
+    let mut s = machine.watch_stream(&app, None).await.unwrap();
+    let w = machine
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap();
+    // The key's owner cannot touch the key's watch either: another caller.
+    let e = alice.remove_watch(&app, &w.sub).await.unwrap_err();
+    assert_eq!(code(e).as_deref(), Some("UNKNOWN_WATCH"));
+
+    let _r = alice
+        .auth()
+        .apikey_revoke(&made.key_id, Some(&mut pk))
+        .await
+        .unwrap();
+    let got = frames_for(&mut s, 4).await;
+    assert_eq!(
+        got.iter()
+            .map(|(_, k, d)| (k.clone(), d.clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "watch-ended".to_owned(),
+            json!({ "sub": w.sub, "reason": "access-lost" })
+        )],
+    );
+    let _i = set(&alice, &app, "a", "1").await;
+    assert!(frames_for(&mut s, 2).await.is_empty());
 }
