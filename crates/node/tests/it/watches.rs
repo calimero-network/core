@@ -673,3 +673,139 @@ async fn over_the_run_budget_frames_come_later_and_none_is_lost() {
             > 0
     );
 }
+
+/// Alice's org with Bob and Carol in it as members, both signed in on node 1, and a kv app
+/// in it: (alice, her passkey, bob, carol, org, app).
+async fn org_on_one_node(
+    c: &Cluster,
+) -> (Client, SoftAuthenticator, Client, Client, String, String) {
+    let (alice, mut a) = signed_up(c, 0, "alice").await;
+    let (bob, _b) = signed_up(c, 1, "bob").await;
+    let (carol, _c) = signed_up(c, 1, "carol").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    for who in [&bob, &carol] {
+        let token = s(
+            alice
+                .orgs()
+                .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+                .await
+                .map(wire)
+                .unwrap(),
+            "token",
+        );
+        let _r = who.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let app = kv_app(&alice, json!({ "org": org })).await;
+    (alice, a, bob, carol, org, app)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn another_caller_cannot_delete_use_or_resume_a_watch_stream() {
+    let c = Cluster::start(3).await;
+    let (alice, _a, bob, _carol, _org, app) = org_on_one_node(&c).await;
+    let mut s = alice.watch_stream(&app, None).await.unwrap();
+    let w = alice
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap();
+
+    // Bob reaches the app, but Alice's stream and watch are not his: refused as if they
+    // did not exist.
+    let e = bob.remove_watch(&app, &w.sub).await.unwrap_err();
+    assert_eq!(code(e).as_deref(), Some("UNKNOWN_WATCH"));
+    let e = bob
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(code(e).as_deref(), Some("UNKNOWN_STREAM"));
+    let mut taken = bob.watch_stream(&app, Some((&s.id, 0))).await.unwrap();
+    assert_ne!(taken.id, s.id);
+    let (_id, kind, _data) = frame(&mut taken, 3).await.expect("a reset");
+    assert_eq!(kind, "watch-reset");
+
+    // Alice's watch is intact and only her stream hears of it.
+    let index = set(&alice, &app, "a", "1").await;
+    let (id, kind, data) = frame(&mut s, 3).await.expect("Alice's notice");
+    assert_eq!(result_of(&kind, &id, &data, &w.sub), (index, json!("1")));
+    assert!(frames_for(&mut taken, 2).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_watch_from_another_session_cannot_be_deleted() {
+    let c = Cluster::start(3).await;
+    let (phone, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&phone, json!({})).await;
+    let laptop = signed_in(&c, 0, &mut pk).await;
+    let mut s = phone.watch_stream(&app, None).await.unwrap();
+    let w = phone
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap();
+
+    let e = laptop.remove_watch(&app, &w.sub).await.unwrap_err();
+    assert_eq!(code(e).as_deref(), Some("UNKNOWN_WATCH"));
+    let index = set(&phone, &app, "a", "1").await;
+    let (id, kind, data) = frame(&mut s, 3).await.expect("the phone's notice");
+    assert_eq!(result_of(&kind, &id, &data, &w.sub), (index, json!("1")));
+}
+
+/// A stream is judged as the session that opened it: another session of the same account
+/// (one that may be signed out on its own) neither takes it over nor adds to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn another_session_cannot_resume_or_add_to_a_watch_stream() {
+    let c = Cluster::start(3).await;
+    let (phone, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&phone, json!({})).await;
+    let laptop = signed_in(&c, 0, &mut pk).await;
+    let s = phone.watch_stream(&app, None).await.unwrap();
+    let w = phone
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap();
+    let e = laptop
+        .add_watch(&app, &s.id, "get", json!({ "key": "b" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(code(e).as_deref(), Some("UNKNOWN_STREAM"));
+
+    // The phone goes; the laptop asks for its stream and gets a new, empty one.
+    drop(s);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stream_id = phone_stream_of(&c, &w.sub);
+    let mut taken = laptop
+        .watch_stream(&app, Some((&stream_id, 0)))
+        .await
+        .unwrap();
+    assert_ne!(taken.id, stream_id);
+    let (_id, kind, _data) = frame(&mut taken, 3).await.expect("a reset");
+    assert_eq!(kind, "watch-reset");
+    let _i = set(&phone, &app, "a", "1").await;
+    assert!(frames_for(&mut taken, 2).await.is_empty());
+    // The laptop signs out: nothing of the phone's goes with it, and the phone resumes.
+    let _r = laptop.auth().logout().await.unwrap();
+    let mut back = phone
+        .watch_stream(&app, Some((&stream_id, w.index)))
+        .await
+        .unwrap();
+    assert_eq!(back.id, stream_id);
+    let (id, kind, data) = frame(&mut back, 3).await.expect("the missed answer");
+    assert_eq!(result_of(&kind, &id, &data, &w.sub).1, json!("1"));
+}
+
+/// The id of the stream that holds watch `sub`, from the node that holds it.
+fn phone_stream_of(c: &Cluster, sub: &str) -> String {
+    c.nodes
+        .iter()
+        .flatten()
+        .find_map(|r| r.node.watches.stream_of(sub).map(|s| s.id.clone()))
+        .expect("the watch's stream")
+}

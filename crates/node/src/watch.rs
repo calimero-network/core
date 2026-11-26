@@ -88,6 +88,20 @@ pub struct Holder {
     pub issuer_release: Option<String>,
 }
 
+impl Holder {
+    /// Whether `other` holds the same credential: the same caller through the same session
+    /// (a refreshed token keeps its session) or API key. Only it may resume the stream, add
+    /// to it or remove its watches: the stream is judged as its own holder, so another
+    /// session of the account (one signed out on its own) must not ride on it.
+    #[must_use]
+    pub fn same_credential(&self, other: &Self) -> bool {
+        self.caller == other.caller
+            && self.session.as_ref().map(|s| &s.session)
+                == other.session.as_ref().map(|s| &s.session)
+            && self.api_key.as_ref().map(|k| &k.key_id) == other.api_key.as_ref().map(|k| &k.key_id)
+    }
+}
+
 /// What a stream sends besides its first frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Notice {

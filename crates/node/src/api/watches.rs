@@ -113,7 +113,7 @@ pub(super) fn local_stream(
     };
     let kept = resume
         .and_then(|id| node.watches.stream(id))
-        .filter(|s| s.app == app_id && s.holder.caller == holder.caller);
+        .filter(|s| s.app == app_id && s.holder.same_credential(&holder));
     let reset = resume.is_some() && kept.is_none();
     let stream = match kept {
         Some(stream) => stream,
@@ -699,7 +699,7 @@ async fn add_local(node: &Arc<Node>, add: AddWatch) -> Result<Value, ApiError> {
     let stream = node
         .watches
         .stream(&add.stream)
-        .filter(|s| s.app == add.app && s.holder.caller == add.holder.caller)
+        .filter(|s| s.app == add.app && s.holder.same_credential(&add.holder))
         .ok_or_else(no_stream)?;
     let g = node
         .hosted(&add.app)
@@ -786,7 +786,7 @@ fn remove_local(node: &Node, remove: &RemoveWatch) -> Result<Value, ApiError> {
     let stream = node
         .watches
         .stream_of(&remove.sub)
-        .filter(|s| s.app == remove.app && s.holder.caller == remove.holder.caller)
+        .filter(|s| s.app == remove.app && s.holder.same_credential(&remove.holder))
         .ok_or_else(no_watch)?;
     if !node.watches.remove(&stream, &remove.sub) {
         return Err(no_watch());
