@@ -5007,7 +5007,7 @@ pub struct UnitMember {
     pub extra: Map<String, Value>,
 }
 
-/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
+/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. `pinsLineage`: the part moves into a release of `package` declaring `lineage: pinned` from one that does not, so from then on it moves only to that package's newer releases by the same publisher.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code")]
 pub enum UpdateReason {
@@ -5049,6 +5049,11 @@ pub enum UpdateReason {
         member: Option<String>,
         name: String,
         before: Option<String>,
+    },
+    #[serde(rename = "pinsLineage")]
+    PinsLineage {
+        package: String,
+        member: Option<String>,
     },
     #[serde(rename = "unclassified")]
     Unclassified {

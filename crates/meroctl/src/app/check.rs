@@ -495,6 +495,10 @@ fn say(r: &Reason) -> String {
                 who(member.as_ref())
             ),
         },
+        Reason::PinsLineage { member, package } => format!(
+            "{} is pinned to {package} and its publisher from now on: only their newer releases follow",
+            who(member.as_ref())
+        ),
         Reason::Unclassified {
             member,
             package,

@@ -600,3 +600,51 @@ async fn concurrent_compute_upgrades_leave_the_group_on_the_recorded_code() {
         assert_eq!(group, recorded, "round {round}");
     }
 }
+
+/// An unpinned instance offered a pinning release of its package sees the update as red with
+/// `pinsLineage`, and the words the consent page shows; once upgraded it records the lineage
+/// and the release it left is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_into_a_pinning_release_pins_the_instance_and_says_so() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let org = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    for (version, pinned) in [("0.9.0", false), ("1.0.0", true)] {
+        let _ok = alice
+            .packages()
+            .upload(release(SEALED, version, pinned), Some(&org))
+            .await
+            .unwrap_or_else(|e| panic!("{version}: {e}"));
+    }
+    let app = create(&alice, "0.9.0", Some(&org)).await;
+    let update = alice.apps().update(&app).await.map(wire).unwrap();
+    let available = &update["available"];
+    assert_eq!(available["class"], "red", "{update}");
+    assert_eq!(
+        available["reasons"][0],
+        json!({ "code": "pinsLineage", "member": null, "package": SEALED }),
+        "{update}"
+    );
+    assert!(s(&available["summary"]).contains("never back"), "{update}");
+
+    let up = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.0.0" })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    let record = alice.apps().get(&app).await.map(wire).unwrap();
+    assert_eq!(record["lineage"]["package"], json!(SEALED), "{record}");
+    let e = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "0.9.0" })), Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("LINEAGE_OLDER_RELEASE"), "{e}");
+}

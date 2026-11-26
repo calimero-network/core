@@ -259,7 +259,8 @@ pub enum Feature {
     /// `InstallPackage` of a release that declares `lineage: pinned`
     /// (`PackageVersion::lineage`): an earlier release drops the field, so its replicas would
     /// let an instance of it move off its package, signer or forward order. Also an
-    /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop.
+    /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop, and
+    /// `UpgradeApp` and `ApproveUpgrade` whose class carries a `pinsLineage` reason.
     PinnedLineage,
 }
 
@@ -753,6 +754,7 @@ impl SystemCmd {
                 if class.as_ref().is_some_and(unclassified) {
                     f.push(Feature::UnclassifiedUpdates);
                 }
+
                 if *auto {
                     f.push(Feature::AutoUpdates);
                 }
@@ -768,12 +770,15 @@ impl SystemCmd {
                 from_release: Some(_),
                 ..
             } => vec![Feature::AutoUpdates],
-            Self::ApproveUpgrade { class, .. } if unclassified(class) => {
-                vec![Feature::UpgradePolicies, Feature::UnclassifiedUpdates]
+            Self::ApproveUpgrade { class, .. } => {
+                let mut f = vec![Feature::UpgradePolicies];
+                if unclassified(class) {
+                    f.push(Feature::UnclassifiedUpdates);
+                }
+
+                f
             }
-            Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
-                vec![Feature::UpgradePolicies]
-            }
+            Self::SetUpgradePolicy { .. } => vec![Feature::UpgradePolicies],
             Self::UndoUpgrade {
                 release_installed, ..
             } => {
@@ -1154,6 +1159,28 @@ mod tests {
                 "record: {record}"
             );
         }
+    }
+
+    /// An approval or upgrade whose class carries `pinsLineage` names the feature: an
+    /// earlier release cannot decode the reason.
+    #[test]
+    fn a_class_that_pins_a_lineage_needs_the_feature() {
+        let class = json!({ "class": "red", "reasons": [{ "code": "pinsLineage",
+            "member": null, "package": "p" }] });
+        let approve = entry(
+            json!({ "op": "approveUpgrade", "app_id": "app", "package": "p",
+            "version": "2.0.0", "actor": "alice", "at": 1, "class": class }),
+        );
+        assert_eq!(
+            approve.features(),
+            [Feature::UpgradePolicies, Feature::PinnedLineage]
+        );
+        let upgrade = entry(json!({ "op": "upgradeApp", "app_id": "app", "bundle": "b",
+            "actor": "alice", "class": class }));
+        assert_eq!(
+            upgrade.features(),
+            [Feature::UpgradeClasses, Feature::PinnedLineage]
+        );
     }
 
     /// An entry that uses `feature`, as a node proposes it.
