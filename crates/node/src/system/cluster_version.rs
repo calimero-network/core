@@ -278,7 +278,8 @@ pub enum Feature {
     XcallBudget,
     /// `InstallPackage` of a release that declares `lineage: pinned`
     /// (`PackageVersion::lineage`): an earlier release drops the field, so its replicas would
-    /// let an instance of it move off its package, signer or forward order.
+    /// let an instance of it move off its package, signer or forward order. Also an
+    /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop.
     PinnedLineage,
 }
 
@@ -723,6 +724,17 @@ fn unclassified(class: &crate::types::UpgradeClass) -> bool {
         .any(|r| matches!(r, calimero_bundle::update::Reason::Unclassified { .. }))
 }
 
+/// Whether `slice` brings a lineage ([`Feature::PinnedLineage`]): an app record pinned, or a
+/// release declaring `lineage: pinned`.
+fn brings_lineage(slice: &super::HolderSlice) -> bool {
+    slice.apps.values().any(|a| a.lineage.is_some())
+        || slice
+            .packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .any(|v| !v.lineage.is_free())
+}
+
 impl SystemCmd {
     /// The features this entry uses: none for a shape every 1.0 release
     /// applies alike. Every command is listed, so a new one decides here.
@@ -894,6 +906,9 @@ impl SystemCmd {
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],
             Self::RequireCurrentRules => vec![Feature::CurrentRules],
             Self::ExpireProofs => vec![Feature::ExpireProofs],
+            Self::ImportHolder { slice, .. } if brings_lineage(slice) => {
+                vec![Feature::BackupKeys, Feature::PinnedLineage]
+            }
             Self::SetBackupKey { .. } | Self::ImportHolder { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
@@ -1140,6 +1155,41 @@ mod tests {
     const RC37: &str = "1.0.0-rc.37";
     const RC38: &str = "1.0.0-rc.38";
     const RC39: &str = "1.0.0-rc.39";
+
+    /// An `ImportHolder` of a slice whose app record, or whose package's release, carries a
+    /// lineage: an earlier release drops both.
+    fn pinned_import(record: bool) -> SystemCmd {
+        let mut app = json!({ "appId": "a", "name": "a", "group": 2, "bundle": "b",
+            "owner": "alice", "org": "org", "replicas": [1], "createdAt": 0 });
+        let mut release = json!({ "version": "1.0.0", "mpk": "h", "mpkSize": 1,
+            "source": "upload", "services": { "": "b" }, "installedBy": "alice",
+            "installedAt": 0 });
+        if record {
+            app["lineage"] = json!({ "package": "p", "signerId": "did:key:z" });
+        } else {
+            release["lineage"] = json!("pinned");
+        }
+        entry(
+            json!({ "op": "importHolder", "holder": { "kind": "org", "id": "org" },
+            "slice": { "holder": { "kind": "org", "id": "org" }, "accounts": [], "apps": { "a": app },
+                "bundles": {}, "packages": { "p": { "name": "p", "signerId": "did:key:z",
+                    "owner": "alice", "versions": { "1.0.0": release } } } },
+            "slice_sha256": "ab", "public_key": "cd", "seed": 1, "apps": [], "at": 1,
+            "proof": null }),
+        )
+    }
+
+    /// An import bringing a lineage needs the feature as well as backup keys.
+    #[test]
+    fn an_import_that_brings_a_lineage_needs_the_feature() {
+        for record in [true, false] {
+            assert_eq!(
+                pinned_import(record).features(),
+                [Feature::BackupKeys, Feature::PinnedLineage],
+                "record: {record}"
+            );
+        }
+    }
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -2091,6 +2141,8 @@ mod tests {
                 (feature, Some(RC38))
             );
         }
+        let refused = propose(&mut nodes, &pinned_import(true)).unwrap_err();
+        assert_eq!(refused.feature, Feature::PinnedLineage);
         for n in &mut nodes {
             n.release = RC39;
         }
@@ -2102,6 +2154,7 @@ mod tests {
         for &feature in &rc39 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
+        propose(&mut nodes, &pinned_import(true)).unwrap();
         assert!(same_state(&nodes));
     }
 
