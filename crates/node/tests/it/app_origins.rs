@@ -8,6 +8,7 @@
 //! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
+use calimero_client::types::TeamJoin;
 use calimero_client::Request;
 use calimero_identity::testing::SoftAuthenticator;
 use reqwest::Method;
@@ -207,6 +208,32 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
     let e = carol.apps().public_link_list(&other).await.unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     let _ok = carol.apps().invite_list(&store).await.unwrap();
+    // Nor anything of the organization's, or of her account's past the store.
+    let team = wire(
+        alice
+            .orgs()
+            .team_create(&org, "eng", TeamJoin::Invite, None)
+            .await
+            .unwrap(),
+    )["teamId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = [
+        carol.orgs().get(&org, None, None, None).await.map(drop),
+        carol.orgs().invite_list(&org).await.map(drop),
+        carol.orgs().team_get(&org, &team).await.map(drop),
+        carol.orgs().app_team_list(&org).await.map(drop),
+        carol.orgs().usage(&org).await.map(drop),
+        carol.orgs().policy(&org).await.map(drop),
+        carol.orgs().upgrade_status(&org, "run").await.map(drop),
+        carol.auth().usage().await.map(drop),
+        carol.auth().alias_list().await.map(drop),
+    ];
+    for (i, r) in refused.into_iter().enumerate() {
+        let e = r.unwrap_err();
+        assert_eq!(status(&e), 403, "route {i}: {e}");
+    }
     // Nor does the site ask her for anything past the store: an organization of hers.
     let e = carol
         .transport()

@@ -442,7 +442,9 @@ async fn sign_up_invite_list(
     headers: HeaderMap,
 ) -> ApiResult<Json<SignUpInviteList>> {
     if operator(&node, &headers).is_err() {
-        let account = signed_in(&node, &headers).await?.account()?;
+        let p = signed_in(&node, &headers).await?;
+        p.beyond_instance(&node)?;
+        let account = p.account()?;
         let _caught_up = node.sys_fresh().await;
         let owner = node.sys(|s| {
             s.cluster_owner

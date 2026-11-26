@@ -440,7 +440,10 @@ registration is a package origin in every other way (its own rp-id, the
 ceremonies, CORS, a session bound to the instance's package and naming the
 origin, removal ending it), and one more rule: such a session reaches that
 instance alone. Any other instance answers `404` though the account reaches
-it, as does a new instance, and a team change is refused. What the account may
+it, as does a new instance, and a team change is refused, as is a read of the
+organization's or the account's past the instance (`403`: the organization,
+its teams, invites, usage, update policy and upgrade runs, the account's usage
+and aliases). What the account may
 do in the instance is the instance's own access: a person who signs up there
 has a new account, which reaches the instance only once its managers let it in
 (a guest of the organization with a grant on the instance) and the app's own
@@ -665,7 +668,7 @@ Code: `origins.rs`, `api/origins.rs`.
 - The origin rides in `SessionClaims::origin` and `RefreshRecord::origin`, kept by `Pending::SignUp` and stated nowhere in the sign-in challenge.
 - `principal` and `refresh` refuse such sessions once the origin is removed, and `UseRefresh` refuses an exchange that changes it.
 - `UninstallPackage` of the last release forgets them.
-- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app` forgets them, and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, instance creation, app lists, streams).
+- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app` forgets them, and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, `beyond_instance`, instance creation, app lists, streams).
 - Limits `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS` and, for instances, `MAX_ORIGINS_PER_APP` and `MAX_APP_ORIGINS` (`SystemState::origins_full`); `http` only for `localhost` names on a `--dev` node (`allow_package_uploads`).
 
 #### Served origins

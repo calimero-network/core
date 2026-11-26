@@ -819,6 +819,17 @@ impl Principal {
         }
     }
 
+    /// Refuse a session opened on one instance's own site: it reaches that
+    /// instance, nothing of the organization's or the account's past it.
+    pub(crate) fn beyond_instance(&self, node: &Node) -> Result<(), ApiError> {
+        if node.sys(|s| self.origin_admits(s, None)) {
+            return Ok(());
+        }
+        Err(ApiError::forbidden(
+            "a session opened on an instance's own site reaches that instance only; do this on the cluster's own page",
+        ))
+    }
+
     /// Whether this principal may change `team` of `org` as `reach` says: a
     /// package-bound session only a team of its own package's, the org's
     /// app team for that package ([`crate::types::Org::package_of_team`])

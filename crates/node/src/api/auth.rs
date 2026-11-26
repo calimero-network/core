@@ -1849,6 +1849,7 @@ async fn alias_delete(
     Path(alias): Path<String>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     p.settings_write()?;
     let account = p.account()?;
     let _ok = node
@@ -1866,7 +1867,9 @@ async fn alias_get(
     headers: HeaderMap,
     Path(alias): Path<String>,
 ) -> ApiResult<Json<AliasView>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let app = node
         .sys(|s| s.accounts.get(&account)?.aliases.get(&alias).cloned())
         .ok_or_else(|| ApiError::not_found("no such alias"))?;
@@ -1877,7 +1880,9 @@ async fn alias_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
 ) -> ApiResult<Json<AliasList>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let aliases = node.sys(|s| {
         s.accounts
             .get(&account)
@@ -1917,7 +1922,9 @@ async fn passkey_label(
 /// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
 /// decimal strings: `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json<AccountUsage>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let today = node
         .developer_usage_today(&crate::usage::account_payer(&account))
         .await;

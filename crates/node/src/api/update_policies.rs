@@ -76,6 +76,7 @@ async fn org_policy(
     Path(org): Path<String>,
 ) -> ApiResult<Json<PolicyView>> {
     let p = person(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account)).is_some()) {
