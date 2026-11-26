@@ -10,8 +10,9 @@
 //!   `event: watch-reset`, `data: {}`: the client registers its watches again.
 //! - `POST /apps/{app}/watches { stream, view, args, intervalMs? }` runs the view as the
 //!   caller through the gate `/views` uses, with the read-set recorder, and answers
-//!   `{ sub, index, answer }`. `intervalMs` (default 1000, clamped to 250..=10000) is how
-//!   often at most the view runs again for the watch.
+//!   `{ sub, index, answer }`. The view runs again for the watch at most once per the
+//!   interval its app sets (`watchIntervalMs` in the ABI, default 1000); a client's
+//!   `intervalMs` can only lengthen it, up to 10000.
 //! - `DELETE /apps/{app}/watches/{sub}` forgets one.
 //! - The stream then carries `event: view-result`, `id: <index>:<seq>`,
 //!   `data: {"sub", "index", "answer"}` (`"error"` in place of `"answer"` for an app
@@ -414,7 +415,7 @@ pub(super) struct WatchBody {
     view: String,
     #[serde(default)]
     args: Value,
-    /// How often at most the view runs again for this watch, in ms.
+    /// A longer interval than the app's for this watch, in ms; a shorter one is ignored.
     #[serde(default)]
     interval_ms: Option<u64>,
 }
@@ -605,7 +606,7 @@ async fn add_local(node: &Arc<Node>, add: AddWatch) -> Result<Value, ApiError> {
         add.args,
         set,
         run.last_entry,
-        interval_of(add.interval_ms),
+        interval_of(method.watch_interval, add.interval_ms),
         &Ok(answer.clone()),
     );
     node.watches

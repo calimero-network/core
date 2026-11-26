@@ -664,8 +664,8 @@ impl Kv {
         Ok(found.items.into_iter().map(|f| f.record.id).collect())
     }
 
-    /// The value of `key`, or `null`.
-    #[app::view(subscribable)]
+    /// The value of `key`, or `null`. Watches of it run at most every 250 ms.
+    #[app::view(subscribable(interval = "250ms"))]
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
         Ok(self.entries.get(&key)?.map(|e| e.value))
     }

@@ -104,7 +104,9 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
   diff through `AppMachine::changes_tx`, and a view that read the directory or the clock
   re-run on every applied system entry; the holder is judged on each system entry and
   before each frame; the new answer is pushed as `view-result` (first change at once, then
-  at most once per the watch's interval, skipped when its hash is unchanged, a bare
+  at most once per the watch's interval (the view's `watchIntervalMs`, default 1 s; a
+  client's `intervalMs` can only lengthen it, `watch::interval_of`), skipped when its hash
+  is unchanged, a bare
   `view-changed` over `MAX_PUSHED_ANSWER_BYTES`)).
 - **Packages and releases**: `packages.rs`, `packages/pipelines.rs`, `runtime.rs`,
   `node/runtime.rs`, `report.rs`, `egress.rs`.

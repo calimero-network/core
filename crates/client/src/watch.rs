@@ -101,8 +101,8 @@ impl Client {
     }
 
     /// Watches `view(args)` on stream `stream`: the node runs the view as this client's
-    /// caller and keeps what it read. `interval_ms` is how often at most the view runs
-    /// again for it (the node's default, 1 s, when `None`; clamped to 250 ms..=10 s).
+    /// caller and keeps what it read. The view runs again at most once per the
+    /// interval its app sets (default 1 s); `interval_ms` can only lengthen it, up to 10 s.
     ///
     /// # Errors
     /// `NOT_SUBSCRIBABLE`, `NOT_A_VIEW`, `READ_SET_UNBOUNDED`, `TOO_MANY_WATCHES`,

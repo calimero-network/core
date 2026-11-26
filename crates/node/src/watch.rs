@@ -30,13 +30,11 @@ pub const MAX_WATCHES_PER_STREAM: usize = 64;
 pub const MAX_WATCHES_PER_NODE: usize = 2_048;
 /// Bytes of one watch's view arguments (they are kept for as long as the watch).
 pub const MAX_WATCH_ARGS_BYTES: usize = 4 * 1024;
-/// A watch's interval when the client names none: its view runs at most once per interval
-/// (the first change after a quiet one at once).
+/// A watch's interval when the app's ABI names none: its view runs at most once per
+/// interval (the first change after a quiet one at once).
 pub const DEFAULT_WATCH_INTERVAL: Duration = Duration::from_millis(1_000);
-/// The shortest interval a client may ask for (`intervalMs`).
-pub const MIN_WATCH_INTERVAL: Duration = Duration::from_millis(250);
-/// The longest interval a client may ask for.
-pub const MAX_WATCH_INTERVAL: Duration = Duration::from_millis(10_000);
+/// The range an app's `watchIntervalMs` and a client's `intervalMs` are held to.
+pub use calimero_app_host::{MAX_WATCH_INTERVAL, MIN_WATCH_INTERVAL};
 /// Bytes of an answer's JSON a frame carries at most; a larger answer is sent as a bare
 /// `view-changed` the client re-reads.
 pub const MAX_PUSHED_ANSWER_BYTES: usize = 64 * 1024;
@@ -108,12 +106,16 @@ impl EndReason {
     }
 }
 
-/// A watch's interval: `interval_ms` clamped to [`MIN_WATCH_INTERVAL`]..=[`MAX_WATCH_INTERVAL`],
-/// [`DEFAULT_WATCH_INTERVAL`] when none is named.
+/// A watch's interval: the app sets it (the view's `watchIntervalMs`, else
+/// [`DEFAULT_WATCH_INTERVAL`]); a client's `interval_ms` can only make it longer, up to
+/// [`MAX_WATCH_INTERVAL`].
 #[must_use]
-pub fn interval_of(interval_ms: Option<u64>) -> Duration {
-    interval_ms.map_or(DEFAULT_WATCH_INTERVAL, |ms| {
-        Duration::from_millis(ms).clamp(MIN_WATCH_INTERVAL, MAX_WATCH_INTERVAL)
+pub fn interval_of(app: Option<Duration>, interval_ms: Option<u64>) -> Duration {
+    let app = app
+        .unwrap_or(DEFAULT_WATCH_INTERVAL)
+        .clamp(MIN_WATCH_INTERVAL, MAX_WATCH_INTERVAL);
+    interval_ms.map_or(app, |ms| {
+        Duration::from_millis(ms).clamp(app, MAX_WATCH_INTERVAL)
     })
 }
 
@@ -706,11 +708,16 @@ mod tests {
     }
 
     #[test]
-    fn intervals_are_clamped() {
-        assert_eq!(interval_of(None), DEFAULT_WATCH_INTERVAL);
-        assert_eq!(interval_of(Some(1)), MIN_WATCH_INTERVAL);
-        assert_eq!(interval_of(Some(u64::MAX)), MAX_WATCH_INTERVAL);
-        assert_eq!(interval_of(Some(2_000)), Duration::from_secs(2));
+    fn the_app_sets_the_interval_and_a_client_can_only_slow_it() {
+        let fast = Some(MIN_WATCH_INTERVAL);
+        assert_eq!(interval_of(None, None), DEFAULT_WATCH_INTERVAL);
+        assert_eq!(interval_of(fast, None), MIN_WATCH_INTERVAL);
+        // A client asking faster than the app gets the app's rate.
+        assert_eq!(interval_of(None, Some(1)), DEFAULT_WATCH_INTERVAL);
+        assert_eq!(interval_of(fast, Some(1)), MIN_WATCH_INTERVAL);
+        // Slower is allowed, up to the cap.
+        assert_eq!(interval_of(fast, Some(2_000)), Duration::from_secs(2));
+        assert_eq!(interval_of(None, Some(u64::MAX)), MAX_WATCH_INTERVAL);
     }
 
     #[test]

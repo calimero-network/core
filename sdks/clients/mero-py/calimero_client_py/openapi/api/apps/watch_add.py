@@ -112,9 +112,9 @@ def sync_detailed(
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
     carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
     read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
-    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
-    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
-    most 4 KiB.
+    state it read and `answer` its answer. The view runs again at most once per the interval its app
+    sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A
+    stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -154,9 +154,9 @@ def sync(
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
     carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
     read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
-    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
-    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
-    most 4 KiB.
+    state it read and `answer` its answer. The view runs again at most once per the interval its app
+    sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A
+    stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -191,9 +191,9 @@ async def asyncio_detailed(
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
     carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
     read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
-    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
-    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
-    most 4 KiB.
+    state it read and `answer` its answer. The view runs again at most once per the interval its app
+    sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A
+    stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -231,9 +231,9 @@ async def asyncio(
     what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then
     carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that
     read the directory or the clock, a system change) changes it. `index` is the app's last entry in the
-    state it read and `answer` its answer. `intervalMs` (default 1000, clamped to 250..=10000) is how
-    often at most the view runs again. A stream holds at most 64 watches and a node 2,048; `args` is at
-    most 4 KiB.
+    state it read and `answer` its answer. The view runs again at most once per the interval its app
+    sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A
+    stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

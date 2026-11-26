@@ -385,7 +385,7 @@ async fn a_burst_is_one_frame_per_interval_and_a_large_answer_a_bare_notice() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let app = kv_app(&alice, json!({})).await;
     let mut s = alice.watch_stream(&app, None).await.unwrap();
-    // Asked for less than the shortest interval: clamped to 250 ms.
+    // Asked for less than the app's 250 ms (`get`'s `watchIntervalMs`): the app's rate.
     let w = alice
         .add_watch(&app, &s.id, "get", json!({ "key": "a" }), Some(1))
         .await
@@ -487,5 +487,48 @@ async fn a_signed_out_session_ends_its_watches() {
             json!({ "sub": w.sub, "reason": "access-lost" })
         )),
         "{got:?}"
+    );
+}
+
+/// The app sets how often a watch is sent a new answer (`get`: 250 ms, `entries`: the
+/// default 1 s); a client asking for faster still gets the app's rate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_app_sets_the_watch_rate_and_a_client_can_only_slow_it() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let mut s = alice.watch_stream(&app, None).await.unwrap();
+    let fast = alice
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), None)
+        .await
+        .unwrap();
+    let slow = alice
+        .add_watch(&app, &s.id, "entries", json!({}), Some(1))
+        .await
+        .unwrap();
+    let slower = alice
+        .add_watch(&app, &s.id, "get", json!({ "key": "a" }), Some(5_000))
+        .await
+        .unwrap();
+
+    // A write every 100 ms for about 3 s, then what is still due.
+    let started = tokio::time::Instant::now();
+    for v in 0..30 {
+        let _ = set(&alice, &app, "a", &v.to_string()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let spent = started.elapsed();
+    let got = frames_for(&mut s, 2).await;
+    let count = |sub: &str| got.iter().filter(|(_, _, d)| d["sub"] == sub).count();
+    let (fast, slow, slower) = (count(&fast.sub), count(&slow.sub), count(&slower.sub));
+    let secs = usize::try_from(spent.as_secs()).unwrap();
+    assert!(slow <= 2 + secs, "entries: {slow} frames in {spent:?}");
+    assert!(
+        slower <= 2 + secs / 5,
+        "slowed get: {slower} frames in {spent:?}"
+    );
+    assert!(
+        fast > slow + 2,
+        "get {fast} vs entries {slow} frames in {spent:?}"
     );
 }
