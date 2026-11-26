@@ -1846,6 +1846,7 @@ async fn app_undelegate(
     let source_id = node.canonical_app_id(&source_id);
     let target_id = node.canonical_app_id(&target_id);
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     let granted = node.sys(|s| {
         s.delegations

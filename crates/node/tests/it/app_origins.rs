@@ -230,6 +230,7 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         carol.orgs().upgrade_status(&org, "run").await.map(drop),
         carol.auth().usage().await.map(drop),
         carol.auth().alias_list().await.map(drop),
+        carol.apps().undelegate(&store, &other).await.map(drop),
     ];
     for (i, r) in refused.into_iter().enumerate() {
         let e = r.unwrap_err();
