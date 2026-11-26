@@ -49,6 +49,8 @@ struct Attrs {
     view: bool,
     /// `view(subscribable)`: clients may watch the view's answer.
     subscribable: bool,
+    /// `view(subscribable(interval = "500ms"))`: the most often a watch is sent a new answer.
+    watch_interval_ms: Option<u64>,
     action: bool,
     /// `allow(action)`: called only by the app's own actions.
     action_only: bool,
@@ -145,6 +147,25 @@ fn unindent(raw: &str) -> String {
 }
 
 /// `"<n>s"`, `"<n>m"` or `"<n>h"` with `n > 0`, as the host reads it.
+/// The fastest and slowest watch interval an app may set (the host checks the same range).
+const MIN_WATCH_INTERVAL_MS: u64 = 250;
+const MAX_WATCH_INTERVAL_MS: u64 = 10_000;
+
+/// `"<n>ms"` or `"<n>s"` in milliseconds, within the allowed range.
+fn watch_interval_ms(text: &str) -> Option<u64> {
+    let ms = if let Some(n) = text.strip_suffix("ms") {
+        n.parse::<u64>().ok()?
+    } else {
+        text.strip_suffix('s')?
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(1_000)?
+    };
+    (MIN_WATCH_INTERVAL_MS..=MAX_WATCH_INTERVAL_MS)
+        .contains(&ms)
+        .then_some(ms)
+}
+
 fn valid_every(text: &str) -> bool {
     let Some(unit) = text.chars().last() else {
         return false;
@@ -192,12 +213,30 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                 attrs.view = true;
                 if matches!(attr.meta, syn::Meta::List(_)) {
                     attr.parse_nested_meta(|meta| {
-                        if meta.path.is_ident("subscribable") {
-                            attrs.subscribable = true;
-                            Ok(())
-                        } else {
-                            Err(meta.error("expected `subscribable`"))
+                        if !meta.path.is_ident("subscribable") {
+                            return Err(meta.error("expected `subscribable`"));
                         }
+                        attrs.subscribable = true;
+                        if meta.input.peek(syn::token::Paren) {
+                            meta.parse_nested_meta(|inner| {
+                                if !inner.path.is_ident("interval") {
+                                    return Err(inner.error("expected `interval = \"<n>ms|<n>s\"`"));
+                                }
+                                let lit: LitStr = inner.value()?.parse()?;
+                                let ms = watch_interval_ms(&lit.value()).ok_or_else(|| {
+                                    syn::Error::new_spanned(
+                                        &lit,
+                                        format!(
+                                            "a watch interval is \"<n>ms\" or \"<n>s\", \
+                                             {MIN_WATCH_INTERVAL_MS}ms to {MAX_WATCH_INTERVAL_MS}ms"
+                                        ),
+                                    )
+                                })?;
+                                attrs.watch_interval_ms = Some(ms);
+                                Ok(())
+                            })?;
+                        }
+                        Ok(())
                     })?;
                 }
             }
@@ -475,6 +514,9 @@ fn abi_entry(m: &Method) -> Value {
     }
     if m.attrs.subscribable {
         let _ = entry.insert("subscribable".into(), true.into());
+    }
+    if let Some(ms) = m.attrs.watch_interval_ms {
+        let _ = entry.insert("watchIntervalMs".into(), ms.into());
     }
     Value::Object(entry)
 }
@@ -958,6 +1000,33 @@ mod tests {
             impl S { #[app::view(shared)] pub fn m(&self) -> Result<()> { Ok(()) } }
         });
         assert!(msg.contains("subscribable"), "{msg}");
+    }
+
+    #[test]
+    fn an_app_sets_its_watch_interval() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                #[app::view(subscribable(interval = "500ms"))]
+                pub fn fast(&self) -> Result<u32> { Ok(1) }
+                #[app::view(subscribable(interval = "2s"))]
+                pub fn slow(&self) -> Result<u32> { Ok(1) }
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        assert!(out.contains(r#"\"watchIntervalMs\":500"#), "{out}");
+        assert!(out.contains(r#"\"watchIntervalMs\":2000"#), "{out}");
+        for bad in ["100ms", "11s", "1m", "fast"] {
+            let item: ItemImpl = syn::parse_str(&format!(
+                "impl S {{ #[app::view(subscribable(interval = \"{bad}\"))] pub fn m(&self) -> Result<()> {{ Ok(()) }} }}"
+            ))
+            .unwrap();
+            let msg = refused(item);
+            assert!(msg.contains("watch interval"), "{bad}: {msg}");
+        }
+        let msg = refused(parse_quote! {
+            impl S { #[app::view(subscribable(every = "1s"))] pub fn m(&self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("interval"), "{msg}");
     }
 
     #[test]

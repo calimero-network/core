@@ -1893,6 +1893,7 @@ mod tests {
             action_only: false,
             compute_result: false,
             subscribable: false,
+            watch_interval: None,
         }
     }
 

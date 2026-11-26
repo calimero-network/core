@@ -613,6 +613,42 @@ fn only_a_view_is_subscribable() {
     }
 }
 
+/// The app sets how often a watch of a view may be sent a new answer, within 250 ms–10 s.
+#[test]
+fn a_subscribable_view_carries_its_watch_interval() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {
+            "fast": { "kind": "view", "subscribable": true, "watchIntervalMs": 250 },
+            "plain": { "kind": "view", "subscribable": true }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        abi.methods["fast"].watch_interval,
+        Some(Duration::from_millis(250))
+    );
+    assert_eq!(abi.methods["plain"].watch_interval, None);
+    for (method, why) in [
+        (
+            json!({ "kind": "view", "subscribable": true, "watchIntervalMs": 100 }),
+            "250 to 10000",
+        ),
+        (
+            json!({ "kind": "view", "subscribable": true, "watchIntervalMs": 20_000 }),
+            "250 to 10000",
+        ),
+        (
+            json!({ "kind": "view", "watchIntervalMs": 500 }),
+            "only for subscribable",
+        ),
+    ] {
+        let err =
+            Abi::from_json(&json!({ "abiVersion": 1, "methods": { "x": method } })).unwrap_err();
+        assert!(err.to_string().contains(why), "{err}");
+    }
+}
+
 /// A recorded view's read set holds the keys it got and the part of each range it scanned:
 /// a write past where a cursor stopped does not touch it.
 #[test]

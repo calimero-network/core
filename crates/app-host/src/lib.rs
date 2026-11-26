@@ -26,7 +26,7 @@ mod xcall;
 
 pub use abi::{
     Abi, ComputeCaps, MethodAbi, MethodKind, MAX_COMPUTE_FUEL, MAX_COMPUTE_MEMORY_MIB,
-    MAX_COMPUTE_WALL_SECS, SUPPORTED_ABI_VERSIONS,
+    MAX_COMPUTE_WALL_SECS, MAX_WATCH_INTERVAL, MIN_WATCH_INTERVAL, SUPPORTED_ABI_VERSIONS,
 };
 pub use action::{
     subcall_key, ActionHost, ActionStart, ConnectorHost, HttpExchange, HttpHost, HttpRequest,
