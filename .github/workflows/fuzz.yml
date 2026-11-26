@@ -8,6 +8,9 @@ on:
       - "crates/sealed/**"
       - "crates/tee-attestation/**"
       - "crates/meroctl/sign/**"
+      - "crates/node/src/system.rs"
+      - "crates/node/src/system/**"
+      - "crates/log/src/**"
       - "fuzz/**"
       - "scripts/fuzz.sh"
       - "scripts/fuzz-ci.sh"
@@ -69,6 +72,13 @@ jobs:
               - *shared
               - "crates/tee-attestation/**"
               - "fuzz/fuzz_targets/quote_parse.rs"
+            system_apply:
+              - *shared
+              - "crates/node/src/system.rs"
+              - "crates/node/src/system/**"
+              - "crates/log/src/**"
+              - "fuzz/fuzz_targets/system_apply.rs"
+              - "fuzz/seeds/system_apply/**"
 
   smoke:
     name: Smoke (${{ matrix.target }})
@@ -107,6 +117,7 @@ jobs:
           - passkey_verify
           - session_token
           - quote_parse
+          - system_apply
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

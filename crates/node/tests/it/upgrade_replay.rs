@@ -266,15 +266,19 @@ async fn replay(fixture: &Path) {
     let alice = bearer("alice");
     for app in expected["apps"].as_object().unwrap().values() {
         let path = format!("apps/{}/storage", app.as_str().unwrap());
-        let mut last = (0, Value::Null);
-        for _ in 0..200 {
-            last = send(&http, &base, alice.as_deref(), "GET", &path, &Value::Null).await;
-            if last.0 == 200 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert_eq!(last.0, 200, "{name}: {path} answers {last:?}");
+        crate::harness::poll::eventually(
+            Duration::from_secs(20),
+            &format!("{name}: {path} answers 200"),
+            || async {
+                let last = send(&http, &base, alice.as_deref(), "GET", &path, &Value::Null).await;
+                if last.0 == 200 {
+                    Ok(())
+                } else {
+                    Err(last)
+                }
+            },
+        )
+        .await;
     }
 
     let mut diffs = Vec::new();

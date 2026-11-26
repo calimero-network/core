@@ -164,49 +164,46 @@ impl Rig {
 
     /// Waits until the run's record is no longer active, and its result method recorded.
     async fn outcome(&self, run: &str) -> Value {
-        let started = Instant::now();
-        loop {
-            let v = self
-                .alice
-                .apps()
-                .view(
-                    &self.app,
-                    "outcome",
-                    Some(json!({ "run": run })),
-                    Some(ViewsRequestConsistency::Strong),
-                    None,
-                )
-                .await
-                .unwrap();
-            if let Some(text) = v.result.as_str() {
-                return serde_json::from_str(text).unwrap();
-            }
-            assert!(started.elapsed() < WAIT, "run {run} did not end");
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        let text =
+            crate::harness::poll::eventually(WAIT, &format!("run {run} did not end"), || async {
+                let v = self
+                    .alice
+                    .apps()
+                    .view(
+                        &self.app,
+                        "outcome",
+                        Some(json!({ "run": run })),
+                        Some(ViewsRequestConsistency::Strong),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                v.result.as_str().map(str::to_owned).ok_or(v.result)
+            })
+            .await;
+        serde_json::from_str(&text).unwrap()
     }
 
-    async fn until(&self, what: &str, mut ready: impl FnMut() -> bool) {
-        let started = Instant::now();
-        while !ready() {
-            assert!(started.elapsed() < WAIT, "{what}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    async fn until(&self, what: &str, ready: impl FnMut() -> bool) {
+        crate::harness::poll::until(WAIT, what, ready).await;
     }
 
     /// The leader's metrics once every series in `names` shows: it counts a run's usage after
     /// the final commits and the job node drops the run, so the outcome is visible first.
     async fn metrics_with(&self, names: &[&str]) -> String {
-        let started = Instant::now();
-        loop {
+        crate::harness::poll::eventually(WAIT, &format!("{names:?} in the metrics"), || async {
             let metrics = self.metrics().await;
             if names.iter().all(|n| metrics.contains(n)) {
-                return metrics;
+                return Ok(metrics);
             }
-            let seen: Vec<&str> = metrics.lines().filter(|l| l.contains("compute")).collect();
-            assert!(started.elapsed() < WAIT, "{names:?} not in {seen:#?}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+            let seen: Vec<String> = metrics
+                .lines()
+                .filter(|l| l.contains("compute"))
+                .map(str::to_owned)
+                .collect();
+            Err(seen)
+        })
+        .await
     }
 
     async fn metrics(&self) -> String {
@@ -1242,18 +1239,12 @@ async fn a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_ans
 }
 
 async fn until_ended(rig: &Rig, run: &str, secs: u64) -> RunRecord {
-    let started = Instant::now();
-    loop {
-        let rec = rig.record(run);
-        if !rec.state.is_active() {
-            return rec;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(secs),
-            "run {run} still active after {secs} s"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    crate::harness::poll::found(
+        Duration::from_secs(secs),
+        &format!("run {run} still active after {secs} s"),
+        || Some(rig.record(run)).filter(|rec| !rec.state.is_active()),
+    )
+    .await
 }
 
 fn failed(reason: FailedReason) -> FinalOutcome {
@@ -1560,8 +1551,7 @@ async fn a_result_method_can_start_the_next_run() {
     let rig = Rig::start(&[JOB_A]).await;
     let run = rig.begin("startDigestThen", json!({ "inputs": [] })).await;
     until_ended(&rig, &run, 60).await;
-    let started = Instant::now();
-    let next = loop {
+    let next = crate::harness::poll::eventually(WAIT, "the result method ran", || async {
         let v = rig
             .alice
             .apps()
@@ -1574,12 +1564,9 @@ async fn a_result_method_can_start_the_next_run() {
             )
             .await
             .unwrap();
-        if let Some(text) = v.result.as_str() {
-            break text.to_owned();
-        }
-        assert!(started.elapsed() < WAIT, "the result method did not run");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
+        v.result.as_str().map(str::to_owned).ok_or(v.result)
+    })
+    .await;
     assert!(!next.starts_with("error"), "{next}");
     let record = until_ended(&rig, &next, 60).await;
     assert_eq!(record.state, RunState::Done);
@@ -1847,15 +1834,15 @@ impl Rig {
     /// The `queue` of the run in `view` (the single-run or the list view) once it shows one in
     /// `state`.
     async fn queue_in(&self, who: &Client, run: &str, state: &str) -> Value {
-        let started = Instant::now();
-        loop {
+        crate::harness::poll::eventually(WAIT, &format!("a queue in {state}"), || async {
             let shown = who.apps().run(&self.app, run).await.map(wire).unwrap();
             if shown["queue"]["state"] == state {
-                return shown["queue"].clone();
+                Ok(shown["queue"].clone())
+            } else {
+                Err(shown)
             }
-            assert!(started.elapsed() < WAIT, "no queue in {state}: {shown}");
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        })
+        .await
     }
 }
 
@@ -2596,11 +2583,15 @@ impl Case<'_> {
                 !self.rig.holds_bytes(&again)
             })
             .await;
-        let started = Instant::now();
-        while self.rig.charged().await != baseline {
-            assert!(started.elapsed() < WAIT, "the quota charge is not released");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        crate::harness::poll::eventually(WAIT, "the quota charge is released", || async {
+            let charged = self.rig.charged().await;
+            if charged == baseline {
+                Ok(())
+            } else {
+                Err(charged)
+            }
+        })
+        .await;
     }
 
     async fn run(&self, up: Via, del: Via, baseline: u64) {
@@ -2625,11 +2616,15 @@ impl Case<'_> {
                 self.nodes_with_bytes(&id) == 0
             })
             .await;
-        let started = Instant::now();
-        while self.rig.charged().await != baseline {
-            assert!(started.elapsed() < WAIT, "the quota charge is not released");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        crate::harness::poll::eventually(WAIT, "the quota charge is released", || async {
+            let charged = self.rig.charged().await;
+            if charged == baseline {
+                Ok(())
+            } else {
+                Err(charged)
+            }
+        })
+        .await;
     }
 }
 

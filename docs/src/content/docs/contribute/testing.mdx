@@ -1123,7 +1123,11 @@ seconds-long p99 with two leader nodes (c') is gone.
 
 <Aside type="note" title="Fuzzing">
   `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,
-  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`).
+  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`) and the
+  system log every replica applies (`system_apply`). Beside it, a property
+  test (`crates/node/src/system/prop_tests.rs`) applies random system logs on
+  two machines, one restored from a snapshot part way, and requires the same
+  answers and the same state.
   `fuzz.yml` runs a changed target for a minute on a PR and
   every target for 30 minutes nightly; `scripts/fuzz.sh <target> [seconds]`
   runs one locally.

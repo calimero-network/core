@@ -573,17 +573,18 @@ async fn an_open_cluster_installs_as_before_until_the_operator_grants_deployment
     let rules = alice.public().releases_public().await.map(wire).unwrap();
     assert_eq!(rules["governance"]["deployments"], "granted");
     // Every replica attests it once it has applied the change.
-    let mut proven = None;
-    for _ in 0..30 {
-        if let Ok(p) = alice.verify_app_cluster(&app).await {
-            if p.governance.deployments == Deployments::Granted {
-                proven = Some(p);
-                break;
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "the replicas attest granted deployments",
+        || async {
+            match alice.verify_app_cluster(&app).await {
+                Ok(p) if p.governance.deployments == Deployments::Granted => Ok(()),
+                Ok(p) => Err(format!("{:?}", p.governance.deployments)),
+                Err(e) => Err(e.to_string()),
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(proven.is_some(), "the replicas attest granted deployments");
+        },
+    )
+    .await;
 }
 
 /// Where the cluster's owner grants deployers: the operator grants them until

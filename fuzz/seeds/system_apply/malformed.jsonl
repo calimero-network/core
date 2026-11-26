@@ -1,0 +1,4 @@
+{"op":"createOrg","org_id":1}
+not json
+{"op":"noSuchCommand"}
+{"op":"createOrg","org_id":"o2","name":"N","actor":"bob","at":3,"name_fits":true}

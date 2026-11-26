@@ -27,7 +27,7 @@ fn account(id: &str) -> SystemCmd {
 }
 
 /// `owner`'s personal organization in these tests, made with the account.
-fn p(owner: &str) -> String {
+pub(super) fn p(owner: &str) -> String {
     format!("p-{owner}")
 }
 
@@ -41,7 +41,7 @@ fn genesis(governance: Governance) -> SystemCmd {
     }
 }
 
-fn all(who: Authority) -> Governance {
+pub(super) fn all(who: Authority) -> Governance {
     Governance {
         releases: who,
         app_upgrades: who,
@@ -1466,7 +1466,10 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
 }
 
 /// An account `id` holding the passkey `pk`.
-fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator) -> SystemCmd {
+pub(super) fn account_with(
+    id: &str,
+    pk: &mut calimero_identity::testing::SoftAuthenticator,
+) -> SystemCmd {
     let rp = calimero_identity::RelyingParty {
         id: "localhost".into(),
         origins: vec!["http://localhost:3000".into()],
@@ -1494,7 +1497,7 @@ fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator
     }
 }
 
-fn consent(
+pub(super) fn consent(
     pk: &mut calimero_identity::testing::SoftAuthenticator,
     subject: &str,
     method: &str,
@@ -1932,7 +1935,7 @@ fn a_publishers_run_covers_the_instances_that_run_its_package() {
 type Soft = calimero_identity::testing::SoftAuthenticator;
 
 /// The operator's signing key in these tests, and what genesis records.
-fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
+pub(super) fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
     let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let public = crate::proof::OperatorKey {
         key: hex::encode(key.verifying_key().to_bytes()),
@@ -1942,7 +1945,7 @@ fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
 }
 
 /// The operator's signature over `method` on `subject` with `args`.
-fn signed(subject: &str, method: &str, args: &serde_json::Value) -> serde_json::Value {
+pub(super) fn signed(subject: &str, method: &str, args: &serde_json::Value) -> serde_json::Value {
     use ed25519_dalek::Signer;
     let (key, public) = operator_signer();
     let statement = crate::proof::Statement::new(subject, method, args);
