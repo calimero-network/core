@@ -15,12 +15,10 @@ class TeamViewAppsItem:
     Attributes:
         app_id (str):
         name (str):
-        context_id (str):
     """
 
     app_id: str
     name: str
-    context_id: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,15 +26,12 @@ class TeamViewAppsItem:
 
         name = self.name
 
-        context_id = self.context_id
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "appId": app_id,
                 "name": name,
-                "contextId": context_id,
             }
         )
 
@@ -49,12 +44,9 @@ class TeamViewAppsItem:
 
         name = d.pop("name")
 
-        context_id = d.pop("contextId")
-
         team_view_apps_item = cls(
             app_id=app_id,
             name=name,
-            context_id=context_id,
         )
 
         team_view_apps_item.additional_properties = d

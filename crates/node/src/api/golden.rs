@@ -178,7 +178,7 @@ fn a_team_answers_as_before() {
     let o = s.orgs.get("o1").expect("o1");
     assert_eq!(
         text(&orgs::team_view(&s, o, "t1", "bob")),
-        r#"{"teamId":"t1","name":"Team One","parent":null,"join":"invite","metadata":{"app":{"package":"p1"}},"package":"p1","defaultCapabilities":3,"members":[{"account":"alice","role":"lead","capabilities":4294967295},{"account":"bob","role":"member","capabilities":7}],"children":["t2"],"apps":[{"appId":"a1","name":"App One","contextId":"f55ff16f66f43360266b95db6f8fec01d76031054306ae4a4b380598f6cfd114"}],"myRole":"member","member":true}"#
+        r#"{"teamId":"t1","name":"Team One","parent":null,"join":"invite","metadata":{"app":{"package":"p1"}},"package":"p1","defaultCapabilities":3,"members":[{"account":"alice","role":"lead","capabilities":4294967295},{"account":"bob","role":"member","capabilities":7}],"children":["t2"],"apps":[{"appId":"a1","name":"App One"}],"myRole":"member","member":true}"#
     );
     assert_eq!(
         text(&orgs::team_view(&s, o, "t2", "alice")),

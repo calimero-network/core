@@ -273,7 +273,7 @@ detail.
    declares, and each step's limits may only lower the method's caps. A problem
    is `400 BAD_PIPELINE` with `details`, a list of `{file, path, code, message}`
    for every error. A release with pipelines installs only once every node runs
-   this release (`409 CLUSTER_NOT_UPGRADED`). `meroctl app pipelines PACKAGE`
+   this release (`409 CLUSTER_NOT_UPGRADED`). `meroctl package pipelines PACKAGE`
    prints what a version registered.
 
 4. **Install it.**
@@ -291,7 +291,7 @@ detail.
    upload:
 
    ```bash
-   meroctl app install --path dist/com.example.my-app-1.0.0.mpk
+   meroctl package install --path dist/com.example.my-app-1.0.0.mpk
    meroctl instance create --name my-app --package com.example.my-app --alias my-app
    ```
 
@@ -299,7 +299,7 @@ detail.
    every artifact's digest, `minRuntimeVersion`, the package's pinned signer
    (the first release's), and that each component prepares and imports only
    what the `calimero:app` world offers. Installing is what *produces* an
-   application: the manifest's `package` and `signerId` fix the application id.
+   installed package: the manifest's `package` and `signerId` fix its identity.
    A WASM that a release of another signer's package already ships is refused
    (`409`).
 
@@ -364,16 +364,16 @@ judge.
 
 ## The signer key is the update authority
 
-For a bundle, the application id is derived from the `package` **and** the
-`signerId` together — not from the bytecode. That makes the application id
+For a bundle, the package's identity is its `package` **and** its
+`signerId` together — not the bytecode. That makes the identity
 **version-stable**: a new release signed by the *same* key under the *same*
-package keeps the same application id and is recognized as an upgrade of the
+package keeps the same identity and is recognized as an upgrade of the
 existing app.
 
 The corollary is the rule to remember: **a new signed version must use the same
-signer key.** Sign a new release with a different key and the node computes a
-different application id — it is a *different application*, not an upgrade, and
-existing contexts will not pick it up. Treat the signing key as the long-lived
+signer key.** Sign a new release with a different key and the node sees a
+different identity — it is a *different package*, not an upgrade, and
+existing instances will not pick it up. Treat the signing key as the long-lived
 identity of your app and guard it accordingly.
 
 <Aside type="note" title="Every install path requires a signature">
@@ -400,8 +400,8 @@ documented in [Upgrades & migration](/protocol/upgrades/).
     href="/protocol/upgrades/"
   />
   <LinkCard
-    title="Applications (protocol)"
-    description="How a signed bundle becomes an application with a version-stable id."
+    title="Packages & frontends (protocol)"
+    description="How a signed bundle becomes an installed package with a version-stable identity."
     href="/protocol/applications/"
   />
 </CardGrid>

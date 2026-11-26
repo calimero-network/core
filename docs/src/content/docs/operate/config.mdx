@@ -143,7 +143,7 @@ new data directory (a rollout's new nodes always do).
 ## Registry
 
 `registry-url` is the package registry every node fetches signed releases from
-(`calimero-app-downloader`'s HTTP registry). `meroctl app install
+(`calimero-app-downloader`'s HTTP registry). `meroctl package install
 PACKAGE@VERSION`, `POST /apps { package, version }` for a release the cluster
 lacks, and owner upgrade runs install from it. A node that runs a registry
 release it does not hold fetches it from the registry, never from a peer, and

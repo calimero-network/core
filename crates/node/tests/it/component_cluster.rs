@@ -1091,8 +1091,10 @@ async fn an_app_answers_to_its_context_id_too() {
         .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap();
-    let ctx = created["contextId"].as_str().unwrap();
-    assert_eq!(ctx, hex::encode(calimero_identity::sha256(app.as_bytes())));
+    // The answer names the instance by its app id only; its context id is derived.
+    assert!(created.get("contextId").is_none(), "{created}");
+    let ctx = hex::encode(calimero_identity::sha256(app.as_bytes()));
+    let ctx = ctx.as_str();
     let _ = alice
         .apps()
         .call(

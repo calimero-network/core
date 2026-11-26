@@ -152,7 +152,7 @@ pub enum OpsCmd {
         #[arg(long)]
         withdraw: bool,
     },
-    /// Approve URL prefixes an application's publisher may call out to,
+    /// Approve URL prefixes a package's publisher may call out to,
     /// cluster-wide, where the operator holds outbound approvals.
     Outbound {
         #[arg(long)]
@@ -162,9 +162,9 @@ pub enum OpsCmd {
         #[arg(long)]
         replace: bool,
     },
-    /// Installed applications.
+    /// Installed packages.
     Packages,
-    /// Install an application for the operator's upgrades: `PACKAGE@VERSION`
+    /// Install a package for the operator's upgrades: `PACKAGE@VERSION`
     /// from the registry, or a signed `.mpk` with `--path`.
     Install {
         #[arg(value_name = "PACKAGE[@VERSION]", required_unless_present = "path")]
@@ -174,7 +174,7 @@ pub enum OpsCmd {
         #[arg(long, conflicts_with = "coords")]
         path: Option<PathBuf>,
     },
-    /// Uninstall an application (or one version) the operator installed.
+    /// Uninstall a package (or one version) the operator installed.
     Uninstall {
         package: String,
         #[arg(long)]

@@ -55,8 +55,8 @@ changing these.
 
 | Crate | Package | What it is | Spec |
 | --- | --- | --- | --- |
-| `crates/app-wit` | `calimero-app-wit` | The `calimero:app` WIT world and its import allow-list. | [Application execution](/protocol/execution/), [The env API](/build/host-functions/) |
-| `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. | [Application execution](/protocol/execution/), [The env API](/build/host-functions/) |
+| `crates/app-wit` | `calimero-app-wit` | The `calimero:app` WIT world and its import allow-list. | [App execution](/protocol/execution/), [The env API](/build/host-functions/) |
+| `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. | [App execution](/protocol/execution/), [The env API](/build/host-functions/) |
 | `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. | [One run](/protocol/execution/#one-run), [Limits](/protocol/limits/) |
 | `crates/sdk` (+ `sdk-macros`) | `calimero-sdk`, `calimero-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. | [Build Calimero apps](/build/), [SDK macros](/build/sdk-macros/), [Tables & collections](/build/collections/) |
 | `crates/app-sdk` | `calimero-app-sdk` | The SDK's old name: re-exports `calimero-sdk`, kept until no app depends on it. | [Build Calimero apps](/build/) |

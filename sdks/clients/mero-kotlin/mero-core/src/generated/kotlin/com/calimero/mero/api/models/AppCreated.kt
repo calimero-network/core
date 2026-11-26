@@ -29,10 +29,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * What `POST /apps` answers: the new instance, its context id, its group and replicas, whether its release ships a compute component, and the apps it created with it by name.
+ * What `POST /apps` answers: the new instance, its app group and replicas, whether its release ships a compute component, and the apps it created with it by name.
  *
  * @param appId 
- * @param contextId 
  * @param group 
  * @param replicas 
  * @param compute 
@@ -44,9 +43,6 @@ data class AppCreated (
 
     @SerialName(value = "appId")
     val appId: kotlin.String,
-
-    @SerialName(value = "contextId")
-    val contextId: kotlin.String,
 
     @SerialName(value = "group")
     val group: kotlin.Long,

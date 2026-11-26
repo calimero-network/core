@@ -50,7 +50,7 @@ pub enum DevCmd {
         #[arg(long)]
         org: Option<String>,
     },
-    /// Push a build to its instances on every save (as `meroctl app watch`).
+    /// Push a build to its instances on every save (as `meroctl package watch`).
     Watch(crate::app::WatchArgs),
 }
 

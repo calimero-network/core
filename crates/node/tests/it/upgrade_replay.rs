@@ -13,8 +13,8 @@
 //!
 //! Each request is sent again, as plain HTTP with the same key: the status must be
 //! the same and the body must hold every field the old body held, with the same
-//! value (this release may add fields, never drop or change one). Then the
-//! replayed state takes a write.
+//! value (this release may add fields, never change one, and drops only a field a
+//! hard cutover removed, [`CUT_FIELDS`]). Then the replayed state takes a write.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,20 @@ const CLUSTER: &str = "upgrade-replay";
 const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
 /// Fields that move on their own and say nothing about the replayed state.
 const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
+
+/// Answer fields a hard cutover removed from the API (`[[cutover]] field = ...` in
+/// `crates/node/api-deprecations.toml`): a release before the cutover answered them and
+/// this one may not. Where this node still answers one, it is compared like any other.
+static CUT_FIELDS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("api-deprecations.toml");
+    let doc: toml::Table = std::fs::read_to_string(path).unwrap().parse().unwrap();
+    doc.get("cutover")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("field")?.as_str().map(str::to_owned))
+        .collect()
+});
 
 /// Totals of the UTC day the read is made on (`today`, `developerFuelToday`,
 /// `developerWritesToday`, ...): a replay on a later day than the release's
@@ -131,6 +145,9 @@ fn holds(got: &Value, want: &Value, path: &str) -> Result<(), String> {
                 }
                 let at = format!("{path}.{k}");
                 let Some(gv) = g.get(k) else {
+                    if CUT_FIELDS.iter().any(|f| f == k) {
+                        continue;
+                    }
                     return Err(format!("{at} is gone"));
                 };
                 if path.ends_with(".receipt") && SIGNATURES.contains(&k.as_str()) {
@@ -364,4 +381,14 @@ fn an_invite_the_release_answered_open_reads_expired_once_its_time_passes() {
         "invite"
     )
     .is_err());
+}
+
+#[test]
+fn a_field_a_cutover_removed_may_be_gone_but_not_changed() {
+    // `contextId` is a declared cutover field: gone is fine, a different value is not.
+    let want = json!({ "appId": "a", "contextId": "c" });
+    holds(&json!({ "appId": "a" }), &want, "team").unwrap();
+    assert!(holds(&json!({ "appId": "a", "contextId": "d" }), &want, "team").is_err());
+    // A field no cutover names is still required.
+    assert!(holds(&json!({ "contextId": "c" }), &want, "team").is_err());
 }

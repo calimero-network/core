@@ -3,7 +3,7 @@
 //! [`HostCore`] owns every state access and policy decision of one invocation; an
 //! [`Engine`] only maps the WIT world onto it and enforces the [`Budget`].
 //!
-//! Spec: [Application execution](https://calimero-network.github.io/core/protocol/execution/),
+//! Spec: [App execution](https://calimero-network.github.io/core/protocol/execution/),
 //! [The env API](https://calimero-network.github.io/core/build/host-functions/).
 //! Crate guide: [`crates/app-host/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-host/AGENTS.md).
 

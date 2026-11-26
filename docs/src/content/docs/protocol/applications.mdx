@@ -209,7 +209,7 @@ always recorded `installedBy`, so each is visible by the rules above from the
 first start of this version.
 
 :::caution[What stays shared]
-Package names are one namespace per cluster: installing a release of a name
+Package names are shared by the whole cluster: installing a release of a name
 another publisher's key pinned is refused with that key named, so the name's
 existence shows. A frontend is served to anyone who asks for its origin (a
 page loads before anyone signs in), so a package's frontend, its releases'
@@ -464,7 +464,7 @@ installed, and `UninstallPackage` of a pinned release is `409 MODULE_IN_USE`,
 parts, and `Node::pipeline_json(hash)` reads it, else recompiles it from the release's `.mpk`.
 Such a release is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`).
 `GET /packages/{package}/{version}/pipelines` (who sees the release) answers `{ name: { hash,
-worstCaseFuel, modules, pipeline } }`; `meroctl app pipelines`.
+worstCaseFuel, modules, pipeline } }`; `meroctl package pipelines`.
 `GET /packages/{package}/{version}/capabilities` (the same access: who sees the release; a
 session bound to the package sees what its account does, every release only for a record from before `visibility`, `SystemState::sees_release_from`) answers the release's capability card before any app of it exists: `{
 package, version, service, bundle, mpk, manifestHash, signer, name, author, outbound, abi }`, the

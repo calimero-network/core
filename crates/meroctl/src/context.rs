@@ -13,7 +13,7 @@ use crate::env::{json_arg, to_json, DevPasskey, Env};
 
 #[derive(Debug, Subcommand)]
 pub enum ContextCmd {
-    /// Create an instance from an installed application (`--package`), a
+    /// Create an instance from an installed package (`--package`), a
     /// bundle hash, or a local file (`--path`: installed first).
     Create {
         /// The instance's name.
@@ -24,7 +24,7 @@ pub enum ContextCmd {
         /// The release; default the newest installed.
         #[arg(long, requires = "package")]
         version: Option<String>,
-        /// The service, for a multi-service application.
+        /// The service, for a multi-service package.
         #[arg(long)]
         service: Option<String>,
         #[arg(long, conflicts_with = "path")]
@@ -45,7 +45,7 @@ pub enum ContextCmd {
         #[arg(long)]
         alias: Option<String>,
     },
-    /// Instances this account reaches, optionally only one application's.
+    /// Instances this account reaches, optionally only one package's.
     #[command(alias = "ls")]
     List {
         #[arg(long)]

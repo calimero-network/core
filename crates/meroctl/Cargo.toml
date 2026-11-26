@@ -1,6 +1,6 @@
 [package]
 name = "meroctl"
-description = "Command line for Calimero nodes (merod): apps, contexts, namespaces, blobs, accounts, operations"
+description = "Command line for Calimero nodes (merod): apps, packages, instances, organizations, teams, blobs, accounts, operations"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
