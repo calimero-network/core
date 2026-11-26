@@ -12763,6 +12763,18 @@ fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
     );
     let by_alice_for_carol = consent(&mut alice, "org:org", "__finish_recovery", &args);
     assert!(m.run(finish("carol", ready, by_alice_for_carol)).is_err());
+    let _prev = m.state.package_origins.insert(
+        NOTES.into(),
+        crate::origins::PackageOrigin {
+            package: "p".into(),
+            rp_id: "notes.example.com".into(),
+            added_by: "alice".into(),
+            added_at: 1,
+            served: false,
+            app: Some("app".into()),
+            registration: "r".into(),
+        },
+    );
     let done = m
         .run(finish(
             "carol",
@@ -12779,6 +12791,11 @@ fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
     assert_eq!(
         m.state.apps["app"].owner, "carol",
         "the org's apps moved with it"
+    );
+    assert_eq!(m.state.origins_of_app("app").count(), 0);
+    assert!(
+        m.state.origin_registration(NOTES, Some("p"), "r").is_none(),
+        "the previous owner's sessions there end"
     );
     // Alice's passkeys and account are her own still.
     assert!(m.state.accounts.contains_key("alice"));
