@@ -635,7 +635,7 @@ fn a_view_records_what_it_read() {
     assert!(!touched(b"y"));
 
     // Without `with_read_set` nothing is recorded.
-    let mut host = core_for(&state, &inv(InvocationKind::View));
+    let host = core_for(&state, &inv(InvocationKind::View));
     let _ = host.storage_get(b"x");
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     assert!(out.read_set.is_none());
