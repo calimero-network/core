@@ -231,7 +231,7 @@ fn plain(attrs: &[Attribute]) -> syn::Result<bool> {
 }
 
 /// The SDK's JSON helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
-const D20: &[&str] = &[
+const JSON_HELPERS: &[&str] = &[
     "u64_str",
     "i64_str",
     "opt_u64_str",
@@ -260,12 +260,12 @@ fn field_type(
     match &serde.with {
         Some(with) => {
             let module = with.rsplit("::").next().unwrap_or(with);
-            if wire(ty).is_none() || !D20.contains(&module) {
+            if wire(ty).is_none() || !JSON_HELPERS.contains(&module) {
                 return Err(syn::Error::new(
                     span,
                     format!(
                         "{field}: AbiType cannot see what `with = \"{with}\"` writes; only the \
-                         SDK's D20 helpers on u64, i64 and Vec<u8> \
+                         SDK's JSON helpers on u64, i64 and Vec<u8> \
                          (`calimero_sdk::json::u64_str`, ...) are described: implement `AbiType` \
                          by hand"
                     ),
@@ -281,7 +281,7 @@ fn field_type(
                 span,
                 format!(
                     "{field}: plain serde writes u64/i64 as a number that loses precision past \
-                     2^53 and Vec<u8> as an array, where the ABI says a string (D20): add \
+                     2^53 and Vec<u8> as an array, where the ABI says a string: add \
                      `#[serde(with = \"calimero_sdk::json::u64_str\")]` (`i64_str`, \
                      `bytes_b64url`, `opt_..`), or make it a Record; or, if the JSON is meant to \
                      be a number or an array of numbers, mark the field `#[abi(plain)]`"

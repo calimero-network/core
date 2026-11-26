@@ -2583,7 +2583,7 @@ pub struct AccountRecoveryPending {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AccountUsage {
     pub apps: u64,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "bundleBytes")]
     pub bundle_bytes: String,
     #[serde(rename = "apiKeys")]
@@ -2593,10 +2593,10 @@ pub struct AccountUsage {
     #[serde(rename = "fileBytes")]
     pub file_bytes: BTreeMap<String, u64>,
     pub quotas: Quotas,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "developerFuelToday")]
     pub developer_fuel_today: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "developerWritesToday")]
     pub developer_writes_today: String,
     /// The fields this client does not name, as the node sent them.
@@ -3370,10 +3370,10 @@ pub struct OrgUpdates {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrgUsage {
     pub apps: u64,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "developerFuelToday")]
     pub developer_fuel_today: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "developerWritesToday")]
     pub developer_writes_today: String,
     pub quotas: Quotas,
@@ -4443,7 +4443,7 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u64,
     #[serde(rename = "computeFuelPerOrg")]
     pub compute_fuel_per_org: u64,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     pub max_fuel_per_developer_per_day: String,
     /// The fields this client does not name, as the node sent them.
@@ -4457,7 +4457,7 @@ pub struct OrgQuotas {
     #[serde(rename = "maxConcurrentRuns")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent_runs: Option<u64>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "computeFuel")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_fuel: Option<String>,
@@ -4488,7 +4488,7 @@ pub struct QuotaSettings {
     pub max_concurrent_runs_per_org: u64,
     #[serde(rename = "computeFuelPerOrg")]
     pub compute_fuel_per_org: u64,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     pub max_fuel_per_developer_per_day: String,
     pub orgs: BTreeMap<String, OrgQuotas>,
@@ -4939,19 +4939,19 @@ pub struct OutboundLog {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageDay {
     pub date: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     pub runs: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     pub fuel: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "wallMs")]
     pub wall_ms: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     pub writes: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "bytesWritten")]
     pub bytes_written: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     pub events: String,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -6889,7 +6889,7 @@ pub struct QuotaChanges {
     #[serde(rename = "computeFuelPerOrg")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_fuel_per_org: Option<u64>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fuel_per_developer_per_day: Option<String>,
@@ -6900,7 +6900,7 @@ pub struct QuotaChanges {
         with = "crate::route::present"
     )]
     pub max_concurrent_runs: Option<Option<u64>>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "computeFuel")]
     #[serde(
         default,
@@ -7871,7 +7871,7 @@ pub struct OpsQuotasSetRequest {
     #[serde(rename = "computeFuelPerOrg")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_fuel_per_org: Option<u64>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fuel_per_developer_per_day: Option<String>,
@@ -7882,7 +7882,7 @@ pub struct OpsQuotasSetRequest {
         with = "crate::route::present"
     )]
     pub max_concurrent_runs: Option<Option<u64>>,
-    /// an unsigned 64-bit integer as a decimal string (D20)
+    /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "computeFuel")]
     #[serde(
         default,

@@ -22,8 +22,8 @@ class OrgUsage:
 
         Attributes:
             apps (int):
-            developer_fuel_today (str): an unsigned 64-bit integer as a decimal string (D20)
-            developer_writes_today (str): an unsigned 64-bit integer as a decimal string (D20)
+            developer_fuel_today (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            developer_writes_today (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
             quotas (Quotas): The per-account limits, and the compute and file limits of each organization (or personal
                 account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are
                 JSON numbers.

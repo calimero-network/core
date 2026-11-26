@@ -102,7 +102,7 @@ export function createRoutes(api: RouteClient) {
        *
        * `POST /apps/{app}/intents` (`intents`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * Retried on `503` (D70), with its `idempotencyKey` (one is made when none is given).
+       * Retried on `503` or when the node cannot be reached, with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       call: (args: operations['intents']['parameters']['path'] & operations['intents']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['intents']['responses'][200]['content']['application/json']> =>
@@ -260,7 +260,7 @@ export function createRoutes(api: RouteClient) {
        *
        * `POST /apps/{app}/methods/{method}` (`app_method`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * Retried on `503` (D70), with its `idempotencyKey` (one is made when none is given).
+       * Retried on `503` or when the node cannot be reached, with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       method: (args: operations['app_method']['parameters']['path'] & operations['app_method']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_method']['responses'][200]['content']['application/json']> =>
@@ -601,7 +601,7 @@ export function createRoutes(api: RouteClient) {
        * Read with a view method.
        *
        * `POST /apps/{app}/views` (`views`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
-       * Retried on `503` (D70).
+       * Retried on `503` or when the node cannot be reached.
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       view: (args: operations['views']['parameters']['path'] & operations['views']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['views']['responses'][200]['content']['application/json']> =>
@@ -1963,7 +1963,7 @@ export function createRoutes(api: RouteClient) {
 
 /**
  * The routes the document marks `x-calimero-retry-safe`: the transport sends them again on a `503`
- * (D70), and one that `requires` an `idempotencyKey` is given one before it is first sent.
+ * or cannot be reached, and one that `requires` an `idempotencyKey` is given one before it is first sent.
  */
 export const RETRY_SAFE_ROUTES: ReadonlyArray<{ method: string; path: string; requires?: string }> = [{"method":"POST","path":"/apps/{app}/intents","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/methods/{method}","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/views"}];
 

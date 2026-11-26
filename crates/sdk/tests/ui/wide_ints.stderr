@@ -1,16 +1,16 @@
-error: field `total`: u128 would reach JSON as a number that JavaScript reads exactly only up to 2^53 (D20); use u32, or u64 (a decimal string in JSON)
+error: field `total`: u128 would reach JSON as a number that JavaScript reads exactly only up to 2^53; use u32, or u64 (a decimal string in JSON)
  --> tests/ui/wide_ints.rs:5:5
   |
 5 |     pub total: u128,
   |     ^^^
 
-error: field `size`: usize would reach JSON as a number that JavaScript reads exactly only up to 2^53 (D20); use u32, or u64 (a decimal string in JSON)
+error: field `size`: usize would reach JSON as a number that JavaScript reads exactly only up to 2^53; use u32, or u64 (a decimal string in JSON)
   --> tests/ui/wide_ints.rs:12:15
    |
 12 |     pub size: usize,
    |               ^^^^^
 
-error: parameter `n`: isize would reach JSON as a number that JavaScript reads exactly only up to 2^53 (D20); use u32, or u64 (a decimal string in JSON)
+error: parameter `n`: isize would reach JSON as a number that JavaScript reads exactly only up to 2^53; use u32, or u64 (a decimal string in JSON)
   --> tests/ui/wide_ints.rs:22:31
    |
 22 |     pub fn take(&mut self, n: isize) -> app::Result<()> {

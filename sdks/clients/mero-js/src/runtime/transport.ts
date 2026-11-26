@@ -12,7 +12,7 @@
  * - the credential (an API key or a session), and the session's refresh when a
  *   node answers `401` to it;
  * - moving to another node of the cluster on `421 WRONG_NODE`, and failing
- *   over when one stays unavailable to a call or a view (D70 retries);
+ *   over when one stays unavailable to a call or a view (`503` retries);
  * - the `412 CONFIRM_REQUIRED` step-up: the passkey's assertion over the
  *   node's challenge, sent with the same body again;
  * - error mapping (a refusal is a typed {@link CalimeroError}) and
@@ -58,7 +58,7 @@ export interface NodeEvent {
 }
 
 /**
- * How a call or a view is sent again while the node is unavailable (D70): with
+ * How a call or a view is sent again while the node is unavailable: with
  * the same key, after a backoff that starts at `baseDelayMs` and doubles up to
  * `maxDelayMs`, no jitter, at most `retries` times. The defaults are the Rust
  * client's: 6 retries, 200 ms doubling, at most 2 s (about 9 s in all, past a
@@ -105,7 +105,7 @@ export interface RequestOptions {
   /** The user verification the step-up asks for when the node names none. Default `required`. */
   userVerification?: PasskeyUserVerification;
   /**
-   * D70 retries for a call or a view: `true` sends it again while the node
+   * Retries for a call or a view: `true` sends it again while the node
    * answers `503` or cannot be reached, then fails over to the next node;
    * `'once'` sends it exactly once (a confirmed attempt, whose challenge is
    * single-use). Only for a JSON body that carries its own idempotency key,
@@ -644,7 +644,7 @@ export class NodeTransport implements Transport {
   }
 
   /**
-   * {@link read} for a call or a view (D70): while the node answers 503 or
+   * {@link read} for a call or a view: while the node answers 503 or
    * cannot be reached, the same request, with the same idempotency key, is sent
    * again after {@link retryDelayMs} (or the pause the node asked for, if
    * longer), at most `retries` times. Every other answer is final.
@@ -706,7 +706,7 @@ export class NodeTransport implements Transport {
   /**
    * One request to a route, answered whatever its status: the runtime's part
    * (sealing, the session and its refresh, `421 WRONG_NODE`, and with
-   * `options.retry` the D70 retries and failover) and nothing of the route's.
+   * `options.retry` the `503` retries and failover) and nothing of the route's.
    * A refusal is the node's response, for the caller to read; a connection
    * that failed rejects as `fetch` did (with `retry`, as
    * {@link UnavailableError} once the retries ran out). The generated route

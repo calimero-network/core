@@ -367,7 +367,9 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
             return fail("an app method takes `&self` or `&mut self`")
         }
         Kind::Action if receiver_mut.is_some() => {
-            return fail("an action has no state access (D12): it takes no `self`")
+            return fail(
+                "an action has no state access (it runs outside the log): it takes no `self`",
+            )
         }
         Kind::Action if attrs.confirm || attrs.public || attrs.action_only => {
             return fail("an action takes no `confirm`, `public` or `allow(action)`")
@@ -930,23 +932,23 @@ mod tests {
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, xs: Vec<u64>) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self) -> Result<Option<Vec<i64>>> { Ok(None) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, p: (u32, u64)) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, p: [u64; 2]) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, p: Vec<Vec<u8>>) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
     }
 
     #[test]

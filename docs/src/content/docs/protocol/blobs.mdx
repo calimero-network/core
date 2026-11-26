@@ -245,311 +245,170 @@ Past that `publish` answers the soft error `run published too much` and records 
 
 ## In `calimero-node`
 
-Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
-unless another crate is named. The design and its reasons are above; a module's own detail is in its
-`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
 
 ### Bundles are blobs, not log entries
 
-`POST /bundles` stores the WASM in every node's sealed blob store (`internal/blob`, majority
-required), then the system log records only `{hash, size}`.
-A node missing a blob fetches it from a peer (`internal/blob/get`) on first use.
-Log entries are capped at `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one
-heartbeat.
-A call whose arguments pass `MAX_ARGS_BYTES` (below that cap) is refused where it arrives (`413
-ARGS_TOO_LARGE`), never proposed.
+`POST /bundles` stores the WASM through `internal/blob` (majority required), and the system log records only `{hash, size}`.
+Log entries are capped at `calimero_log::MAX_ENTRY_BYTES` (1 MiB) because openraft gives each append one heartbeat.
+A call whose arguments pass `MAX_ARGS_BYTES` (512 KiB) is refused where it arrives (`413 ARGS_TOO_LARGE`), never proposed.
 
 ### Blob routes and deletion
 
-Code: `POST/GET /apps/{app}/blobs[/{id}]`; how an app holds one: below.
-
-Bytes live in the cluster's blob store (`hex(SHA-256)`, a majority before the answer, a missing one
-fetched from a peer).
-A download asks the app's leader whether the app still holds the blob (`blob_held_strong`, through
-`Node::ask_leader`, which asks the replicas again through an election for up to
-`LEADER_ANSWER_WAIT`; 503 when no leader answers by then).
-`DELETE /apps/{app}/blobs/{id}` (owner or org admin) forgets it, then `Node::collect_blob` deletes
-the bytes on every node (`internal/blob/delete`) unless another app still holds the same content
-(asked of each app's leader; an app whose leader does not answer counts as holding it) or it is a
-bundle or a release `.mpk`.
-Every path that stores bytes before their record commits pins the ids on the app's leader first, and
-holds the pin until the record commits or fails (`node/blob_guards.rs`): `logged_entry` (a publish,
-a call's files, a run's outputs; it runs on the leader) and the plain upload (`Node::pin_on_leader`:
-locally on the leader, else through `internal/blob/pin`, a lease that expires after `LEASE_TTL` if
-the receiving node never releases it).
-Every deletion of bytes (`collect_blob`, which the owner's delete, the queued collection and
-discarded files call, and a peer's `internal/blob/delete`) asks `Node::blob_in_use`: held or pinned,
-as each app's leader answers, unknown counting as in use.
-A put of an id (`BlobGuards::put`) also stops a deletion of that id that was between its checks and
-its delete, here and on every peer.
-A leader change between the pin and the commit is not covered: the pin stays on the old leader.
-A blob past `MAX_BLOB_BYTES` (47 MiB) is refused `413 TOO_LARGE` by the node, one past the sealed
-cap (64 MiB) by the envelope, in the clear; the client reports both as `TOO_LARGE`.
+- A download asks the leader with `blob_held_strong` through `Node::ask_leader`, which retries through an election for up to `LEADER_ANSWER_WAIT` (5 s) before `503`.
+- `Node::collect_blob` deletes bytes on every node through `internal/blob/delete`.
+- Every deletion of bytes asks `Node::blob_in_use`: held or pinned, as each app's leader answers, unknown counting as in use.
+- Pins live in `node/blob_guards.rs`; `logged_entry` pins on the leader for a publish, a call's files and a run's outputs.
+- A plain upload pins through `Node::pin_on_leader`: locally on the leader, else through `internal/blob/pin`, a lease of `LEASE_TTL` (60 s).
+- A put of an id (`BlobGuards::put`) also stops a deletion of that id caught between its checks and its delete, here and on every peer.
+- The client reports both the node's `413` and the envelope's refusal as `TOO_LARGE`.
 
 ### Blobs a component holds
 
-(R8, `component/blobs.rs`.)
+Code: `component/blobs.rs`.
 
-The cluster's store and routes (`store_blob`, a majority, `fetch_blob`, `collect_blob`,
-`blob_held_strong`), but the app holds a blob through a host record (`BlobRecord { size, mime, refs,
-idleSinceMs }`, hidden rows `rows::CBLOB`, in memory as `BlobTable`), not a mark in its keyspace.
-Upload (`POST /apps/{app}/blobs`, `Content-Type` kept as the mime, at most `MAX_BLOB_MIME_BYTES`)
-commits `componentBlob`; the owner's delete `componentBlobForget` (both through `CallRequest::host`,
-`Node::component_blob_cmd`).
-A `BlobRef` in a stored value is CBOR tag `calimero_app_host::BLOB_REF_TAG`; `apply` counts
-references from each diff and the values it replaces (`ref_deltas`), so every replica agrees; a blob
-with none is held `BLOB_IDLE_MS` (1 h) from its upload or its last reference, then forgotten against
-entry timestamps (`expiry_now`, at most `BLOB_EXPIRY_STEP` per entry) and queued in
-`ComponentHead::collect`; the leader's timer poll collects the bytes (`collect_blob`) and logs
-`componentBlobsCollected`.
-Runs see the records through `RunBlobs` (`HostCore::with_blobs`): `info`, and `grant` =
-`<expiresMs>.<HMAC>` under `grant_key(K_c)`, which `GET /apps/{app}/blobs/{id}?grant=` takes without
-a session (a bad one is `404`).
-At most `MAX_COMPONENT_BLOBS` per app (`429`).
+- `BlobRecord { size, mime, refs, idleSinceMs }` lives in `rows::CBLOB`, in memory as `BlobTable`.
+- Upload and the owner's delete commit `componentBlob` and `componentBlobForget` through `CallRequest::host` (`Node::component_blob_cmd`).
+- The mime is at most `MAX_BLOB_MIME_BYTES`, and an app holds at most `MAX_COMPONENT_BLOBS`.
+- The `BlobRef` CBOR tag is `calimero_app_host::BLOB_REF_TAG`; `apply` counts references with `ref_deltas`.
+- Idle blobs are forgotten by `expiry_now` at most `BLOB_EXPIRY_STEP` per entry and queued in `ComponentHead::collect`; the leader's timer poll collects them.
+- Runs see the records through `RunBlobs` (`HostCore::with_blobs`); grants are keyed with `grant_key(K_c)`.
 
 ### The sealed file format
 
 Code: `files.rs` (re-exporting `calimero_sealed::file`), `files/wrap.rs`.
 
-A file is 64 KiB AES-256-GCM STREAM chunks (`FileSealer`, `FileOpener`) under a random data key.
-The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a
-last-chunk flag byte.
-`FileOpener::finish_expecting` checks the plaintext size and SHA-256 against the mark, as GCM does
-not commit to its key.
-A file is stored as segments: `SegmentWriter` cuts the ciphertext stream into segments of
-`SEGMENT_CHUNKS` (256) whole chunks (`SEGMENT_BYTES`, 16,781,312 stored bytes; the last segment is
-the rest), and `SegmentReader` joins them, checking each against the list.
-A segment's hash is the SHA-256 of its bytes and the file id is `file_id`: SHA-256 of
-`"calimero.file.segments.v1\0" || u32 count || h0 ||... || hn-1`, so an id never equals a plain
-blob's content hash.
-A mark (`FileMark`) and a record (`FileSeal`) list the segments (`segments`, required, hex, at least
-one); `FileMark::segment_hashes` is the one check that the list is well formed and hashes to the
-mark's id.
-`wrap_key` wraps the data key as salt || nonce || AES-256-GCM under a subkey of `backup::file_key`
-(per app, from K_c, not the TEE key), with the app id as AAD.
-`wrap_for_job` re-wraps a secret to a job node: ephemeral X25519, then HKDF over both public keys,
-the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
-The job node opens it through `SealedTransport::derive`, which never returns the raw DH output and
-labels its HKDF (`calimero_sealed::derive_shared`, shared with the wrap side).
-`noise_seed` and `run_token` derive a run's seed and capability from the file key.
+| Piece | Format |
+| --- | --- |
+| Chunk | AES-256-GCM STREAM (`FileSealer`, `FileOpener`); nonce = 4 zero bytes + big-endian chunk index; AAD = `calimero.file.v1` + a last-chunk flag byte |
+| Segment | `SEGMENT_CHUNKS` (256) whole chunks, `SEGMENT_BYTES` (16,781,312) stored bytes, the last one shorter (`SegmentWriter`, `SegmentReader`) |
+| File id | `file_id`: SHA-256 of `"calimero.file.segments.v1\0" \|\| u32 count \|\| h0 \|\| ... \|\| hn-1` |
+| Wrapped data key | `wrap_key`: salt \|\| nonce \|\| AES-256-GCM under a subkey of `backup::file_key`, the app id as AAD |
 
-**Exporting a file** (`api/exports.rs`): `POST /apps/{app}/files/{id}/export { recipient }` (64 hex,
-an X25519 public key) and `GET /apps/{app}/files/{id}/segments/{k}` take the `/files` gate
-(`files_gate`: `api::may_handle_files`, fresh system read, even where an `anyone` grant admits
-others) and judge the file on the app's leader (`Node::file_record_strong`: `internal/blob/held`
-with `record`, which answers the size and `FileSeal`), else `404`; a segment past the last is `404
-NO_SUCH_SEGMENT`, and one is read from this node's store or a replica (`segment_from`).
-The export answer is `{ app, id, size, sha256, segments, ephemeral, wrapped }`; `wrapped` is `nonce
-|| AES-256-GCM` of the data key (unwrapped from the `FileSeal` with the app file key, then zeroized)
-under `HKDF(X25519(ephemeral secret, recipient))`, salt `calimero.export-wrap.v1`, info `ephemeral
-public || recipient public || u32 length-prefixed app id || u32 length-prefixed hex file id`
-(`calimero_sealed::wrap::wrap_export`, over `derive_shared`, which refuses a low-order key: `400
-BAD_RECIPIENT`, as does a recipient that is not 64 hex).
-The construction lives in `calimero-sealed` (`wrap.rs`, with the AES-GCM helpers `wrap_for_job`
-shares, and `file.rs`, the file STREAM format) so `calimero_client::Client::export_file_to` opens it
-with `unwrap_export`, checks the segment list against the file id, each segment against its hash,
-and the size and plaintext SHA-256 with `finish_expecting`, and succeeds only when all match.
-An account may export `MAX_EXPORTS_PER_MINUTE` (30) times a minute per node (`ExportLimits`, an
-in-memory token bucket over at most `MAX_TRACKED_ACCOUNTS` accounts): `429 TOO_MANY_EXPORTS`.
+- `FileOpener::finish_expecting` checks the plaintext size and SHA-256.
+- `FileMark` and `FileSeal` list the segments (`segments`, required, at least one); `FileMark::segment_hashes` is the one well-formedness check.
+- `wrap_for_job` re-wraps to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
+- The job node opens it through `SealedTransport::derive`, which never returns the raw DH output (`calimero_sealed::derive_shared`).
+- `noise_seed` and `run_token` derive a run's seed and capability from the file key.
+
+#### Exporting a file
+
+Code: `api/exports.rs`.
+
+- Both routes take `files_gate` (`api::may_handle_files` on a fresh system read) and judge the file on the leader (`Node::file_record_strong`, `internal/blob/held` with `record`), else `404`.
+- A segment is read from this node's store or a replica (`segment_from`); one past the last is `404 NO_SUCH_SEGMENT`.
+- `wrapped` is `nonce || AES-256-GCM` of the data key under `HKDF(X25519(ephemeral secret, recipient))`, salt `calimero.export-wrap.v1`.
+  The HKDF info is `ephemeral public || recipient public || u32 length-prefixed app id || u32 length-prefixed hex file id`.
+- `calimero_sealed::wrap::wrap_export` refuses a low-order key, and a recipient that is not 64 hex is `400 BAD_RECIPIENT` too.
+- `calimero_client::Client::export_file_to` opens it with `unwrap_export` and checks the segment list, each segment and the plaintext with `finish_expecting`.
+- `ExportLimits` is an in-memory token bucket of `MAX_EXPORTS_PER_MINUTE` over at most `MAX_TRACKED_ACCOUNTS` accounts (`429 TOO_MANY_EXPORTS`).
 
 ### Sealed files of a component
 
 Code: `node/component/files.rs`.
 
-A file is a sealed blob.
-It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
-A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key
-(`backup::file_key`, not the TEE key) and the app's blob records.
-A sealed file's record carries a `FileSeal` (`BlobRecord::file`: the plaintext hash and the wrapped
-key) in the hidden `rows::CBLOB` rows the guest cannot reach, so a snapshot and `restore` carry it.
-A writer seals (`SegmentWriter`), stores each segment on this node the moment it is complete and
-wraps the data key; the file id is the hash of its segment list (`FileSeal::segments`,
-`FileMark::segments`).
-Each segment is stored in the `blobs` column under `seg.<hex hash>` and, in the same batch, an empty
-index row `seg/<hash>` in `meta` (`Engine::put_segment`, `list_segments`), so segments are listed
-without reading a byte of them; no whole-file row exists.
-Segments travel raw (no base64): a push is `PUT /internal/segment/{hash}`, checked on receipt
-(`SHA-256(body)` is the hash, at most `SEGMENT_BYTES`), a fetch `GET /internal/segment/{hash}`,
-served only to a node approved for an app hosted here whose files list it (`caller_may_hold`; `404`
-for a hash no hosted app lists); there is no peer delete, a replica's unreferenced segments go with
-the sweep after `SEGMENT_GRACE` (`Node::pin_segments` holds an upload's or a pending entry's out of
-it).
-A job transfer still sends and receives the joined segments in one request.
-The outcome and the entry carry marks only (`Outcome::files`, a serde default: old entries decode
-unchanged).
-`apply` records them as unreferenced blobs before the diff, only for status `Ok`, so a `BlobRef` the
-same entry stores is counted and a file is never collectable in between.
-A file is then held while a stored `BlobRef` names it, `BLOB_IDLE_MS` after its entry or after the
-last reference went, and forgotten by `expire_blobs` in the same entry on every replica.
-The leader then collects the file's id through the same `collect_blob` and `componentBlobsCollected`
-as any blob, which releases its quota and deletes no file bytes: no blob path (`collect_blob`, the
-blob routes) deletes a `seg.` row.
-Every node deletes segments itself: `Node::sweep_segments` (every `SWEEP_EVERY`, 10 min, over the
-`meta` index; `node/segments.rs`) deletes a stored segment no hosted app lists
-(`BlobTable::holds_segment`, a map from segment hash to file rebuilt on `load`) and nothing pins, if
-this node saw it listed at an earlier sweep (its file was forgotten) or it has been unlisted for
-`SEGMENT_GRACE` (24 h) since first seen so; first-seen times are in memory, so a restart restarts
-the grace, and there is no caught-up check, so segments handed to a joining node before it applies
-survive the grace.
-`BlobTable::upload` and `forget_blob` refuse a file id, so a blob upload or an owner delete cannot
-take one.
+#### Records and segments
 
-**Publishing** (`runs.publish`): `NodeFiles::publish` answers only a sealed file whose
-`FileSeal.output` is set, which `apply_compute_final` sets on a done run's outputs and nothing else
-sets.
-A run attempt's log is a sealed file marked `FileSeal.log` instead (see [compute
-actions](/protocol/compute-actions/)), so it is never published.
-It opens and proves the whole file, holds the plaintext against the pending budget (`plaintext`),
-and answers a `PublishedFile` (a file over `MAX_BLOB_BYTES`, the plain blob it becomes, is a soft
-`file too large`).
-The outcome and entry carry `Outcome::published` (`PublishedMark { source, id, size }`, never bytes;
-a serde default).
-`run_with` adds the plaintext of each published blob the app does not hold to the run's blobs, so
-`logged_entry` charges it (`new_file_bytes`, once per id) and `persist_files` pushes it to a
-majority before the entry is proposed.
-`apply_component_outcome` checks every mark first (`publishes_only_outputs`): the source must be an
-output record, its plaintext hash must be the mark's id and its size the mark's, and at most
-`MAX_PUBLISHED_PER_RUN` marks.
-A failing mark makes the whole entry a no-op that answers `NOT_A_RUN_OUTPUT`, on every replica, so a
-leader cannot publish an uploaded file, a file a call made, another app's output or a different
-plaintext.
-Any entry that applies as a no-op (a conflict or a refusal) has the bytes it stored discarded and
-its charge refunded (`recorded_nothing`).
-Then `BlobTable::add_published` records the plain blob (`BlobRecord::charged`,
-`application/octet-stream`) before the diff, unless the app already holds that id; `expire` and
-`BlobsCollected` release the charge of a file or a charged blob.
-A published blob is served only through a grant (`blob_download` judges it on the leader's record,
-`Node::blob_standing_strong`), and `blobs.grant` is refused for it outside a logged write.
-`BlobRecord::epoch` counts the owner's revokes (`ComponentCmd::BlobRevoke`, `POST
-/apps/{app}/blobs/{id}/revoke`, `__blob_revoke`); a grant above zero carries its epoch
-(`grant_token`), and a download whose grant names another epoch than the record's answers `404`.
-The app also keeps an epoch floor (`BlobTable::floor`, the hidden `rows::CBLOB` row `floor`):
-forgetting any blob but a sealed file raises it above that blob's epoch, and a record made again
-(`add_published`, `upload`) starts there, so a grant of a forgotten blob never holds for its
-successor.
-`load` fails on an unreadable floor or record instead of defaulting, and `revoke` refuses at
-`u32::MAX` (`no revocation left`).
-The owner's delete (`forget_blob`) forgets a published blob too, queuing its bytes and charge in
-`collect` and `collect_files` like `expire` does; it still refuses a sealed file.
-A result method sees its own run's outputs without the flag (`blob_view_with_outputs`), so it cannot
-publish them; it stores the `BlobRef` and a later call publishes.
-`RunBlobs::info` answers a file with its plaintext size and hash and an empty mime, as `files.info`
-does; the host core refuses `blobs.grant` for it.
-`GET`, `POST` and `DELETE` on `/apps/{app}/blobs` refuse a file id with `409 NOT_SUPPORTED`
-(`refuse_sealed_file`, judged by the app's leader through `file_held_strong`).
-`/apps/{app}/storage` counts their sealed bytes in `blobBytes` (a tag per chunk).
+- A run's `files` provider (`NodeFiles`) is built per run from the app id, `backup::file_key` and the blob records; it touches keys, budgets and bytes only when the run touches a file.
+- A file's record is `BlobRecord::file`, a `FileSeal` in `rows::CBLOB`, so snapshots and `restore` carry it.
+- Each segment is stored in the `blobs` column under `seg.<hex hash>`, with an empty index row `seg/<hash>` in `meta` in the same batch (`Engine::put_segment`, `list_segments`); there is no whole-file row.
+- Segments travel raw: `PUT /internal/segment/{hash}` (checked: the body's SHA-256, at most `SEGMENT_BYTES`) and `GET /internal/segment/{hash}`.
+- A fetch is served only to a node approved for an app hosted here whose files list the hash (`caller_may_hold`), else `404`.
+- A job transfer still sends the joined segments in one request.
+- `Outcome::files` carries marks only; `apply` records them as unreferenced blobs before the diff, for status `Ok` only.
+- `BlobTable::upload` and `forget_blob` refuse a file id.
 
-**Uploads** are `POST /apps/{app}/files` for a file of up to one part (`PART_BYTES`, 16 MiB;
-`Client::upload_file`) and, for a larger one, upload sessions (`node/component/uploads.rs`):
-`POST.../files/uploads { size }` answers `{ uploadId, partBytes, parts, expiresAt }` (Unix seconds),
-`PUT.../uploads/{u}/parts/{k}` takes part `k` raw and answers `{ next }`, `GET.../uploads/{u}`
-answers `next`, `POST.../uploads/{u}/complete` waits up to `COMPLETE_WAIT` (20 s) for every segment
-to reach a majority (else `503 FILES_UNAVAILABLE`; a retry resumes) and answers the file,
-`DELETE.../uploads/{u}` aborts.
-Only the app's owner and the members of its organization (role Member or above,
-`api::may_handle_files`, through `api::files_gate`) may upload, list and read files, even where the
-app is public; anyone else gets `403` on every `/files` route.
-`GET /apps/{app}/files` lists the files (`{ files: [{ id, blobId, size, sha256 }] }`) and `GET
-/apps/{app}/files/{id}` answers one (never the key); `/apps/{app}/blobs` lists plain blobs only and
-answers `409 NOT_SUPPORTED` to `info` of a file id, as to a download.
-A session lives in the leader's memory (`Uploads`, one `Session` per upload: segment writer, segment
-and part hashes, what is on a majority), belongs to its account (another account, an unknown id, a
-leader change, `UPLOAD_IDLE` 15 minutes without a part or `UPLOAD_TTL` 6 hours all answer `404
-UPLOAD_UNKNOWN`) and is ended by `Node::expire_uploads` (the timer poll) when it lapses or this node
-stops leading the app.
-Part `k` is sealed into segment `k` (`SegmentWriter::write_more`: a full part closes its segment
-without waiting for the next) and stored here, and a background task pushes it to a majority
-(`push_blobs`, no discard on failure; retried with backoff until it lands or the session ends); the
-answer waits only for a slot in the window (at most `UPLOAD_WINDOW` = 4 segments stored but not yet
-on a majority; the part is sealed and stored anyway, and past `PART_PUSH_WAIT` the answer is `503
-FILES_UNAVAILABLE` and the resent part replays its answer); parts go in order (`409
-PART_OUT_OF_ORDER` names `next`), a resent part answers its first answer and other bytes are `409
-PART_CONFLICT`, a part of the wrong length `400 BAD_PART`.
-Begin refuses past 4 sessions per app, 32 per node or 16 GiB declared per leader (`429
-TOO_MANY_UPLOADS`, `admit`) and when the payer's file bytes plus its open sessions plus `size` pass
-the quota (`429 QUOTA_EXCEEDED`); nothing is charged until `complete`, which charges once
-(`State::charged`) and commits through `commit_mark` under the key `node:upload-<id>`, so a retried
-`complete` replays, from the leader's record of that key (`replayed`, only for the uploader) even
-when no session is left.
-A `complete` before every part is in is `409 UPLOAD_INCOMPLETE`; one past the quota is `429`,
-deletes the bytes and ends the session; one whose commit may yet land (`Upload::Unknown`) keeps the
-session and its bytes until it ends, when a barrier tells whether the mark committed: absent, the
-charge is refunded and the segments deleted (`Node::undo_unmarked`).
-Ending a session (abort, idle, age, leader change) answers unknown at once, then stops its pushes
-and deletes its segments here (`Node::end`); replicas' copies go with the sweep.
-A follower forwards every session request one hop to the leader (`internal/upload*`, raw part
-bodies, `PART_FORWARD_TIMEOUT`).
-The single request (`POST /apps/{app}/files`, one part) is a session of one part run through the
-same operations (`Node::upload_file`): begin, part 0, complete, retrying a `503` `complete`,
-starting over when the leader changed, aborting on failure.
-`StorageStats::files` carries each file's id, size and SHA-256 for these routes, and
-`internal/storage` sends it to a peer.
-The command carries the uploader (`uploader`, a serde default), the account the API's `principal`
-derived, which the `internal/upload*` routes refuse unless it is an account id (`valid_uploader`);
-`BlobTable::add_uploaded` stores it as `FileSeal::uploader`, and files made by calls and runs have
-none.
-`NodeFiles::uploader` answers it to `runs.uploader`; an id already held is refused (`file exists`),
-so a second upload never replaces the first uploader.
-A recorded answer for another file under the same key wins and the new file is undone.
-`apply` records the file as an unreferenced blob stamped with the entry's `ts_ms`, as
-`Node::component_blob_cmd` stamps an upload, so a client has the idle time to attach it.
-If the commit fails, a `componentBarrier` entry (applies as nothing) is committed through the
-leader, so the failed entry has either committed or never will.
-The leader then reads the record: present, the upload succeeded; absent, its bytes and charge go; no
-barrier possible, they stay.
-A file is held while its blob record exists, and the quota counts it for as long.
-A logged entry's new files are charged first, within `CHARGE_WAIT` (`Node::charge_files`, from the
-run's thread).
-A refused charge pushes nothing, answers `429` and logs nothing; a charge that lands after the wait
-is refunded when its answer arrives.
-`Node::discard` undoes the bytes and the charge if the entry does not commit.
-The charge is released by retention: `expire_blobs` queues a forgotten file's plaintext size in
-`ComponentHead::collect_files` beside its id in `collect`.
-The leader's `componentBlobsCollected` entry answers `freed`, the bytes of the queued files it
-really took off, and the node releases that many (`collect_component_blobs`), so a repeated entry
-releases nothing.
-A node that stops hosting an app that is deleted everywhere drops its sealed files' segments
-(`Node::drop_deleted_files`); plain blobs stay, as they may be another app's.
-A crash between the entry and the release leaves an over-count, never a loss; a queue past
-`MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
-Before a call, tick or `init` proposes, `Node::persist_files` pushes the new files' segments, read
-back from this node's store, at most `MAX_PUSHING_BLOBS` (2) at a time and each body shared by every
-target, to the app group's voters and learners (its own Raft membership, not the directory's
-replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget
-(`MAX_PUSH_BYTES`).
-It needs a majority of the voters, this node counted; a voter with no address still counts.
-It runs only after the entry bytes are built, so an entry the log replaces as too large stores
-nothing.
-When the majority is missing the call is `503 FILES_UNAVAILABLE` (the forward loops pass it on
-unchanged and do not retry it; the client does, with its key), nothing is logged and the pushed
-bytes are removed; so are the bytes of an entry that conflicts or whose proposal fails.
-A run's writers hold only their partial segment in memory, which draws on a node-wide budget
-(`MAX_PENDING_FILE_BYTES`, `PendingBytes`) and returns as each segment is stored; the segments of a
-file no entry marks are deleted when the run ends (`NodeFiles::forget_made`).
-A write it cannot hold takes nothing and aborts the logged run as `FileError::Unavailable`, so runs
-together never hold more than the budget.
-`open` reads the file one segment at a time: a local segment is used only if its SHA-256 is its
-hash, else it is dropped and fetched from the other replicas (5 s); a segment nobody holds ends the
-read as unavailable.
-Any opener failure, including at the end of the stream, is `ReadError::Corrupt`, which the host core
-makes a `HostDenied` trap.
-Open readers hold one segment and its plaintext (`OPEN_READER_BYTES`, at most the file) against a
-per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged runs wait 1
-s for it).
-Only a compute run opens a file (the host core refuses `files.open` in every other kind), so a
-sealed file's contents are readable only inside a compute run of the release the organization
-approved.
-A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503
-TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `create`, `write` and `finish`)
-and ends a compute run `Unavailable`.
-The provider is built for every run but touches keys, budgets and bytes only when a run touches a
-file.
+#### Who deletes segments
+
+No blob path (`collect_blob`, the blob routes) deletes a `seg.` row, and there is no peer delete.
+Collecting a file's id releases its quota only.
+`Node::sweep_segments` (`node/segments.rs`, every `SWEEP_EVERY`, 10 min) deletes a segment no hosted app lists (`BlobTable::holds_segment`) and nothing pins (`Node::pin_segments`), when:
+
+- this node saw it listed at an earlier sweep, so its file was forgotten; or
+- it has been unlisted for `SEGMENT_GRACE` (24 h) since first seen.
+
+First-seen times are in memory, so a restart restarts the grace.
+There is no caught-up check, so segments handed to a joining node before it applies survive the grace.
+A node that stops hosting an app deleted everywhere drops its segments at once (`Node::drop_deleted_files`); plain blobs stay.
+
+#### Writing in a logged run
+
+1. A run's writers hold only their partial segment in memory, against `MAX_PENDING_FILE_BYTES` (`PendingBytes`).
+   A write the budget cannot hold aborts the run as `FileError::Unavailable`.
+2. `Node::charge_files` charges the new files within `CHARGE_WAIT`, from the run's thread.
+   A refused charge answers `429` and logs nothing; one landing after the wait is refunded.
+3. `Node::persist_files` pushes the segments to the group's voters and learners (its Raft membership), `MAX_PUSHING_BLOBS` at a time, under one deadline below `FORWARD_TIMEOUT` and `MAX_PUSH_BYTES`.
+   It runs only after the entry bytes are built, so an entry replaced as too large stores nothing.
+   It needs a majority of voters, this node counted; a voter with no address still counts.
+4. Without a majority the call is `503 FILES_UNAVAILABLE`: the forward loops pass it on unretried, and the pushed bytes are removed.
+5. `Node::discard` undoes bytes and charge if the entry does not commit; `NodeFiles::forget_made` deletes segments no entry marks when the run ends.
+
+A file that cannot be had aborts a logged run as `503 TIMEOUT` (`FileError::Unavailable`) and ends a compute run `Unavailable`.
 Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
-Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas,
-which serve a file as a blob their app holds (`holds_blob`); bundles and other blobs still use every
-node.
-Replica moves hand over the app's files, segment by segment, with the bundle (`hand_over_bytes`),
-and again after the voters change, only what the joining nodes do not hold, for files made while the
-move ran; the second hand-over is retried for 10 s and never abandons the move.
-A snapshot from before carries no file-byte counts, so files stored earlier start from zero, and
-their release floors at zero.
+
+#### Reading
+
+- `open` reads one segment at a time; a local segment is used only if its SHA-256 matches, else it is fetched from the other replicas (5 s).
+- Any opener failure is `ReadError::Corrupt`, which the host core makes a `HostDenied` trap.
+- Open readers hold `OPEN_READER_BYTES` against `MAX_RUN_OPEN_BYTES` per run and `MAX_OPEN_FILE_BYTES` per node; logged runs wait 1 s for it.
+- `fetch_blob_from` asks only the app's other replicas, which serve a file they hold (`holds_blob`); bundles and other blobs still use every node.
+- Pushes skip members `may_send` refuses.
+
+#### Quota and retention
+
+- `expire_blobs` queues a forgotten file's plaintext size in `ComponentHead::collect_files` beside its id in `collect`.
+- The leader's `componentBlobsCollected` answers `freed`, and the node releases that many (`collect_component_blobs`), so a repeated entry releases nothing.
+- A queue past `MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
+- A snapshot without file-byte counts starts them at zero, and their release floors at zero.
+
+#### Replica moves
+
+`hand_over_bytes` hands the files over segment by segment with the bundle, and again after the voters change for files made during the move.
+The second hand-over is retried for 10 s and never abandons the move.
+
+### Publishing
+
+- `NodeFiles::publish` answers only a file with `FileSeal.output`, which only `apply_compute_final` sets.
+- A run log of an earlier release is marked `FileSeal.log` instead (see [Compute actions](/protocol/compute-actions/)), so it is never published.
+- It proves the whole file and holds the plaintext against the pending budget (`plaintext`).
+- `Outcome::published` carries `PublishedMark { source, id, size }`.
+- `run_with` adds each new published plaintext to the run's blobs, so `logged_entry` charges it (`new_file_bytes`) and `persist_files` pushes it.
+- `apply_component_outcome` checks every mark first (`publishes_only_outputs`, at most `MAX_PUBLISHED_PER_RUN`); one failing mark makes the entry a no-op.
+- Any no-op entry has its stored bytes discarded and its charge refunded (`recorded_nothing`).
+- `BlobTable::add_published` records the plain blob as `BlobRecord::charged`, `application/octet-stream`.
+- `blob_download` judges a published blob on the leader's record (`Node::blob_standing_strong`).
+
+#### Revoking grants
+
+- `BlobRecord::epoch` counts revokes (`ComponentCmd::BlobRevoke`, `__blob_revoke`); a grant above zero carries its epoch (`grant_token`).
+- `BlobTable::floor` (the hidden `rows::CBLOB` row `floor`) rises above the epoch of any forgotten blob but a sealed file; `add_published` and `upload` start there.
+- `load` fails on an unreadable floor or record instead of defaulting, and revoking refuses at `u32::MAX` (`no revocation left`).
+- `forget_blob` queues a published blob's bytes and charge in `collect` and `collect_files`.
+- A result method sees its outputs without the flag (`blob_view_with_outputs`), so a later call must publish them.
+- `refuse_sealed_file` answers `409 NOT_SUPPORTED` on the blob routes, judged by the leader through `file_held_strong`.
+- `/apps/{app}/storage` counts files' sealed bytes in `blobBytes`.
+
+### Uploads
+
+Code: `node/component/uploads.rs`.
+
+- `PART_BYTES` (16 MiB) is one part; `Client::upload_file` is the client side.
+- Access is `api::files_gate`; anyone else gets `403` on every `/files` route, and a part of the wrong length is `400 BAD_PART`.
+- A session (`Uploads`, one `Session` each) holds the segment writer, segment and part hashes and what is on a majority.
+- `UPLOAD_IDLE` and `UPLOAD_TTL` bound it; `Node::expire_uploads` ends it on the timer poll or when this node stops leading.
+- `SegmentWriter::write_more` seals part `k` into segment `k`, and `push_blobs` pushes it in the background with backoff.
+- `UPLOAD_WINDOW` bounds segments not yet on a majority; past `PART_PUSH_WAIT` the answer is `503`.
+- `admit` enforces the session limits and the payer's quota at begin.
+- `complete` waits `COMPLETE_WAIT`, charges once (`State::charged`) and commits through `commit_mark`.
+- A retried `complete` replays from the leader's record of the key (`replayed`, for the uploader only), even with no session left.
+- A recorded answer for another file under the same key wins, and the new file is undone.
+- When the commit's fate is unknown (`Upload::Unknown`), the session keeps its bytes until it ends.
+  Then a barrier decides: absent mark, refund and delete (`Node::undo_unmarked`).
+- Ending a session answers unknown at once, then stops its pushes and deletes its segments here (`Node::end`).
+- A follower forwards session requests one hop over `internal/upload*`, raw bodies, within `PART_FORWARD_TIMEOUT`.
+- The single request is a one-part session run through the same steps (`Node::upload_file`).
+- `StorageStats::files` carries each file's id, size and SHA-256, and `internal/storage` sends it to a peer.
+- The uploader comes from the API's `principal`; `internal/upload*` refuse anything but an account id (`valid_uploader`).
+- `BlobTable::add_uploaded` stores it as `FileSeal::uploader`, and `NodeFiles::uploader` answers `runs.uploader`.
+- A failed commit is settled with a `componentBarrier` entry, then a read of the record: present succeeded, absent undone, no barrier possible kept.

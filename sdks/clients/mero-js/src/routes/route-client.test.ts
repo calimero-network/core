@@ -240,7 +240,7 @@ describe('the 428 operator-signature middleware', () => {
   });
 });
 
-describe('D70 retries through the generated client', () => {
+describe('503 retries through the generated client', () => {
   const unavailable = { status: 503, json: { status: 503, error: 'UNAVAILABLE', message: 'electing' } };
 
   it('retries a view on 503 until it is answered', async () => {

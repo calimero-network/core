@@ -592,7 +592,7 @@ answers carry none. \
 `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` \
 where it applies only sometimes) and `x-calimero-operator` mark \
 the two-round operations below.\n\n\
-**Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings (D20); every \
+**Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings; every \
 other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.";
 
 /// The shared shapes.

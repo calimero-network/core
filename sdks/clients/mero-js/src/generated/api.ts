@@ -5479,7 +5479,7 @@ export interface components {
         AccountUsage: {
             /** Format: int64 */
             apps: number;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             bundleBytes: string;
             /** Format: int64 */
             apiKeys: number;
@@ -5489,9 +5489,9 @@ export interface components {
                 [key: string]: number;
             };
             quotas: components["schemas"]["Quotas"];
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             developerFuelToday: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             developerWritesToday: string;
         };
         /** @description `GET /auth/me`: the caller's account, its passkeys and organizations, how the caller came and its recovery state. */
@@ -5757,9 +5757,9 @@ export interface components {
         OrgUsage: {
             /** Format: int64 */
             apps: number;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             developerFuelToday: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             developerWritesToday: string;
             quotas: components["schemas"]["Quotas"];
         };
@@ -6297,14 +6297,14 @@ export interface components {
             maxConcurrentRunsPerOrg: number;
             /** Format: int64 */
             computeFuelPerOrg: number;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay: string;
         };
         /** @description One payer's limits in place of the cluster's; a limit left out is the cluster's. */
         OrgQuotas: {
             /** Format: int64 */
             maxConcurrentRuns?: number;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             computeFuel?: string;
             /** Format: int64 */
             maxFileBytes?: number;
@@ -6327,7 +6327,7 @@ export interface components {
             maxConcurrentRunsPerOrg: number;
             /** Format: int64 */
             computeFuelPerOrg: number;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay: string;
             orgs: {
                 [key: string]: components["schemas"]["OrgQuotas"];
@@ -6514,17 +6514,17 @@ export interface components {
         /** @description What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only. */
         UsageDay: {
             date: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             runs: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             fuel: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             wallMs: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             writes: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             bytesWritten: string;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             events: string;
         };
         /** @description A file a run reads or wrote: its id, and its plaintext size and SHA-256 (hex) only for a caller who may list the app's files. */
@@ -7183,11 +7183,11 @@ export interface components {
             maxConcurrentRunsPerOrg?: number;
             /** Format: int64 */
             computeFuelPerOrg?: number;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay?: string;
             /** Format: int64 */
             maxConcurrentRuns?: number | null;
-            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             computeFuel?: string | null;
             /** Format: int64 */
             maxFileBytes?: number | null;

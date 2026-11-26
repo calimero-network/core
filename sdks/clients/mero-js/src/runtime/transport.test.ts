@@ -117,7 +117,7 @@ describe('the 412 step-up', () => {
   });
 });
 
-describe('D70 retries', () => {
+describe('503 retries', () => {
   it('retry: true sends a 503 again until it is answered', async () => {
     let n = 0;
     node.answer = () => (++n < 3 ? refused(503, 'UNAVAILABLE') : { status: 200, json: { index: 1 } });
