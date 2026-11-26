@@ -110,7 +110,7 @@ pub fn reason_words(r: &Reason) -> String {
             Some(before) => format!("{}Now {after}; it {before}.", of(member)),
         },
         Reason::PinsLineage { member, package } => format!(
-            "{}{package}",
+            "{}Pins it to {package} and its publisher: from then on it moves only to their newer releases, and never back.",
             of(member)
         ),
         Reason::Unclassified {

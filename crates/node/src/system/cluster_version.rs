@@ -736,6 +736,14 @@ fn brings_lineage(slice: &super::HolderSlice) -> bool {
             .any(|v| !v.lineage.is_free())
 }
 
+/// Whether `class` carries a `pinsLineage` reason ([`Feature::PinnedLineage`]).
+fn pins_lineage(class: &crate::types::UpgradeClass) -> bool {
+    class
+        .reasons
+        .iter()
+        .any(|r| matches!(r, calimero_bundle::update::Reason::PinsLineage { .. }))
+}
+
 impl SystemCmd {
     /// The features this entry uses: none for a shape every 1.0 release
     /// applies alike. Every command is listed, so a new one decides here.
@@ -789,7 +797,9 @@ impl SystemCmd {
                 if class.as_ref().is_some_and(unclassified) {
                     f.push(Feature::UnclassifiedUpdates);
                 }
-
+                if class.as_ref().is_some_and(pins_lineage) {
+                    f.push(Feature::PinnedLineage);
+                }
                 if *auto {
                     f.push(Feature::AutoUpdates);
                 }
@@ -810,7 +820,9 @@ impl SystemCmd {
                 if unclassified(class) {
                     f.push(Feature::UnclassifiedUpdates);
                 }
-
+                if pins_lineage(class) {
+                    f.push(Feature::PinnedLineage);
+                }
                 f
             }
             Self::SetUpgradePolicy { .. } => vec![Feature::UpgradePolicies],

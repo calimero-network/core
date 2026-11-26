@@ -1066,6 +1066,7 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
         actor
     };
     let org = state.apps.get(&app_id).map(|app| app.org.clone());
+    let pins = state.lineage_of(release.as_ref(), &bundle, at);
     // A person who upgraded it themselves saw who runs its deployment now; an update
     // on its own, a key's, a run's or the operator's did not.
     let person_saw =
@@ -1117,6 +1118,8 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
         app.bundle = bundle;
         app.compute_bundle = compute_bundle;
         app.release = release;
+        // Pinned once it runs a pinning release; nothing clears it.
+        app.lineage = app.lineage.take().or(pins);
     }
     if let Some(org) = org {
         state.drop_spent_approvals(&org, at);
