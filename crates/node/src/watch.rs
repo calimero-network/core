@@ -36,6 +36,10 @@ use crate::types::Caller;
 pub const MAX_WATCHES_PER_STREAM: usize = 64;
 /// Watches one node holds at most, over every stream.
 pub const MAX_WATCHES_PER_NODE: usize = 2_048;
+/// Watch streams one caller holds on one node at most (with or without a connection).
+pub const MAX_WATCH_STREAMS_PER_CALLER: usize = 64;
+/// Watches one caller holds on one node at most, over its streams: a quarter of the node.
+pub const MAX_WATCHES_PER_CALLER: usize = MAX_WATCHES_PER_NODE / 4;
 /// Bytes of one watch's view arguments (they are kept for as long as the watch).
 pub const MAX_WATCH_ARGS_BYTES: usize = 4 * 1024;
 /// A watch's interval when the app's ABI names none: its view runs at most once per
@@ -314,6 +318,9 @@ pub struct Due {
 pub enum Full {
     Stream,
     Node,
+    /// The caller holds its share of the node ([`MAX_WATCH_STREAMS_PER_CALLER`],
+    /// [`MAX_WATCHES_PER_CALLER`]).
+    Caller,
 }
 
 struct StreamState {
@@ -575,6 +582,9 @@ pub struct Watches {
     /// Watch id to its stream.
     subs: Mutex<HashMap<String, String>>,
     total: AtomicUsize,
+    /// `(streams, watches)` each caller holds here, by its JSON: one caller cannot take
+    /// every stream or watch the node holds.
+    callers: Mutex<HashMap<String, (usize, usize)>>,
     /// The node's view runs for watches: shared, bounded and budgeted.
     pub runs: Runs,
 }
@@ -694,6 +704,11 @@ impl Runs {
     }
 }
 
+/// A caller as [`Watches::callers`] counts it.
+fn caller_key(caller: &Caller) -> String {
+    serde_json::to_string(caller).unwrap_or_default()
+}
+
 impl Watches {
     fn streams(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<WatchStream>>> {
         // SAFETY: guaranteed by every critical section below: none panics while holding it.
@@ -709,12 +724,49 @@ impl Watches {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A new stream, or `None` past `MAX_EVENT_STREAMS` streams held.
+    fn callers(&self) -> std::sync::MutexGuard<'_, HashMap<String, (usize, usize)>> {
+        // SAFETY: as for `streams`.
+        self.callers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `(streams, watches)` `caller` holds here.
     #[must_use]
-    pub fn open(&self, id: String, app: String, holder: Holder) -> Option<Arc<WatchStream>> {
+    pub fn held_by(&self, caller: &Caller) -> (usize, usize) {
+        self.callers()
+            .get(&caller_key(caller))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Gives back `streams` streams and `watches` watches of `caller`'s share.
+    fn release(&self, caller: &Caller, streams: usize, watches: usize) {
+        let key = caller_key(caller);
+        let mut callers = self.callers();
+        if let Some(held) = callers.get_mut(&key) {
+            held.0 = held.0.saturating_sub(streams);
+            held.1 = held.1.saturating_sub(watches);
+            if *held == (0, 0) {
+                let _ = callers.remove(&key);
+            }
+        }
+    }
+
+    /// A new stream; refused past `MAX_EVENT_STREAMS` streams held
+    /// ([`Full::Node`]) or [`MAX_WATCH_STREAMS_PER_CALLER`] of the holder's ([`Full::Caller`]).
+    pub fn open(&self, id: String, app: String, holder: Holder) -> Result<Arc<WatchStream>, Full> {
         let mut streams = self.streams();
         if streams.len() >= crate::api::MAX_EVENT_STREAMS {
-            return None;
+            return Err(Full::Node);
+        }
+        {
+            let mut callers = self.callers();
+            let held = callers.entry(caller_key(&holder.caller)).or_default();
+            if held.0 >= MAX_WATCH_STREAMS_PER_CALLER {
+                return Err(Full::Caller);
+            }
+            held.0 += 1;
         }
         let stream = Arc::new(WatchStream {
             id: id.clone(),
@@ -729,7 +781,7 @@ impl Watches {
             wake: Notify::new(),
         });
         let _prev = streams.insert(id, Arc::clone(&stream));
-        Some(stream)
+        Ok(stream)
     }
 
     #[must_use]
@@ -754,7 +806,9 @@ impl Watches {
         for sub in &gone {
             let _ = subs.remove(sub);
         }
+        drop(subs);
         let _ = self.total.fetch_sub(gone.len(), Ordering::SeqCst);
+        self.release(&stream.holder.caller, 1, gone.len());
     }
 
     /// Adds `watch` as `sub`; `now` as in [`WatchStream::refresh`].
@@ -765,6 +819,14 @@ impl Watches {
         watch: Watch,
         now: impl FnOnce() -> u64,
     ) -> Result<(), Full> {
+        // Held across the insert: concurrent adds of one caller cannot pass its share.
+        let mut callers = self.callers();
+        let held = callers
+            .entry(caller_key(&stream.holder.caller))
+            .or_default();
+        if held.1 >= MAX_WATCHES_PER_CALLER {
+            return Err(Full::Caller);
+        }
         if self.total.fetch_add(1, Ordering::SeqCst) >= MAX_WATCHES_PER_NODE {
             let _ = self.total.fetch_sub(1, Ordering::SeqCst);
             return Err(Full::Node);
@@ -773,6 +835,8 @@ impl Watches {
             let _ = self.total.fetch_sub(1, Ordering::SeqCst);
             return Err(full);
         }
+        held.1 += 1;
+        drop(callers);
         let _prev = self.subs().insert(sub.clone(), stream.id.clone());
         stream.caught_up(&sub, now());
         Ok(())
@@ -785,6 +849,7 @@ impl Watches {
         }
         let _ = self.subs().remove(sub);
         let _ = self.total.fetch_sub(1, Ordering::SeqCst);
+        self.release(&stream.holder.caller, 0, 1);
         true
     }
 
@@ -1098,6 +1163,62 @@ mod tests {
             .add(&stream, "w".into(), watch(rs, 5), || 6)
             .unwrap();
         assert_eq!(due_now(&stream)[0].index, 6);
+    }
+
+    fn holder_of(account: &str) -> Holder {
+        Holder {
+            caller: Caller::Account {
+                account: account.into(),
+            },
+            ..holder()
+        }
+    }
+
+    #[test]
+    fn one_caller_holds_at_most_its_share_of_streams_and_watches() {
+        let watches = Watches::default();
+        for i in 0..MAX_WATCH_STREAMS_PER_CALLER {
+            assert!(watches
+                .open(format!("a{i}"), "app".into(), holder_of("ada"))
+                .is_ok());
+        }
+        let over = watches.open("a-over".into(), "app".into(), holder_of("ada"));
+        assert_eq!(over.err(), Some(Full::Caller));
+        assert!(watches
+            .open("b".into(), "app".into(), holder_of("bob"))
+            .is_ok());
+        // A stream forgotten gives its place back.
+        watches.close("a0");
+        assert!(watches
+            .open("a0".into(), "app".into(), holder_of("ada"))
+            .is_ok());
+
+        let mut added = 0;
+        'fill: for i in 0..MAX_WATCH_STREAMS_PER_CALLER {
+            let stream = watches.stream(&format!("a{i}")).unwrap();
+            for j in 0..MAX_WATCHES_PER_STREAM {
+                let w = watch(ReadSet::default(), 0);
+                match watches.add(&stream, format!("w{i}.{j}"), w, || 0) {
+                    Ok(()) => added += 1,
+                    Err(full) => {
+                        assert_eq!(full, Full::Caller);
+                        break 'fill;
+                    }
+                }
+            }
+        }
+        assert_eq!(added, MAX_WATCHES_PER_CALLER);
+        assert_eq!(watches.held_by(&holder_of("ada").caller).1, added);
+        let bob = watches.stream("b").unwrap();
+        assert!(watches
+            .add(&bob, "bw".into(), watch(ReadSet::default(), 0), || 0)
+            .is_ok());
+        // Removed or closed, watches give their place back.
+        assert!(watches.remove(&watches.stream("a0").unwrap(), "w0.0"));
+        watches.close("a1");
+        let (streams, held) = watches.held_by(&holder_of("ada").caller);
+        assert_eq!(streams, MAX_WATCH_STREAMS_PER_CALLER - 1);
+        assert_eq!(held, MAX_WATCHES_PER_CALLER - 1 - MAX_WATCHES_PER_STREAM);
     }
 
     #[test]

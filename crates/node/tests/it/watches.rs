@@ -809,3 +809,24 @@ fn phone_stream_of(c: &Cluster, sub: &str) -> String {
         .find_map(|r| r.node.watches.stream_of(sub).map(|s| s.id.clone()))
         .expect("the watch's stream")
 }
+
+/// One caller cannot hold every watch stream a node serves: past its own share it is
+/// refused, and someone else still opens one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn one_caller_cannot_take_every_watch_stream_of_a_node() {
+    let c = Cluster::start(3).await;
+    let (_alice, mut a, bob, _carol, _org, app) = org_on_one_node(&c).await;
+    let alice = signed_in(&c, 1, &mut a).await;
+    let max = calimero_node::watch::MAX_WATCH_STREAMS_PER_CALLER;
+    let mut held = Vec::new();
+    for _ in 0..max {
+        held.push(alice.watch_stream(&app, None).await.unwrap());
+    }
+    // Streams outlive their connection for a while: dropping them frees nothing yet.
+    held.clear();
+    let Err(e) = alice.watch_stream(&app, None).await else {
+        panic!("a stream past the caller's share");
+    };
+    assert_eq!(code(e).as_deref(), Some("RATE_LIMITED"));
+    let _s = bob.watch_stream(&app, None).await.unwrap();
+}

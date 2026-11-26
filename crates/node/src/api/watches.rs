@@ -38,8 +38,9 @@ use crate::app::Changed;
 use crate::system::effects::SysEffect;
 use crate::watch::{
     concurrent_reruns, interval_of, Due, EndReason, Full, Holder, Notice, SharedRun, Watch,
-    WatchStream, EXPIRY_CHECK, MAX_PUSHED_ANSWER_BYTES, MAX_WATCHES_PER_NODE,
-    MAX_WATCHES_PER_STREAM, MAX_WATCH_ARGS_BYTES, STREAM_BUFFER,
+    WatchStream, EXPIRY_CHECK, MAX_PUSHED_ANSWER_BYTES, MAX_WATCHES_PER_CALLER,
+    MAX_WATCHES_PER_NODE, MAX_WATCHES_PER_STREAM, MAX_WATCH_ARGS_BYTES,
+    MAX_WATCH_STREAMS_PER_CALLER, STREAM_BUFFER,
 };
 
 /// Who holds a request's credential, for the stream and its watches.
@@ -122,12 +123,14 @@ pub(super) fn local_stream(
             let stream = node
                 .watches
                 .open(id, app_id.to_owned(), holder)
-                .ok_or_else(|| {
-                    ApiError::new(
-                        429,
-                        "RATE_LIMITED",
-                        "this node holds as many watch streams as it can",
-                    )
+                .map_err(|full| {
+                    let what = match full {
+                        Full::Caller => format!(
+                            "a caller holds at most {MAX_WATCH_STREAMS_PER_CALLER} watch streams on this node"
+                        ),
+                        _ => "this node holds as many watch streams as it can".to_owned(),
+                    };
+                    ApiError::new(429, "RATE_LIMITED", &what)
                 })?;
             let changes = g.read_local(|m, _| m.changes_tx.subscribe());
             let system = node.system.read_local(|m, _| m.effects.subscribe());
@@ -727,6 +730,9 @@ async fn add_local(node: &Arc<Node>, add: AddWatch) -> Result<Value, ApiError> {
     if node.watches.total() >= MAX_WATCHES_PER_NODE {
         return Err(too_many(Full::Node));
     }
+    if node.watches.held_by(&stream.holder.caller).1 >= MAX_WATCHES_PER_CALLER {
+        return Err(too_many(Full::Caller));
+    }
     let req = ViewRequest {
         app_id: add.app.clone(),
         method: add.view.clone(),
@@ -778,6 +784,9 @@ fn too_many(full: Full) -> ApiError {
     let what = match full {
         Full::Stream => format!("a stream holds at most {MAX_WATCHES_PER_STREAM} watches"),
         Full::Node => format!("this node holds at most {MAX_WATCHES_PER_NODE} watches"),
+        Full::Caller => {
+            format!("a caller holds at most {MAX_WATCHES_PER_CALLER} watches on this node")
+        }
     };
     ApiError::new(429, "TOO_MANY_WATCHES", &what)
 }
