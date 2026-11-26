@@ -390,6 +390,11 @@ impl SystemState {
         // shared component bundle's record names only its first package.
         let package = self
             .running_release(record)
+            .filter(|r| {
+                self.packages
+                    .get(&r.package)
+                    .is_some_and(|p| p.versions.contains_key(&r.version))
+            })
             .ok_or("the instance runs no installed release")?
             .package;
         let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;

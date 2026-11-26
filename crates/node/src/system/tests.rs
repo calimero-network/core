@@ -17439,11 +17439,8 @@ fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_insta
     assert!(m.state.apps["oa"].access.names("carol"));
 }
 
-/// An instance's origin binds its sessions to the package of the release the
-/// instance runs, which `Principal::within` checks: not the first package
-/// recorded for its shared component bundle.
-#[test]
-fn an_app_origin_records_the_package_its_instance_runs() {
+/// Instance `a` of package `q`, whose component bundle `p` shipped first.
+fn instance_of_a_shared_bundle() -> SystemMachine {
     let mut m = machine_with_apps(100, &[("a", Some("acme"))]);
     let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
     let _ok = m.run_unproven(account("alice")).unwrap();
@@ -17462,17 +17459,47 @@ fn an_app_origin_records_the_package_its_instance_runs() {
     let app = m.state.apps.get_mut("a").unwrap();
     app.bundle = "b-1.0.0".into();
     app.release = serde_json::from_value(json!({ "package": "q", "version": "1.0.0" })).unwrap();
+    m
+}
+
+fn add_app_origin() -> SystemCmd {
+    SystemCmd::AddAppOrigin {
+        app_id: "a".into(),
+        origin: NOTES.into(),
+        rp_id: "notes.example.com".into(),
+        registration: "r".into(),
+        actor: "alice".into(),
+        at: 1,
+        consent: Value::Null,
+    }
+}
+
+/// An instance's origin binds its sessions to the package of the release the
+/// instance runs, which `Principal::within` checks: not the first package
+/// recorded for its shared component bundle.
+#[test]
+fn an_app_origin_records_the_package_its_instance_runs() {
+    let mut m = instance_of_a_shared_bundle();
     assert_eq!(m.state.package_of(&m.state.apps["a"]), Some("p"));
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    assert_eq!(m.state.package_origins[NOTES].package, "q");
+}
+
+/// An instance whose release was uninstalled (its bundle kept by another
+/// package) registers no origin: none of its sessions would reach it.
+#[test]
+fn an_app_origin_needs_its_instances_release_installed() {
+    let mut m = instance_of_a_shared_bundle();
     let _ok = m
-        .run_unproven(SystemCmd::AddAppOrigin {
-            app_id: "a".into(),
-            origin: NOTES.into(),
-            rp_id: "notes.example.com".into(),
-            registration: "r".into(),
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "q".into(),
+            version: None,
             actor: "alice".into(),
-            at: 1,
-            consent: Value::Null,
         })
         .unwrap();
-    assert_eq!(m.state.package_origins[NOTES].package, "q");
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(
+        refused.message().contains("no installed release"),
+        "{refused}"
+    );
 }
