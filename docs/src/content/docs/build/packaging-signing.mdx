@@ -122,7 +122,10 @@ detail.
    whoever upgrades it, the operator included
    ([Pinned instances](/protocol/upgrades/#pinned-instances)). Absent means
    `free`. A pinning release names a semver version, and a node installs one
-   only from cluster version 1.0.0-rc.39.
+   only from cluster version 1.0.0-rc.39. A release signed with the development
+   key pins its instances to a key everyone holds; only a node that takes
+   development releases (`--allow-unsigned-bundles`) installs one, so such a pin
+   is for local testing only.
 
    One more comes only from the crate's `[package.metadata.calimero]`:
 
