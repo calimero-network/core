@@ -11,6 +11,7 @@ import ed25519_sign
 from rv2 import b64url
 from upgrade_deep import (DeepCase, Failed, anyone, app_label, check, decision, decisions, eq, install, join, kv_wasm, new_org, ops,
                           people, person, refused, same_decisions, same_read, snap, subset, until)
+from upgrade_deep import not_covered
 from upgrade_path import case
 
 
@@ -680,3 +681,17 @@ class UnclassifiedUpdates(DeepCase):
         self._applied(w, s, fresh, noa.id, nia.id)
         eq(nia.result(fresh, "get", {"key": "made"}), s["data"][fresh], "the fresh app's data")
         s["read"] = snap(nia, f"packages/{s['package']}")
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Packages", "A passkey sign-in completed from a registered origin (a session bound to the package and naming it)",
+            "the harness's passkeys are the dev passkey's, which holds a credential under the cluster's rp-id only, and an "
+            "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "
+            "(the rp-id each registered origin gets and the refusal of any other), and the finish on a frontend the node "
+            "serves is `Bound`'s (the packages' own frontends)")
+
+not_covered("Packages", "Served frontends and served origins (custom domains)",
+            "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
+            "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
+            "`app_frontends_are_served_and_their_sessions_are_bound` covers serving")

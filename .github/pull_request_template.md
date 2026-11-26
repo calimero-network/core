@@ -28,7 +28,7 @@ Skip this section only for pure docs/chore PRs.
 Every cluster rolls forward from the release in `.github/upgrade-from` (ci-checks.yml's
 `Upgrade path`; docs: contribute/testing, "Upgrade path"):
 
-- [ ] Adds user-visible functionality: added a deep upgrade case (`crates/node/tests/fault/upgrade_cases/`, `since` = the release it ships in) and regenerated the coverage matrix
+- [ ] Adds user-visible functionality: added a deep upgrade case (`crates/node/tests/fault/upgrade_cases/`, `since` = the release it ships in); the coverage matrix is generated from it
 - [ ] Changes stored data or a log entry: the upgrade path and `upgrade_replay` stay green (a reader or a migration), or the PR declares a hard cutover
 
 ## Wire contract (clients)
