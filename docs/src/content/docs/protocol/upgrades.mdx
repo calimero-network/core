@@ -287,7 +287,7 @@ an update **red** when any of these holds, and **green** otherwise:
 | The app or a member declares another state version (`stateVersionChanged`) | No migration runs, so the new code reads data in a shape it may not expect |
 | A member with egress joins or leaves the unit (`memberAdded`, `memberRemoved`) | A joining member brings its own destinations; one that leaves is no longer upgraded under this consent |
 | A release newly calls a method of another app as the person (`delegatedMethodsAdded`) | A new way to act as the user |
-| The app or a member moves into a release declaring `lineage: pinned` from one that does not (`pinsLineage`) | From then on it moves only to newer releases of that package by the same publisher ([Pinned instances](#pinned-instances)) |
+| The app or a member, not pinned yet, moves into a release declaring `lineage: pinned` (`pinsLineage`) | From then on it moves only to newer releases of that package by the same publisher ([Pinned instances](#pinned-instances)) |
 
 New and removed methods are reported (`newMethods`, `removedMethods`) but do not
 make an update red. The class decides how an update applies: a red one waits
