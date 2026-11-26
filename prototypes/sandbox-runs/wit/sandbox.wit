@@ -1,0 +1,35 @@
+package calimero:sandbox-proto@0.1.0;
+
+/// What a driver component may ask of the sandbox on a job node. One sandbox per run:
+/// every `exec` runs a fresh, isolated process tree over the same /workspace, which is
+/// wiped when the run ends.
+interface sandbox {
+  record exec-request {
+    argv: list<string>,
+    env: list<tuple<string, string>>,
+    cwd: option<string>,           // under /workspace; default /workspace
+    stdin: list<u8>,
+    timeout-ms: u32,               // clamped by the host
+  }
+  record exec-result {
+    exit-code: s32,                // 128+n when the process died of signal n
+    stdout: list<u8>,
+    stderr: list<u8>,
+    truncated: bool,               // stdout or stderr hit the cap
+    timed-out: bool,
+    wall-us: u64,                  // host-measured, including sandbox setup
+  }
+  exec: func(req: exec-request) -> result<exec-result, string>;
+
+  // Workspace I/O by the host, relative to /workspace. Refuses absolute paths, `..`,
+  // symlinks anywhere in the path, and anything but a regular file.
+  write: func(path: string, bytes: list<u8>) -> result<_, string>;
+  read: func(path: string, max: u32) -> result<list<u8>, string>;
+  // Copies a workspace file out as a run output; returns its sha256 (hex).
+  collect: func(path: string) -> result<string, string>;
+}
+
+world driver {
+  import sandbox;
+  export run: func(task: string, args: list<u8>) -> result<list<u8>, string>;
+}

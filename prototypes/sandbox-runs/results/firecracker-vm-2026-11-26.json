@@ -1,0 +1,413 @@
+{
+  "bench": {
+    "host": {
+      "instantiate_us": 126,
+      "run_setup_us": 249,
+      "task_us": 531308,
+      "teardown_us": 2325
+    },
+    "result": {
+      "cat_1mib_ms": 29.451,
+      "cat_1mib_ok": true,
+      "exec_python_median_ms": 25.165,
+      "exec_true_median_ms": 8.52,
+      "host_io_ok": true,
+      "host_write_read_4mib_ms": 24.939303
+    }
+  },
+  "demo": {
+    "host": {
+      "instantiate_us": 141,
+      "run_setup_us": 345,
+      "task_us": 109473,
+      "teardown_us": 1608
+    },
+    "result": {
+      "collected_output_sha256": "83c6ac977ca9692246184cf5fc5d3e888579a406730abdbd7fdc5cc56991b5c1",
+      "report_json": "{\"totals\": {\"alice\": 7, \"bob\": 7, \"carol\": 1}, \"python\": \"3.13.18\"}",
+      "steps": [
+        {
+          "r": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "ok 15",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 42.787
+          },
+          "step": "python3 report.py"
+        },
+        {
+          "r": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "2 bob\n      2 alice\n      1 carol",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 11.549
+          },
+          "step": "shell pipeline"
+        },
+        {
+          "r": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 7.689
+          },
+          "step": "gcc --version"
+        },
+        {
+          "r": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "hello from C in the sandbox",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 46.5
+          },
+          "step": "compile + run C"
+        }
+      ]
+    }
+  },
+  "escape": {
+    "host": {
+      "instantiate_us": 178,
+      "run_setup_us": 308,
+      "task_us": 3177843,
+      "teardown_us": 4091
+    },
+    "result": {
+      "cases": [
+        {
+          "attack": "look for the host's files (repo, /root, /home)",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "done",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 26.891
+          },
+          "name": "host_files_hidden",
+          "pass": true
+        },
+        {
+          "attack": "write to /usr, /, /etc",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "refused:/usr/x\nrefused:/x\nrefused:/etc/passwd\nrefused:/workspace/../x",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 8.865
+          },
+          "name": "rootfs_read_only",
+          "pass": true
+        },
+        {
+          "attack": "check uid and capabilities",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "65534\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 11.873
+          },
+          "name": "unprivileged",
+          "pass": true
+        },
+        {
+          "attack": "run a setuid-root binary (su, mount)",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "-rwsr-xr-x\n-rwsr-xr-x\nsu: Critical error - immediate abort\nmount: /tmp: must be superuser to use mount.\n       dmesg(1) may have more information after failed mount system call.\nend",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 1017.411
+          },
+          "name": "setuid_binaries_inert",
+          "pass": true
+        },
+        {
+          "attack": "list processes; signal everything visible",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "4\nstill-here",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 46.753
+          },
+          "name": "process_isolation",
+          "pass": true
+        },
+        {
+          "attack": "connect out by IP and by name",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "blocked ('1.1.1.1', 443) 101\nblocked ('169.254.169.254', 80) 101\nno dns -3\nno /sys",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 42.848
+          },
+          "name": "no_network",
+          "pass": true
+        },
+        {
+          "attack": "raw unshare(), setns, mount(), ptrace(), bpf via ctypes",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "unshare_user -1 Operation not permitted\nunshare_mnt -1 Operation not permitted\nmount -1 Operation not permitted\nptrace_attach_1 -1 Operation not permitted\nbpf -1 Operation not permitted\nio_uring_setup -1 Operation not permitted\nchroot -1 Operation not permitted",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 46.841
+          },
+          "name": "namespace_and_mount_syscalls",
+          "pass": true
+        },
+        {
+          "attack": "fork into a new user namespace through clone()",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "unshare: unshare failed: Operation not permitted\nunshare: unshare failed: Operation not permitted\nend",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 11.454
+          },
+          "name": "clone_namespace_flags",
+          "pass": true
+        },
+        {
+          "attack": "write /proc/sys, read dmesg and kallsyms",
+          "evidence": {
+            "exit": 0,
+            "stderr": "/bin/sh: 1: cannot create /proc/sys/kernel/sysrq: Directory nonexistent",
+            "stdout": "sysrq-denied\ndmesg: read kernel buffer failed: Operation not permitted\n0000000000000000 T srso_alias_untrain_ret\n0000000000000000 T _stext\nls: cannot access '/sys': No such file or directory",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 16.006
+          },
+          "name": "kernel_and_proc_knobs",
+          "pass": true
+        },
+        {
+          "attack": "find and escape the run's cgroup",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "9:name=systemd:/\n8:pids:/\n7:blkio:/\nend",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 19.665
+          },
+          "name": "cgroup_view",
+          "pass": true
+        },
+        {
+          "attack": "read the environment for host secrets or proxies",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "HOME LANG PATH PWD",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 10.853
+          },
+          "name": "env_clean",
+          "pass": true
+        },
+        {
+          "attack": "fork until it fails (pids.max = 64)",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "forks 61 errno 11",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 42.404
+          },
+          "name": "fork_bomb_contained",
+          "pass": true
+        },
+        {
+          "attack": "allocate 1 GiB (limit 256 MiB)",
+          "evidence": {
+            "exit": 137,
+            "stderr": "",
+            "stdout": "",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 201.303
+          },
+          "name": "memory_capped",
+          "pass": true
+        },
+        {
+          "attack": "spin forever (timeout 1.5 s)",
+          "evidence": {
+            "exit": 137,
+            "stderr": "",
+            "stdout": "",
+            "timed_out": true,
+            "truncated": false,
+            "wall_ms": 1502.722
+          },
+          "name": "cpu_timeout",
+          "pass": true
+        },
+        {
+          "attack": "leave a background process behind",
+          "evidence": {
+            "first": {
+              "exit": 0,
+              "stderr": "",
+              "stdout": "started",
+              "timed_out": false,
+              "truncated": false,
+              "wall_ms": 28.244
+            },
+            "second": {
+              "exit": 0,
+              "stderr": "",
+              "stdout": "0",
+              "timed_out": false,
+              "truncated": false,
+              "wall_ms": 9.82
+            }
+          },
+          "name": "orphans_reaped",
+          "pass": true
+        },
+        {
+          "attack": "fill the workspace (64 MiB tmpfs)",
+          "evidence": {
+            "exit": 0,
+            "stderr": "",
+            "stdout": "67108864 bytes (67 MB, 64 MiB) copied, 0.0341678 s, 2.0 GB/s",
+            "timed_out": false,
+            "truncated": false,
+            "wall_ms": 50.493
+          },
+          "name": "workspace_quota",
+          "pass": true
+        },
+        {
+          "attack": "print 5 MiB (cap 1 MiB)",
+          "evidence": {
+            "stdout_bytes": 1048576,
+            "truncated": true
+          },
+          "name": "output_capped",
+          "pass": true
+        },
+        {
+          "attack": "plant symlinks to host files, ask the host to read them",
+          "evidence": [
+            {
+              "Err": "leak: Too many levels of symbolic links (os error 40)",
+              "path": "leak"
+            },
+            {
+              "Err": "leak2: Too many levels of symbolic links (os error 40)",
+              "path": "leak2"
+            },
+            {
+              "Err": "leak3: Too many levels of symbolic links (os error 40)",
+              "path": "leak3"
+            },
+            {
+              "Err": "d/root/etc/shadow: Too many levels of symbolic links (os error 40)",
+              "path": "d/root/etc/shadow"
+            }
+          ],
+          "name": "host_read_symlink_attack",
+          "pass": true
+        },
+        {
+          "attack": "plant a symlink, ask the host to write through it",
+          "evidence": {
+            "write": "Err(\"target: Too many levels of symbolic links (os error 40)\")"
+          },
+          "name": "host_write_symlink_attack",
+          "pass": true
+        },
+        {
+          "attack": "plant a FIFO so the host blocks reading it",
+          "evidence": {
+            "read": "Err(\"pipe: not a regular file\")"
+          },
+          "name": "host_fifo_trap",
+          "pass": true
+        },
+        {
+          "attack": "write outside the workspace by path",
+          "evidence": [
+            "../escape: Err(\"../escape: Invalid cross-device link (os error 18)\")",
+            "/etc/x: Err(\"/etc/x: Invalid cross-device link (os error 18)\")",
+            "a/../../x: Err(\"a/../../x: No such file or directory (os error 2)\")",
+            "/proc/self/root/x: Err(\"/proc/self/root/x: Invalid cross-device link (os error 18)\")"
+          ],
+          "name": "host_path_traversal",
+          "pass": true
+        }
+      ],
+      "passed": 21,
+      "total": 21
+    }
+  },
+  "isolation-read": {
+    "host": {
+      "instantiate_us": 142,
+      "run_setup_us": 715,
+      "task_us": 38554,
+      "teardown_us": 1950
+    },
+    "result": {
+      "listing": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "entries=0\nend",
+        "timed_out": false,
+        "truncated": false,
+        "wall_ms": 38.444
+      },
+      "pass": true
+    }
+  },
+  "isolation-write": {
+    "host": {
+      "instantiate_us": 180,
+      "run_setup_us": 255,
+      "task_us": 11612,
+      "teardown_us": 29207
+    },
+    "result": {
+      "wrote": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "a.txt\nsecret.txt",
+        "timed_out": false,
+        "truncated": false,
+        "wall_ms": 11.504
+      }
+    }
+  },
+  "leftovers": {
+    "run_cgroups": 0,
+    "run_dirs": 0,
+    "workspace_mounts": 0
+  },
+  "native_baseline": {
+    "python_median_us": 17208,
+    "true_median_us": 1195
+  }
+}

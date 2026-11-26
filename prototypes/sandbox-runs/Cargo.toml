@@ -1,0 +1,7 @@
+# Standalone prototype; not a member of core's workspace.
+[workspace]
+resolver = "2"
+members = ["host", "driver"]
+
+[profile.release]
+debug = false
