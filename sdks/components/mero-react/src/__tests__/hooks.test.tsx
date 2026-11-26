@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppError, errorFrom, upgradeConsent, type NodeEvent } from '@calimero-network/mero-js';
@@ -202,6 +203,30 @@ describe('calls and views', () => {
       await pending;
     });
     expect(result.current.data).toBe('b1');
+  });
+
+  it('useView live under StrictMode holds one open watch and closes it on unmount', async () => {
+    const open = new Set<number>();
+    let n = 0;
+    const client = fakeClient({
+      watchView: vi.fn(() => {
+        const id = ++n;
+        open.add(id);
+        return { close: () => open.delete(id) };
+      }),
+    });
+    const Wrapper = wrapper(client);
+    const { unmount } = renderHook(() => useView('get', { key: 'a' }, { live: true }), {
+      wrapper: ({ children }) => (
+        <StrictMode>
+          <Wrapper>{children}</Wrapper>
+        </StrictMode>
+      ),
+    });
+    await waitFor(() => expect(n).toBeGreaterThan(0));
+    expect(open.size).toBe(1);
+    unmount();
+    expect(open.size).toBe(0);
   });
 
   it('useConnectionState follows the app stream', async () => {
