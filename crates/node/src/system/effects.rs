@@ -68,7 +68,7 @@ pub fn effect_of(cmd: &SystemCmd) -> SysEffect {
         | C::AcquireRun { .. }
         | C::ReleaseRun { .. }
         | C::ChargeFileBytes { .. }
-        | C::CreateAccount { .. }
+        | C::CreateAccount { invite: None, .. }
         | C::AddPasskey { .. }
         | C::CreateApiKey { .. }
         | C::SetAlias { .. }
@@ -95,8 +95,18 @@ pub fn effect_of(cmd: &SystemCmd) -> SysEffect {
                 account: account.clone(),
             })
         }
-        // The invite names its org and teams in the system state, not in the entry.
-        C::RedeemInvite { account, .. } => SysEffect::Touches(vec![
+        // The invite names its org and teams in the system state, not in the entry. A
+        // sign-up with an invite redeems it (an organization's) or spends it (a cluster's).
+        C::RedeemInvite { account, .. }
+        | C::CreateAccount {
+            account:
+                crate::types::Account {
+                    account_id: account,
+                    ..
+                },
+            invite: Some(_),
+            ..
+        } => SysEffect::Touches(vec![
             T::Member {
                 org: None,
                 account: account.clone(),
@@ -140,16 +150,37 @@ pub fn effect_of(cmd: &SystemCmd) -> SysEffect {
             team: None,
             account: None,
         }),
-        C::SetCapabilities { org, account, .. } | C::SetAllApps { org, account, .. } => {
-            one(T::Grant {
+        C::SetAllApps { org, account, .. } => one(T::Grant {
+            org: Some(org.clone()),
+            account: Some(account.clone()),
+        }),
+        // Who is in an open team follows their capabilities (`Org::in_team`).
+        C::SetCapabilities { org, account, .. } => SysEffect::Touches(vec![
+            T::Grant {
                 org: Some(org.clone()),
                 account: Some(account.clone()),
-            })
+            },
+            T::Team {
+                org: Some(org.clone()),
+                team: None,
+                account: Some(account.clone()),
+            },
+        ]),
+        // Defaults reach everyone's capabilities; scoping apps makes app teams, which
+        // change the organization's mode and give members rows.
+        C::SetDefaultCapabilities { org, .. } | C::ScopeApps { org, .. } => {
+            SysEffect::Touches(vec![
+                T::Grant {
+                    org: Some(org.clone()),
+                    account: None,
+                },
+                T::Team {
+                    org: Some(org.clone()),
+                    team: None,
+                    account: None,
+                },
+            ])
         }
-        C::SetDefaultCapabilities { org, .. } | C::ScopeApps { org, .. } => one(T::Grant {
-            org: Some(org.clone()),
-            account: None,
-        }),
         _ => SysEffect::All,
     }
 }
@@ -207,6 +238,50 @@ mod tests {
                 account: "ada".into(),
             }])
         );
+    }
+
+    /// Membership of an open team follows the member's capabilities, the organization's
+    /// defaults and its app teams: a change to any of them may change `in_team`.
+    #[test]
+    fn capability_and_app_team_changes_touch_team_membership() {
+        let team_of = |e: SysEffect, account: Option<&str>| match e {
+            SysEffect::Touches(t) => t.contains(&SysTouch::Team {
+                org: Some("o".into()),
+                team: None,
+                account: account.map(Into::into),
+            }),
+            _ => false,
+        };
+        let caps = cmd(json!({
+            "op": "setCapabilities", "org": "o", "account": "ada", "capabilities": 1,
+            "actor": "bob"
+        }));
+        assert!(team_of(effect_of(&caps), Some("ada")));
+        let defaults = cmd(json!({
+            "op": "setDefaultCapabilities", "org": "o", "capabilities": 1, "actor": "bob"
+        }));
+        assert!(team_of(effect_of(&defaults), None));
+        let scope = cmd(json!({
+            "op": "scopeApps", "org": "o", "nonce": "n", "actor": "bob", "consent": null
+        }));
+        assert!(team_of(effect_of(&scope), None));
+    }
+
+    /// A sign-up with an organization invite joins the organization, as redeeming it does.
+    #[test]
+    fn a_sign_up_with_an_invite_names_the_new_member() {
+        let account = json!({ "accountId": "ada", "name": "Ada", "createdAt": 0, "passkeys": [] });
+        let plain = cmd(json!({ "op": "createAccount", "account": account }));
+        assert_eq!(effect_of(&plain), SysEffect::Quiet);
+        let invited = cmd(json!({
+            "op": "createAccount", "account": account,
+            "invite": { "inviteKey": "k", "now": 1, "signature": "s" }
+        }));
+        let redeem = cmd(json!({
+            "op": "redeemInvite", "invite_key": "k", "account": "ada", "now": 1,
+            "signature": "s"
+        }));
+        assert_eq!(effect_of(&invited), effect_of(&redeem));
     }
 
     #[test]
