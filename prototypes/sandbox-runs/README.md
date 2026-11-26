@@ -40,3 +40,8 @@ TDX (the container is a Firecracker VM: no TD, but also no nested
 virtualization, as in a TD), gVisor (not installed here), cgroup v2, a pinned
 OCI image (it binds the host's `/usr` read-only), and egress. Results and the
 feasibility verdict are in the design doc that accompanies this prototype.
+
+## Feasibility report
+
+`python3 report/build_feasibility.py results/firecracker-vm-2026-11-26.json out.pdf`
+(needs `reportlab`) rebuilds the report from a recorded run.
