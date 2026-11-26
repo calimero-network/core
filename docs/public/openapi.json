@@ -2056,7 +2056,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's events as server-sent events",
-        "description": "Committed events from index `from`, then live ones, each to its audience.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "description": "Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -2086,11 +2086,37 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "watch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "last",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Server-sent events: each committed event the caller is in the audience of.",
+            "description": "Server-sent events: each committed event the caller is in the audience of, or a watch stream's notices.",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -9049,6 +9075,287 @@
                 "$ref": "#/components/schemas/RetryAfter"
               }
             }
+          }
+        }
+      }
+    },
+    "/apps/{app}/watches": {
+      "post": {
+        "operationId": "watch_add",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Watch a subscribable view",
+        "description": "Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "stream": {
+                    "type": "string"
+                  },
+                  "view": {
+                    "type": "string"
+                  },
+                  "args": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  }
+                },
+                "required": [
+                  "stream",
+                  "view"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchAdded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`NOT_A_VIEW`; `NOT_SUBSCRIBABLE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_A_VIEW",
+              "NOT_SUBSCRIBABLE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`UNKNOWN_STREAM`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNKNOWN_STREAM"
+            ]
+          },
+          "413": {
+            "description": "`ARGS_TOO_LARGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "ARGS_TOO_LARGE"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "422": {
+            "description": "`APP_ERROR`; `READ_SET_UNBOUNDED`; `TRAP`. `details` of `APP_ERROR`: a `AppError`, `TRAP`: a `Trap`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "APP_ERROR",
+              "READ_SET_UNBOUNDED",
+              "TRAP"
+            ],
+            "x-calimero-details": {
+              "APP_ERROR": {
+                "$ref": "#/components/schemas/AppError"
+              },
+              "TRAP": {
+                "$ref": "#/components/schemas/Trap"
+              }
+            }
+          },
+          "429": {
+            "description": "`TOO_MANY_WATCHES`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_WATCHES"
+            ]
+          },
+          "503": {
+            "description": "`TIMEOUT`. `details` of `TIMEOUT`: a `RetryAfter`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TIMEOUT"
+            ],
+            "x-calimero-details": {
+              "TIMEOUT": {
+                "$ref": "#/components/schemas/RetryAfter"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{app}/watches/{sub}": {
+      "delete": {
+        "operationId": "watch_remove",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Stop watching a view",
+        "description": "Forgets watch `sub`, which the caller holds.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sub",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`UNKNOWN_WATCH`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNKNOWN_WATCH"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
           }
         }
       }
@@ -31191,6 +31498,24 @@
           "receipt"
         ],
         "description": "What a view (`/views`) answers: the log index it read at, the app's result, and the answering node's receipt."
+      },
+      "WatchAdded": {
+        "type": "object",
+        "properties": {
+          "sub": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "sub",
+          "index"
+        ],
+        "description": "`POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at."
       },
       "XcallsReport": {
         "type": "object",

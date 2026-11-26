@@ -191,6 +191,9 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
 | `POST /apps/{app}/methods/{method}` | app access | The body of `/intents` or `/views` without `method`: runs as `/views` for a view the ABI declares (without `confirm`), else as `/intents`, with the same gate, step-up and limits | |
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `instance watch` |
+| `GET /apps/{app}/events?watch=true[&stream=ID&last=N]` | app access | A watch stream: `stream`, then `view-changed` `{ sub, index }` and `watch-ended` `{ sub }`; resumes within 30 s | `call --view --watch` |
+| `POST /apps/{app}/watches` | app access | Watch a subscribable view on a stream: `{ stream, view, args }` → `{ sub, index }` | `call --view --watch` |
+| `DELETE /apps/{app}/watches/{sub}` | app access | Stop a watch | |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades, by an owner or admin of the app's organization | `instance update` |
 | `GET /apps/{app}/update` | whoever the app admits | `{ app, running, available: { package, version, source: deployment \| release } \| null, mayApprove, approvers }`: whether an update is available, for the app's frontend to offer on the consent page; `available` carries the update classifier's `class` (`green`/`red`), `reasons`, and `egress` diff (`before`, `after`, `added`, `removed`) | |
 | `GET /apps/{app}/egress` | whoever the app admits | `{ app, destinations, members }`: every destination outside the cluster the app and the apps it created may send data to; empty when no data leaves Calimero | |

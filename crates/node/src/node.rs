@@ -677,6 +677,8 @@ pub struct Node {
     pub runs_kick: Arc<tokio::sync::Notify>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The view watches of the streams this node serves.
+    pub watches: crate::watch::Watches,
     /// Pipeline run event streams open on this node, by app.
     pub pipeline_subscribers: Mutex<HashMap<String, usize>>,
     /// Every app's ephemeral presence, in memory only.
@@ -1188,6 +1190,7 @@ impl Node {
             http,
             challenges: Mutex::new(crate::api::Ceremonies::default()),
             event_streams: std::sync::Arc::default(),
+            watches: crate::watch::Watches::default(),
             pipeline_subscribers: Mutex::new(HashMap::new()),
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),

@@ -166,7 +166,9 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
   `x-calimero-retry-requires` key made when none is given (`new_call_key`), and
   `x-calimero-sealed: false` (`/health`, `/attestation`) goes in the clear
   (`route::clear`). Event streams are not methods: `Client::events`,
-  `Client::presence_stream`.
+  `Client::presence_stream`, and live views (`watch.rs`): `Client::watch_stream`,
+  `add_watch`, `remove_watch`, and `Client::watch`, which resumes or re-registers one
+  watch across reconnects.
 - `types.rs`: components keep their names; inline schemas are named after where
   they are (`{Operation}Request`, `{Operation}Response`, then each property).
   Absent is `Option<T>`; absent or `null` is `Option<Option<T>>` (and an optional

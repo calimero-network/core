@@ -1326,7 +1326,7 @@ public struct Client: APIProtocol {
     }
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -1354,6 +1354,27 @@ public struct Client: APIProtocol {
                     explode: true,
                     name: "from",
                     value: input.query.from
+                )
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "watch",
+                    value: input.query.watch
+                )
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "stream",
+                    value: input.query.stream
+                )
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "last",
+                    value: input.query.last
                 )
                 converter.setAcceptHeader(
                     in: &request.headerFields,
@@ -5210,6 +5231,148 @@ public struct Client: APIProtocol {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
                             Components.Schemas.ViewResult.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Watch a subscribable view
+    ///
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/watches`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/post(watch_add)`.
+    public func watchAdd(_ input: Operations.WatchAdd.Input) async throws -> Operations.WatchAdd.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.WatchAdd.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/watches",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .post
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.WatchAdd.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.WatchAdded.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Stop watching a view
+    ///
+    /// Forgets watch `sub`, which the caller holds.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/watches/{sub}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/{sub}/delete(watch_remove)`.
+    public func watchRemove(_ input: Operations.WatchRemove.Input) async throws -> Operations.WatchRemove.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.WatchRemove.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/watches/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.sub
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .delete
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.WatchRemove.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            OpenAPIRuntime.OpenAPIObjectContainer.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)

@@ -21,7 +21,7 @@ holds the API document and the docs to the same words).
 | `node add/remove/use/list` | saved nodes, `{home}/meroctl/nodes.json` | (local) |
 | `app install/list/get/versions/get-latest-version/pipelines/uninstall/watch` → `package ...` (the `app` spellings still parse, hidden from `app`'s help: `mut_subcommand(.., hidden)` in `main.rs`; test `package_commands_are_packages_and_hidden_under_app`) | signed packages installed on the cluster (v1's applications); `--path` a `.mpk`, or a dev `.wasm` bundle; `package origins list/add/remove` its registered web origins (its manager's; `add --served` a custom domain the cluster serves the frontend on) | `/packages*`, `/bundles`, `/package-origins/{package}` |
 | `instance create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
-| `call` | `call --instance I METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
+| `call` | `call --instance I METHOD --args JSON [--view [--watch [--limit N]]]` | `/apps/{app}/intents`, `/views`; `--watch`: `/events?watch=true`, `/watches` |
 | `blob list/upload/download/info/delete` | an instance's blobs | `/apps/{app}/blobs*` |
 | `file upload FILE -i INSTANCE` | an instance's sealed files: one request up to 16 MiB, else resumable parts (`Client::upload_file`) | `/apps/{app}/files*` |
 | `file download INSTANCE ID -o OUT` | a sealed file's plaintext, streamed to `OUT.part` and renamed onto `OUT` only after every check passed (`Client::export_file_to`); `pipeline download` does the same per output | `/apps/{app}/files/{id}/export`, `.../segments/{k}` |

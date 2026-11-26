@@ -1500,6 +1500,7 @@ impl Drive<'_> {
                                 outcome: Outcome::default(),
                                 blobs: Vec::new(),
                                 _pending: None,
+                                read_set: None,
                             }
                         } else {
                             Ran {
@@ -1509,6 +1510,7 @@ impl Drive<'_> {
                                 ),
                                 blobs: Vec::new(),
                                 _pending: None,
+                                read_set: None,
                             }
                         };
                         let entry = FinalEntry {

@@ -177,7 +177,7 @@ public protocol APIProtocol: Sendable {
     func appSetEgress(_ input: Operations.AppSetEgress.Input) async throws -> Operations.AppSetEgress.Output
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -662,6 +662,24 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/views`.
     /// - Remark: Generated from `#/paths//apps/{app}/views/post(views)`.
     func views(_ input: Operations.Views.Input) async throws -> Operations.Views.Output
+    /// Watch a subscribable view
+    ///
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/watches`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/post(watch_add)`.
+    func watchAdd(_ input: Operations.WatchAdd.Input) async throws -> Operations.WatchAdd.Output
+    /// Stop watching a view
+    ///
+    /// Forgets watch `sub`, which the caller holds.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/watches/{sub}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/{sub}/delete(watch_remove)`.
+    func watchRemove(_ input: Operations.WatchRemove.Input) async throws -> Operations.WatchRemove.Output
     /// An app's cross-app calls
     ///
     /// The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a count), and its dead letters, oldest first (`atMs`: the entry time it was dead-lettered at, Unix milliseconds).
@@ -2056,7 +2074,7 @@ extension APIProtocol {
     }
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -3039,6 +3057,42 @@ extension APIProtocol {
             path: path,
             headers: headers,
             body: body
+        ))
+    }
+    /// Watch a subscribable view
+    ///
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/watches`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/post(watch_add)`.
+    public func watchAdd(
+        path: Operations.WatchAdd.Input.Path,
+        headers: Operations.WatchAdd.Input.Headers = .init(),
+        body: Operations.WatchAdd.Input.Body
+    ) async throws -> Operations.WatchAdd.Output {
+        try await watchAdd(Operations.WatchAdd.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Stop watching a view
+    ///
+    /// Forgets watch `sub`, which the caller holds.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/watches/{sub}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/{sub}/delete(watch_remove)`.
+    public func watchRemove(
+        path: Operations.WatchRemove.Input.Path,
+        headers: Operations.WatchRemove.Input.Headers = .init()
+    ) async throws -> Operations.WatchRemove.Output {
+        try await watchRemove(Operations.WatchRemove.Input(
+            path: path,
+            headers: headers
         ))
     }
     /// An app's cross-app calls
@@ -9570,6 +9624,31 @@ public enum Components {
                 case index
                 case result
                 case receipt
+            }
+        }
+        /// `POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at.
+        ///
+        /// - Remark: Generated from `#/components/schemas/WatchAdded`.
+        public struct WatchAdded: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/WatchAdded/sub`.
+            public var sub: Swift.String
+            /// - Remark: Generated from `#/components/schemas/WatchAdded/index`.
+            public var index: Swift.Int64
+            /// Creates a new `WatchAdded`.
+            ///
+            /// - Parameters:
+            ///   - sub:
+            ///   - index:
+            public init(
+                sub: Swift.String,
+                index: Swift.Int64
+            ) {
+                self.sub = sub
+                self.index = index
+            }
+            public enum CodingKeys: String, CodingKey {
+                case sub
+                case index
             }
         }
         /// `GET /apps/{app}/xcalls`: messages waiting, and those never delivered.
@@ -23523,7 +23602,7 @@ public enum Operations {
     }
     /// An app's events as server-sent events
     ///
-    /// Committed events from index `from`, then live ones, each to its audience.
+    /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed` (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event: watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose watches must be added again.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -23549,12 +23628,29 @@ public enum Operations {
             public struct Query: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/events/GET/query/from`.
                 public var from: Swift.Int64?
+                /// - Remark: Generated from `#/paths/apps/{app}/events/GET/query/watch`.
+                public var watch: Swift.Bool?
+                /// - Remark: Generated from `#/paths/apps/{app}/events/GET/query/stream`.
+                public var stream: Swift.String?
+                /// - Remark: Generated from `#/paths/apps/{app}/events/GET/query/last`.
+                public var last: Swift.Int64?
                 /// Creates a new `Query`.
                 ///
                 /// - Parameters:
                 ///   - from:
-                public init(from: Swift.Int64? = nil) {
+                ///   - watch:
+                ///   - stream:
+                ///   - last:
+                public init(
+                    from: Swift.Int64? = nil,
+                    watch: Swift.Bool? = nil,
+                    stream: Swift.String? = nil,
+                    last: Swift.Int64? = nil
+                ) {
                     self.from = from
+                    self.watch = watch
+                    self.stream = stream
+                    self.last = last
                 }
             }
             public var query: Operations.Events.Input.Query
@@ -23615,7 +23711,7 @@ public enum Operations {
                     self.body = body
                 }
             }
-            /// Server-sent events: each committed event the caller is in the audience of.
+            /// Server-sent events: each committed event the caller is in the audience of, or a watch stream's notices.
             ///
             /// - Remark: Generated from `#/paths//apps/{app}/events/get(events)/responses/200`.
             ///
@@ -32086,6 +32182,337 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.Views.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Watch a subscribable view
+    ///
+    /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/watches`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/post(watch_add)`.
+    public enum WatchAdd {
+        public static let id: Swift.String = "watch_add"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.WatchAdd.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.WatchAdd.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.WatchAdd.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.WatchAdd.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/json/stream`.
+                    public var stream: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/json/view`.
+                    public var view: Swift.String
+                    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                    ///
+                    /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/json/args`.
+                    public var args: OpenAPIRuntime.OpenAPIValueContainer?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - stream:
+                    ///   - view:
+                    ///   - args: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                    public init(
+                        stream: Swift.String,
+                        view: Swift.String,
+                        args: OpenAPIRuntime.OpenAPIValueContainer? = nil
+                    ) {
+                        self.stream = stream
+                        self.view = view
+                        self.args = args
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case stream
+                        case view
+                        case args
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.stream = try container.decode(
+                            Swift.String.self,
+                            forKey: .stream
+                        )
+                        self.view = try container.decode(
+                            Swift.String.self,
+                            forKey: .view
+                        )
+                        self.args = try container.decodeIfPresent(
+                            OpenAPIRuntime.OpenAPIValueContainer.self,
+                            forKey: .args
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "stream",
+                            "view",
+                            "args"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/requestBody/content/application\/json`.
+                case json(Operations.WatchAdd.Input.Body.JsonPayload)
+            }
+            public var body: Operations.WatchAdd.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.WatchAdd.Input.Path,
+                headers: Operations.WatchAdd.Input.Headers = .init(),
+                body: Operations.WatchAdd.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/watches/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.WatchAdded)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.WatchAdded {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.WatchAdd.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.WatchAdd.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/watches/post(watch_add)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.WatchAdd.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.WatchAdd.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Stop watching a view
+    ///
+    /// Forgets watch `sub`, which the caller holds.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/watches/{sub}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/watches/{sub}/delete(watch_remove)`.
+    public enum WatchRemove {
+        public static let id: Swift.String = "watch_remove"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/watches/{sub}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/{sub}/DELETE/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/{sub}/DELETE/path/sub`.
+                public var sub: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - sub:
+                public init(
+                    app: Swift.String,
+                    sub: Swift.String
+                ) {
+                    self.app = app
+                    self.sub = sub
+                }
+            }
+            public var path: Operations.WatchRemove.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/watches/{sub}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.WatchRemove.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.WatchRemove.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.WatchRemove.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.WatchRemove.Input.Path,
+                headers: Operations.WatchRemove.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/watches/{sub}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/watches/{sub}/DELETE/responses/200/content/application\/json`.
+                    case json(OpenAPIRuntime.OpenAPIObjectContainer)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: OpenAPIRuntime.OpenAPIObjectContainer {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.WatchRemove.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.WatchRemove.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/watches/{sub}/delete(watch_remove)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.WatchRemove.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.WatchRemove.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

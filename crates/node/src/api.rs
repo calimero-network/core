@@ -99,6 +99,7 @@ mod sign_up;
 mod undo;
 mod update_policies;
 pub(crate) mod upgrades;
+mod watches;
 
 pub(crate) use approvals::{
     outbound_release, refuse_egress_off, set_egress, set_outbound_approval, set_release_approval,
@@ -106,6 +107,7 @@ pub(crate) use approvals::{
 };
 // `POST /apps/{app}/egress`, routed beside its `GET` in `upgrades::routes`.
 use approvals::app_set_egress;
+pub(crate) use calls::MAX_EVENT_STREAMS;
 pub(crate) use exports::ExportLimits;
 pub(crate) use internal::peer_only;
 pub(crate) use orgs::{
@@ -175,6 +177,7 @@ pub(crate) const AREA_SOURCES: &[(&str, &str)] = &[
     ("undo", include_str!("api/undo.rs")),
     ("update_policies", include_str!("api/update_policies.rs")),
     ("upgrades", include_str!("api/upgrades.rs")),
+    ("watches", include_str!("api/watches.rs")),
 ];
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
@@ -2765,6 +2768,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .merge(deployments::routes())
         .merge(sign_up::routes())
         .merge(internal::routes())
+        .merge(watches::routes())
         .merge(ops::routes())
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.

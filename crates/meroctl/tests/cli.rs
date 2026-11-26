@@ -433,6 +433,49 @@ fn scenario(root: &Path, url: &str) {
         "--view",
     ]);
     assert_eq!(view["result"], "1");
+    // `--watch`: the view now, then once more after a write to what it read.
+    let watcher = alice
+        .cmd()
+        .args([
+            "call",
+            "--instance",
+            "notes",
+            "get",
+            "--args",
+            r#"{"key":"a"}"#,
+            "--view",
+            "--watch",
+            "--limit",
+            "1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let _ = alice.run(&[
+        "call",
+        "--instance",
+        "notes",
+        "set",
+        "--args",
+        r#"{"key":"a","value":"2"}"#,
+    ]);
+    let out = watcher.wait_with_output().unwrap();
+    let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["result"], "1");
+    assert_eq!(lines[1]["result"], "2");
+    let _ = alice.run(&[
+        "call",
+        "--instance",
+        "notes",
+        "set",
+        "--args",
+        r#"{"key":"a","value":"1"}"#,
+    ]);
     // An app's refusal names the app's own error, not only `422 APP_ERROR`.
     let refused = alice
         .try_run(&[

@@ -99,7 +99,9 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
 - **HTTP API**: `api.rs` (router, `principal`, `gate`, shared helpers), `api/<area>.rs` (one per
   area, each with its `routes()`), `api/openapi.rs` (`docs/public/openapi.json`),
   `error.rs`, `metrics.rs`, `consent_page.rs` and `consent_page/`, `app_host.rs` (frontends),
-  `origins.rs`, `presence.rs`.
+  `origins.rs`, `presence.rs`, `watch.rs` with `api/watches.rs` (live views: watch streams
+  on `/apps/{app}/events?watch=true`, each watch's read set checked against every applied
+  diff through `AppMachine::changes_tx`).
 - **Packages and releases**: `packages.rs`, `packages/pipelines.rs`, `runtime.rs`,
   `node/runtime.rs`, `report.rs`, `egress.rs`.
 - **Upgrades**: `node/cluster_version.rs`, `node/auto_updates.rs`, `node/restore_points.rs`,

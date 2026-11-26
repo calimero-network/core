@@ -607,6 +607,22 @@ export function createRoutes(api: RouteClient) {
       view: (args: operations['views']['parameters']['path'] & operations['views']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['views']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/apps/{app}/views","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['views']['responses'][200]['content']['application/json']>,
       /**
+       * Watch a subscribable view.
+       *
+       * `POST /apps/{app}/watches` (`watch_add`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      watchAdd: (args: operations['watch_add']['parameters']['path'] & operations['watch_add']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['watch_add']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/watches","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['watch_add']['responses'][200]['content']['application/json']>,
+      /**
+       * Stop watching a view.
+       *
+       * `DELETE /apps/{app}/watches/{sub}` (`watch_remove`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      watchRemove: (args: operations['watch_remove']['parameters']['path'], options?: MethodOptions): Promise<operations['watch_remove']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/watches/{sub}","pathParams":["app","sub"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['watch_remove']['responses'][200]['content']['application/json']>,
+      /**
        * An app's cross-app calls.
        *
        * `GET /apps/{app}/xcalls` (`app_xcalls`). **Who:** signed in (a session or an API key).

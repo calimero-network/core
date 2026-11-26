@@ -17,11 +17,20 @@ def _get_kwargs(
     app: str,
     *,
     from_: Union[Unset, int] = UNSET,
+    watch: Union[Unset, bool] = UNSET,
+    stream: Union[Unset, str] = UNSET,
+    last: Union[Unset, int] = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
 
     params["from"] = from_
+
+    params["watch"] = watch
+
+    params["stream"] = stream
+
+    params["last"] = last
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -85,16 +94,28 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     from_: Union[Unset, int] = UNSET,
+    watch: Union[Unset, bool] = UNSET,
+    stream: Union[Unset, str] = UNSET,
+    last: Union[Unset, int] = UNSET,
 ) -> Response[Union[Error, str]]:
     """An app's events as server-sent events
 
-     Committed events from index `from`, then live ones, each to its audience.
+     Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
+    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
+    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
+    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
+    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
+    watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
         from_ (Union[Unset, int]):
+        watch (Union[Unset, bool]):
+        stream (Union[Unset, str]):
+        last (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -107,6 +128,9 @@ def sync_detailed(
     kwargs = _get_kwargs(
         app=app,
         from_=from_,
+        watch=watch,
+        stream=stream,
+        last=last,
     )
 
     response = client.get_httpx_client().request(
@@ -121,16 +145,28 @@ def sync(
     *,
     client: AuthenticatedClient,
     from_: Union[Unset, int] = UNSET,
+    watch: Union[Unset, bool] = UNSET,
+    stream: Union[Unset, str] = UNSET,
+    last: Union[Unset, int] = UNSET,
 ) -> Optional[Union[Error, str]]:
     """An app's events as server-sent events
 
-     Committed events from index `from`, then live ones, each to its audience.
+     Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
+    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
+    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
+    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
+    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
+    watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
         from_ (Union[Unset, int]):
+        watch (Union[Unset, bool]):
+        stream (Union[Unset, str]):
+        last (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -144,6 +180,9 @@ def sync(
         app=app,
         client=client,
         from_=from_,
+        watch=watch,
+        stream=stream,
+        last=last,
     ).parsed
 
 
@@ -152,16 +191,28 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     from_: Union[Unset, int] = UNSET,
+    watch: Union[Unset, bool] = UNSET,
+    stream: Union[Unset, str] = UNSET,
+    last: Union[Unset, int] = UNSET,
 ) -> Response[Union[Error, str]]:
     """An app's events as server-sent events
 
-     Committed events from index `from`, then live ones, each to its audience.
+     Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
+    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
+    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
+    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
+    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
+    watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
         from_ (Union[Unset, int]):
+        watch (Union[Unset, bool]):
+        stream (Union[Unset, str]):
+        last (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -174,6 +225,9 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         app=app,
         from_=from_,
+        watch=watch,
+        stream=stream,
+        last=last,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -186,16 +240,28 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     from_: Union[Unset, int] = UNSET,
+    watch: Union[Unset, bool] = UNSET,
+    stream: Union[Unset, str] = UNSET,
+    last: Union[Unset, int] = UNSET,
 ) -> Optional[Union[Error, str]]:
     """An app's events as server-sent events
 
-     Committed events from index `from`, then live ones, each to its audience.
+     Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch
+    stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-changed`
+    (`id: <index>:<seq>`, `{ sub, index }`) when something a watched view read changed, and `event:
+    watch-ended` (`{ sub }`) when a watch is dropped (its holder lost access, or its view no longer
+    reads a bounded set). `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each
+    watch touched after `last` is noticed again; a stream that is gone comes back as a new one, whose
+    watches must be added again.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
         from_ (Union[Unset, int]):
+        watch (Union[Unset, bool]):
+        stream (Union[Unset, str]):
+        last (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -210,5 +276,8 @@ async def asyncio(
             app=app,
             client=client,
             from_=from_,
+            watch=watch,
+            stream=stream,
+            last=last,
         )
     ).parsed

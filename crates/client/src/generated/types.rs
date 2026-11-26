@@ -2247,6 +2247,16 @@ pub struct ViewResult {
     pub extra: Map<String, Value>,
 }
 
+/// `POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WatchAdded {
+    pub sub: String,
+    pub index: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// `GET /apps/{app}/xcalls`: messages waiting, and those never delivered.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct XcallsReport {

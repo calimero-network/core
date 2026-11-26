@@ -119,6 +119,8 @@ from .openapi.api.apps import upload_complete as _upload_complete
 from .openapi.api.apps import upload_part as _upload_part
 from .openapi.api.apps import upload_status as _upload_status
 from .openapi.api.apps import views as _views
+from .openapi.api.apps import watch_add as _watch_add
+from .openapi.api.apps import watch_remove as _watch_remove
 from .openapi.api.consent import consent_page_create as _consent_page_create
 from .openapi.api.consent import consent_page_result as _consent_page_result
 from .openapi.api.ops import ops_apps as _ops_apps
@@ -395,6 +397,7 @@ from .openapi.models import TeamUpdateBody
 from .openapi.models import UpgradePolicyBody
 from .openapi.models import UploadBeginBody
 from .openapi.models import ViewsBody
+from .openapi.models import WatchAddBody
 from ._facade import UNSET, Group, Operation
 
 _APP_ABI = Operation(
@@ -807,6 +810,18 @@ _APP_USAGE = Operation(
     answer="json",
 )
 _VIEWS = Operation(_views, "views", body=ViewsBody, answer="json", repeatable=True)
+_WATCH_ADD = Operation(
+    _watch_add,
+    "watch_add",
+    body=WatchAddBody,
+    answer="json",
+)
+_WATCH_REMOVE = Operation(
+    _watch_remove,
+    "watch_remove",
+    body="none",
+    answer="json",
+)
 _APP_XCALLS = Operation(
     _app_xcalls,
     "app_xcalls",
@@ -2284,6 +2299,48 @@ class Apps(Group):
                 "consistency": consistency,
                 "minIndex": min_index,
             },
+        )
+
+    def watch_add(self, *, app, stream, view, args=UNSET):
+        """Watch a subscribable view (`POST /apps/{app}/watches`, `watch_add`).
+
+        Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries `view-changed` for this watch, `sub`, after each entry that writes what it read. `index` is the log index it read at. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+
+        Args:
+            app: path
+            stream: body `stream`
+            view: body `view`
+            args: body `args`
+
+        Returns: WatchAdded
+        """
+        return self._run(
+            _WATCH_ADD, (app,), {}, {"stream": stream, "view": view, "args": args}
+        )
+
+    def watch_remove(self, *, app, sub):
+        """Stop watching a view (`DELETE /apps/{app}/watches/{sub}`, `watch_remove`).
+
+        Forgets watch `sub`, which the caller holds.
+
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+
+        Args:
+            app: path
+            sub: path
+
+        Returns: WatchRemoveResponse200
+        """
+        return self._run(
+            _WATCH_REMOVE,
+            (
+                app,
+                sub,
+            ),
+            {},
+            None,
         )
 
     def xcalls(self, *, app):

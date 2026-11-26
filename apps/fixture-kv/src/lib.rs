@@ -665,7 +665,7 @@ impl Kv {
     }
 
     /// The value of `key`, or `null`.
-    #[app::view]
+    #[app::view(subscribable)]
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
         Ok(self.entries.get(&key)?.map(|e| e.value))
     }
@@ -680,10 +680,23 @@ impl Kv {
     }
 
     /// Every entry (up to 1000).
-    #[app::view]
+    #[app::view(subscribable)]
     pub fn entries(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
         let page = self.entries.scan(FindOpts::default().limit(LIST_LIMIT))?;
         Ok(page.items.into_iter().map(|e| (e.key, e.value)).collect())
+    }
+
+    /// How many of the keys `p0` .. `p<n-1>` are set: `n` point reads, so a watch past the
+    /// node's read-set cap is refused.
+    #[app::view(subscribable)]
+    pub fn probe(&self, n: u32) -> app::Result<u32> {
+        let mut found = 0;
+        for i in 0..n {
+            if self.entries.get(&format!("p{i}"))?.is_some() {
+                found += 1;
+            }
+        }
+        Ok(found)
     }
 
     /// How many keys there are.

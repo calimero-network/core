@@ -1194,6 +1194,44 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, true).await
     }
 
+    /// Watch a subscribable view.
+    ///
+    /// `POST /apps/{app}/watches` (`watch_add`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
+    pub async fn watch_add(
+        self,
+        app: &str,
+        stream: &str,
+        view: &str,
+        args: Option<Value>,
+    ) -> Result<WatchAdded> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "stream", &stream)?;
+        route::put(&mut fields, "view", &view)?;
+        route::put_some(&mut fields, "args", args)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/watches", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Stop watching a view.
+    ///
+    /// `DELETE /apps/{app}/watches/{sub}` (`watch_remove`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
+    pub async fn watch_remove(self, app: &str, sub: &str) -> Result<Map<String, Value>> {
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/watches/{}",
+                route::segment(app),
+                route::segment(sub)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// An app's cross-app calls.
     ///
     /// `GET /apps/{app}/xcalls` (`app_xcalls`). Who: signed in (a session or an API key).
