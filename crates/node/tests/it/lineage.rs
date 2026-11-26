@@ -398,3 +398,56 @@ async fn a_unit_never_moves_without_its_pinned_member() {
         assert_eq!(record["release"]["version"], json!(version), "{record}");
     }
 }
+
+/// An upgrade whose switch ran on the app's group but whose record never followed (a crash, a
+/// refusal at apply) leaves the group ahead of the record. Upgrading to the release the group
+/// already runs then succeeds without running anything, and the record catches up; later
+/// upgrades go on as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_half_finished_upgrade_is_repaired_by_upgrading_to_what_the_group_runs() {
+    use calimero_node::node::CallRequest;
+    use calimero_node::types::Caller;
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let org = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    for version in ["1.1.0", "1.2.0", "1.3.0"] {
+        let _ok = alice
+            .packages()
+            .upload(release(SEALED, version, true), Some(&org))
+            .await
+            .unwrap();
+    }
+    let app = create(&alice, "1.1.0", Some(&org)).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let recorded = node.app(&app).await.unwrap().bundle;
+    let ahead = node.sys(|s| s.packages[SEALED].versions["1.2.0"].services[""].clone());
+    let switched = node
+        .call(&CallRequest::host(
+            app.clone(),
+            "__upgrade",
+            json!({ "bundle": ahead, "from": recorded }),
+            Caller::System,
+        ))
+        .await
+        .unwrap();
+    assert!(switched.error.is_null(), "{:?}", switched.error);
+    assert_eq!(group_bundle(&c, &app), Some(ahead.clone()));
+    assert_eq!(node.app(&app).await.unwrap().bundle, recorded, "no record");
+
+    for version in ["1.2.0", "1.3.0"] {
+        let up = alice
+            .apps()
+            .upgrade(&app, typed(json!({ "version": version })), Some(&mut pk))
+            .await
+            .map(wire)
+            .unwrap_or_else(|e| panic!("{version}: {e}"));
+        assert_eq!(up["status"], "ok", "{version}: {up}");
+        let record = node.app(&app).await.unwrap().bundle;
+        assert_eq!(group_bundle(&c, &app), Some(record), "{version}");
+    }
+}
