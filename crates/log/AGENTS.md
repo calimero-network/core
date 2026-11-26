@@ -210,9 +210,16 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - Heartbeats travel batched per peer, always (`network::Batcher`): openraft's own
   heartbeat timer is off in every group (`enable_heartbeat: false`), and one engine
   ticker (`heartbeat_ticker`, every `heartbeat_ms`) triggers every group's heartbeats at
-  once (`RpcTarget::tick`); each empty append to a peer then waits up to
-  `HEARTBEAT_BATCH_WINDOW` (5 ms) and goes in one `Transport::send_batch` of at most
-  `MAX_HEARTBEATS_PER_BATCH` (1024). A batch not answered as a whole (unreachable,
+  once (`RpcTarget::tick`); the burst to a peer waits up to `HEARTBEAT_BATCH_WINDOW`
+  (5 ms) to coalesce and goes in one `Transport::send_batch` of at most
+  `MAX_HEARTBEATS_PER_BATCH` (1024). The wait is only for that burst: the ticker marks
+  each firing (`HeartbeatPacing::mark_tick`) and a heartbeat within
+  `TICK_COALESCE_GRACE` (10 ms) of a mark waits the window, while any other empty append
+  — a read-index confirm on a hot group's write path, which openraft sends as an empty
+  append between ticks — sees a zero window and goes at once (`HeartbeatPacing::window`).
+  So idle heartbeats still batch (one message per peer per tick at any group count) but a
+  write no longer pays the batching delay once per read-index round. A batch not answered
+  as a whole (unreachable,
   refused, the wrong number of answers) is sent again item by item, so each group gets
   its own answer (a peer on a release before it, which has no batch route, keeps its
   leaders this way through a rollout). `Engine::handle_rpc_batch` takes one. Cadence:
