@@ -47,7 +47,7 @@ impl calimero_log::Transport for Nowhere {
 
 /// The system group's state store, opened once for the whole run.
 fn group() -> &'static GroupState {
-    static GROUP: OnceLock<(tempfile::TempDir, Engine, GroupState)> = OnceLock::new();
+    static GROUP: OnceLock<(tempfile::TempDir, Arc<Engine>, GroupState)> = OnceLock::new();
     &GROUP
         .get_or_init(|| {
             let dir = tempfile::tempdir().expect("a temporary directory");
@@ -74,13 +74,18 @@ fn sign_up(id: &str) -> SystemCmd {
         require_uv: false,
     };
     let challenge = calimero_identity::random::<32>();
-    let credential = calimero_identity::verify_registration(&rp, &challenge, &pk.register(&challenge))
-        .expect("a fresh passkey registers");
+    let credential =
+        calimero_identity::verify_registration(&rp, &challenge, &pk.register(&challenge))
+            .expect("a fresh passkey registers");
     let account: Account = serde_json::from_value(json!({
         "accountId": id, "name": id, "createdAt": 0, "passkeys": [credential],
     }))
     .expect("an account record");
-    let statement = Statement::new(&format!("account:{id}"), "__create_account", &account_args(&account, None));
+    let statement = Statement::new(
+        &format!("account:{id}"),
+        "__create_account",
+        &account_args(&account, None),
+    );
     let challenge = statement.challenge().expect("a statement has a challenge");
     let consent = Consent {
         statement,
@@ -130,7 +135,12 @@ fn genesis() -> &'static [u8] {
         for (index, cmd) in [cmd, sign_up("alice"), sign_up("bob")].iter().enumerate() {
             let entry = serde_json::to_vec(cmd).expect("a command serializes");
             let out = m.apply(index as u64 + 1, &entry, &mut StateTx::new(group()));
-            assert!(out.starts_with(b"{\"ok\""), "setup entry {}: {}", index + 1, String::from_utf8_lossy(&out));
+            assert!(
+                out.starts_with(b"{\"ok\""),
+                "setup entry {}: {}",
+                index + 1,
+                String::from_utf8_lossy(&out)
+            );
         }
         m.snapshot().expect("the state serializes")
     })
@@ -152,7 +162,11 @@ fuzz_target!(|data: &[u8]| {
         let before = (!decodes).then(|| first.snapshot().expect("the state serializes"));
         let mut tx = StateTx::new(group());
         answers.push(first.apply(index, entry, &mut tx));
-        assert_eq!(tx.failed(), !decodes, "entry {index}: a stop must mean it did not decode");
+        assert_eq!(
+            tx.failed(),
+            !decodes,
+            "entry {index}: a stop must mean it did not decode"
+        );
         if let Some(before) = before {
             assert_eq!(
                 first.snapshot().expect("the state serializes"),
@@ -166,11 +180,22 @@ fuzz_target!(|data: &[u8]| {
     for (i, entry) in entries.iter().enumerate() {
         let index = i as u64 + FIRST;
         let out = second.apply(index, entry, &mut StateTx::new(group()));
-        assert_eq!(out, answers[i], "entry {index} answered differently on another replica");
+        assert_eq!(
+            out, answers[i],
+            "entry {index} answered differently on another replica"
+        );
     }
     let end = first.snapshot().expect("the state serializes");
-    assert_eq!(second.snapshot().expect("the state serializes"), end, "the replicas' states differ");
+    assert_eq!(
+        second.snapshot().expect("the state serializes"),
+        end,
+        "the replicas' states differ"
+    );
     let mut restored = SystemMachine::new(CLUSTER.into());
     restored.restore(&end).expect("a snapshot restores");
-    assert_eq!(restored.snapshot().expect("the state serializes"), end, "a snapshot does not restore to itself");
+    assert_eq!(
+        restored.snapshot().expect("the state serializes"),
+        end,
+        "a snapshot does not restore to itself"
+    );
 });
