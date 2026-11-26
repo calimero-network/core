@@ -84,5 +84,5 @@ why = "a release's secrets are credential bindings: each names one host and one 
 
 [[cutover]]
 field = "contextId"
-pr = 0
+pr = 5426
 why = "answers name an app instance by its app id only: POST /apps and GET /orgs/{org}/teams/{team} (each of its apps) no longer answer contextId; a client that read it derives it as hex(SHA-256(appId)), which every /apps/{app} route still accepts"
