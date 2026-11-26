@@ -1221,6 +1221,51 @@ mod tests {
         assert_eq!(held, MAX_WATCHES_PER_CALLER - 1 - MAX_WATCHES_PER_STREAM);
     }
 
+    /// The last entry of a burst is always run for: one that lands while the view runs
+    /// (its notice before or after the run's read set is in place) runs it again after the
+    /// interval, and a frame that could not be sent is sent again then.
+    #[test]
+    fn the_last_change_of_a_burst_is_run_for_even_mid_run() {
+        let watches = Watches::default();
+        let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
+        let rs = || read_set_of(&[], b"a");
+        watches
+            .add(&stream, "w".into(), watch(rs(), 5), || 5)
+            .unwrap();
+        stream.mark(&change(6, b"a"));
+        let due = due_now(&stream);
+        assert_eq!(due[0].index, 6);
+
+        // Entry 7 is noticed while the view runs on the state at 6.
+        stream.mark(&change(7, b"a"));
+        stream.refresh("w", rs(), 6, || 7);
+        let (due, next) = stream.take_due(Instant::now());
+        assert!(due.is_empty());
+        let next = next.expect("run again after the interval");
+        let due = stream.take_due(next).0;
+        assert_eq!(due[0].index, 7);
+
+        // Entry 8 applied during that run, its notice not yet read: the refresh sees it.
+        stream.refresh("w", rs(), 7, || 8);
+        stream.mark(&change(8, b"a"));
+        let later = next + DEFAULT_WATCH_INTERVAL;
+        let due = stream.take_due(later).0;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].index, 8);
+
+        // Its frame did not fit: it is due again, and sent even though it repeats.
+        stream.refresh("w", rs(), 8, || 8);
+        assert!(stream.answer_changed("w", &Ok(Value::from(8))));
+        stream.remark("w", 8, true);
+        let due = stream.take_due(later + DEFAULT_WATCH_INTERVAL).0;
+        assert_eq!(due[0].index, 8);
+        assert!(stream.answer_changed("w", &Ok(Value::from(8))));
+        assert!(stream
+            .take_due(later + DEFAULT_WATCH_INTERVAL * 2)
+            .0
+            .is_empty());
+    }
+
     #[test]
     fn watches_are_bounded_per_stream_and_freed_with_it() {
         let watches = Watches::default();
