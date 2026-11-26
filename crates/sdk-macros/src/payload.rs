@@ -1,10 +1,10 @@
 //! `#[app::error]` and `#[app::event]`: enums whose variants carry JSON payloads.
 //!
-//! The variant name is the error code or event name. Fields are camelCase JSON keys, and
-//! every field is named (D63): a tuple variant, or a tuple struct in place of the enum, is a
-//! compile error; a unit variant has no fields. `u64`/`i64` fields are decimal strings (D20,
-//! Ruling 25). Each macro also emits its part of the ABI as a module-level constant that
-//! `#[app::logic]` in the same module picks up.
+//! The variant name is the error code or event name. Fields are camelCase JSON keys, and every
+//! field is named: a tuple variant, or a tuple struct in place of the enum, is a compile error;
+//! a unit variant has no fields. `u64`/`i64` fields are decimal strings, so JSON readers
+//! keep them exact above 2^53. Each macro also emits its part of the ABI as a module-level
+//! constant that `#[app::logic]` in the same module picks up.
 
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
@@ -29,7 +29,7 @@ impl Payload {
     }
 }
 
-/// The refusal of fields without names (D63), pointing at `at`.
+/// The refusal of fields without names, pointing at `at`.
 fn unnamed(kind: Payload, at: impl ToTokens, what: &str, name: &str) -> syn::Error {
     syn::Error::new_spanned(
         at,
@@ -41,7 +41,7 @@ fn unnamed(kind: Payload, at: impl ToTokens, what: &str, name: &str) -> syn::Err
 }
 
 /// `#[app::error]` / `#[app::event]` on any item: an enum is expanded, a tuple struct is
-/// refused naming D63, anything else is refused as not an enum.
+/// refused as having unnamed fields, anything else is refused as not an enum.
 pub fn expand_item(kind: Payload, item: &Item) -> syn::Result<TokenStream> {
     match item {
         Item::Enum(item) => expand(kind, item),
@@ -73,7 +73,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
     let mut type_deps = Vec::new();
     for variant in &item.variants {
         let vname = &variant.ident;
-        // A unit variant or a braced one; a tuple variant is refused (D63).
+        // A unit variant or a braced one; a tuple variant is refused.
         let named = match &variant.fields {
             Fields::Unnamed(_) => {
                 return Err(unnamed(kind, variant, "tuple variant", &vname.to_string()))
@@ -92,7 +92,8 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
             .filter_map(|f| f.ident.clone().map(|ident| (f, ident)));
         for (field, bind) in fields {
             let key = camel(&bind.to_string());
-            check_wire(&field.ty)?;
+            check_wire(&field.ty)
+                .map_err(|e| syn::Error::new(e.span(), format!("field `{bind}`: {e}")))?;
             type_deps.extend(probes(&field.ty, &[], &[]));
             let _ = fields_abi.insert(key.clone(), Value::String(abi_type(&field.ty)));
             let value = match wire(&field.ty) {
@@ -195,7 +196,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         /// The app types this module's fields refer to, for the ABI's `types`.
         #[doc(hidden)]
         #[allow(non_upper_case_globals, dead_code)]
-        pub const #types_konst: &[::core::option::Option<&#sdk::abi::TypeDef>] = #types;
+        pub const #types_konst: &[&#sdk::abi::TypeDef] = #types;
     })
 }
 

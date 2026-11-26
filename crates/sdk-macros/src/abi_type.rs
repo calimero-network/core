@@ -1,18 +1,18 @@
 //! `#[derive(AbiType)]`: a serde struct's or enum's JSON shape, for the ABI's `types`.
 //!
-//! The derive reads the `#[serde(..)]` attributes that change the JSON (`rename`,
-//! `rename_all`, `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
+//! The derive reads the `#[serde(..)]` attributes that change the JSON (`rename`, `rename_all`,
+//! `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
 //! `skip_serializing`, `skip_serializing_if`, `with`) and refuses the ones whose JSON it cannot
-//! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's D20
-//! helpers). A field that `skip_serializing_if` may leave out, or that `default` (on the field
-//! or the struct) lets a caller leave out, is optional in the shape.
+//! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's
+//! `calimero_sdk::json` helpers). A field that `skip_serializing_if` may leave out, or that
+//! `default` (on the field or the struct) lets a caller leave out, is optional in the shape.
 //!
-//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its D20 form (`#[serde(with =
-//! "calimero_sdk::json::u64_str")]`, ...: a decimal string, base64url), or, marked
-//! `#[abi(plain)]` (on the field, or on the type for every field), what plain serde writes: a
-//! JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to 2^53) and
-//! an array of numbers (`byte_list`), at any depth (`Vec<u64>` is `list<u64_number>`). Unmarked,
-//! it is refused (Ruling 27): the ABI's `u64` and `bytes` mean the strings.
+//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its string form
+//! (`#[serde(with = "calimero_sdk::json::u64_str")]`, ...: a decimal string, base64url), or,
+//! marked `#[abi(plain)]` (on the field, or on the type for every field), what plain serde
+//! writes: a JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to
+//! 2^53) and an array of numbers (`byte_list`), at any depth (`Vec<u64>` is
+//! `list<u64_number>`). Unmarked, it is refused: the ABI's `u64` and `bytes` mean the strings.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -20,7 +20,9 @@ use serde_json::{json, Value};
 use syn::spanned::Spanned;
 use syn::{Attribute, Data, DeriveInput, Fields, Ident, LitStr};
 
-use crate::types::{abi_type, canonical, check_wire, plain_abi_type, probe_slice, probes, wire};
+use crate::types::{
+    abi_type, canonical, check_wide, check_wire, plain_abi_type, probe_slice, probes, wire,
+};
 
 /// serde's `rename_all` rules.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -228,7 +230,7 @@ fn plain(attrs: &[Attribute]) -> syn::Result<bool> {
     Ok(plain)
 }
 
-/// The SDK's D20 helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
+/// The SDK's JSON helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
 const D20: &[&str] = &[
     "u64_str",
     "i64_str",
@@ -244,14 +246,17 @@ const D20: &[&str] = &[
     "opt_bytes_auto",
 ];
 
-/// A field's ABI type, refusing what the ABI would describe wrongly. `plain`: the field is
-/// `#[abi(plain)]` (or its type is).
+/// A field's ABI type, refusing what the ABI would describe wrongly. `field` names it in the
+/// refusal (`` `at` ``, or `` field 0 ``). `plain`: the field is `#[abi(plain)]` (or its type
+/// is).
 fn field_type(
     ty: &syn::Type,
     serde: &Serde,
     plain: bool,
+    field: &str,
     span: proc_macro2::Span,
 ) -> syn::Result<String> {
+    let named = |e: syn::Error| syn::Error::new(span, format!("{field}: {e}"));
     match &serde.with {
         Some(with) => {
             let module = with.rsplit("::").next().unwrap_or(with);
@@ -259,32 +264,43 @@ fn field_type(
                 return Err(syn::Error::new(
                     span,
                     format!(
-                        "AbiType cannot see what `with = \"{with}\"` writes; only the SDK's D20 \
-                         helpers on u64, i64 and Vec<u8> (`calimero_sdk::json::u64_str`, ...) \
-                         are described: implement `AbiType` by hand"
+                        "{field}: AbiType cannot see what `with = \"{with}\"` writes; only the \
+                         SDK's D20 helpers on u64, i64 and Vec<u8> \
+                         (`calimero_sdk::json::u64_str`, ...) are described: implement `AbiType` \
+                         by hand"
                     ),
                 ));
             }
         }
-        None if plain => return Ok(plain_abi_type(ty)),
+        None if plain => {
+            check_wide(ty).map_err(named)?;
+            return Ok(plain_abi_type(ty));
+        }
         None if wire(ty).is_some() => {
             return Err(syn::Error::new(
                 span,
-                "plain serde writes u64/i64 as a number that loses precision and Vec<u8> as an \
-                 array, where the ABI says a string (D20): add `#[serde(with = \
-                 \"calimero_sdk::json::u64_str\")]` (`i64_str`, `bytes_b64url`, `opt_..`), or \
-                 make it a Record; or, if the JSON is meant to be a number or an array of \
-                 numbers, mark the field `#[abi(plain)]`",
+                format!(
+                    "{field}: plain serde writes u64/i64 as a number that loses precision past \
+                     2^53 and Vec<u8> as an array, where the ABI says a string (D20): add \
+                     `#[serde(with = \"calimero_sdk::json::u64_str\")]` (`i64_str`, \
+                     `bytes_b64url`, `opt_..`), or make it a Record; or, if the JSON is meant to \
+                     be a number or an array of numbers, mark the field `#[abi(plain)]`"
+                ),
             ));
         }
-        None => check_wire(ty).map_err(|e| {
-            syn::Error::new(
-                span,
-                format!(
-                    "{e}; or, if the JSON is meant to be numbers, mark the field `#[abi(plain)]`"
-                ),
-            )
-        })?,
+        None => {
+            // A wide integer has no `#[abi(plain)]` way out: say so without offering one.
+            check_wide(ty).map_err(named)?;
+            check_wire(ty).map_err(|e| {
+                syn::Error::new(
+                    span,
+                    format!(
+                        "{field}: {e}; or, if the JSON is meant to be numbers, mark the field \
+                         `#[abi(plain)]`"
+                    ),
+                )
+            })?;
+        }
     }
     Ok(abi_type(ty))
 }
@@ -321,7 +337,13 @@ impl Ctx<'_> {
                 .rename
                 .clone()
                 .unwrap_or_else(|| rule.map_or(ident.clone(), |r| r.field(&ident)));
-            let ty = field_type(&f.ty, &serde, self.plain || plain(&f.attrs)?, f.span())?;
+            let ty = field_type(
+                &f.ty,
+                &serde,
+                self.plain || plain(&f.attrs)?,
+                &format!("field `{ident}`"),
+                f.span(),
+            )?;
             self.dep(&f.ty);
             out.push(if serde.optional || serde.default || self.default {
                 json!([name, ty, { "optional": true }])
@@ -336,11 +358,15 @@ impl Ctx<'_> {
         fields
             .unnamed
             .iter()
-            .filter_map(|f| match read(&f.attrs) {
+            .enumerate()
+            .filter_map(|(i, f)| match read(&f.attrs) {
                 Ok(s) if s.skip => None,
                 Ok(s) => Some(
                     plain(&f.attrs)
-                        .and_then(|p| field_type(&f.ty, &s, self.plain || p, f.span()))
+                        .and_then(|p| {
+                            let field = format!("field {i}");
+                            field_type(&f.ty, &s, self.plain || p, &field, f.span())
+                        })
                         .map(|t| {
                             self.dep(&f.ty);
                             Value::String(t)
@@ -379,7 +405,15 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                     return Err(syn::Error::new_spanned(name, "transparent needs one field"));
                 };
                 let field_plain = ctx.plain || plain(&field.attrs)?;
-                let ty = field_type(&field.ty, &read(&field.attrs)?, field_plain, field.span())?;
+                // SAFETY: guaranteed by `Fields::Named`, whose fields all have identifiers.
+                let ident = field.ident.as_ref().expect("named field");
+                let ty = field_type(
+                    &field.ty,
+                    &read(&field.attrs)?,
+                    field_plain,
+                    &format!("field `{ident}`"),
+                    field.span(),
+                )?;
                 ctx.dep(&field.ty);
                 json!({ "kind": "newtype", "type": ty })
             }
@@ -551,7 +585,7 @@ mod tests {
             s,
             r#"{"fields":[["views","u64_number"],["deltas","list<i64_number>"],["shots","byte_list"],["peak","option<u64_number>"],["at","u64"]],"kind":"record"}"#
         );
-        // On the type: every field, a D20 `with` still winning; tuple fields too.
+        // On the type: every field, a `calimero_sdk::json` `with` still winning; tuple fields too.
         let s = shape(parse_quote! {
             #[abi(plain)]
             struct Plain {
@@ -608,9 +642,23 @@ mod tests {
             parse_quote! { struct A { xs: Vec<u64> } },
             parse_quote! { struct A { #[serde(flatten)] inner: B } },
             parse_quote! { struct A { #[serde(with = "my::fmt")] at: String } },
+            parse_quote! { struct A { size: usize } },
+            parse_quote! { struct A { #[abi(plain)] total: u128 } },
+            parse_quote! { #[abi(plain)] struct A { sizes: Vec<isize> } },
+            parse_quote! { enum A { B(i128) } },
         ] {
             let input: DeriveInput = input;
             assert!(expand(&input).is_err(), "{}", quote!(#input));
         }
+    }
+
+    #[test]
+    fn a_refusal_names_the_field() {
+        let err = |input: DeriveInput| expand(&input).unwrap_err().to_string();
+        assert!(err(parse_quote! { struct A { name: String, views: u64 } })
+            .starts_with("field `views`: plain serde writes u64/i64 as a number"),);
+        assert!(err(parse_quote! { struct A { sizes: Vec<usize> } })
+            .starts_with("field `sizes`: usize inside Vec<usize> would reach JSON as a number"));
+        assert!(err(parse_quote! { struct A(String, u64); }).starts_with("field 1: "));
     }
 }

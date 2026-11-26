@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_runs_response_200 import AppRunsResponse200
 from ...models.error import Error
+from ...models.run_list import RunList
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -42,9 +42,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppRunsResponse200, Error]]:
+) -> Optional[Union[Error, RunList]]:
     if response.status_code == 200:
-        response_200 = AppRunsResponse200.from_dict(response.json())
+        response_200 = RunList.from_dict(response.json())
 
         return response_200
 
@@ -76,7 +76,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppRunsResponse200, Error]]:
+) -> Response[Union[Error, RunList]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -91,7 +91,7 @@ def sync_detailed(
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
     before: Union[Unset, str] = UNSET,
-) -> Response[Union[AppRunsResponse200, Error]]:
+) -> Response[Union[Error, RunList]]:
     """An app's compute runs
 
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
@@ -109,7 +109,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppRunsResponse200, Error]]
+        Response[Union[Error, RunList]]
     """
 
     kwargs = _get_kwargs(
@@ -131,7 +131,7 @@ def sync(
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
     before: Union[Unset, str] = UNSET,
-) -> Optional[Union[AppRunsResponse200, Error]]:
+) -> Optional[Union[Error, RunList]]:
     """An app's compute runs
 
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
@@ -149,7 +149,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppRunsResponse200, Error]
+        Union[Error, RunList]
     """
 
     return sync_detailed(
@@ -166,7 +166,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
     before: Union[Unset, str] = UNSET,
-) -> Response[Union[AppRunsResponse200, Error]]:
+) -> Response[Union[Error, RunList]]:
     """An app's compute runs
 
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
@@ -184,7 +184,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppRunsResponse200, Error]]
+        Response[Union[Error, RunList]]
     """
 
     kwargs = _get_kwargs(
@@ -204,7 +204,7 @@ async def asyncio(
     client: AuthenticatedClient,
     limit: Union[Unset, str] = UNSET,
     before: Union[Unset, str] = UNSET,
-) -> Optional[Union[AppRunsResponse200, Error]]:
+) -> Optional[Union[Error, RunList]]:
     """An app's compute runs
 
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
@@ -222,7 +222,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppRunsResponse200, Error]
+        Union[Error, RunList]
     """
 
     return (

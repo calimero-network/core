@@ -1,0 +1,2688 @@
+//! KMS client for fetching storage encryption keys.
+//!
+//! This module handles communication with KMS services to obtain storage
+//! encryption keys using TDX attestation, from mero-kms running as a TDX cluster.
+//!
+//! The KMS is trusted only through the signed mero-tee release policy
+//! (`crate::policy`, named by MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION or
+//! MERO_TEE_VERSION): its `POST /attest` quote must match that policy before
+//! anything is asked of it. Without the policy there is no key.
+
+use crate::config::{normalize_attestation_measurement, KmsConfig};
+use base64::Engine;
+use calimero_tee_attestation::{
+    generate_attestation, verify_attestation, KmsEvidence, VerificationResult,
+    DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
+};
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
+use eyre::{bail, Context, Result};
+use libp2p_identity::Keypair;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+use tracing::{debug, error, info, warn};
+use url::Url;
+
+use self::sealed::EphemeralSealKey;
+use crate::policy::KmsAttestationPolicy;
+
+mod rollback;
+mod sealed;
+
+pub use self::rollback::{CounterAck, CounterEntry, Counters};
+
+/// Request body for the KMS challenge endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsChallengeRequest {
+    peer_id: String,
+}
+
+/// Response body from the KMS challenge endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsChallengeResponse {
+    challenge_id: String,
+    nonce_b64: String,
+}
+
+/// Request body for the KMS get-key endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsGetKeyRequest {
+    challenge_id: String,
+    quote_b64: String,
+    peer_id: String,
+    peer_public_key_b64: String,
+    signature_b64: String,
+    /// The one-time X25519 key the KMS must seal the released key to. The
+    /// get-key quote commits to it, so it cannot be swapped in transit.
+    seal_to_b64: String,
+    /// Ask for this node's rollback counters (a v2 release); the quote and the
+    /// signature commit to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rollback_node_id: Option<u64>,
+}
+
+/// Response body from the KMS get-key endpoint.
+/// A key-only answer (no sealed release) is refused: whatever terminated TLS could read it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsGetKeyResponse {
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    sealed_key_b64: Option<String>,
+    #[serde(default)]
+    seal_nonce_b64: Option<String>,
+}
+
+/// Error response from the KMS service.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsErrorResponse {
+    error: String,
+    #[serde(default)]
+    details: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct KmsHttpFailure {
+    endpoint: &'static str,
+    status: reqwest::StatusCode,
+    kms_error: Option<String>,
+    details: String,
+}
+
+impl KmsHttpFailure {
+    fn from_response(endpoint: &'static str, status: reqwest::StatusCode, body: &str) -> Self {
+        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(body) {
+            return Self {
+                endpoint,
+                status,
+                kms_error: Some(kms_error.error),
+                details: kms_error.details.unwrap_or_default(),
+            };
+        }
+
+        Self {
+            endpoint,
+            status,
+            kms_error: None,
+            details: body.to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for KmsHttpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(kms_error) = self.kms_error.as_deref() {
+            return write!(
+                f,
+                "KMS {} request failed ({}): {} - {}",
+                self.endpoint, self.status, kms_error, self.details
+            );
+        }
+
+        write!(
+            f,
+            "KMS {} request failed ({}): {}",
+            self.endpoint, self.status, self.details
+        )
+    }
+}
+
+impl std::error::Error for KmsHttpFailure {}
+
+/// Request body for KMS self-attestation endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsAttestRequest {
+    nonce_b64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding_b64: Option<String>,
+    /// Ask the KMS to report its transport key and commit to it in the quote.
+    transport_key: bool,
+    /// Ask the KMS to report what it can do (rollback counters) and commit to
+    /// that too. A KMS that predates it ignores the field.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    capabilities: bool,
+}
+
+/// Response body from KMS self-attestation endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsAttestResponse {
+    quote_b64: String,
+    report_data_hex: String,
+    /// The KMS's X25519 transport key, which the quote's report data commits to.
+    #[serde(default)]
+    transport_public_key_b64: Option<String>,
+    /// What the KMS can do; the quote commits to it (`attest_binding_v2`).
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+}
+
+/// The KMS's attested transport key, and whether it keeps rollback counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Transport {
+    public: [u8; 32],
+    rollback: bool,
+}
+
+/// The binding an `/attest` quote must carry after the nonce, and whether the KMS keeps counters.
+/// A v2 binding commits to the capabilities, so a relay that strips them breaks the quote.
+fn transport_binding(
+    binding: &[u8; 32],
+    kms_public: &[u8; 32],
+    attest: &KmsAttestResponse,
+) -> Result<([u8; 32], bool)> {
+    match &attest.capabilities {
+        None => Ok((sealed::attest_binding(binding, kms_public), false)),
+        Some(c)
+            if c.iter()
+                .map(String::as_str)
+                .eq(sealed::CAPABILITIES.iter().copied()) =>
+        {
+            Ok((sealed::attest_binding_v2(binding, kms_public), true))
+        }
+        Some(_) => bail!("the KMS reports capabilities this node does not know"),
+    }
+}
+
+#[cfg(feature = "mock-attestation")]
+const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
+const MAX_KMS_ATTEST_QUOTE_B64_LEN: usize = 128 * 1024;
+const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
+const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
+const MAX_KMS_NONCE_B64_LEN: usize = 2048;
+const MAX_KMS_KEY_HEX_LEN: usize = 4096;
+const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024; // a v2 sealed record: key hex, counters and session
+const MIN_KMS_KEY_BYTES: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KmsProbeStage {
+    Transport,
+    Attest,
+    Challenge,
+    GetKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KmsProbeResult {
+    pub ok: bool,
+    pub stage: KmsProbeStage,
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kms_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeAttestation {
+    quote_bytes: Vec<u8>,
+    quote_b64: String,
+    is_mock: bool,
+}
+
+#[derive(Debug, Clone)]
+struct KmsProbeFailure {
+    stage: KmsProbeStage,
+    code: &'static str,
+    kms_error: Option<String>,
+    details: String,
+}
+
+impl KmsProbeFailure {
+    fn to_result(&self) -> KmsProbeResult {
+        KmsProbeResult {
+            ok: false,
+            stage: self.stage,
+            code: self.code.to_owned(),
+            kms_error: self.kms_error.clone(),
+            details: Some(self.details.clone()),
+        }
+    }
+}
+
+fn probe_failure(
+    stage: KmsProbeStage,
+    code: &'static str,
+    kms_error: Option<String>,
+    details: impl Into<String>,
+) -> KmsProbeFailure {
+    KmsProbeFailure {
+        stage,
+        code,
+        kms_error,
+        details: details.into(),
+    }
+}
+
+fn probe_success(details: impl Into<String>) -> KmsProbeResult {
+    KmsProbeResult {
+        ok: true,
+        stage: KmsProbeStage::GetKey,
+        code: "OK".to_owned(),
+        kms_error: None,
+        details: Some(details.into()),
+    }
+}
+
+fn map_kms_error_to_probe_code(kms_error: &str, fallback_code: &'static str) -> &'static str {
+    match kms_error.trim().to_ascii_lowercase().as_str() {
+        "measurement_policy_rejected" | "profile_policy_rejected" => "KMS_PROFILE_POLICY_REJECTED",
+        _ => fallback_code,
+    }
+}
+
+fn probe_failure_from_http(
+    stage: KmsProbeStage,
+    fallback_code: &'static str,
+    error: &KmsHttpFailure,
+) -> KmsProbeFailure {
+    let code = error
+        .kms_error
+        .as_deref()
+        .map(|kms_error| map_kms_error_to_probe_code(kms_error, fallback_code))
+        .unwrap_or(fallback_code);
+
+    probe_failure(stage, code, error.kms_error.clone(), error.to_string())
+}
+
+fn map_probe_attestation_failure(err: eyre::Report) -> KmsProbeFailure {
+    if let Some(http_error) = err.downcast_ref::<KmsHttpFailure>() {
+        return probe_failure_from_http(KmsProbeStage::Attest, "KMS_ATTEST_REJECTED", http_error);
+    }
+
+    let details = err.to_string();
+
+    // The mock-runtime-not-allowed classification only exists when the mock
+    // attestation path is compiled in.
+    #[cfg(feature = "mock-attestation")]
+    if details.contains(MOCK_KMS_ATTESTATION_ENV) {
+        return probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_MOCK_RUNTIME_NOT_ALLOWED",
+            None,
+            details,
+        );
+    }
+
+    let code = if details.contains("reportData mismatch") {
+        "KMS_ATTEST_REPORT_DATA_MISMATCH"
+    } else if details.contains("Policy JSON")
+        || details.contains("allowed_")
+        || details.contains("allowlist")
+        || details.contains("TCB status")
+        || details.contains("did not include TCB status")
+    {
+        "KMS_PROFILE_POLICY_REJECTED"
+    } else if details.contains("exceeds maximum allowed size") {
+        "KMS_ATTEST_RESPONSE_OVERSIZED"
+    } else if details.contains("Failed to parse KMS attest response")
+        || details.contains("Failed to decode KMS quote")
+        || details.contains("Failed to decode reportDataHex")
+        || details.contains("reportDataHex must be 64 bytes")
+    {
+        "KMS_ATTEST_RESPONSE_INVALID"
+    } else {
+        "KMS_ATTEST_VERIFICATION_FAILED"
+    };
+
+    probe_failure(KmsProbeStage::Attest, code, None, details)
+}
+
+fn map_probe_challenge_failure(err: eyre::Report) -> KmsProbeFailure {
+    if let Some(http_error) = err.downcast_ref::<KmsHttpFailure>() {
+        return probe_failure_from_http(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_REJECTED",
+            http_error,
+        );
+    }
+
+    let details = err.to_string();
+    let code = if details.contains("Failed to parse KMS challenge response") {
+        "KMS_CHALLENGE_RESPONSE_INVALID"
+    } else if details.contains("challengeId exceeds maximum allowed length") {
+        "KMS_CHALLENGE_ID_OVERSIZED"
+    } else if details.contains("challenge nonce exceeds maximum allowed size") {
+        "KMS_CHALLENGE_NONCE_OVERSIZED"
+    } else if details.contains("Failed to decode challenge nonce")
+        || details.contains("Challenge nonce must be exactly 32 bytes")
+    {
+        "KMS_CHALLENGE_NONCE_INVALID"
+    } else {
+        "KMS_CHALLENGE_REQUEST_FAILED"
+    };
+
+    probe_failure(KmsProbeStage::Challenge, code, None, details)
+}
+
+fn map_probe_get_key_failure(err: eyre::Report) -> KmsProbeFailure {
+    if let Some(http_error) = err.downcast_ref::<KmsHttpFailure>() {
+        return probe_failure_from_http(KmsProbeStage::GetKey, "KMS_GET_KEY_REJECTED", http_error);
+    }
+
+    let details = err.to_string();
+    let code = if details.contains("Failed to parse KMS get-key response") {
+        "KMS_GET_KEY_RESPONSE_INVALID"
+    } else if details.contains("empty encryption key")
+        || details.contains("oversized encryption key")
+        || details.contains("odd hex length")
+        || details.contains("Failed to decode key from hex")
+    {
+        "KMS_KEY_INVALID"
+    } else {
+        "KMS_GET_KEY_REQUEST_FAILED"
+    };
+
+    probe_failure(KmsProbeStage::GetKey, code, None, details)
+}
+
+fn generate_probe_attestation(
+    report_data: [u8; 64],
+) -> std::result::Result<ProbeAttestation, String> {
+    generate_attestation(report_data)
+        .map(|attestation| ProbeAttestation {
+            quote_bytes: attestation.quote_bytes,
+            quote_b64: attestation.quote_b64,
+            is_mock: attestation.is_mock,
+        })
+        .map_err(|err| format!("Failed to generate TDX attestation: {err}"))
+}
+
+/// Probe the KMS the way [`fetch_storage_key`] would use it, with the same
+/// refusal of a KMS the signed release policy does not pin (see there).
+pub async fn probe_storage_key(
+    kms: &KmsConfig,
+    peer_id: &str,
+    identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
+) -> KmsProbeResult {
+    match probe_storage_key_with_attestor(
+        kms,
+        peer_id,
+        identity,
+        policy,
+        generate_probe_attestation,
+    )
+    .await
+    {
+        Ok(key_bytes) => probe_success(format!(
+            "KMS probe succeeded and returned {} key bytes",
+            key_bytes.len()
+        )),
+        Err(err) => err.to_result(),
+    }
+}
+
+/// Fetch the storage encryption key from the configured KMS.
+///
+/// The KMS is verified via POST /attest against `policy`, the signed mero-tee
+/// release policy ([`crate::policy::resolve_policy`]), before any key is asked
+/// for. With no policy the KMS is refused before any request, in every build:
+/// nothing else (no config allowlist, no environment variable) pins a KMS.
+///
+/// Returns an error if no KMS is configured (incomplete TEE configuration) or
+/// if key fetching fails.
+///
+/// # Arguments
+/// * `kms` - The `[tee.kms]` configuration, if any
+/// * `peer_id` - The peer ID string (base58 encoded)
+/// * `identity` - Local node identity keypair used to sign challenge payloads
+/// * `policy` - The attestation policy of the release the node names; `None` is refused
+pub async fn fetch_storage_key(
+    kms: Option<&KmsConfig>,
+    peer_id: &str,
+    identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
+    rollback_node: Option<u64>,
+) -> Result<ReleasedKey> {
+    fetch_storage_key_with_attestor(
+        kms,
+        peer_id,
+        identity,
+        policy,
+        rollback_node,
+        generate_probe_attestation,
+    )
+    .await
+}
+
+/// [`fetch_storage_key`] with the quote taken by `attestor` (tests take a mock one).
+async fn fetch_storage_key_with_attestor<F>(
+    kms: Option<&KmsConfig>,
+    peer_id: &str,
+    identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
+    rollback_node: Option<u64>,
+    attestor: F,
+) -> Result<ReleasedKey>
+where
+    F: FnOnce([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
+{
+    let Some(kms) = kms else {
+        bail!(
+            "TEE is enabled but no KMS is configured. \
+             Please configure [tee.kms] in your config.toml to enable storage encryption. \
+             Running a TEE node without storage encryption is not supported."
+        );
+    };
+    let policy = require_release_policy(kms, policy)?;
+    info!("Using mero-kms");
+    validate_kms_transport(&kms.url)?;
+
+    let (transport, evidence) = verify_kms_attestation_from_release_policy(kms, policy).await?;
+    let (key, counters) =
+        fetch_from_kms(kms, peer_id, identity, transport, rollback_node, attestor).await?;
+    Ok(ReleasedKey {
+        key,
+        evidence,
+        counters,
+    })
+}
+
+/// A key the KMS released, and the KMS quote that was accepted before asking.
+///
+/// No `Debug`: it holds the key.
+pub struct ReleasedKey {
+    pub key: Vec<u8>,
+    /// What the TD verified of the KMS against the signed release policy.
+    pub evidence: KmsEvidence,
+    /// This node's rollback counters, when asked for (`rollback_node`) and the
+    /// KMS keeps them; `None` from a KMS that predates them.
+    pub counters: Option<Counters>,
+}
+
+/// Refused before any request: only the signed release policy pins a KMS, in
+/// every build. Config allowlists (an `attestation` table under `[tee.kms]`)
+/// are ignored, and nothing in the environment stands in for the policy.
+fn require_release_policy<'a>(
+    kms: &KmsConfig,
+    policy: Option<&'a KmsAttestationPolicy>,
+) -> Result<&'a KmsAttestationPolicy> {
+    policy.ok_or_else(|| {
+        eyre::eyre!(
+            "the KMS at {} is not verified. Name the release it runs (MERO_TEE_VERSION, \
+             MERO_KMS_VERSION or MERO_KMS_RELEASE_TAG) so its signed policy is used; \
+             nothing else pins a KMS",
+            kms.url
+        )
+    })
+}
+
+async fn probe_storage_key_with_attestor<F>(
+    kms: &KmsConfig,
+    peer_id: &str,
+    identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
+    attestor: F,
+) -> std::result::Result<Vec<u8>, KmsProbeFailure>
+where
+    F: Fn([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
+{
+    let policy = require_release_policy(kms, policy).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_UNVERIFIED",
+            None,
+            err.to_string(),
+        )
+    })?;
+    validate_kms_transport(&kms.url).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_URL_UNSUPPORTED",
+            None,
+            err.to_string(),
+        )
+    })?;
+
+    let base_url = ensure_trailing_slash(&kms.url);
+    let challenge_endpoint = base_url.join("challenge").map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_ENDPOINT_URL_INVALID",
+            None,
+            format!("Failed to build KMS challenge endpoint URL: {err}"),
+        )
+    })?;
+    let key_endpoint = base_url.join("get-key").map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_ENDPOINT_URL_INVALID",
+            None,
+            format!("Failed to build KMS get-key endpoint URL: {err}"),
+        )
+    })?;
+
+    let client = build_kms_http_client(kms).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_HTTP_CLIENT_SETUP_FAILED",
+            None,
+            err.to_string(),
+        )
+    })?;
+
+    let kms_public = verify_kms_attestation_from_release_policy(kms, policy)
+        .await
+        .map(|(transport, _evidence)| transport.public)
+        .map_err(map_probe_attestation_failure)?;
+
+    let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id)
+        .await
+        .map_err(map_probe_challenge_failure)?;
+    let challenge_nonce =
+        decode_kms_challenge_nonce(&challenge).map_err(map_probe_challenge_failure)?;
+
+    let seal = EphemeralSealKey::generate();
+    let mut report_data = [0u8; 64];
+    report_data[..32].copy_from_slice(&challenge_nonce);
+    report_data[32..].copy_from_slice(&sealed::request_binding(seal.public(), peer_id));
+
+    let attestation = attestor(report_data).map_err(|details| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_ATTESTATION_FAILED",
+            None,
+            details,
+        )
+    })?;
+    if attestation.is_mock {
+        warn!("Generated mock attestation during KMS probe");
+    }
+
+    let signature_payload = build_signature_payload(
+        &challenge.challenge_id,
+        &challenge_nonce,
+        &attestation.quote_bytes,
+        peer_id,
+        seal.public(),
+        None,
+    )
+    .map_err(|err| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_SIGNATURE_FAILED",
+            None,
+            err.to_string(),
+        )
+    })?;
+    let signature = identity.sign(&signature_payload).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_SIGNATURE_FAILED",
+            None,
+            format!("Failed to sign KMS challenge payload with node identity key: {err}"),
+        )
+    })?;
+    let peer_public_key = identity.public().encode_protobuf();
+
+    let key_response = request_kms_key_release(
+        &client,
+        &key_endpoint,
+        &KmsGetKeyRequest {
+            challenge_id: challenge.challenge_id,
+            quote_b64: attestation.quote_b64,
+            peer_id: peer_id.to_owned(),
+            peer_public_key_b64: base64::engine::general_purpose::STANDARD.encode(peer_public_key),
+            signature_b64: base64::engine::general_purpose::STANDARD.encode(signature),
+            seal_to_b64: base64::engine::general_purpose::STANDARD.encode(seal.public()),
+            rollback_node_id: None,
+        },
+    )
+    .await
+    .map_err(map_probe_get_key_failure)?;
+
+    open_released_key(&key_response, &seal, &kms_public, &challenge_nonce, peer_id)
+        .map_err(map_probe_get_key_failure)
+}
+
+/// Verify KMS via POST /attest using the release policy and enforce its measurement allowlists.
+/// Answers the attested transport key and the record of the quote that passed.
+async fn verify_kms_attestation_from_release_policy(
+    kms: &KmsConfig,
+    policy: &KmsAttestationPolicy,
+) -> Result<(Transport, KmsEvidence)> {
+    info!("Verifying KMS attestation before key fetch");
+
+    let base_url = ensure_trailing_slash(&kms.url);
+    let attest_endpoint = base_url
+        .join("attest")
+        .context("Failed to build KMS attest endpoint URL")?;
+
+    let client = build_kms_http_client(kms)?;
+
+    let nonce = random_nonce();
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+
+    let request = KmsAttestRequest {
+        nonce_b64: nonce_b64.clone(),
+        binding_b64: Some(policy.default_binding_b64.clone()),
+        transport_key: true,
+        capabilities: true,
+    };
+
+    let response = client
+        .post(attest_endpoint.as_str())
+        .json(&request)
+        .send()
+        .await
+        .context("Failed to request KMS attestation")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!("KMS attest request failed ({}): {}", status, body);
+    }
+
+    let attest: KmsAttestResponse = response
+        .json()
+        .await
+        .context("Failed to parse KMS attest response")?;
+
+    let binding_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&policy.default_binding_b64)
+        .context("Invalid policy default_binding_b64")?;
+    let binding: [u8; 32] = binding_bytes
+        .try_into()
+        .map_err(|_| eyre::eyre!("Policy default_binding_b64 must be 32 bytes"))?;
+    let kms_public = decode_kms_transport_key(&attest)?;
+    let (binding, rollback) = transport_binding(&binding, &kms_public, &attest)?;
+    let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
+
+    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest)?;
+    if report_data_bytes.len() != 64 {
+        bail!(
+            "KMS attest reportDataHex must be 64 bytes, got {}",
+            report_data_bytes.len()
+        );
+    }
+    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
+        bail!(
+            "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)"
+        );
+    }
+
+    // Without the `mock-attestation` feature there is no mock path: every quote
+    // is verified with the real DCAP verifier.
+    #[cfg(feature = "mock-attestation")]
+    let is_mock = is_mock_quote(&quote_bytes);
+    #[cfg(not(feature = "mock-attestation"))]
+    let is_mock = false;
+
+    #[cfg(feature = "mock-attestation")]
+    let verification_result = if is_mock {
+        if !mock_kms_attestation_runtime_opt_in() {
+            bail!(
+                "KMS returned mock attestation quote, but {} is not enabled. \
+                 Set {}=true only for development/testing.",
+                MOCK_KMS_ATTESTATION_ENV,
+                MOCK_KMS_ATTESTATION_ENV
+            );
+        }
+
+        warn!(
+            "Accepting mock KMS attestation quote from release policy path - development/testing only"
+        );
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
+            .context("KMS mock attestation verification failed")?
+    } else {
+        verify_attestation(&quote_bytes, &nonce, &binding)
+            .await
+            .context("KMS attestation verification failed")?
+    };
+    #[cfg(not(feature = "mock-attestation"))]
+    let verification_result = verify_attestation(&quote_bytes, &nonce, &binding)
+        .await
+        .context("KMS attestation verification failed")?;
+
+    if !verification_result.is_valid() {
+        error!(
+            quote_verified = verification_result.quote_verified,
+            nonce_verified = verification_result.nonce_verified,
+            "KMS attestation verification failed"
+        );
+        bail!("KMS attestation verification failed");
+    }
+
+    enforce_attestation_policy(policy, &verification_result, is_mock)?;
+    info!("KMS is a TDX cluster replica, pinned by MRTD and RTMR0-3");
+    info!("KMS attestation verified successfully");
+    let evidence = KmsEvidence::of_quote(
+        kms_host(&kms.url),
+        policy.release.clone(),
+        policy.profile.clone(),
+        &quote_bytes,
+        &verification_result,
+        unix_now(),
+        is_mock,
+    );
+    Ok((
+        Transport {
+            public: kms_public,
+            rollback,
+        },
+        evidence,
+    ))
+}
+
+/// The host (and explicit port) of a KMS URL, as a node reports it.
+fn kms_host(url: &Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Enforce the signed release policy's measurement and TCB-status allowlists
+/// against a verified KMS quote.
+///
+/// Defense in depth: the policy parser already refuses empty allowlists, but
+/// they are checked again here so a policy built any other way cannot pass a
+/// KMS with a register unchecked. A missing TCB status is tolerated only for a
+/// (development-gated) mock quote (`allow_missing_tcb_status`), which is also
+/// the only quote exempt from the floor on Intel's TCB evaluation data
+/// ([`DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`], as `policy_valid` holds node
+/// quotes to): a mock quote fetched no collateral.
+fn enforce_attestation_policy(
+    policy: &KmsAttestationPolicy,
+    verification_result: &VerificationResult,
+    allow_missing_tcb_status: bool,
+) -> Result<()> {
+    enforce_required_allowlist_non_empty(
+        "policy.allowed_tcb_statuses",
+        &policy.allowed_tcb_statuses,
+    )?;
+    for (field_name, values) in [
+        ("policy.allowed_mrtd", &policy.allowed_mrtd),
+        ("policy.allowed_rtmr0", &policy.allowed_rtmr0),
+        ("policy.allowed_rtmr1", &policy.allowed_rtmr1),
+        ("policy.allowed_rtmr2", &policy.allowed_rtmr2),
+        ("policy.allowed_rtmr3", &policy.allowed_rtmr3),
+    ] {
+        enforce_required_measurement_allowlist_non_empty(field_name, values)?;
+    }
+
+    if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
+        let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
+        if !policy
+            .allowed_tcb_statuses
+            .iter()
+            .any(|a| a == &normalized_tcb)
+        {
+            bail!(
+                "KMS TCB status '{}' is not allowed. Allowed: {:?}",
+                actual_tcb_status,
+                policy.allowed_tcb_statuses
+            );
+        }
+    } else if allow_missing_tcb_status {
+        warn!("Mock KMS quote did not provide TCB status; skipping TCB status allowlist check");
+    } else {
+        bail!("Quote verification did not provide a TCB status");
+    }
+
+    if !allow_missing_tcb_status {
+        let floor = DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER;
+        match verification_result.tcb_evaluation_data_number {
+            Some(number) if number >= floor => {}
+            Some(number) => bail!(
+                "KMS TCB status was computed against Intel TCB evaluation data {number}, \
+                 older than the minimum {floor}"
+            ),
+            None => bail!(
+                "KMS TCB status was computed against unknown TCB evaluation data (minimum {floor})"
+            ),
+        }
+    }
+
+    let body = &verification_result.quote.body;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
+    Ok(())
+}
+
+/// Enforce a single measurement allowlist (non-empty: checked above).
+fn enforce_measurement_allowlist(
+    label: &str,
+    actual_measurement: &str,
+    allowed_measurements: &[String],
+) -> Result<()> {
+    let normalized_actual = normalize_attestation_measurement(actual_measurement);
+    if allowed_measurements
+        .iter()
+        .any(|allowed| allowed == &normalized_actual)
+    {
+        return Ok(());
+    }
+    let preview_len = 5usize.min(allowed_measurements.len());
+    let preview = allowed_measurements[..preview_len].join(", ");
+    let suffix = if allowed_measurements.len() > preview_len {
+        format!(" ... ({} total)", allowed_measurements.len())
+    } else {
+        String::new()
+    };
+    bail!(
+        "KMS {} '{}' is not in allowlist [{}{}]",
+        label,
+        normalized_actual,
+        preview,
+        suffix
+    )
+}
+
+fn enforce_required_allowlist_non_empty(field_name: &str, values: &[String]) -> Result<()> {
+    if values.iter().all(|value| value.trim().is_empty()) {
+        bail!(
+            "KMS attestation policy is missing required non-empty allowlist '{}'",
+            field_name
+        );
+    }
+    Ok(())
+}
+
+fn enforce_required_measurement_allowlist_non_empty(
+    field_name: &str,
+    values: &[String],
+) -> Result<()> {
+    if values
+        .iter()
+        .map(|value| normalize_attestation_measurement(value))
+        .all(|value| value.is_empty())
+    {
+        bail!(
+            "KMS attestation policy is missing required non-empty allowlist '{}'",
+            field_name
+        );
+    }
+    Ok(())
+}
+
+/// Fetch the storage encryption key from mero-kms.
+///
+/// This function:
+/// 1. Requests a one-time challenge nonce from KMS
+/// 2. Generates a TDX attestation with challenge nonce in report_data[0..32]
+///    and a commitment to the peer id and a one-time seal key in [32..64]
+/// 3. Signs challenge + quote hash with node identity key
+/// 4. Sends the signed attestation request to KMS
+/// 5. Opens the key the KMS sealed to that one-time key (see [`sealed`])
+///
+/// # Arguments
+/// * `kms` - KMS configuration
+/// * `peer_id` - The peer ID string (base58 encoded)
+/// * `identity` - Local node identity keypair used to sign challenge payloads
+/// * `transport` - The KMS's transport key, attested against the release policy
+///
+/// # Returns
+/// The storage encryption key bytes (hex-decoded from KMS response).
+async fn fetch_from_kms<F>(
+    kms: &KmsConfig,
+    peer_id: &str,
+    identity: &Keypair,
+    transport: Transport,
+    rollback_node: Option<u64>,
+    attestor: F,
+) -> Result<(Vec<u8>, Option<Counters>)>
+where
+    F: FnOnce([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
+{
+    info!(%peer_id, "Fetching storage key from KMS");
+
+    // Build endpoint URLs - ensure trailing slash to prevent Url::join path replacement.
+    let base_url = ensure_trailing_slash(&kms.url);
+    let challenge_endpoint = base_url
+        .join("challenge")
+        .context("Failed to build KMS challenge endpoint URL")?;
+    let key_endpoint = base_url
+        .join("get-key")
+        .context("Failed to build KMS get-key endpoint URL")?;
+
+    // Build HTTP client once and reuse for all KMS requests.
+    let client = build_kms_http_client(kms)?;
+
+    // 1) Request one-time challenge nonce.
+    info!(challenge_endpoint = %calimero_primitives::utils::loggable_url(&challenge_endpoint), "Requesting key release challenge from KMS");
+    let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id).await?;
+    let challenge_nonce = decode_kms_challenge_nonce(&challenge)?;
+
+    debug!(
+        challenge_id = %challenge.challenge_id,
+        challenge_nonce = %hex::encode(challenge_nonce),
+        "Received KMS challenge"
+    );
+
+    // 2) Create report_data with the challenge nonce in [0..32] and, in [32..64],
+    //    a commitment to the peer id and the one-time key the KMS must seal to.
+    let seal = EphemeralSealKey::generate();
+    // A v2 release (this node's rollback counters) only from a KMS that keeps
+    // them; an older one gets the request it knows.
+    let rollback_node = rollback_node.filter(|_| transport.rollback);
+    if rollback_node.is_none() && transport.rollback {
+        debug!("the KMS keeps rollback counters; this fetch does not ask for them");
+    }
+    let binding = match rollback_node {
+        Some(node) => sealed::request_binding_v2(seal.public(), peer_id, node),
+        None => sealed::request_binding(seal.public(), peer_id),
+    };
+    let mut report_data = [0u8; 64];
+    report_data[..32].copy_from_slice(&challenge_nonce);
+    report_data[32..].copy_from_slice(&binding);
+
+    // 3) Generate attestation
+    let attestation = attestor(report_data).map_err(|e| eyre::eyre!(e))?;
+
+    if attestation.is_mock {
+        warn!("Generated MOCK attestation - this will only work if KMS accepts mock attestations");
+    } else {
+        info!("Generated real TDX attestation");
+    }
+
+    debug!(
+        quote_len = attestation.quote_bytes.len(),
+        is_mock = attestation.is_mock,
+        "Attestation generated"
+    );
+
+    // 4) Sign challenge payload using node identity key.
+    let signature_payload = build_signature_payload(
+        &challenge.challenge_id,
+        &challenge_nonce,
+        &attestation.quote_bytes,
+        peer_id,
+        seal.public(),
+        rollback_node,
+    )?;
+    let signature = identity
+        .sign(&signature_payload)
+        .context("Failed to sign KMS challenge payload with node identity key")?;
+    let peer_public_key = identity.public().encode_protobuf();
+
+    // 5) Build signed key request.
+    let request = KmsGetKeyRequest {
+        challenge_id: challenge.challenge_id,
+        quote_b64: attestation.quote_b64,
+        peer_id: peer_id.to_string(),
+        peer_public_key_b64: base64::engine::general_purpose::STANDARD.encode(peer_public_key),
+        signature_b64: base64::engine::general_purpose::STANDARD.encode(signature),
+        seal_to_b64: base64::engine::general_purpose::STANDARD.encode(seal.public()),
+        rollback_node_id: rollback_node,
+    };
+
+    info!(key_endpoint = %calimero_primitives::utils::loggable_url(&key_endpoint), "Sending signed key request to KMS");
+    let response = request_kms_key_release(&client, &key_endpoint, &request).await?;
+    let Some(node) = rollback_node else {
+        let key_bytes = open_released_key(
+            &response,
+            &seal,
+            &transport.public,
+            &challenge_nonce,
+            peer_id,
+        )?;
+        info!(
+            key_len = key_bytes.len(),
+            "Successfully fetched storage key from KMS"
+        );
+        return Ok((key_bytes, None));
+    };
+    let record = open_released_record(
+        &response,
+        &seal,
+        &transport.public,
+        &challenge_nonce,
+        peer_id,
+    )?;
+    let key_bytes = decode_kms_encryption_key(&record.key_hex)?;
+    let counters = Counters::from_record(&record, client, base_url, peer_id, node)?;
+    info!(
+        key_len = key_bytes.len(),
+        epoch = counters.epoch,
+        entry = ?counters.entry,
+        "Successfully fetched storage key and rollback counters from KMS"
+    );
+    Ok((key_bytes, Some(counters)))
+}
+
+fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
+    let uses_https = kms.url.scheme().eq_ignore_ascii_case("https");
+    // `tee.kms.url` may resolve to every KMS replica and a dead one can linger in DNS;
+    // the connect timeout is split across addresses so one dead address cannot consume the whole timeout.
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30));
+    // Tests dial stand-in KMSes on loopback; an environment proxy must not
+    // sit between them.
+    #[cfg(test)]
+    {
+        builder = builder.no_proxy();
+    }
+
+    // Re-check TLS invariants here so client construction stays fail-closed
+    // if config is edited after startup validation.
+    if let Some(ca_cert_path) = kms.tls.ca_cert_path.as_deref() {
+        if !uses_https {
+            bail!(
+                "tee.kms.tls.ca_cert_path requires tee.kms.url to use https:// (current: {})",
+                kms.url
+            );
+        }
+        // Intentional sync I/O: this path is executed during startup preflight
+        // key-fetch/probe setup and keeps client construction fail-closed.
+        let ca_pem = std::fs::read(ca_cert_path).with_context(|| {
+            format!("Failed to read tee.kms.tls.ca_cert_path at {ca_cert_path}")
+        })?;
+        let cert = reqwest::Certificate::from_pem(&ca_pem)
+            .context("Failed to parse tee.kms.tls.ca_cert_path as PEM certificate")?;
+        builder = builder.add_root_certificate(cert);
+    }
+
+    match (
+        kms.tls.client_cert_path.as_deref(),
+        kms.tls.client_key_path.as_deref(),
+    ) {
+        (Some(client_cert_path), Some(client_key_path)) => {
+            if !uses_https {
+                bail!(
+                    "tee.kms.tls.client_cert_path/client_key_path require tee.kms.url to use https:// (current: {})",
+                    kms.url
+                );
+            }
+
+            // Intentional sync I/O for startup-only TLS material loading.
+            let client_cert_pem = std::fs::read(client_cert_path).with_context(|| {
+                format!("Failed to read tee.kms.tls.client_cert_path at {client_cert_path}")
+            })?;
+            let client_key_pem = std::fs::read(client_key_path).with_context(|| {
+                format!("Failed to read tee.kms.tls.client_key_path at {client_key_path}")
+            })?;
+
+            let mut identity_pem =
+                Vec::with_capacity(client_cert_pem.len() + client_key_pem.len() + 1);
+            identity_pem.extend_from_slice(&client_cert_pem);
+            if !identity_pem.ends_with(b"\n") {
+                identity_pem.push(b'\n');
+            }
+            identity_pem.extend_from_slice(&client_key_pem);
+
+            let identity = reqwest::Identity::from_pem(&identity_pem).context(
+                "Failed to parse tee.kms.tls.client_cert_path/client_key_path as PEM identity",
+            )?;
+            builder = builder.identity(identity);
+        }
+        (None, None) => {}
+        _ => {
+            bail!(
+                "tee.kms.tls.client_cert_path and tee.kms.tls.client_key_path must be set together"
+            );
+        }
+    }
+
+    builder.build().context("Failed to build HTTP client")
+}
+
+fn decode_kms_transport_key(attest_response: &KmsAttestResponse) -> Result<[u8; 32]> {
+    let Some(encoded) = attest_response.transport_public_key_b64.as_deref() else {
+        bail!(
+            "the KMS reported no transport key, so it cannot seal the key it releases. It \
+             predates sealed key release; upgrade mero-kms. A key released unsealed is \
+             readable by whatever terminates TLS in front of the KMS, so it is not accepted."
+        );
+    };
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .context("KMS transportPublicKeyB64 is not valid base64")?;
+    decoded
+        .try_into()
+        .map_err(|_| eyre::eyre!("KMS transportPublicKeyB64 must decode to exactly 32 bytes"))
+}
+
+/// Open the key the KMS released, sealed to `seal` by the holder of `kms_public`.
+fn open_released_key(
+    response: &KmsGetKeyResponse,
+    seal: &EphemeralSealKey,
+    kms_public: &[u8; 32],
+    challenge_nonce: &[u8; 32],
+    peer_id: &str,
+) -> Result<Vec<u8>> {
+    let (Some(sealed_key_b64), Some(seal_nonce_b64)) = (
+        response.sealed_key_b64.as_deref(),
+        response.seal_nonce_b64.as_deref(),
+    ) else {
+        if response.key.is_some() {
+            bail!(
+                "the KMS released the key unsealed, readable by anything between it and this \
+                 node; refusing it. Upgrade mero-kms to one that supports sealed release."
+            );
+        }
+        bail!("KMS get-key response carries no sealed key");
+    };
+    if sealed_key_b64.len() > MAX_KMS_KEY_HEX_LEN * 2 {
+        bail!("KMS returned an oversized sealed key");
+    }
+    let engine = &base64::engine::general_purpose::STANDARD;
+    let ciphertext = engine
+        .decode(sealed_key_b64)
+        .context("KMS sealedKeyB64 is not valid base64")?;
+    let seal_nonce = engine
+        .decode(seal_nonce_b64)
+        .context("KMS sealNonceB64 is not valid base64")?;
+    let plaintext = seal.open(
+        kms_public,
+        challenge_nonce,
+        peer_id,
+        &seal_nonce,
+        &ciphertext,
+    )?;
+    let key_hex = std::str::from_utf8(&plaintext).context("the sealed key is not hex text")?;
+    decode_kms_encryption_key(key_hex)
+}
+
+/// Open a v2 release: the key and this node's counters, sealed together.
+fn open_released_record(
+    response: &KmsGetKeyResponse,
+    seal: &EphemeralSealKey,
+    kms_public: &[u8; 32],
+    challenge_nonce: &[u8; 32],
+    peer_id: &str,
+) -> Result<rollback::ReleaseRecord> {
+    let (Some(sealed_b64), Some(seal_nonce_b64)) = (
+        response.sealed_key_b64.as_deref(),
+        response.seal_nonce_b64.as_deref(),
+    ) else {
+        bail!("the KMS answered a v2 release without a sealed record");
+    };
+    if sealed_b64.len() > MAX_KMS_RECORD_B64_LEN {
+        bail!("KMS returned an oversized sealed record");
+    }
+    let engine = &base64::engine::general_purpose::STANDARD;
+    let ciphertext = engine
+        .decode(sealed_b64)
+        .context("KMS sealedKeyB64 is not valid base64")?;
+    let seal_nonce = engine
+        .decode(seal_nonce_b64)
+        .context("KMS sealNonceB64 is not valid base64")?;
+    let plaintext = seal.open_v2(
+        kms_public,
+        challenge_nonce,
+        peer_id,
+        &seal_nonce,
+        &ciphertext,
+    )?;
+    serde_json::from_slice(&plaintext).context("the KMS's sealed record is not a v2 record")
+}
+
+async fn request_kms_challenge(
+    client: &reqwest::Client,
+    challenge_endpoint: &Url,
+    peer_id: &str,
+) -> Result<KmsChallengeResponse> {
+    let challenge_response = client
+        .post(challenge_endpoint.as_str())
+        .json(&KmsChallengeRequest {
+            peer_id: peer_id.to_owned(),
+        })
+        .send()
+        .await
+        .context("Failed to request challenge from KMS")?;
+
+    let challenge_status = challenge_response.status();
+    if !challenge_status.is_success() {
+        let error_body = challenge_response.text().await.unwrap_or_default();
+        return Err(
+            KmsHttpFailure::from_response("challenge", challenge_status, &error_body).into(),
+        );
+    }
+
+    challenge_response
+        .json()
+        .await
+        .context("Failed to parse KMS challenge response")
+}
+
+fn decode_kms_challenge_nonce(challenge: &KmsChallengeResponse) -> Result<[u8; 32]> {
+    if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
+        bail!(
+            "KMS challengeId exceeds maximum allowed length ({} chars)",
+            MAX_KMS_CHALLENGE_ID_LEN
+        );
+    }
+    if challenge.nonce_b64.len() > MAX_KMS_NONCE_B64_LEN {
+        bail!(
+            "KMS challenge nonce exceeds maximum allowed size ({} chars base64)",
+            MAX_KMS_NONCE_B64_LEN
+        );
+    }
+    let challenge_nonce_vec = base64::engine::general_purpose::STANDARD
+        .decode(&challenge.nonce_b64)
+        .context("Failed to decode challenge nonce from base64")?;
+    challenge_nonce_vec
+        .try_into()
+        .map_err(|_| eyre::eyre!("Challenge nonce must be exactly 32 bytes"))
+}
+
+async fn request_kms_key_release(
+    client: &reqwest::Client,
+    key_endpoint: &Url,
+    request: &KmsGetKeyRequest,
+) -> Result<KmsGetKeyResponse> {
+    let response = client
+        .post(key_endpoint.as_str())
+        .json(request)
+        .send()
+        .await
+        .context("Failed to send request to KMS")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        return Err(KmsHttpFailure::from_response("get-key", status, &error_body).into());
+    }
+
+    response
+        .json()
+        .await
+        .context("Failed to parse KMS get-key response")
+}
+
+fn decode_kms_encryption_key(key_hex: &str) -> Result<Vec<u8>> {
+    let key_hex = key_hex.trim();
+    if key_hex.is_empty() {
+        bail!("KMS returned an empty encryption key");
+    }
+    if key_hex.len() > MAX_KMS_KEY_HEX_LEN {
+        bail!(
+            "KMS returned oversized encryption key ({} hex chars > {})",
+            key_hex.len(),
+            MAX_KMS_KEY_HEX_LEN
+        );
+    }
+    if !key_hex.len().is_multiple_of(2) {
+        bail!("KMS returned encryption key with invalid odd hex length");
+    }
+
+    let key = hex::decode(key_hex).context("Failed to decode key from hex")?;
+    if key.len() < MIN_KMS_KEY_BYTES {
+        bail!(
+            "KMS returned an undersized encryption key: {} bytes, expected at least {}",
+            key.len(),
+            MIN_KMS_KEY_BYTES
+        );
+    }
+
+    Ok(key)
+}
+
+fn decode_kms_attestation_response(
+    attest_response: &KmsAttestResponse,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    if attest_response.quote_b64.is_empty() {
+        bail!("KMS attest response quoteB64 is empty");
+    }
+    if attest_response.quote_b64.len() > MAX_KMS_ATTEST_QUOTE_B64_LEN {
+        bail!(
+            "KMS attest response quoteB64 exceeds maximum allowed size ({} chars > {})",
+            attest_response.quote_b64.len(),
+            MAX_KMS_ATTEST_QUOTE_B64_LEN
+        );
+    }
+    if attest_response.report_data_hex.is_empty() {
+        bail!("KMS attest response reportDataHex is empty");
+    }
+    if attest_response.report_data_hex.len() > MAX_KMS_REPORT_DATA_HEX_LEN {
+        bail!(
+            "KMS attest response reportDataHex exceeds maximum allowed size ({} chars > {})",
+            attest_response.report_data_hex.len(),
+            MAX_KMS_REPORT_DATA_HEX_LEN
+        );
+    }
+
+    let quote_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&attest_response.quote_b64)
+        .context("Failed to decode KMS quote from base64")?;
+    let report_data_bytes = hex::decode(&attest_response.report_data_hex)
+        .context("Failed to decode reportDataHex from KMS attest response")?;
+
+    Ok((quote_bytes, report_data_bytes))
+}
+
+fn build_kms_attestation_report_data(nonce: &[u8; 32], binding: &[u8; 32]) -> [u8; 64] {
+    let mut report_data = [0u8; 64];
+    report_data[..32].copy_from_slice(nonce);
+    report_data[32..].copy_from_slice(binding);
+    report_data
+}
+
+#[cfg(feature = "mock-attestation")]
+fn mock_kms_attestation_runtime_opt_in() -> bool {
+    std::env::var(MOCK_KMS_ATTESTATION_ENV)
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false)
+}
+
+fn build_signature_payload(
+    challenge_id: &str,
+    challenge_nonce: &[u8; 32],
+    quote_bytes: &[u8],
+    peer_id: &str,
+    seal_to: &[u8; 32],
+    rollback_node: Option<u64>,
+) -> Result<Vec<u8>> {
+    let quote_hash = Sha256::digest(quote_bytes);
+    let mut payload = serde_json::json!({
+        "challengeId": challenge_id,
+        "challengeNonceHex": hex::encode(challenge_nonce),
+        "quoteHashHex": hex::encode(quote_hash),
+        "peerId": peer_id,
+        "sealToHex": hex::encode(seal_to),
+    });
+    if let Some(node) = rollback_node {
+        payload["rollbackNodeId"] = serde_json::Value::from(node);
+    }
+    serde_json::to_vec(&payload).context("Failed to serialize challenge signature payload")
+}
+
+/// Ensure URL has a trailing slash: `Url::join` replaces the last path segment without one.
+/// `http://host/api/v1`.join("get-key") gives `http://host/api/get-key`.
+fn ensure_trailing_slash(url: &Url) -> Url {
+    let mut url = url.clone();
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    url
+}
+
+/// The KMS URL's scheme. Plain HTTP is allowed: the KMS is verified against the
+/// signed release policy before anything is asked of it, and the key comes back
+/// sealed to a one-time key this node's quote commits to, authenticated by the
+/// KMS's attested key (`open_released_key`, which refuses an unsealed key). An
+/// on-path attacker can neither read the key nor pass as the KMS, so TLS adds
+/// nothing, and a VPC-internal name such as `<cluster>.kms.mdma.internal` has
+/// no public CA to certify it anyway.
+fn validate_kms_transport(kms_url: &Url) -> Result<()> {
+    match kms_url.scheme() {
+        "https" | "http" => Ok(()),
+        scheme => bail!("Unsupported KMS URL scheme '{scheme}'; expected https:// or http://"),
+    }
+}
+
+/// A fresh nonce for a KMS request, from the operating system's generator.
+fn random_nonce() -> [u8; 32] {
+    ring::rand::generate(&ring::rand::SystemRandom::new())
+        .expect("system randomness")
+        .expose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Only the mock HTTP test servers use these; gated with the mock tests.
+    #[cfg(feature = "mock-attestation")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(feature = "mock-attestation")]
+    use std::sync::Arc;
+
+    #[cfg(feature = "mock-attestation")]
+    use axum::extract::State;
+    #[cfg(feature = "mock-attestation")]
+    use axum::http::StatusCode;
+    #[cfg(feature = "mock-attestation")]
+    use axum::routing::post;
+    #[cfg(feature = "mock-attestation")]
+    use axum::{Json, Router};
+    #[cfg(feature = "mock-attestation")]
+    use serde::Deserialize;
+    use serde_json::json;
+
+    /// The binding a stand-in KMS uses when a request names none.
+    #[cfg(feature = "mock-attestation")]
+    fn default_kms_attestation_binding() -> [u8; 32] {
+        Sha256::digest(b"mero-kms-attest-v1").into()
+    }
+
+    #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
+    enum AttestResponseMode {
+        Valid,
+        ReportDataMismatch,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[cfg(feature = "mock-attestation")]
+    struct AttestRequestBody {
+        nonce_b64: String,
+        #[serde(default)]
+        binding_b64: Option<String>,
+        #[serde(default)]
+        capabilities: bool,
+    }
+
+    /// The stand-in KMS's transport secret.
+    #[cfg(feature = "mock-attestation")]
+    const TEST_KMS_SECRET: [u8; 32] = [0x5c; 32];
+
+    #[cfg(feature = "mock-attestation")]
+    fn mock_quote_bytes_with_report_data(report_data: &[u8; 64]) -> Vec<u8> {
+        let mut quote_bytes = b"MOCK_TDX_QUOTE_V1".to_vec();
+        quote_bytes.extend_from_slice(report_data);
+        quote_bytes.resize(256, 0);
+        quote_bytes
+    }
+
+    #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
+    enum ProbeChallengeMode {
+        Valid,
+        MalformedNonce,
+        OversizedNonce,
+    }
+
+    #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
+    enum ProbeGetKeyMode {
+        Success,
+        MeasurementPolicyRejected,
+    }
+
+    #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
+    struct ProbeServerMode {
+        attest: AttestResponseMode,
+        challenge: ProbeChallengeMode,
+        get_key: ProbeGetKeyMode,
+    }
+
+    #[derive(Clone)]
+    #[cfg(feature = "mock-attestation")]
+    struct ProbeServerState {
+        mode: ProbeServerMode,
+        get_key_hits: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[cfg(feature = "mock-attestation")]
+    struct ChallengeRequestBody {
+        peer_id: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[cfg(feature = "mock-attestation")]
+    struct GetKeyRequestBody {
+        challenge_id: String,
+        quote_b64: String,
+        peer_id: String,
+        peer_public_key_b64: String,
+        signature_b64: String,
+        seal_to_b64: String,
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    async fn probe_attest_handler(
+        State(state): State<ProbeServerState>,
+        Json(request): Json<AttestRequestBody>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let nonce_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&request.nonce_b64)
+            .expect("request nonce must be valid base64");
+        let nonce: [u8; 32] = nonce_bytes
+            .try_into()
+            .expect("request nonce must decode to 32 bytes");
+
+        let binding = if let Some(binding_b64) = request.binding_b64 {
+            let binding_bytes = base64::engine::general_purpose::STANDARD
+                .decode(binding_b64)
+                .expect("binding must be valid base64");
+            binding_bytes
+                .try_into()
+                .expect("binding must decode to 32 bytes")
+        } else {
+            default_kms_attestation_binding()
+        };
+
+        let kms_public = sealed::public_for_test(&TEST_KMS_SECRET);
+        let binding = sealed::attest_binding(&binding, &kms_public);
+        let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
+        let report_data_hex = match state.mode.attest {
+            AttestResponseMode::Valid => hex::encode(expected_report_data),
+            AttestResponseMode::ReportDataMismatch => hex::encode([0u8; 64]),
+        };
+
+        let quote_b64 = base64::engine::general_purpose::STANDARD
+            .encode(mock_quote_bytes_with_report_data(&expected_report_data));
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "quoteB64": quote_b64,
+                "reportDataHex": report_data_hex,
+                "transportPublicKeyB64":
+                    base64::engine::general_purpose::STANDARD.encode(kms_public)
+            })),
+        )
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    async fn probe_challenge_handler(
+        State(state): State<ProbeServerState>,
+        Json(request): Json<ChallengeRequestBody>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let _ = request.peer_id;
+
+        let nonce_b64 = match state.mode.challenge {
+            ProbeChallengeMode::Valid => {
+                base64::engine::general_purpose::STANDARD.encode([0x33u8; 32])
+            }
+            ProbeChallengeMode::MalformedNonce => "***not-base64***".to_owned(),
+            ProbeChallengeMode::OversizedNonce => "A".repeat(MAX_KMS_NONCE_B64_LEN + 1),
+        };
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "challengeId": "probe-challenge",
+                "nonceB64": nonce_b64
+            })),
+        )
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    async fn probe_get_key_handler(
+        State(state): State<ProbeServerState>,
+        Json(request): Json<GetKeyRequestBody>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        state.get_key_hits.fetch_add(1, Ordering::SeqCst);
+
+        let has_empty_field = request.challenge_id.is_empty()
+            || request.quote_b64.is_empty()
+            || request.peer_id.is_empty()
+            || request.peer_public_key_b64.is_empty()
+            || request.signature_b64.is_empty()
+            || request.seal_to_b64.is_empty();
+        if has_empty_field {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_request",
+                    "details": "required request fields are missing"
+                })),
+            );
+        }
+
+        match state.mode.get_key {
+            ProbeGetKeyMode::Success => {
+                let engine = &base64::engine::general_purpose::STANDARD;
+                let seal_to: [u8; 32] = engine
+                    .decode(&request.seal_to_b64)
+                    .expect("sealToB64 must be base64")
+                    .try_into()
+                    .expect("sealToB64 must be 32 bytes");
+                // The challenge handler below always issues this nonce.
+                let sealed_key = sealed::seal_for_test(
+                    &TEST_KMS_SECRET,
+                    &seal_to,
+                    &[0x33; 32],
+                    &request.peer_id,
+                    [0x19; 12],
+                    &"11".repeat(32),
+                );
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "sealedKeyB64": engine.encode(sealed_key),
+                        "sealNonceB64": engine.encode([0x19u8; 12])
+                    })),
+                )
+            }
+            ProbeGetKeyMode::MeasurementPolicyRejected => (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "measurement_policy_rejected",
+                    "details": "MRTD mismatch"
+                })),
+            ),
+        }
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    async fn spawn_probe_server(mode: ProbeServerMode) -> (Url, Arc<AtomicUsize>) {
+        let get_key_hits = Arc::new(AtomicUsize::new(0));
+        let state = ProbeServerState {
+            mode,
+            get_key_hits: Arc::clone(&get_key_hits),
+        };
+
+        let app = Router::new()
+            .route("/attest", post(probe_attest_handler))
+            .route("/challenge", post(probe_challenge_handler))
+            .route("/get-key", post(probe_get_key_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("probe test server should run");
+        });
+
+        (
+            Url::parse(&format!("http://{addr}/")).expect("base URL should parse"),
+            get_key_hits,
+        )
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    fn make_probe_kms_config(url: &Url) -> KmsConfig {
+        parse_kms_config(json!({ "url": url.as_str() }))
+    }
+
+    /// A release policy the stand-in KMS's mock quote matches.
+    #[cfg(feature = "mock-attestation")]
+    fn mock_release_policy() -> KmsAttestationPolicy {
+        let mock = make_mock_verification_result();
+        let mrtd = normalize_attestation_measurement(&mock.quote.body.mrtd);
+        make_release_policy(&mock, vec!["mock".to_owned()], vec![mrtd])
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    fn mock_probe_attestor(report_data: [u8; 64]) -> std::result::Result<ProbeAttestation, String> {
+        let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
+        let quote_b64 = base64::engine::general_purpose::STANDARD.encode(&quote_bytes);
+        Ok(ProbeAttestation {
+            quote_bytes,
+            quote_b64,
+            is_mock: true,
+        })
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    fn enable_mock_kms_attestation_env() {
+        // Tests that exercise mock quote acceptance must explicitly opt in to
+        // mirror production behavior.
+        unsafe {
+            std::env::set_var(MOCK_KMS_ATTESTATION_ENV, "true");
+        }
+    }
+
+    #[test]
+    fn test_ensure_trailing_slash() {
+        // URL without trailing slash should get one added
+        let url = Url::parse("http://host/api/v1").unwrap();
+        let fixed = ensure_trailing_slash(&url);
+        assert_eq!(fixed.as_str(), "http://host/api/v1/");
+
+        // URL with trailing slash should remain unchanged
+        let url = Url::parse("http://host/api/v1/").unwrap();
+        let fixed = ensure_trailing_slash(&url);
+        assert_eq!(fixed.as_str(), "http://host/api/v1/");
+
+        // Root URL should work
+        let url = Url::parse("http://host").unwrap();
+        let fixed = ensure_trailing_slash(&url);
+        assert_eq!(fixed.as_str(), "http://host/");
+    }
+
+    #[test]
+    fn test_release_policy_allows_vpc_http_kms() {
+        // The GCP KMS cluster is reached at a private-zone name over plain HTTP;
+        // the release policy plus sealed release protect the key instead of TLS.
+        let vpc_http =
+            Url::parse("http://mero-kms-locked-read-only-2-3-83.kms.mdma.internal:8080/").unwrap();
+        assert!(validate_kms_transport(&vpc_http).is_ok());
+        let https = Url::parse("https://kms.example.com/").unwrap();
+        assert!(validate_kms_transport(&https).is_ok());
+    }
+
+    #[test]
+    fn test_release_policy_still_rejects_other_schemes() {
+        let ftp = Url::parse("ftp://kms.example.com/").unwrap();
+        let err = validate_kms_transport(&ftp)
+            .expect_err("only http and https carry the KMS protocol")
+            .to_string();
+        assert!(err.contains("Unsupported KMS URL scheme"));
+    }
+
+    fn parse_kms_config(value: serde_json::Value) -> KmsConfig {
+        serde_json::from_value(value).expect("valid kms config fixture")
+    }
+
+    #[test]
+    fn test_build_kms_http_client_rejects_partial_mtls_configuration() {
+        let cfg = parse_kms_config(json!({
+            "url": "https://kms.example.com/",
+            "tls": {
+                "client_cert_path": "/etc/calimero/client-cert.pem"
+            }
+        }));
+        let err = build_kms_http_client(&cfg)
+            .expect_err("partial mTLS config must fail")
+            .to_string();
+        assert!(err.contains("must be set together"));
+    }
+
+    #[test]
+    fn test_build_kms_http_client_rejects_ca_pinning_on_http() {
+        let cfg = parse_kms_config(json!({
+            "url": "http://127.0.0.1:8080/",
+            "tls": {
+                "ca_cert_path": "/etc/calimero/kms-ca.pem"
+            }
+        }));
+        let err = build_kms_http_client(&cfg)
+            .expect_err("CA pinning over HTTP must fail")
+            .to_string();
+        assert!(err.contains("requires tee.kms.url to use https://"));
+    }
+
+    #[test]
+    fn test_decode_kms_attestation_response_rejects_oversized_fields() {
+        let oversized_quote = KmsAttestResponse {
+            quote_b64: "A".repeat(MAX_KMS_ATTEST_QUOTE_B64_LEN + 1),
+            report_data_hex: "00".repeat(64),
+            transport_public_key_b64: None,
+            capabilities: None,
+        };
+        let err = decode_kms_attestation_response(&oversized_quote)
+            .expect_err("oversized quoteB64 must fail")
+            .to_string();
+        assert!(err.contains("quoteB64 exceeds maximum allowed size"));
+
+        let oversized_report = KmsAttestResponse {
+            quote_b64: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
+            report_data_hex: "0".repeat(MAX_KMS_REPORT_DATA_HEX_LEN + 1),
+            transport_public_key_b64: None,
+            capabilities: None,
+        };
+        let err = decode_kms_attestation_response(&oversized_report)
+            .expect_err("oversized reportDataHex must fail")
+            .to_string();
+        assert!(err.contains("reportDataHex exceeds maximum allowed size"));
+    }
+
+    #[test]
+    fn test_decode_kms_encryption_key_rejects_undersized_key() {
+        let err = decode_kms_encryption_key("00")
+            .expect_err("undersized key must fail")
+            .to_string();
+        assert!(err.contains("undersized encryption key"), "{err}");
+
+        // A full 32-byte key is accepted.
+        let decoded = decode_kms_encryption_key(&"42".repeat(MIN_KMS_KEY_BYTES))
+            .expect("valid key must decode");
+        assert_eq!(decoded.len(), MIN_KMS_KEY_BYTES);
+    }
+
+    /// A KMS that answers with the key in the clear is refused, even with every
+    /// quote genuine: that key was readable by whatever terminated TLS.
+    #[test]
+    fn an_unsealed_key_release_is_refused() {
+        let seal = EphemeralSealKey::generate();
+        let unsealed = KmsGetKeyResponse {
+            key: Some("42".repeat(MIN_KMS_KEY_BYTES)),
+            sealed_key_b64: None,
+            seal_nonce_b64: None,
+        };
+        let err = open_released_key(&unsealed, &seal, &[9; 32], &[0; 32], "peer")
+            .expect_err("an unsealed key must not be accepted");
+        assert!(err.to_string().contains("unsealed"), "{err}");
+    }
+
+    #[test]
+    fn a_sealed_key_release_opens_and_decodes() {
+        let seal = EphemeralSealKey::generate();
+        let kms_secret = [0x21; 32];
+        let nonce = [0x31; 32];
+        let key_hex = "42".repeat(MIN_KMS_KEY_BYTES);
+        let sealed_key = sealed::seal_for_test(
+            &kms_secret,
+            seal.public(),
+            &nonce,
+            "peer",
+            [7; 12],
+            &key_hex,
+        );
+        let response = KmsGetKeyResponse {
+            key: None,
+            sealed_key_b64: Some(base64::engine::general_purpose::STANDARD.encode(sealed_key)),
+            seal_nonce_b64: Some(base64::engine::general_purpose::STANDARD.encode([7u8; 12])),
+        };
+        let kms_public = sealed::public_for_test(&kms_secret);
+        let key = open_released_key(&response, &seal, &kms_public, &nonce, "peer").unwrap();
+        assert_eq!(key, vec![0x42; MIN_KMS_KEY_BYTES]);
+    }
+
+    #[test]
+    fn test_signature_payload_is_deterministic() {
+        let challenge_id = "abc123";
+        let challenge_nonce = [0x5a; 32];
+        let quote_bytes = b"quote-bytes";
+        let peer_id = "12D3KooWAbcdefghijklmnopqrstuvwxyz";
+
+        let seal_to = [0x7b; 32];
+
+        let payload1 = build_signature_payload(
+            challenge_id,
+            &challenge_nonce,
+            quote_bytes,
+            peer_id,
+            &seal_to,
+            None,
+        )
+        .unwrap();
+        let payload2 = build_signature_payload(
+            challenge_id,
+            &challenge_nonce,
+            quote_bytes,
+            peer_id,
+            &seal_to,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(payload1, payload2);
+        // The seal key is signed over: a request re-pointed at another key is
+        // no longer the request this node signed.
+        let repointed = build_signature_payload(
+            challenge_id,
+            &challenge_nonce,
+            quote_bytes,
+            peer_id,
+            &[0; 32],
+            None,
+        )
+        .unwrap();
+        assert_ne!(payload1, repointed);
+    }
+
+    #[test]
+    fn test_build_kms_attestation_report_data_layout() {
+        let nonce = [0x11; 32];
+        let binding = [0x22; 32];
+
+        let report_data = build_kms_attestation_report_data(&nonce, &binding);
+        assert_eq!(&report_data[..32], &nonce);
+        assert_eq!(&report_data[32..], &binding);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn test_probe_kms_flow_succeeds() {
+        enable_mock_kms_attestation_env();
+        let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&base_url);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let policy = mock_release_policy();
+        let key = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect("probe flow should succeed");
+
+        assert_eq!(key, vec![0x11u8; 32]);
+        assert_eq!(get_key_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn test_probe_kms_flow_rejects_spoofed_attest_before_key_fetch() {
+        enable_mock_kms_attestation_env();
+        let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::ReportDataMismatch,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&base_url);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("reportData mismatch must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::Attest);
+        assert_eq!(err.code, "KMS_ATTEST_REPORT_DATA_MISMATCH");
+        assert_eq!(get_key_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn test_probe_kms_flow_propagates_measurement_policy_rejection_with_stable_code() {
+        enable_mock_kms_attestation_env();
+        let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::MeasurementPolicyRejected,
+        })
+        .await;
+        let kms = make_probe_kms_config(&base_url);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("measurement policy rejection must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::GetKey);
+        assert_eq!(err.code, "KMS_PROFILE_POLICY_REJECTED");
+        assert_eq!(
+            err.kms_error.as_deref(),
+            Some("measurement_policy_rejected")
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn test_probe_kms_flow_rejects_malformed_challenge_nonce() {
+        enable_mock_kms_attestation_env();
+        let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::MalformedNonce,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&base_url);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("malformed challenge nonce must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::Challenge);
+        assert_eq!(err.code, "KMS_CHALLENGE_NONCE_INVALID");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn test_probe_kms_flow_rejects_oversized_challenge_nonce() {
+        enable_mock_kms_attestation_env();
+        let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::OversizedNonce,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&base_url);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("oversized challenge nonce must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::Challenge);
+        assert_eq!(err.code, "KMS_CHALLENGE_NONCE_OVERSIZED");
+    }
+
+    #[tokio::test]
+    async fn test_probe_storage_key_rejects_an_unsupported_scheme() {
+        let kms = parse_kms_config(json!({ "url": "ftp://kms.example.com/" }));
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let policy = pinning_release_policy();
+        let result = probe_storage_key(&kms, &peer_id, &identity, Some(&policy)).await;
+        assert!(!result.ok);
+        assert_eq!(result.stage, KmsProbeStage::Transport);
+        assert_eq!(result.code, "KMS_URL_UNSUPPORTED");
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    fn enforce_release_policy(
+        policy: &KmsAttestationPolicy,
+        verification_result: &VerificationResult,
+        allow_missing_tcb_status: bool,
+    ) -> Result<()> {
+        enforce_attestation_policy(policy, verification_result, allow_missing_tcb_status)
+    }
+
+    /// A stand-in mero-kms with rollback counters (`strip`: a relay that drops
+    /// the capabilities request, so the KMS answers as an old one).
+    #[cfg(feature = "mock-attestation")]
+    async fn spawn_v2_kms(strip: bool) -> Url {
+        use axum::routing::post;
+        const SESSION_KEY: [u8; 32] = [0x66; 32];
+        let engine = &base64::engine::general_purpose::STANDARD;
+        let attest = move |Json(request): Json<AttestRequestBody>| async move {
+            let nonce: [u8; 32] = engine
+                .decode(&request.nonce_b64)
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let binding: [u8; 32] = request
+                .binding_b64
+                .map(|b| engine.decode(b).unwrap().try_into().unwrap())
+                .unwrap_or_else(default_kms_attestation_binding);
+            let kms_public = sealed::public_for_test(&TEST_KMS_SECRET);
+            let v2 = request.capabilities && !strip;
+            let binding = if v2 {
+                sealed::attest_binding_v2(&binding, &kms_public)
+            } else {
+                sealed::attest_binding(&binding, &kms_public)
+            };
+            let report_data = build_kms_attestation_report_data(&nonce, &binding);
+            let mut answer = json!({
+                "quoteB64": engine.encode(mock_quote_bytes_with_report_data(&report_data)),
+                "reportDataHex": hex::encode(report_data),
+                "transportPublicKeyB64": engine.encode(kms_public),
+            });
+            if v2 {
+                answer["capabilities"] = json!(["rollback/v1"]);
+            }
+            Json(answer)
+        };
+        let challenge = move || async move {
+            Json(json!({ "challengeId": "c", "nonceB64": engine.encode([0x33u8; 32]) }))
+        };
+        let get_key = move |Json(request): Json<serde_json::Value>| async move {
+            let seal_to: [u8; 32] = engine
+                .decode(request["sealToB64"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let peer = request["peerId"].as_str().unwrap();
+            let sealed = if request["rollbackNodeId"].as_u64() == Some(4) {
+                let record = json!({
+                    "keyHex": "11".repeat(32),
+                    "epoch": 2,
+                    "generation": 2,
+                    "mark": 9,
+                    "sessionIdB64": engine.encode([0x55u8; 16]),
+                    "sessionKeyHex": hex::encode(SESSION_KEY),
+                });
+                sealed::seal_v2_for_test(
+                    &TEST_KMS_SECRET,
+                    &seal_to,
+                    &[0x33; 32],
+                    peer,
+                    [0x19; 12],
+                    record.to_string().as_bytes(),
+                )
+            } else {
+                assert!(request.get("rollbackNodeId").is_none());
+                sealed::seal_for_test(
+                    &TEST_KMS_SECRET,
+                    &seal_to,
+                    &[0x33; 32],
+                    peer,
+                    [0x19; 12],
+                    &"11".repeat(32),
+                )
+            };
+            Json(json!({
+                "sealedKeyB64": engine.encode(sealed),
+                "sealNonceB64": engine.encode([0x19u8; 12]),
+            }))
+        };
+        let raise = move |Json(request): Json<serde_json::Value>| async move {
+            let nonce: [u8; 32] = engine
+                .decode(request["nonceB64"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let (generation, mark) = (
+                request["generation"].as_u64().unwrap(),
+                request["mark"].as_u64().unwrap(),
+            );
+            Json(json!({
+                "epoch": 2,
+                "generation": generation,
+                "mark": mark,
+                "macB64": rollback::tests::ack_for_test(&SESSION_KEY, &nonce, 2, generation, mark),
+            }))
+        };
+        let app = Router::new()
+            .route("/attest", post(attest))
+            .route("/challenge", post(challenge))
+            .route("/get-key", post(get_key))
+            .route("/rollback/raise", post(raise));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(tokio::spawn(
+            async move { axum::serve(listener, app).await },
+        ));
+        Url::parse(&format!("http://{addr}/")).unwrap()
+    }
+
+    /// A v2 release returns the counters sealed with the key; a relay that strips the capabilities
+    /// leaves the node with the key and no counters, which the node then judges.
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn a_v2_release_carries_the_counters_and_a_session_that_raises_them() {
+        enable_mock_kms_attestation_env();
+        let mock = make_mock_verification_result();
+        let mrtd = normalize_attestation_measurement(&mock.quote.body.mrtd);
+        let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec![mrtd]);
+        let identity = Keypair::generate_ed25519();
+        let peer = identity.public().to_peer_id().to_base58();
+
+        let kms = make_probe_kms_config(&spawn_v2_kms(false).await);
+        let released = fetch_storage_key_with_attestor(
+            Some(&kms),
+            &peer,
+            &identity,
+            Some(&policy),
+            Some(4),
+            mock_probe_attestor,
+        )
+        .await
+        .unwrap();
+        assert_eq!(released.key, vec![0x11; 32]);
+        let counters = released.counters.expect("a v2 release");
+        let entry = CounterEntry {
+            generation: 2,
+            mark: 9,
+        };
+        assert_eq!((counters.epoch, counters.entry), (2, Some(entry)));
+        let next = CounterEntry {
+            generation: 2,
+            mark: 10,
+        };
+        let ack = counters.raise(next).await.unwrap();
+        assert_eq!(
+            ack,
+            CounterAck {
+                epoch: 2,
+                entry: next
+            }
+        );
+
+        let kms = make_probe_kms_config(&spawn_v2_kms(true).await);
+        let released = fetch_storage_key_with_attestor(
+            Some(&kms),
+            &peer,
+            &identity,
+            Some(&policy),
+            Some(4),
+            mock_probe_attestor,
+        )
+        .await
+        .unwrap();
+        assert_eq!(released.key, vec![0x11; 32]);
+        assert!(released.counters.is_none(), "stripped: an old KMS's answer");
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    fn make_release_policy(
+        verification_result: &VerificationResult,
+        allowed_tcb_statuses: Vec<String>,
+        allowed_mrtd: Vec<String>,
+    ) -> KmsAttestationPolicy {
+        let body = &verification_result.quote.body;
+        KmsAttestationPolicy {
+            allowed_tcb_statuses,
+            allowed_mrtd,
+            allowed_rtmr0: vec![normalize_attestation_measurement(&body.rtmr0)],
+            allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
+            allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
+            allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
+            default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
+            release: "2.4.1".to_owned(),
+            profile: Some("locked-read-only".to_owned()),
+        }
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    fn make_mock_verification_result() -> VerificationResult {
+        let nonce = [0x11u8; 32];
+        let binding = [0x22u8; 32];
+        let report_data = build_kms_attestation_report_data(&nonce, &binding);
+        let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
+            .expect("mock verification result should be created")
+    }
+
+    /// A key fetch records the KMS quote it accepted, which the node reports in its own attestation,
+    /// so it has to be what was verified, not what was asked.
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn the_kms_a_key_fetch_accepted_is_recorded() {
+        enable_mock_kms_attestation_env();
+        let (url, _) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&url);
+        let mock = make_mock_verification_result();
+        let mrtd = normalize_attestation_measurement(&mock.quote.body.mrtd);
+        let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec![mrtd.clone()]);
+
+        let before = unix_now();
+        let (transport, evidence) = verify_kms_attestation_from_release_policy(&kms, &policy)
+            .await
+            .expect("the stand-in KMS matches the policy");
+
+        assert_eq!(transport.public, sealed::public_for_test(&TEST_KMS_SECRET));
+        assert_eq!(
+            evidence.kms_host,
+            format!(
+                "127.0.0.1:{}",
+                url.port().expect("the stand-in names its port")
+            )
+        );
+        assert_eq!(evidence.release, "2.4.1");
+        assert_eq!(evidence.profile.as_deref(), Some("locked-read-only"));
+        assert_eq!(evidence.mrtd, mrtd);
+        assert_eq!(
+            evidence.rtmr3,
+            normalize_attestation_measurement(&mock.quote.body.rtmr3)
+        );
+        assert_eq!(evidence.tcb_status.as_deref(), Some("Mock"));
+        assert!(evidence.mock);
+        assert!(evidence.verified_at >= before);
+        assert_eq!(evidence.quote_sha256.len(), 64);
+        // A KMS quote is over a fresh nonce, so two fetches never record the
+        // same quote.
+        let (_, again) = verify_kms_attestation_from_release_policy(&kms, &policy)
+            .await
+            .expect("the stand-in KMS matches the policy");
+        assert_ne!(again.quote_sha256, evidence.quote_sha256);
+    }
+
+    /// Nothing is recorded for a KMS the policy refuses: the error is all.
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn a_refused_kms_leaves_no_record() {
+        enable_mock_kms_attestation_env();
+        let (url, _) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&url);
+        let mock = make_mock_verification_result();
+        let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec!["ab".repeat(48)]);
+        let err = verify_kms_attestation_from_release_policy(&kms, &policy)
+            .await
+            .expect_err("an MRTD outside the policy is refused");
+        assert!(err.to_string().contains("MRTD"), "{err}");
+    }
+
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn test_enforce_attestation_policy_rejects_disallowed_tcb_status() {
+        let verification_result = make_mock_verification_result();
+        let policy = make_release_policy(
+            &verification_result,
+            vec!["uptodate".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        let err = enforce_release_policy(&policy, &verification_result, false)
+            .expect_err("disallowed TCB status must fail")
+            .to_string();
+        assert!(err.contains("TCB status"));
+    }
+
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn test_enforce_attestation_policy_handles_missing_tcb_status_for_mock_quotes() {
+        let mut verification_result = make_mock_verification_result();
+        verification_result.tcb_status = None;
+        let policy = make_release_policy(
+            &verification_result,
+            vec!["mock".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        assert!(enforce_release_policy(&policy, &verification_result, true).is_ok());
+        assert!(enforce_release_policy(&policy, &verification_result, false).is_err());
+    }
+
+    /// A real KMS quote is held to the same floor on Intel's TCB evaluation
+    /// data as a node's: an `UpToDate` computed against an older baseline,
+    /// or an unknown one, is refused.
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn a_kms_verdict_from_collateral_below_the_floor_is_refused() {
+        let mut verification_result = make_mock_verification_result();
+        verification_result.tcb_status = Some("UpToDate".to_owned());
+        let policy = make_release_policy(
+            &verification_result,
+            vec!["uptodate".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        for number in [None, Some(17)] {
+            verification_result.tcb_evaluation_data_number = number;
+            let err = enforce_release_policy(&policy, &verification_result, false)
+                .expect_err("a verdict from too old a baseline must fail")
+                .to_string();
+            assert!(err.contains("TCB evaluation data"), "{number:?}: {err}");
+        }
+
+        verification_result.tcb_evaluation_data_number =
+            Some(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER);
+        enforce_release_policy(&policy, &verification_result, false)
+            .expect("a verdict from a current baseline passes");
+    }
+
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn test_enforce_attestation_policy_rejects_measurement_mismatch() {
+        let verification_result = make_mock_verification_result();
+        let policy = make_release_policy(
+            &verification_result,
+            vec!["mock".to_owned()],
+            vec!["ab".repeat(48)],
+        );
+
+        let err = enforce_release_policy(&policy, &verification_result, true)
+            .expect_err("mismatched MRTD must fail")
+            .to_string();
+        assert!(err.contains("MRTD"));
+    }
+
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn test_enforce_attestation_policy_rejects_rtmr_mismatch_for_each_lane() {
+        for lane in ["RTMR0", "RTMR1", "RTMR2", "RTMR3"] {
+            let mut verification_result = make_mock_verification_result();
+            let policy = mock_release_policy();
+
+            match lane {
+                "RTMR0" => verification_result.quote.body.rtmr0 = "ab".repeat(48),
+                "RTMR1" => verification_result.quote.body.rtmr1 = "ab".repeat(48),
+                "RTMR2" => verification_result.quote.body.rtmr2 = "ab".repeat(48),
+                "RTMR3" => verification_result.quote.body.rtmr3 = "ab".repeat(48),
+                _ => unreachable!(),
+            }
+
+            let err = enforce_release_policy(&policy, &verification_result, true)
+                .expect_err("RTMR mismatch must fail")
+                .to_string();
+            assert!(err.contains(lane));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn test_enforce_attestation_policy_rejects_effectively_empty_allowlists() {
+        let verification_result = make_mock_verification_result();
+
+        let mut policy = mock_release_policy();
+        policy.allowed_tcb_statuses = vec!["   ".to_owned()];
+        let err = enforce_release_policy(&policy, &verification_result, true)
+            .expect_err("whitespace-only TCB status allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_tcb_statuses"));
+
+        let mut policy = mock_release_policy();
+        policy.allowed_mrtd = vec!["0x".to_owned(), " ".to_owned()];
+        let err = enforce_release_policy(&policy, &verification_result, true)
+            .expect_err("normalized-empty MRTD allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_mrtd"));
+    }
+
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn test_enforce_attestation_policy_rejects_empty_required_allowlists() {
+        let verification_result = make_mock_verification_result();
+        let mut policy = make_release_policy(
+            &verification_result,
+            vec!["mock".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+        policy.allowed_rtmr0.clear();
+
+        let err = enforce_release_policy(&policy, &verification_result, true)
+            .expect_err("empty RTMR0 allowlist must fail")
+            .to_string();
+        assert!(err.contains("policy.allowed_rtmr0"));
+    }
+
+    /// A listener standing in for the KMS that counts the POSTs it receives; a stray
+    /// connection or probe of the port is not a contact.
+    async fn silent_kms() -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the stand-in KMS");
+        let addr = listener.local_addr().expect("stand-in KMS address");
+        let url = Url::parse(&format!("http://{addr}/")).expect("stand-in KMS url");
+        let contacts = Arc::new(AtomicUsize::new(0));
+        let count = |axum::extract::State(seen): axum::extract::State<Arc<AtomicUsize>>| async move {
+            let _ = seen.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::NOT_FOUND
+        };
+        let app = axum::Router::new()
+            .fallback_service(axum::routing::post(count).with_state(Arc::clone(&contacts)));
+        drop(tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        }));
+        (url, contacts)
+    }
+
+    /// The `[tee.kms.attestation]` table a config could carry, allowlists that
+    /// pin a KMS. It still parses; nothing reads it.
+    fn pinning_allowlists() -> serde_json::Value {
+        json!({
+            "enabled": true,
+            "accept_mock": false,
+            "allowed_tcb_statuses": ["UpToDate"],
+            "allowed_mrtd": ["aa".repeat(48)],
+            "allowed_rtmr0": ["bb".repeat(48)],
+            "allowed_rtmr1": ["cc".repeat(48)],
+            "allowed_rtmr2": ["dd".repeat(48)],
+            "allowed_rtmr3": ["ee".repeat(48)]
+        })
+    }
+
+    /// A signed release policy's allowlists, as `policy.rs` parses them.
+    fn pinning_release_policy() -> KmsAttestationPolicy {
+        KmsAttestationPolicy {
+            allowed_tcb_statuses: vec!["uptodate".to_owned()],
+            allowed_mrtd: vec!["aa".repeat(48)],
+            allowed_rtmr0: vec!["bb".repeat(48)],
+            allowed_rtmr1: vec!["cc".repeat(48)],
+            allowed_rtmr2: vec!["dd".repeat(48)],
+            allowed_rtmr3: vec!["ee".repeat(48)],
+            default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
+            release: "2.4.1".to_owned(),
+            profile: None,
+        }
+    }
+
+    /// A config pointing at a stand-in KMS, with `attestation` as its
+    /// `[tee.kms.attestation]` table, and the count of who dialled it.
+    async fn stand_in_kms_config(
+        attestation: serde_json::Value,
+    ) -> (KmsConfig, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let (url, contacts) = silent_kms().await;
+        let kms = parse_kms_config(json!({ "url": url.as_str(), "attestation": attestation }));
+        (kms, contacts)
+    }
+
+    async fn fetch_with(
+        attestation: serde_json::Value,
+        policy: Option<&KmsAttestationPolicy>,
+    ) -> (Result<Vec<u8>>, usize) {
+        let (kms, contacts) = stand_in_kms_config(attestation).await;
+        let identity = Keypair::generate_ed25519();
+        let result = fetch_storage_key(Some(&kms), "peer", &identity, policy, None)
+            .await
+            .map(|released| released.key);
+        (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    async fn probe_with(attestation: serde_json::Value) -> (KmsProbeResult, usize) {
+        let (kms, contacts) = stand_in_kms_config(attestation).await;
+        let identity = Keypair::generate_ed25519();
+        let result = probe_storage_key(&kms, "peer", &identity, None).await;
+        (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn the_stand_in_counts_posts_not_probes_of_its_port() {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (url, contacts) = silent_kms().await;
+        let addr = (
+            url.host_str().unwrap_or_default(),
+            url.port().unwrap_or_default(),
+        );
+        let send = |method: &'static str| async move {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.expect("dial");
+            let request = format!("{method} / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            stream.write_all(request.as_bytes()).await.expect("send");
+            let _ = stream.read_to_end(&mut Vec::new()).await.expect("answer");
+        };
+        send("GET").await;
+        assert_eq!(
+            contacts.load(Ordering::SeqCst),
+            0,
+            "a GET probe is not a contact"
+        );
+        send("POST").await;
+        assert_eq!(contacts.load(Ordering::SeqCst), 1, "a POST is a contact");
+    }
+
+    /// A KMS nothing pins is never asked for a key: with no release policy the
+    /// fetch ends before the first request, in every build.
+    #[tokio::test]
+    async fn a_kms_nothing_verifies_is_not_contacted() {
+        let (result, contacts) = fetch_with(json!({}), None).await;
+        let err = result
+            .expect_err("an unverified KMS is refused")
+            .to_string();
+        assert!(err.contains("not verified"), "{err}");
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    /// `accept_mock` cannot stand in for a policy.
+    #[tokio::test]
+    async fn a_kms_only_verified_by_accept_mock_is_not_contacted() {
+        let attestation = json!({ "enabled": true, "accept_mock": true });
+        let (result, contacts) = fetch_with(attestation, None).await;
+        let err = result
+            .expect_err("accept_mock does not verify a KMS")
+            .to_string();
+        assert!(err.contains("not verified"), "{err}");
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    /// Allowlists in config are not a verification: only the signed release
+    /// policy is, so a KMS they alone pin is never asked for a key.
+    #[tokio::test]
+    async fn a_kms_pinned_only_by_config_allowlists_is_not_contacted() {
+        let (result, contacts) = fetch_with(pinning_allowlists(), None).await;
+        let err = result
+            .expect_err("config allowlists do not verify a KMS")
+            .to_string();
+        assert!(err.contains("not verified"), "{err}");
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    /// The signed release policy is a verification: the fetch goes on to ask
+    /// the KMS for its attestation, whatever the config's table says.
+    #[tokio::test]
+    async fn a_kms_the_release_policy_pins_is_contacted() {
+        let policy = pinning_release_policy();
+        let (result, contacts) = fetch_with(json!({}), Some(&policy)).await;
+        assert!(result.is_err(), "the stand-in KMS answers nothing");
+        assert!(contacts > 0, "the pinned KMS was never asked");
+    }
+
+    /// The probe holds to the rule the fetch does: it does not dial a KMS
+    /// the release policy does not pin.
+    #[tokio::test]
+    async fn a_probe_of_a_kms_nothing_verifies_does_not_contact_it() {
+        let (result, contacts) = probe_with(json!({})).await;
+        assert!(!result.ok);
+        assert_eq!(result.code, "KMS_UNVERIFIED");
+        assert!(
+            result
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not verified"),
+            "{result:?}"
+        );
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    #[tokio::test]
+    async fn a_probe_of_a_kms_pinned_only_by_config_allowlists_does_not_contact_it() {
+        let (result, contacts) = probe_with(pinning_allowlists()).await;
+        assert!(!result.ok);
+        assert_eq!(result.code, "KMS_UNVERIFIED");
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+}

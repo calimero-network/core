@@ -13,7 +13,8 @@ use calimero_log::store::Db;
 use calimero_log::types::LogId;
 use calimero_log::{
     BoxFuture, Comparison, Config, Digests, Engine, Group, GroupId, GroupState, Machine, NodeId,
-    PortableRow, Proposal, RpcRequest, RpcResponse, StateDigest, StateTx, Transport, WriteError,
+    PortableRow, Proposal, RpcRequest, RpcResponse, Stage, Staged, StateDigest, StateTx, Transport,
+    WriteError,
 };
 
 /// A key-value machine: command `key=value` sets, output is the previous value.
@@ -216,7 +217,7 @@ async fn replicates_to_every_node() {
 /// A node whose machine cannot apply an entry (`StateTx::fail`) stops its
 /// group on it: nothing of it or after it applies there, not even later
 /// entries of the same batch, while the other nodes go on. This is what the
-/// node's machines do with an entry a later release wrote (B4).
+/// node's machines do with an entry a later release wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_batch_stops_that_nodes_group_on_the_entry() {
     let net = Arc::new(Net::default());
@@ -354,6 +355,81 @@ async fn proposals_see_previous_writes() {
         .unwrap();
     assert!(!reply.appended);
     assert_eq!(reply.output, b"cached");
+}
+
+/// The staged build's contract (`Group::propose_led_staged`): its run step holds the
+/// proposal lock but not the applied state's read lock. While a slow run step runs, an
+/// entry from elsewhere (`Group::write`, as the node's barriers) commits and applies, and
+/// the group's state is read, at once; the next proposal still waits for the slow one, and
+/// its read step sees that one's entry applied (proposals on a group run one at a time, from
+/// read step through commit). The run step's `P` is owned: it cannot borrow the machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_staged_build_runs_off_the_read_lock_and_the_next_proposal_sees_it_applied() {
+    const SLOW: Duration = Duration::from_millis(600);
+    const QUICK: Duration = Duration::from_millis(300);
+    let c = cluster(3).await;
+    let id = leader(&c).await;
+    let g = Arc::clone(&c.groups[&id]);
+    let started = std::time::Instant::now();
+    let first = {
+        let g = Arc::clone(&g);
+        tokio::spawn(async move {
+            g.propose_led_staged(|stage, _| match stage {
+                Stage::Read(m, _) => Staged::Run(m.map.get("a").cloned()),
+                Stage::Run(before) => {
+                    assert_eq!(before, None);
+                    // A slow guest: blocks its thread, as a run off the workers does.
+                    std::thread::sleep(SLOW);
+                    Staged::Done(Proposal::Append(b"a=1".to_vec()))
+                }
+            })
+            .await
+            .unwrap()
+        })
+    };
+    tokio::time::sleep(SLOW / 4).await;
+    // The second proposal queues on the proposal lock behind the first.
+    let second = {
+        let g = Arc::clone(&g);
+        tokio::spawn(async move {
+            let mut seen = None;
+            let p = g
+                .propose_led_staged(|stage, _| match stage {
+                    Stage::Read(m, _) => {
+                        seen = Some((m.map.get("a").cloned(), std::time::Instant::now()));
+                        Staged::Done(Proposal::Append(b"b=2".to_vec()))
+                    }
+                    Stage::Run(()) => unreachable!("done in the read step"),
+                })
+                .await
+                .unwrap();
+            (p, seen.unwrap())
+        })
+    };
+    tokio::time::sleep(SLOW / 8).await;
+    let at = std::time::Instant::now();
+    let (_index, _out) = g.write(b"c=3".to_vec()).await.unwrap();
+    let wrote = at.elapsed();
+    let at = std::time::Instant::now();
+    let c3 = get(&g, "c");
+    let read = at.elapsed();
+    let first = first.await.unwrap();
+    let (second, (a_seen, read_at)) = second.await.unwrap();
+    eprintln!("a {SLOW:?} run step: an entry applied after {wrote:?}, a read after {read:?}");
+    assert!(wrote < QUICK, "the entry waited {wrote:?} for the run step");
+    assert_eq!(c3.as_deref(), Some("3"));
+    assert!(read < QUICK, "the read waited {read:?} for the run step");
+    assert_eq!(
+        a_seen.as_deref(),
+        Some("1"),
+        "the next read step sees the first applied"
+    );
+    assert!(
+        read_at.duration_since(started) >= SLOW,
+        "the next waited for the first"
+    );
+    assert!(first.appended && second.appended && first.index < second.index);
+    assert_eq!(get(&g, "b").as_deref(), Some("2"));
 }
 
 /// A counter that refuses, at apply, a value built on other state than the
@@ -849,7 +925,7 @@ impl DiskCluster {
     }
 }
 
-/// Review finding B3: a state row a replica could not read during an apply read
+/// A state row a replica could not read during an apply read
 /// as absent, and the replica applied the entry anyway, answering (and writing)
 /// differently from the others. The read fault now fails the batch, so that
 /// replica stops on the entry instead.
@@ -1221,6 +1297,8 @@ async fn portable_rows_seed_a_group_under_another_clusters_key() {
     );
 }
 
+/// A restore's seed replaces a new group's state with a backup and snapshots through it; the other
+/// replicas must join from that snapshot and hold the backup's keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backup_seeds_another_group_that_replicas_then_join() {
     let c = DiskCluster::new(3).await;

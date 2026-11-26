@@ -124,6 +124,16 @@ fn trap_kind(outcome: &Outcome) -> Option<TrapKind> {
 }
 
 #[test]
+fn a_replica_engine_reserves_4_gib_per_memory_slot() {
+    let fx = fixture();
+    assert_eq!(
+        fx.engine.memory_reservation(),
+        calimero_app_engine_wasmtime::SLOT_RESERVATION_BYTES
+    );
+    assert_eq!(fx.engine.memory_reservation(), 1 << 32);
+}
+
+#[test]
 fn infinite_loop_runs_out_of_fuel() {
     let fx = fixture();
     let app = prepare(&fx, "spin");
@@ -689,6 +699,135 @@ fn artifacts_are_only_loaded_under_the_key_they_were_written_with() {
     );
 }
 
+/// Sets `path`'s modification time two hours back, past the sweep's grace.
+fn age(path: &Path) {
+    let then = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(then)
+        .unwrap();
+}
+
+/// Writes `name` (and its `.mac`) into `dir` as a leftover artifact, aged unless `fresh`.
+fn plant(dir: &Path, name: &str, fresh: bool) -> [PathBuf; 2] {
+    let artifact = dir.join(name);
+    let sidecar = dir.join(format!("{name}.mac"));
+    for p in [&artifact, &sidecar] {
+        std::fs::write(p, b"leftover").unwrap();
+        if !fresh {
+            age(p);
+        }
+    }
+    [artifact, sidecar]
+}
+
+/// A wasmtime or engine-config change names every artifact anew: a new engine deletes the
+/// old ones (once past the grace, so a process still writing one keeps it) and keeps its own.
+#[test]
+fn a_new_engine_deletes_artifacts_of_another_wasmtime_or_config() {
+    let fx = fixture();
+    let component = guest("global_counter");
+    let _ = fx.engine.prepare("gc", &component).expect("prepare");
+    let own = cache_files(fx.cache.path(), &component);
+    for p in &own {
+        age(p);
+    }
+    let sha = hex::encode(Sha256::digest(&component));
+    // The previous wasmtime's artifact of another component, under this engine's own
+    // config hash, so only the tag tells it apart.
+    let own_name = own[0].file_name().unwrap().to_str().unwrap();
+    let config_hash = own_name
+        .strip_suffix(".cwasm")
+        .and_then(|n| n.rsplit('-').next())
+        .unwrap();
+    assert_eq!(
+        own_name,
+        format!("{sha}-wasmtime51-{config_hash}.cwasm"),
+        "artifacts are tagged with the wasmtime release line"
+    );
+    let old_wasmtime = plant(
+        fx.cache.path(),
+        &format!("{}-wasmtime50-{config_hash}.cwasm", "ef".repeat(32)),
+        false,
+    );
+    let old_config = plant(
+        fx.cache.path(),
+        &format!("{}-wasmtime51-0123456789abcdef.cwasm", "ab".repeat(32)),
+        false,
+    );
+    let just_written = plant(
+        fx.cache.path(),
+        &format!("{}-wasmtime51-fedcba9876543210.cwasm", "cd".repeat(32)),
+        true,
+    );
+    let stray_temp = fx
+        .cache
+        .path()
+        .join(format!("{sha}-wasmtime51-0123456789abcdef.tmp-1-0"));
+    std::fs::write(&stray_temp, b"half").unwrap();
+    age(&stray_temp);
+    let unrelated = fx.cache.path().join("notes.txt");
+    std::fs::write(&unrelated, b"not ours").unwrap();
+    age(&unrelated);
+
+    let restarted = WasmtimeEngine::new(fx.cache.path().to_path_buf(), &CACHE_KEY).expect("engine");
+    for p in old_wasmtime.iter().chain(&old_config).chain([&stray_temp]) {
+        assert!(!p.exists(), "{p:?} left behind");
+    }
+    for p in just_written.iter().chain(&own).chain([&unrelated]) {
+        assert!(p.exists(), "{p:?} deleted");
+    }
+    let _ = restarted.prepare("gc", &component).expect("prepare again");
+    assert_eq!(restarted.compiles(), 0, "loaded from the cache");
+}
+
+/// The node's sweep keeps the artifacts of the components it names and deletes the rest,
+/// except one written within the grace (a release installed, no app made from it yet).
+#[test]
+fn sweeping_keeps_the_artifacts_of_live_components_only() {
+    let fx = fixture();
+    let (live, dead, fresh) = (
+        guest("global_counter"),
+        guest("view_writer"),
+        guest("clock_reader"),
+    );
+    for (name, component) in [("live", &live), ("dead", &dead)] {
+        let _ = fx.engine.prepare(name, component).expect("prepare");
+        for p in cache_files(fx.cache.path(), component) {
+            age(&p);
+        }
+    }
+    let _ = fx.engine.prepare("fresh", &fresh).expect("prepare");
+    let live_sha = hex::encode(Sha256::digest(&live));
+    let swept = fx.engine.sweep_cache(|c| c == live_sha);
+    assert_eq!(swept.files, 2, "{swept:?}");
+    assert!(swept.bytes > 0, "{swept:?}");
+    assert!(cache_files(fx.cache.path(), &dead).is_empty());
+    assert_eq!(cache_files(fx.cache.path(), &live).len(), 2);
+    assert_eq!(cache_files(fx.cache.path(), &fresh).len(), 2);
+
+    let restarted = WasmtimeEngine::new(fx.cache.path().to_path_buf(), &CACHE_KEY).expect("engine");
+    let _ = restarted.prepare("live", &live).expect("prepare live");
+    assert_eq!(
+        restarted.compiles(),
+        0,
+        "the live component loads from the cache"
+    );
+    let _ = restarted.prepare("dead", &dead).expect("prepare dead");
+    assert_eq!(restarted.compiles(), 1, "a swept component compiles again");
+}
+
+/// A compute engine has no disk cache: its sweep deletes nothing.
+#[test]
+fn a_compute_engine_sweeps_nothing() {
+    assert_eq!(
+        compute_engine().sweep_cache(|_| false),
+        calimero_app_engine_wasmtime::CacheSweep::default()
+    );
+}
+
 #[test]
 fn ten_thousand_and_one_writes_trap() {
     let fx = fixture();
@@ -753,7 +892,22 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
         started.elapsed()
     );
 
-    // Event audiences count too; 100 events naming a 1 MiB account each stop at the first.
+    // Event audiences count too; 100 events naming a 1 MiB account each are all refused.
+    // Past the run's bytes an event is the soft error `emit` returns, which this guest
+    // ignores: the run ends `Ok` and keeps none of them. Each refused event still pays for the
+    // 1 MiB it was handed (host fuel per byte), 100 MiB of fuel in all, more than a call's default budget, so
+    // it runs on a larger one.
+    let out = fx
+        .engine
+        .invoke(&app, host(InvocationKind::Call, "shout", b""), heavy());
+    assert_eq!(out.status, Status::Ok);
+    assert!(out.events.is_empty());
+    let handed = 100 * (1u64 << 20) * calimero_app_host::FUEL_PER_BYTE;
+    assert!(
+        out.usage.fuel > handed,
+        "100 refused events of 1 MiB cost {} fuel",
+        out.usage.fuel
+    );
     let out = fx.engine.invoke(
         &app,
         host(InvocationKind::Call, "shout", b""),
@@ -761,7 +915,7 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
     );
     assert_eq!(
         trap_kind(&out),
-        Some(TrapKind::HostDenied),
+        Some(TrapKind::OutOfFuel),
         "{:?}",
         out.status
     );
@@ -986,6 +1140,31 @@ fn prepare_compute(engine: &WasmtimeEngine, name: &str) -> Prepared {
     engine
         .prepare(&format!("{name}-hash"), &guest(name))
         .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+/// A node reads a compute component's methods and caps without compiling it: `abi_of`
+/// gives what `prepare` would, after the same checks, and compiles nothing.
+#[test]
+fn abi_of_reads_a_compute_components_abi_without_compiling_it() {
+    let engine = compute_engine();
+    let component = guest("compute_probe");
+    let abi = engine.abi_of(&component).expect("abi");
+    assert_eq!(engine.compiles(), 0, "read without compiling");
+    let prepared = engine.prepare("probe", &component).expect("prepare");
+    assert_eq!(engine.compiles(), 1);
+    assert_eq!(abi, prepared.abi);
+
+    let err = engine.abi_of(&guest("compute_publish")).unwrap_err();
+    assert!(matches!(err, PrepareError::ForbiddenImport(_)), "{err:?}");
+    let err = engine.abi_of(&guest("global_counter")).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            PrepareError::ForbiddenImport(_) | PrepareError::BadAbi(_)
+        ),
+        "{err:?}"
+    );
+    assert_eq!(engine.compiles(), 1);
 }
 
 #[test]
@@ -1392,7 +1571,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     });
     let compute_abi = serde_json::json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.6",
+        "world": "calimero:app/compute@0.5.7",
         "methods": {},
     });
     let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");
@@ -1409,4 +1588,259 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
         .err()
         .expect("an app component whose ABI names the compute world");
     assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
+}
+
+// --- host work and fuel --------------------------------------------------------------------
+
+/// A 64 KiB value under `big`, as the node's state holds it.
+const BIG_VALUE_BYTES: usize = 64 << 10;
+
+fn host_work(kind: InvocationKind, method: &str, n: u32) -> HostCore {
+    let inv = Invocation {
+        kind,
+        method: method.to_owned(),
+        args: n.to_le_bytes().to_vec(),
+        caller: Caller::Account("alice".to_owned()),
+        entry_ts_ms: ENTRY_TS_MS,
+        id_term: 1,
+        id_seq: 1,
+        seed: [7; 32],
+        timer: None,
+        compute: None,
+    };
+    let mut state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    let _ = state.insert(
+        calimero_app_host::stored_key(calimero_app_host::GENERATION, b"big"),
+        vec![1; BIG_VALUE_BYTES],
+    );
+    HostCore::new(
+        "app-1",
+        Arc::new(state),
+        1,
+        inv,
+        Arc::new(TestDir {
+            panic_on_org: false,
+        }),
+    )
+    .expect("valid invocation")
+}
+
+/// Every query answers a full page: 100 hits out of 10,000 matches.
+struct FullPages;
+
+impl calimero_app_host::SearchHost for FullPages {
+    fn query(
+        &self,
+        query: &calimero_app_host::SearchQuery,
+    ) -> Result<calimero_app_host::SearchPage, String> {
+        let hits = (0..query.limit)
+            .map(|i| calimero_app_host::SearchHit {
+                key: i.to_be_bytes().to_vec(),
+                score: 1.0,
+                snippet: "s".repeat(64),
+            })
+            .collect();
+        Ok(calimero_app_host::SearchPage {
+            hits,
+            next: Some(query.limit),
+            total: 10_000,
+        })
+    }
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+}
+
+/// A view that reads 64 MiB of state through `storage.get` pays for the host's work, so a
+/// small budget runs out of fuel instead of finishing.
+#[test]
+fn reading_megabytes_of_state_costs_fuel() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    // The run is judged on fuel alone: 64 MiB copied by a debug build on a loaded runner
+    // can take longer than a call's 2 s, so the wall clock is out of the way.
+    let budget = Budget {
+        fuel: 10_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let reads = 1_000;
+    let out = fx.engine.invoke(
+        &app,
+        host_work(InvocationKind::View, "reads", reads),
+        budget,
+    );
+    let handed = if out.status == Status::Ok {
+        u64_at(&out.result, 0)
+    } else {
+        0
+    };
+    eprintln!(
+        "{reads} reads of {BIG_VALUE_BYTES} bytes on {} fuel: {:?} after {} fuel",
+        budget.fuel, out.status, out.usage.fuel
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{reads} reads of {BIG_VALUE_BYTES} bytes: status {:?}, the host handed over {handed} \
+         bytes for {} fuel",
+        out.status,
+        out.usage.fuel
+    );
+    assert_eq!(out.usage.fuel, budget.fuel);
+}
+
+/// A view's searches are capped per run, however much fuel it has.
+#[test]
+fn a_view_makes_at_most_max_searches_per_run() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let host = host_work(InvocationKind::View, "searches", 1_000).with_search(Arc::new(FullPages));
+    let out = fx.engine.invoke(&app, host, heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let (answered, hits) = (u64_at(&out.result, 0), u64_at(&out.result, 8));
+    eprintln!(
+        "1000 searches asked: {answered} answered with {hits} hits for {} fuel",
+        out.usage.fuel
+    );
+    assert_eq!(
+        answered,
+        u64::from(calimero_app_host::MAX_SEARCHES_PER_RUN),
+        "1000 searches asked: {answered} answered with {hits} hits for {} fuel",
+        out.usage.fuel
+    );
+}
+
+/// One more read costs what the table says: the engine's base, a state access and a fuel
+/// per byte of the key and the value, plus the guest's own loop step (well under 10,000).
+#[test]
+fn a_read_costs_what_the_fuel_table_says() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let run = |reads: u32| {
+        let host = host_work(InvocationKind::View, "reads", reads);
+        let out = fx.engine.invoke(&app, host, Budget::call());
+        assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+        out.usage.fuel
+    };
+    let one_more = run(2) - run(1);
+    let host = calimero_app_host::FUEL_HOST_CALL
+        + calimero_app_host::FUEL_STATE_ACCESS
+        + (b"big".len() + BIG_VALUE_BYTES) as u64 * calimero_app_host::FUEL_PER_BYTE;
+    assert!(
+        (host..host + 10_000).contains(&one_more),
+        "one more read cost {one_more}; the table says {host} for the host"
+    );
+}
+
+/// The last count `spin` printed before its run ended.
+fn last_count(out: &Outcome) -> u64 {
+    out.logs
+        .iter()
+        .rev()
+        .find_map(|l| l.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Fuel the host already charged is not spent again by the guest.
+/// A view whose reads owe about nine tenths of its budget may then run only the last tenth
+/// of guest code, not a whole budget more.
+#[test]
+fn a_guest_cannot_spend_fuel_its_host_calls_already_owe() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let budget = Budget {
+        fuel: 50_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let run = |reads: u32| {
+        let host = host_work(InvocationKind::View, "spin", reads).with_logs(true);
+        let out = fx.engine.invoke(&app, host, budget);
+        assert_eq!(
+            trap_kind(&out),
+            Some(TrapKind::OutOfFuel),
+            "{:?}",
+            out.status
+        );
+        last_count(&out)
+    };
+    let alone = run(0);
+    // About 67,500 fuel a read: 650 of them owe about 44M of the 50M.
+    let after_debt = run(650);
+    eprintln!("spun {alone} steps on the whole budget, {after_debt} after 650 reads of 64 KiB");
+    // A tenth of the budget is left for the guest: about a tenth of the steps, never a
+    // whole budget's worth.
+    assert!(
+        after_debt * 5 < alone,
+        "the guest spun {after_debt} steps after owing ~44M of 50M fuel; {alone} alone"
+    );
+}
+
+/// A host call pays for the bytes it is handed before it checks
+/// them, so refused 32 MiB xcall arguments cost fuel.
+#[test]
+fn refused_xcall_arguments_cost_fuel() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let budget = Budget {
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let out = fx.engine.invoke(
+        &app,
+        host_work(InvocationKind::Call, "refused", 100),
+        budget,
+    );
+    let refused = if out.status == Status::Ok {
+        u64_at(&out.result, 0)
+    } else {
+        0
+    };
+    eprintln!(
+        "100 refused xcalls of 32 MiB: {:?}, {refused} refused, {} fuel",
+        out.status, out.usage.fuel
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}: {refused} xcalls of 32 MiB refused for {} fuel",
+        out.status,
+        out.usage.fuel
+    );
+}
+
+/// Stdout costs fuel per byte, also once the log is full and the
+/// bytes are dropped.
+#[test]
+fn stdout_costs_fuel_after_the_log_is_full() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let budget = Budget {
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    // 16,384 writes of 64 KiB: 1 GiB.
+    let out = fx.engine.invoke(
+        &app,
+        host_work(InvocationKind::Call, "shout", 16_384),
+        budget,
+    );
+    let written = if out.status == Status::Ok {
+        u64_at(&out.result, 0)
+    } else {
+        0
+    };
+    eprintln!(
+        "1 GiB to stdout: {:?}, {written} bytes written, {} fuel",
+        out.status, out.usage.fuel
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}: {written} bytes written to stdout for {} fuel",
+        out.status,
+        out.usage.fuel
+    );
 }

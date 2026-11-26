@@ -34,6 +34,10 @@ use crate::harness;
 
 use harness::{cluster_name, free_port, kv_wasm, node_config, typed, wire, ORIGIN};
 
+const ELECTION_MIN_MS: u64 = 5_000; // long enough that a held follower never starts an election
+const ELECTION_MAX_MS: u64 = 6_000;
+const FORM_TIMEOUT: Duration = Duration::from_millis(10 * ELECTION_MAX_MS); // a split vote costs a round
+
 /// Forward `listen` to `upstream`; while `held` is true, bytes towards
 /// `upstream` wait. Answers flow back freely.
 async fn proxy(listen: TcpListener, upstream: String, held: watch::Receiver<bool>) {
@@ -126,9 +130,8 @@ impl ProxiedCluster {
                     .unwrap()
                     .socket_addrs(|| None)
                     .unwrap()[0];
-                // A held follower must not start an election while it waits.
-                config.raft.election_min_ms = 5_000;
-                config.raft.election_max_ms = 6_000;
+                config.raft.election_min_ms = ELECTION_MIN_MS;
+                config.raft.election_max_ms = ELECTION_MAX_MS;
                 configure(&mut config);
                 match run(config).await {
                     Ok(r) => nodes.push(r),
@@ -159,13 +162,23 @@ impl ProxiedCluster {
             hold,
             _dirs: dirs,
         };
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + FORM_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
             if c.nodes.iter().all(|r| r.node.sys(|s| s.nodes.len() == 3)) {
                 return c;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("cluster did not form");
+        let seen: Vec<String> = c
+            .nodes
+            .iter()
+            .map(|r| {
+                let st = r.node.system.status();
+                let nodes = r.node.sys(|s| s.nodes.len());
+                format!("nodes {nodes}, term {}, leader {:?}", st.term, st.leader)
+            })
+            .collect();
+        panic!("cluster did not form: {seen:?}");
     }
 
     fn client(&self, i: usize) -> Client {
@@ -461,7 +474,86 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
 
-/// Review finding A3: `GET /attestation?app=` is in the clear and takes no
+/// The owner and admin checks a route makes after `gate` (`manages_app`,
+/// `may_handle_files`, `read_only_in`) judge the app record as of `gate`'s read-index
+/// round, not a copy the handler read before it, so a follower behind never judges by the
+/// owner and organization the record held earlier. Here Bob hands his app to Alice
+/// through the leader while the follower serving his next request has not applied it:
+/// he must not still read its xcalls (owner or admin only) as its owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, mut a) = signed_up(&c, leader, "alice").await;
+    let (bob, mut b) = signed_up(&c, follower, "bob").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = shared_org(&alice, &mut a, &bob).await;
+    let bob_account = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // `CREATE_APP`: Bob, a plain member, makes the app and owns it.
+    let _ok = alice
+        .orgs()
+        .capabilities(&org, 1, Some(&bob_account), None, Some(&mut a))
+        .await
+        .unwrap();
+    let bundle = bob
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = bob
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle, "org": org })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ok = bob
+        .apps()
+        .access(&app, vec![typed(json!({ "kind": "org" }))])
+        .await
+        .unwrap();
+    let xcalls = bob.apps().xcalls(&app).await;
+    assert!(xcalls.is_ok(), "the owner reads them: {:?}", xcalls.err());
+
+    // Hold the follower; Bob hands the app to Alice through the leader.
+    let bob_on_leader = c.client(leader);
+    let _s = bob_on_leader.sign_in(&mut b).await.unwrap();
+    let follower_node = &c.nodes[follower].node;
+    let applied = |n: &calimero_node::Node| n.sys(|s| s.apps.get(&app).map(|r| r.owner.clone()));
+    assert_eq!(applied(follower_node), Some(bob_account.clone()));
+    c.hold[follower].send_replace(true);
+    bob_on_leader
+        .apps()
+        .transfer(&app, &alice_id, Some(&mut b))
+        .await
+        .unwrap();
+    assert_eq!(
+        applied(follower_node),
+        Some(bob_account),
+        "the follower must still hold Bob as the owner"
+    );
+    let read = tokio::spawn({
+        let app = app.clone();
+        async move { bob.apps().xcalls(&app).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[follower].send_replace(false);
+    let read = read.await.unwrap();
+    let err = read.expect_err("a transfer committed before the request must hold");
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+}
+
+/// `GET /attestation?app=` is in the clear and takes no
 /// credential, yet it bound any app's bundle hash, so anyone could learn that a
 /// private app exists and which release it runs (`404` against `200`). It now
 /// answers as an anonymous `GET /apps/{app}` does: an app reads exactly as an id
@@ -1040,7 +1132,7 @@ fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// Bugbot on #5210 ("lagging replica undercounts"): the node that took an upgrade's
+/// The node that took an upgrade's
 /// restore point may still host the app and be behind its group. What an undo would lose
 /// is then read from a majority of the app's replicas, the furthest counting, as where
 /// that node no longer hosts it, never from its own applied index alone: a write it has
@@ -1064,7 +1156,7 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
     for (version, wasm) in [("1.0.0", kv_wasm()), ("1.1.0", v11)] {
         let _ = alice
             .packages()
-            .upload(undo_release(version, &wasm))
+            .upload(undo_release(version, &wasm), None)
             .await
             .unwrap();
     }
@@ -1170,4 +1262,74 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
         lost["entriesSince"].as_u64().is_some_and(|n| n >= 2),
         "the upgrade and the write since the restore point: {plan}"
     );
+}
+
+/// A credential that cannot be valid is refused before the request costs a
+/// read-index round on the system group, and is not held open: junk, a
+/// malformed API key, a visitor credential whose signature does not hold and a
+/// session token its issuer did not sign cost no round. A well-formed API key
+/// no account has costs at most one round and answers at once rather than
+/// waiting out `Config::read_wait` for it to appear; the same key again costs
+/// none (`UNKNOWN_API_KEYS`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_credential_that_cannot_be_valid_costs_no_system_read_round() {
+    let c = ProxiedCluster::start().await;
+    let entry = 1;
+    let client = c.client(entry);
+    // The sealed session first, so the requests below carry only the credential.
+    let _anonymous = client.auth().me().await;
+    let forged_session = calimero_identity::mint_session(
+        &[7; 32],
+        &calimero_identity::SessionClaims {
+            account: "alice".into(),
+            session: "s1".into(),
+            expires_at: u64::MAX,
+            passkey: None,
+            app: None,
+            origin: None,
+            node: c.nodes[entry].node.config.node_id,
+            key: calimero_identity::b64url(&c.nodes[entry].node.receipt_public()),
+        },
+    );
+    let malformed_key = format!("cal_{}", "!".repeat(43));
+    let (unknown_key, _hash) = calimero_identity::new_api_key();
+    // Each credential, by name, and the most read-index rounds it may cost.
+    let cases = [
+        ("junk", "junk", 0),
+        ("short API key", "cal_short", 0),
+        ("API key of other characters", malformed_key.as_str(), 0),
+        ("unsigned visitor", "vis1.token.key.1.signature", 0),
+        ("forged session", forged_session.as_str(), 0),
+        ("unknown API key", unknown_key.as_str(), 1),
+        ("the same unknown API key again", unknown_key.as_str(), 0),
+    ];
+    let mut costs = Vec::new();
+    for (name, bogus, _) in &cases {
+        client.use_api_key(bogus).await;
+        let before = rounds(&c);
+        let started = std::time::Instant::now();
+        let e = client.auth().me().await.expect_err(name);
+        let took = started.elapsed();
+        assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{name}: {e}");
+        costs.push((rounds(&c) - before, took));
+    }
+    let table: Vec<String> = cases
+        .iter()
+        .zip(&costs)
+        .map(|((name, _, _), (n, took))| format!("{name}: {n} rounds, {} ms", took.as_millis()))
+        .collect();
+    eprintln!("{}", table.join("\n"));
+    for ((name, _, most), (n, took)) in cases.iter().zip(&costs) {
+        assert!(
+            n <= most,
+            "{name} cost {n} system read rounds:\n{}",
+            table.join("\n")
+        );
+        // Under `Config::read_wait` (2 s): nothing waits for the key to appear.
+        assert!(
+            *took < Duration::from_millis(1500),
+            "{name} was held open {took:?}:\n{}",
+            table.join("\n")
+        );
+    }
 }

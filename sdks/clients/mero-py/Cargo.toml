@@ -1,6 +1,6 @@
 [package]
 name = "mero-py"
-version = "1.0.0-rc.35"
+version = "1.0.0-rc.37"
 edition = "2021"
 authors = ["Calimero Limited <info@calimero.network>"]
 description = "Python client library for Calimero 1.0"

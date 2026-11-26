@@ -10,6 +10,7 @@ use axum::body::Bytes;
 use calimero_app_host::MAX_FILE_BYTES;
 use calimero_log::Group;
 use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -57,6 +58,9 @@ const _: () = assert!(
         && COMPLETE_WAIT.as_millis() < PART_FORWARD_TIMEOUT.as_millis()
         && PART_FORWARD_TIMEOUT.as_secs() < 30
 );
+// A failed push is tried again within one `complete` wait: once the replicas take segments,
+// one retried `complete` lands.
+const _: () = assert!(PUSH_RETRY_MAX.as_millis() < COMPLETE_WAIT.as_millis());
 // Session segments are not pinned: the sweep's grace must outlive any session.
 const _: () = assert!(UPLOAD_TTL.as_secs() < crate::node::segments::SEGMENT_GRACE.as_secs());
 
@@ -228,13 +232,13 @@ impl Session {
         idle.min(self.began_ms + UPLOAD_TTL.as_millis() as u64) / 1000
     }
 
-    fn view(&self) -> Value {
-        json!({
-            "uploadId": self.id,
-            "partBytes": PART_BYTES,
-            "parts": self.parts,
-            "expiresAt": self.expires_at(),
-        })
+    fn view(&self) -> UploadView {
+        UploadView {
+            upload_id: self.id.clone(),
+            part_bytes: PART_BYTES as u64,
+            parts: self.parts,
+            expires_at: self.expires_at(),
+        }
     }
 
     /// Waits until `ready` holds of the segments' push states, for at most `wait`.
@@ -475,10 +479,11 @@ impl Node {
                 UploadOp::Status { upload } => {
                     let session = self.session(upload, app_id, account, now)?;
                     let next = session.state.lock().await.acked;
-                    let mut view = session.view();
-                    view["size"] = json!(session.size);
-                    view["next"] = json!(next);
-                    Ok(view)
+                    Ok(json!(UploadStatus {
+                        upload: session.view(),
+                        size: session.size,
+                        next,
+                    }))
                 }
                 UploadOp::Abort { upload } => {
                     let session = self.session(upload, app_id, account, now)?;
@@ -566,7 +571,7 @@ impl Node {
                 ..State::default()
             }),
         });
-        let view = session.view();
+        let view = json!(session.view());
         let _none = open.insert(session.id.clone(), session);
         Ok(view)
     }
@@ -594,7 +599,7 @@ impl Node {
                 ));
             }
             if k < st.acked {
-                return Ok(json!({ "next": k + 1 }));
+                return Ok(json!(PartTaken { next: k + 1 }));
             }
         } else if k == st.part_hashes.len() && st.acked == k && k < session.parts {
             if bytes.len() != session.part_len(k) {
@@ -617,7 +622,7 @@ impl Node {
         let in_window = |pushed: &[bool]| pushed.iter().filter(|p| !**p).count() <= window;
         session.wait_until(PART_PUSH_WAIT, in_window).await?;
         st.acked = st.acked.max(k + 1);
-        Ok(json!({ "next": k + 1 }))
+        Ok(json!(PartTaken { next: k + 1 }))
     }
 
     #[cfg(feature = "testing")]
@@ -1015,4 +1020,30 @@ mod tests {
         assert_eq!(parts_of(part + 1), 2);
         assert_eq!(parts_of(2 * 1024 * 1024 * 1024), 128);
     }
+}
+
+/// An upload session: its id, the size of each part (the last may be shorter), how many parts
+/// and when it lapses unless a part arrives (Unix seconds).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadView {
+    pub upload_id: String,
+    pub part_bytes: u64,
+    pub parts: usize,
+    pub expires_at: u64,
+}
+
+/// An upload session's status: the file's size and the part it expects next.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UploadStatus {
+    #[serde(flatten)]
+    pub upload: UploadView,
+    pub size: u64,
+    pub next: usize,
+}
+
+/// A part taken: the part the session expects next.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PartTaken {
+    pub next: usize,
 }

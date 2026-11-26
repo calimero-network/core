@@ -197,7 +197,7 @@ fn abi_lists_every_method_with_its_attributes() {
     );
 
     assert_eq!(abi_json["abiVersion"], 1);
-    assert_eq!(abi_json["world"], "calimero:app@0.5.6");
+    assert_eq!(abi_json["world"], "calimero:app@0.5.7");
     assert_eq!(
         abi_json["state"],
         json!({
@@ -257,6 +257,11 @@ fn abi_types_carry_the_shapes_methods_answer_and_the_json_matches() {
                     ["title", "string"],
                     ["checkedIn", "bool"],
                 ],
+            },
+            "Meter": { "kind": "record", "fields": [["readings", "list<Reading>"]] },
+            "Reading": {
+                "kind": "record",
+                "fields": [["total", "u64"], ["delta", "option<i64>", { "optional": true }]],
             },
             "Listing": {
                 "kind": "record",
@@ -331,6 +336,30 @@ fn plain_serde_types_travel_as_their_abi_says() {
 }
 
 #[test]
+fn nested_wrapped_integers_round_trip_as_decimal_strings_past_2_pow_53() {
+    let abi_json = built().abi.clone().expect("component carries an ABI");
+    assert_eq!(abi_json["methods"]["echoMeter"]["returns"], json!("Meter"));
+    // 2^53 + 1 and i64::MIN: a JSON number would round the first; the string is exact.
+    let meter = json!({ "readings": [
+        { "total": "9007199254740993", "delta": "-9223372036854775808" },
+        { "total": "18446744073709551615", "delta": null },
+    ] });
+    let mut app = App::new();
+    assert_eq!(
+        ok_json(&app.view("echoMeter", &args(json!({ "meter": meter.clone() })))),
+        meter
+    );
+    // A number where the ABI says a decimal string is refused, not rounded.
+    let (code, message) = app_error(&app.view(
+        "echoMeter",
+        &args(json!({ "meter": { "readings": [{ "total": 9_007_199_254_740_993_u64 }] } })),
+    ));
+    assert_eq!(code, "BadArgs");
+    assert!(message.contains("meter.readings[0].total"), "{message}");
+    assert!(message.contains("decimal string"), "{message}");
+}
+
+#[test]
 fn unknown_method_is_an_app_error() {
     let mut app = App::new();
     let out = app.call("noSuchMethod", b"{}");
@@ -357,7 +386,15 @@ fn u64_args_are_decimal_strings() {
     let out = app.view("echoStart", br#"{"start": "18446744073709551615"}"#);
     assert_eq!(ok_json(&out), json!("18446744073709551615"));
     let out = app.view("echoStart", br#"{"start": 1}"#);
-    assert_eq!(app_error(&out).0, "BadArgs");
+    let (code, fields) = app_error(&out);
+    assert_eq!(code, "BadArgs");
+    assert_eq!(
+        serde_json::from_str::<Value>(&fields).unwrap(),
+        json!({
+            "message": "start: invalid type: integer `1`, expected a u64 as a decimal string",
+            "param": "start",
+        })
+    );
     let out = app.view("echoStart", br#"{"start": "1", "label": "x"}"#);
     assert_eq!(ok_json(&out), json!("1"));
 }
@@ -473,7 +510,7 @@ fn init_takes_arguments_like_a_call() {
     let title =
         |app: &mut App, key: &str| ok_json(&app.view("title", &args(json!({ "key": key }))));
 
-    // Delivered, by camelCase name, a `u64` as a decimal string (D20).
+    // Delivered, by camelCase name, a `u64` as a decimal string.
     let mut app = App::new();
     let init = args(json!({ "welcome": "hello", "opensAt": "1700" }));
     let out = app.run(InvocationKind::Init, owner(), "init", &init, None);

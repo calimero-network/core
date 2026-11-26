@@ -19,7 +19,8 @@ pub(super) struct IntentBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
+/// The 422/503 of a component's run that did not end `Ok`: `422` for an app error or a
+/// trap; a run past its deadline is a retryable `503 TIMEOUT`, not a `422 TRAP`.
 pub(super) fn component_failure(
     index: u64,
     status: &Status,
@@ -48,47 +49,59 @@ pub(super) fn component_failure(
     }
 }
 
+/// The refusal a component call's outcome answers, if it did not apply.
+fn applied_refusal(a: &crate::component::Applied) -> Option<ApiError> {
+    if a.conflict {
+        return Some(ApiError::unavailable(
+            "the call raced a leader change; retry with the same idempotency key",
+        ));
+    }
+    if a.error.as_str() == Some(crate::node::NOT_REACHED) {
+        return Some(ApiError::not_found(crate::node::NOT_REACHED));
+    }
+    if a.error.as_str() == Some(crate::node::READ_ONLY) {
+        return Some(ApiError::forbidden(crate::node::READ_ONLY));
+    }
+    component_failure(a.index, &a.status, &a.error, a.timeout)
+}
+
 /// A component call's answer. Its events are the ones the caller is in the
-/// audience of (R9).
+/// audience of (a team or org audience is resolved at delivery).
 fn component_answer(
     node: &Node,
     app_id: &str,
     caller: &Caller,
     a: crate::component::Applied,
 ) -> Response {
-    if a.conflict {
-        return ApiError::unavailable(
-            "the call raced a leader change; retry with the same idempotency key",
-        )
-        .into_response();
-    }
-    if a.error.as_str() == Some(crate::node::NOT_REACHED) {
-        return ApiError::not_found(crate::node::NOT_REACHED).into_response();
-    }
-    if a.error.as_str() == Some(crate::node::READ_ONLY) {
-        return ApiError::forbidden(crate::node::READ_ONLY).into_response();
-    }
-    if let Some(e) = component_failure(a.index, &a.status, &a.error, a.timeout) {
+    if let Some(e) = applied_refusal(&a) {
         return e.into_response();
     }
     let account = caller.account();
-    let events: Vec<Value> = node.sys(|s| {
+    let events: Vec<AppEvent> = node.sys(|s| {
         let Some(app) = s.apps.get(app_id) else {
             return Vec::new();
         };
         a.events
             .iter()
             .filter(|e| s.receives(app, &e.audience, account, account))
-            .map(|e| json!({ "kind": e.kind, "data": e.data }))
+            .map(|e| AppEvent {
+                kind: e.kind.clone(),
+                data: e.data.clone(),
+            })
             .collect()
     });
     let receipt = node.receipt(app_id, a.index, &a.result);
-    Json(json!({ "index": a.index, "result": a.result, "events": events, "receipt": receipt }))
-        .into_response()
+    Json(IntentResult {
+        index: a.index,
+        result: a.result,
+        events,
+        receipt,
+    })
+    .into_response()
 }
 
 /// `/intents` for a component app: the ABI of the bundle the app group runs
-/// (Ruling 40) decides whether it is a view and whether it needs a passkey.
+/// (not the app record) decides whether it is a view and whether it needs a passkey.
 async fn component_intents(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -137,7 +150,7 @@ async fn component_intents(
             },
         ));
     }
-    // Confirm flags come from the running bundle's ABI (S5), never from the app record.
+    // Confirm flags come from the running bundle's ABI, never from the app record.
     let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
         Some(consent(node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {
@@ -168,6 +181,31 @@ async fn component_intents(
     Ok(component_answer(node, &app_id, &caller, applied))
 }
 
+/// A confirm method's call under a consent already verified (an API key's
+/// follow-ups): the call [`component_intents`] makes after its step-up.
+pub(super) async fn call_consented(
+    node: &Node,
+    p: &Principal,
+    follow_up: &crate::types::KeyFollowUp,
+    idempotency_key: String,
+    consent: Value,
+) -> Result<(u64, Value), ApiError> {
+    let a = node
+        .call_component(&CallRequest {
+            idempotency_key: Some(idempotency_key),
+            consent: Some(consent),
+            sys_index: p.sys_index,
+            ..CallRequest::new(
+                follow_up.app.clone(),
+                follow_up.method.clone(),
+                follow_up.args.clone(),
+                p.caller.clone(),
+            )
+        })
+        .await?;
+    applied_refusal(&a).map_or(Ok((a.index, a.result)), Err)
+}
+
 async fn intents(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -175,6 +213,16 @@ async fn intents(
     Json(body): Json<IntentBody>,
 ) -> Result<Response, ApiError> {
     not_reserved(&body.method)?;
+    if body
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|k| k.starts_with(crate::idempotency::FOLLOW_UP_KEY_PREFIX))
+    {
+        return Err(ApiError::bad_request(
+            "RESERVED_IDEMPOTENCY_KEY",
+            "this idempotency key is the node's own",
+        ));
+    }
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
@@ -187,7 +235,7 @@ async fn intents(
 /// The node's commands and the runtime's exports are not an app's methods
 /// (`node::reserved_method`): a client naming one would otherwise reach
 /// `__upgrade` or `__blob` past the API's authority checks.
-fn not_reserved(method: &str) -> Result<(), ApiError> {
+pub(super) fn not_reserved(method: &str) -> Result<(), ApiError> {
     if crate::node::reserved_method(method) {
         return Err(ApiError::bad_request(
             "RESERVED_METHOD",
@@ -235,8 +283,12 @@ async fn views(
             Some(e) => e.into_response(),
             None => {
                 let receipt = node.receipt(&app_id, a.index, &a.result);
-                Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
-                    .into_response()
+                Json(ViewResult {
+                    index: a.index,
+                    result: a.result,
+                    receipt,
+                })
+                .into_response()
             }
         },
     )
@@ -248,7 +300,7 @@ pub(super) struct EventsQuery {
     from: u64,
 }
 
-/// The most event streams one node serves at once (Xil's review, issue 12).
+/// The most event streams one node serves at once.
 pub const MAX_EVENT_STREAMS: usize = 4096;
 
 /// One open event stream, counted until the stream is dropped.
@@ -287,7 +339,8 @@ async fn events(
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
-    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
+    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone(), Some(p.clone()))
+    {
         let stream = stream.map(move |e| {
             let _held = &slot;
             e
@@ -314,7 +367,17 @@ async fn events(
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
-    let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
+    // The replica judges each event for the subscriber's account; this node judges the
+    // credential that opened the stream before passing on what it sends.
+    let judged = resp
+        .bytes_stream()
+        .then(move |b| {
+            let (node, p, app_id) = (Arc::clone(&node), p.clone(), app_id.clone());
+            async move { still_admitted(&node, &p, &app_id).await.then_some(b) }
+        })
+        .take_while(|b| std::future::ready(b.is_some()))
+        .filter_map(std::future::ready);
+    let body = axum::body::Body::from_stream(judged.map(move |b| {
         let _held = &slot;
         b
     }));
@@ -377,15 +440,19 @@ async fn presence_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PresenceList>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
-    Ok(Json(json!({ "present": node.presence.snapshot(&app_id) })))
+    Ok(Json(PresenceList {
+        present: node.presence.snapshot(&app_id),
+    }))
 }
 
 /// Presence as a stream: a `snapshot` event, then a `presence` event per change
-/// (`state: null` when someone left).
+/// (`state: null` when someone left). Each batch of changes that arrived together (at most
+/// [`MAX_EVENT_BATCH`]) is judged again on fresh state ([`still_admitted`]): a member
+/// removed, or a key revoked, since the stream opened ends it.
 async fn presence_stream(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -393,7 +460,7 @@ async fn presence_stream(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
     let slot = StreamSlot::take(&node)?;
     let (now, rx) = node.presence.subscribe(&app_id);
     let first = futures_util::stream::once(async move {
@@ -405,6 +472,13 @@ async fn presence_stream(
     });
     let live = tokio_stream::wrappers::BroadcastStream::new(rx)
         .filter_map(|r| async move { r.ok() })
+        .ready_chunks(MAX_EVENT_BATCH)
+        .then(move |batch| {
+            let (node, p, app_id) = (Arc::clone(&node), p.clone(), app_id.clone());
+            async move { still_admitted(&node, &p, &app_id).await.then_some(batch) }
+        })
+        .take_while(|batch| std::future::ready(batch.is_some()))
+        .flat_map(|batch| futures_util::stream::iter(batch.unwrap_or_default()))
         .map(move |d| {
             let _held = &slot;
             Ok(Event::default()
@@ -512,7 +586,7 @@ async fn app_run_logs(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, run)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<RunLogs>> {
     let (app, account) = files_gate(&node, &headers, &app_id, false).await?;
     let answer = node
         .view(&ViewRequest {
@@ -528,7 +602,7 @@ async fn app_run_logs(
     if answer.result.is_null() {
         return Err(ApiError::not_found("no such run"));
     }
-    Ok(Json(json!({ "logs": [] })))
+    Ok(Json(RunLogs { logs: Vec::new() }))
 }
 
 #[derive(Deserialize)]
@@ -614,4 +688,57 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/intents", post(intents))
         .route("/apps/{app}/views", post(views))
         .route("/apps/{app}/events", get(events))
+}
+
+/// An event a call emitted that the caller is in the audience of: its kind and data (the
+/// app's own value).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppEvent {
+    kind: String,
+    data: Value,
+}
+
+/// What a call (`/intents`) answers: the log index of its entry, the app's result, the events
+/// the caller receives, and the answering node's receipt.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct IntentResult {
+    index: u64,
+    result: Value,
+    events: Vec<AppEvent>,
+    receipt: calimero_client::attest::Receipt,
+}
+
+/// What a view (`/views`) answers: the log index it read at, the app's result, and the
+/// answering node's receipt.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ViewResult {
+    index: u64,
+    result: Value,
+    receipt: calimero_client::attest::Receipt,
+}
+
+/// What `POST /apps/{app}/methods/{method}` answers: a call's answer, or a view's (no
+/// `events`), as the method is. The handler answers one of [`IntentResult`] and [`ViewResult`];
+/// this is their schema together, for the API's document.
+#[cfg(test)]
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct MethodResult {
+    index: u64,
+    result: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    events: Option<Vec<AppEvent>>,
+    receipt: calimero_client::attest::Receipt,
+}
+
+/// `GET /apps/{app}/presence`: who is here, on which device, and their state (`null`: none
+/// set).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PresenceList {
+    present: Vec<crate::presence::PresenceDiff>,
+}
+
+/// `GET /apps/{app}/runs/{run}/logs` (deprecated): always empty, a run keeps no log.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RunLogs {
+    logs: Vec<Value>,
 }

@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.account_usage import AccountUsage
 from ...models.error import Error
-from ...models.usage_response_200 import UsageResponse200
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, UsageResponse200]]:
+) -> Optional[Union[AccountUsage, Error]]:
     if response.status_code == 200:
-        response_200 = UsageResponse200.from_dict(response.json())
+        response_200 = AccountUsage.from_dict(response.json())
 
         return response_200
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, UsageResponse200]]:
+) -> Response[Union[AccountUsage, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,7 +60,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, UsageResponse200]]:
+) -> Response[Union[AccountUsage, Error]]:
     """The account's usage against its quotas
 
      The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations;
@@ -75,7 +75,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, UsageResponse200]]
+        Response[Union[AccountUsage, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -90,7 +90,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, UsageResponse200]]:
+) -> Optional[Union[AccountUsage, Error]]:
     """The account's usage against its quotas
 
      The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations;
@@ -105,7 +105,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, UsageResponse200]
+        Union[AccountUsage, Error]
     """
 
     return sync_detailed(
@@ -116,7 +116,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, UsageResponse200]]:
+) -> Response[Union[AccountUsage, Error]]:
     """The account's usage against its quotas
 
      The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations;
@@ -131,7 +131,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, UsageResponse200]]
+        Response[Union[AccountUsage, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -144,7 +144,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, UsageResponse200]]:
+) -> Optional[Union[AccountUsage, Error]]:
     """The account's usage against its quotas
 
      The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations;
@@ -159,7 +159,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, UsageResponse200]
+        Union[AccountUsage, Error]
     """
 
     return (

@@ -38,8 +38,8 @@ Generated from core's `docs/public/openapi.json`.
 | `blob_list(app)` | `GET /apps/{app}/blobs` | List an app's blobs |
 | `blob_revoke(app, id)` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate a blob's grants |
 | `blob_upload(app, sealed=…, body, content_type='application/octet-stream')` | `POST /apps/{app}/blobs` | Upload a blob. *Refusals:* `400 USE_FILES_API`, `429 QUOTA_EXCEEDED` |
-| `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
-| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
+| `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
+| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `403 ACCOUNT_NOT_LINKED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
 | `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
 | `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNIT_MEMBER` |
@@ -57,9 +57,10 @@ Generated from core's `docs/public/openapi.json`.
 | `links(app)` | `GET /apps/{app}/links` | List an app's links to the apps its release uses |
 | `list(package=…, bundle=…)` | `GET /apps` | Apps the caller reaches |
 | `metadata(app, metadata)` | `POST /apps/{app}/metadata` | Set an app's metadata |
-| `method(app, method, args=…, idempotency_key=…, consistency=…, min_index=…, confirm=None)` | `POST /apps/{app}/methods/{method}` | Call a method by its path. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_METHOD`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
+| `method(app, method, args=…, idempotency_key=…, consistency=…, min_index=…, confirm=None)` | `POST /apps/{app}/methods/{method}` | Call a method by its path. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `400 RESERVED_METHOD`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
 | `move(app, to_org, bring_members=…, confirm=None)` | `POST /apps/{app}/move` | Move an app to another organization. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `openapi(app)` | `GET /apps/{app}/openapi.json` | An app's OpenAPI document. *Refusals:* `410 UNSUPPORTED_ENGINE`, `422 BAD_ABI` |
+| `outbound_log(app)` | `GET /apps/{app}/outbound-log` | An app's outbound requests |
 | `pipeline_receipt_receipt(app, run, version=…)` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | A pipeline run's receipt. *Refusals:* `400 BAD_VERSION`, `409 RUN_NOT_ENDED` |
 | `pipelines_cancel(app, run)` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a pipeline run |
 | `pipelines_estimate_run(app, name, inputs=…, counts=…, params=…)` | `POST /apps/{app}/pipelines/{name}/estimate` | Estimate a pipeline run. *Refusals:* `400 BAD_INPUTS`, `400 BAD_PARAMS`, `404 NO_SUCH_PIPELINE` |
@@ -81,15 +82,16 @@ Generated from core's `docs/public/openapi.json`.
 | `secret_clear(app, name, confirm=None)` | `DELETE /apps/{app}/secrets/{name}` | Remove an app's own value of a secret. **passkey**. *Refusals:* `409 CLUSTER_NOT_UPGRADED` |
 | `secret_set(app, name, value, confirm=None)` | `PUT /apps/{app}/secrets/{name}` | Set an app's own value of a declared secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `409 CLUSTER_NOT_UPGRADED`, `409 CONFLICT` |
 | `secrets(app)` | `GET /apps/{app}/secrets` | The secrets an app's release declares |
+| `set_egress(app, egress, confirm=None)` | `POST /apps/{app}/egress` | Turn one app's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
-| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
+| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
 | `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
 | `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
-| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 USES_NOT_INSTALLED` |
+| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `400 NO_REGISTRY`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |
 | `upload_begin(app, size)` | `POST /apps/{app}/files/uploads` | Begin a file upload. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `upload_complete(app, upload)` | `POST /apps/{app}/files/uploads/{upload}/complete` | Commit an upload. *Refusals:* `409 UPLOAD_INCOMPLETE` |
@@ -116,7 +118,7 @@ Generated from core's `docs/public/openapi.json`.
 | `alias_get(alias)` | `GET /auth/aliases/{alias}` | Resolve an alias |
 | `alias_list()` | `GET /auth/aliases` | The account's aliases |
 | `alias_set(alias, app)` | `PUT /auth/aliases/{alias}` | Set an alias |
-| `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_UPGRADE_KEY`, `429 QUOTA_EXCEEDED` |
+| `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, then=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_FOLLOW_UP`, `400 BAD_UPGRADE_KEY`, `400 RESERVED_METHOD`, `409 FEATURE_NOT_ACTIVE`, `413 ARGS_TOO_LARGE`, `422 FOLLOW_UP_FAILED`, `429 QUOTA_EXCEEDED` |
 | `apikey_list()` | `GET /auth/apikeys` | The account's API keys |
 | `apikey_revoke(key, confirm=None)` | `DELETE /auth/apikeys/{key}` | Revoke an API key. **passkey** |
 | `login_begin(origin=…)` | `POST /auth/passkey/login/begin` | Start a sign-in |
@@ -148,7 +150,7 @@ Generated from core's `docs/public/openapi.json`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `create(name, owner, confirm=None)` | `POST /deployments` | Create a deployment. **passkey** |
+| `create(name, owner, confirm=None)` | `POST /deployments` | Create a deployment. **passkey**. *Refusals:* `409 RECOVERY_KEY_REQUIRED` |
 | `delete(id, confirm=None)` | `DELETE /deployments/{id}` | Delete a deployment. **passkey** |
 | `deployer_grant(deployer, until=…, confirm=None)` | `POST /deployers` | Grant a deployer. **passkey** |
 | `deployer_list()` | `GET /deployers` | The deployers |
@@ -229,6 +231,7 @@ Generated from core's `docs/public/openapi.json`.
 | `capabilities(org, account=…, team=…, capabilities, confirm=None)` | `POST /orgs/{org}/capabilities` | Set capabilities. **passkey** |
 | `create(name, recovery_key=…, capabilities=…)` | `POST /orgs` | Create an organization. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `delete(org, confirm=None)` | `DELETE /orgs/{org}` | Delete an organization. **passkey** |
+| `egress(org, egress, confirm=None)` | `POST /orgs/{org}/egress` | Turn the organization's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
 | `get(org)` | `GET /orgs/{org}` | One organization |
 | `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |
@@ -246,7 +249,7 @@ Generated from core's `docs/public/openapi.json`.
 | `publisher_upgrade(org, package, version, migrate=…, confirm=None)` | `POST /orgs/{org}/packages/{package}/upgrade` | Upgrade every instance of a publisher's package. **passkey** |
 | `recovery_cancel(org, confirm=None)` | `POST /orgs/{org}/recovery/cancel` | Cancel an organization recovery. **passkey** |
 | `recovery_finish(org, confirm=None)` | `POST /orgs/{org}/recovery/finish` | Finish an organization recovery. **passkey**. *Refusals:* `409 RECOVERY_NOT_READY` |
-| `recovery_set(org, public_key=…, confirm=None)` | `POST /orgs/{org}/recovery` | Set the organization's recovery key. **passkey**. *Refusals:* `400 BAD_RECOVERY_KEY` |
+| `recovery_set(org, public_key=…, confirm=None)` | `POST /orgs/{org}/recovery` | Set the organization's recovery key. **passkey**. *Refusals:* `400 BAD_RECOVERY_KEY`, `409 RECOVERY_KEY_REQUIRED` |
 | `recovery_start(org, nonce, signature)` | `POST /orgs/{org}/recovery/start` | Start an organization recovery. *Refusals:* `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` |
 | `release_approval(org, version, approved=…, confirm=None)` | `POST /orgs/{org}/releases` | Approve a mero-tee release for the organization's apps. **passkey** |
 | `remove_member(org, account, confirm=None)` | `DELETE /orgs/{org}/members/{account}` | Remove a member, or leave. **passkey** |
@@ -273,14 +276,14 @@ Generated from core's `docs/public/openapi.json`.
 | `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `503 BUSY` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
 | `get(package)` | `GET /packages/{package}` | One package |
-| `install(package, version)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 ACCOUNT_NOT_LINKED`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `list()` | `GET /packages` | Installed packages |
 | `origins_add(package, origin, rp_id=…, served=…, confirm=None)` | `POST /package-origins/{package}` | Register a frontend origin. **passkey**. *Refusals:* `400 BAD_RP_ID`, `429 QUOTA_EXCEEDED` |
 | `origins_list(package)` | `GET /package-origins/{package}` | A package's frontend origins |
 | `origins_remove(package, origin, confirm=None)` | `DELETE /package-origins/{package}` | Remove a frontend origin. **passkey** |
 | `pipelines(package, version)` | `GET /packages/{package}/{version}/pipelines` | A release's pipelines |
 | `uninstall(package)` | `DELETE /packages/{package}` | Uninstall a package |
-| `upload(body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `upload(org=…, body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `version_uninstall(package, version)` | `DELETE /packages/{package}/{version}` | Uninstall one version |
 
 ## `client.public`

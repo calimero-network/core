@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_secrets_response_200 import AppSecretsResponse200
+from ...models.app_secrets import AppSecrets
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppSecretsResponse200, Error]]:
+) -> Optional[Union[AppSecrets, Error]]:
     if response.status_code == 200:
-        response_200 = AppSecretsResponse200.from_dict(response.json())
+        response_200 = AppSecrets.from_dict(response.json())
 
         return response_200
 
@@ -62,7 +62,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppSecretsResponse200, Error]]:
+) -> Response[Union[AppSecrets, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,15 +75,18 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppSecretsResponse200, Error]]:
-    """The secrets an app's release declares
+) -> Response[Union[AppSecrets, Error]]:
+    r"""The secrets an app's release declares
 
-     For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts,
-    description and whether it is required, and `source`: `app` when the instance has its own value
-    (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else
-    `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing
-    more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever
-    manages the organization's apps.
+     For each secret the release the instance runs declares (its signed manifest's `secrets`): its
+    binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments;
+    `/` for every path) and the one place the node attaches it (`header` with its `format`, or
+    `bodyField`), with `binding` saying it in one line (\"sends OPENAI_API_KEY as the Authorization
+    header (Bearer …) to api.openai.com under /v1/\"), its description and whether it is required, and
+    `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits
+    of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from
+    holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound
+    one). Never a value. The owner, or whoever manages the organization's apps.
 
     **Who:** signed in (a session or an API key).
 
@@ -95,7 +98,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppSecretsResponse200, Error]]
+        Response[Union[AppSecrets, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -113,15 +116,18 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppSecretsResponse200, Error]]:
-    """The secrets an app's release declares
+) -> Optional[Union[AppSecrets, Error]]:
+    r"""The secrets an app's release declares
 
-     For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts,
-    description and whether it is required, and `source`: `app` when the instance has its own value
-    (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else
-    `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing
-    more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever
-    manages the organization's apps.
+     For each secret the release the instance runs declares (its signed manifest's `secrets`): its
+    binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments;
+    `/` for every path) and the one place the node attaches it (`header` with its `format`, or
+    `bodyField`), with `binding` saying it in one line (\"sends OPENAI_API_KEY as the Authorization
+    header (Bearer …) to api.openai.com under /v1/\"), its description and whether it is required, and
+    `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits
+    of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from
+    holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound
+    one). Never a value. The owner, or whoever manages the organization's apps.
 
     **Who:** signed in (a session or an API key).
 
@@ -133,7 +139,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppSecretsResponse200, Error]
+        Union[AppSecrets, Error]
     """
 
     return sync_detailed(
@@ -146,15 +152,18 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppSecretsResponse200, Error]]:
-    """The secrets an app's release declares
+) -> Response[Union[AppSecrets, Error]]:
+    r"""The secrets an app's release declares
 
-     For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts,
-    description and whether it is required, and `source`: `app` when the instance has its own value
-    (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else
-    `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing
-    more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever
-    manages the organization's apps.
+     For each secret the release the instance runs declares (its signed manifest's `secrets`): its
+    binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments;
+    `/` for every path) and the one place the node attaches it (`header` with its `format`, or
+    `bodyField`), with `binding` saying it in one line (\"sends OPENAI_API_KEY as the Authorization
+    header (Bearer …) to api.openai.com under /v1/\"), its description and whether it is required, and
+    `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits
+    of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from
+    holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound
+    one). Never a value. The owner, or whoever manages the organization's apps.
 
     **Who:** signed in (a session or an API key).
 
@@ -166,7 +175,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppSecretsResponse200, Error]]
+        Response[Union[AppSecrets, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -182,15 +191,18 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppSecretsResponse200, Error]]:
-    """The secrets an app's release declares
+) -> Optional[Union[AppSecrets, Error]]:
+    r"""The secrets an app's release declares
 
-     For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts,
-    description and whether it is required, and `source`: `app` when the instance has its own value
-    (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else
-    `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing
-    more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever
-    manages the organization's apps.
+     For each secret the release the instance runs declares (its signed manifest's `secrets`): its
+    binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments;
+    `/` for every path) and the one place the node attaches it (`header` with its `format`, or
+    `bodyField`), with `binding` saying it in one line (\"sends OPENAI_API_KEY as the Authorization
+    header (Bearer …) to api.openai.com under /v1/\"), its description and whether it is required, and
+    `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits
+    of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from
+    holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound
+    one). Never a value. The owner, or whoever manages the organization's apps.
 
     **Who:** signed in (a session or an API key).
 
@@ -202,7 +214,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppSecretsResponse200, Error]
+        Union[AppSecrets, Error]
     """
 
     return (

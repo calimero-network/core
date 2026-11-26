@@ -1,6 +1,11 @@
 //! The Rust app SDK for `calimero:app`: the `app` attributes, the shared storage encoding,
 //! tables with indexes, collections, `env` and guards. Apps compile it into their
 //! `wasm32-wasip2` component.
+//!
+//! Spec: [Build Calimero apps](https://calimero-network.github.io/core/build/),
+//! [SDK macros](https://calimero-network.github.io/core/build/sdk-macros/),
+//! [Tables & collections](https://calimero-network.github.io/core/build/collections/).
+//! Crate guide: [`crates/sdk/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/sdk/AGENTS.md).
 
 // Generated code names the SDK by name (`::calimero_sdk::...`), also inside this crate's own
 // tests and doctests.
@@ -83,7 +88,7 @@ pub use collections::{
 };
 pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
 pub use env::{Audience, Caller, OrgRole};
-pub use error::{AppError, Result, StorageError, TableError};
+pub use error::{AppError, Result, RunLimit, StorageError, TableError};
 pub use json::Bytes;
 pub use search::{Found, SearchMode, SearchOpts, SearchResults};
 pub use store::{MemStore, RangeCursor, Store};

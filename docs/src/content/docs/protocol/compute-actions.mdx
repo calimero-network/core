@@ -42,6 +42,7 @@ An app with compute methods is built as two components from one crate, and a job
 
 The two worlds differ in who may start work.
 `runs` is imported by the app world only: `start` and `cancel` are logged writes, so a compute run cannot start another.
+A client never calls a compute method or a result method itself: `/intents` and `/views` refuse both with `422 APP_ERROR`, code `WrongKind`.
 `job` is imported by the compute world only: `run-id`, `inputs` and `progress` describe the run in progress.
 Neither world imports the other's interface, so the install-time import check is the sandbox, not a policy the host remembers to apply.
 
@@ -101,12 +102,12 @@ A call, view, timer or `init` may create a file and ask for its size and hash, b
   Neither answer carries a key or content.
 - **No download, no grant.** A file is read by the app's own code through the `files` interface (`open`, `info`, and `create` to write), never through the API: `GET /apps/{app}/blobs/{id}` answers `409 NOT_SUPPORTED`, and `blobs.grant` refuses a file.
 - **No delete.** There is no `files.delete`: dropping the last reference is the delete.
-- **Retention.** Files follow the retention of blobs (R8).
+- **Retention.** Files follow the [retention of blobs](/protocol/blobs/).
   A file is held while a stored `BlobRef` names it, and is forgotten `BLOB_IDLE_MS` (1 hour) after it was made or after its last reference went.
   Every replica forgets the record in the same entry, and the bytes are then collected from every node that holds them.
   An uploaded file is held the same way, so the app has that hour to store its `BlobRef`.
 - **Quota.** Stored plaintext bytes are counted per organization in the [system group](/protocol/system-group/).
-  A write is charged before its record commits and released when R8 collects the file or the app is deleted; one past `maxFileBytesPerOrg` is refused with `429 QUOTA_EXCEEDED`.
+  A write is charged before its record commits and released when retention collects the file or the app is deleted; one past `maxFileBytesPerOrg` is refused with `429 QUOTA_EXCEEDED`.
 - **Who may use them.** Calls, timers and `init` create files.
   Views and actions may read them, and an action may send what it read out over outbound HTTP, but an action cannot write one.
   A migration touches no file.
@@ -161,7 +162,10 @@ Only an attested TD of this cluster holds the cluster key, so a valid signature 
 <li>**Start.** A call, timer or init (a logged write) calls `runs.start(method, args, inputs)`.
 The start is part of the call's outcome and is dropped if the call fails, or if an input is no longer a sealed file of the app when it applies.
 It is refused (`no compute component`) when the app's running release ships no compute component, and the entry pins that release's compute component to the run.
-Each input is **pinned** as one more reference while the run is active, so R8 keeps it even when no state refers to it; the pin goes with the final entry.
+The other refusals come back as soft errors the calling method handles; nothing is recorded. In order: `not a compute method`, `arguments too large` (over 64 KiB), `too many inputs` (over 64), `input named twice`, `input is not a file of this app`, `inputs too large` (over 2 GiB declared), then `too many runs started` (16 by one call) and `too many active runs` (64 for the app).
+The last two are checked after the same-job answer below, so a repeated start of a run already active is answered even at the caps.
+`runs.cancel` of a run that is not active answers `no such active run`; run records that cannot be read make both trap `HostDenied`.
+Each input is **pinned** as one more reference while the run is active, so [retention](/protocol/blobs/) keeps it even when no state refers to it; the pin goes with the final entry.
 An active run with the same method, arguments and inputs is answered instead of a second one.
 The run is **queued**.</li>
 <li>**Queue and caps.** The leader asks the system group for a place (`AcquireRun`).
@@ -278,7 +282,7 @@ To read a compute method's log lines, run it on your own machine with `meroctl l
 
 A release that registers pipelines (`pipelines` in its manifest, checked at install) can run them in the group of any app made from it, compute-only apps included.
 A pipeline that names `sources`, `sinks`, `publish`, `notify` or an input's `accept`, `maxFileSize`, `format` or `schema` is refused with `NOT_IN_V1`, as are `when`, `runIf`, `uses`, `loops` and `variables`: the engine runs none of them.
-`POST /apps/{app}/pipelines/{name}/runs { inputs, params }` starts one and answers `202 { run }`.
+`POST /apps/{app}/pipelines/{name}/runs { inputs, params }` starts one and answers `200 { run }`.
 The node judges the request against the pinned pipeline before logging anything: `NO_SUCH_PIPELINE`, `BAD_INPUTS` (an input unbound, past its `maxItems`, or a file the app does not hold), `BAD_PARAMS` (typed, within `min`, `max` and `enum`, defaults filled), `TOO_MANY_PIPELINE_RUNS` (8 running per app, `429`), `PIPELINES_NEED_ONE_SERVICE` and `409 CLUSTER_NOT_UPGRADED` until every node runs this release.
 The run pins the release's pipeline by hash and its compute component, so an upgrade of the app changes neither a run that started before it.
 A step's work is ordinary compute runs (`RunRecord.pipeline` names the step), so placement, retries, caps, quotas and billing are the run driver's, unchanged.
@@ -396,7 +400,7 @@ A job node exposes no usage series.
 | Open files in one run | 16 | `MAX_OPEN_FILES` |
 | Files created in one call | 1000 | `MAX_NEW_FILES` |
 | A file or output held with no reference | 1 hour | `BLOB_IDLE_MS` |
-| Result of a compute method | 64 KiB | `MAX_COMPUTE_RESULT_BYTES` |
+| Result of a compute method (past it the run ends `Trap(HostDenied, "result too large")` with no result) | 64 KiB | `MAX_COMPUTE_RESULT_BYTES` |
 | Progress step | 128 bytes | `MAX_PROGRESS_STEP_BYTES` |
 | Runs started by one call | 16 | `MAX_STARTS_PER_RUN` |
 | Active runs of one app | 64 | `MAX_ACTIVE_RUNS` |
@@ -431,7 +435,7 @@ Each row is one decision and the reason for it.
 | CA3 | Files use a random 256-bit data key per file, 64 KiB AES-256-GCM chunks with the index in the nonce and a last-chunk flag in the authenticated data, and a per-app file key `HMAC-SHA256(K_c, "calimero.files.v1\|" \|\| app)` that wraps data keys with a fresh subkey per wrap. Opening checks the plaintext size and SHA-256 against the blob's record. A file is a list of segments of 256 chunks, and its id is a domain-separated SHA-256 of the segment hashes, so it never equals a plain blob's content hash and files still share the blob id namespace. | The file key is separate from the app's TEE key, which is also a curve private key. A fresh subkey per wrap removes any random-nonce bound per key, and GCM does not commit to its key, so the recorded hash does. |
 | CA4 | Component files live on the app's replicas, pushed over the existing blob route and successful at a majority of those replicas. | A cluster-wide majority multiplies disk for large uploads. Replicas already survive a node loss and move with the app. |
 | CA5 | Uploads go through the sealed channel to `POST /apps/{app}/blobs`. The receiving node passes the body to the app's leader, which seals, charges, stores on a majority of the voters and commits the blob record; an upload is at most 47 MiB. A file cannot be downloaded or granted through the API: `GET` answers `409`. | Core publishes no app public key to seal to, and a per-file key is what a run's re-wrap needs. |
-| CA6 | A per-organization stored-file quota, `maxFileBytesPerOrg` (50 GB), is counted in the system group, charged before a file's record commits, and released when R8 collects the file or the app is deleted. | The organization pays for the bytes. The charge is not atomic with the app log, so a crash between them can leave a small over-count. |
+| CA6 | A per-organization stored-file quota, `maxFileBytesPerOrg` (50 GB), is counted in the system group, charged before a file's record commits, and released when retention collects the file or the app is deleted. | The organization pays for the bytes. The charge is not atomic with the app log, so a crash between them can leave a small over-count. |
 | CA7 | Job nodes are registered with `role: job` but are never Raft members. They are excluded from admission, placement, blob pushes, key delivery and placement counts, and run `merod run --job-node` with no KMS key, no cluster key and no store. | A member keeps its log sealed under the cluster key, which a job node must never hold. "No vote" then holds structurally rather than by policy. |
 | CA8 | **Q-P1, how the leader checks a job node's release.** The existing attestation machinery, with a job variant: `GET /attestation?purpose=jobs` returns a quote binding the transport key and an Ed25519 job key, verified by `verify_job_key` with the shared peer policy. The attested release must then be approved for the app's organization. | One verification path, one policy. The leader learns the job node's keys and its release from a single quote, before it re-wraps anything to it. |
 | CA9 | For each input the leader unwraps the data key and re-wraps it to the job node's attested transport key (ephemeral X25519, HKDF over the key pair, app, run, attempt and index, AES-256-GCM). The noise seed is wrapped the same way. The run token is `HMAC-SHA256(file key, "calimero.compute.token.v1\|" \|\| run \|\| "\|" \|\| attempt` with the attempt in decimal`. | Wrapped keys travel only in the assignment, never in the log. The job node opens them through its sealed transport, and any replica can derive the token, so a new leader can keep polling. |
@@ -453,11 +457,660 @@ Each row is one decision and the reason for it.
 | CA25 | A run's outcome never depends on the node it ran on. Node-local failures (instance pool, allocation, OS memory, file I/O) are `Unavailable`, retried elsewhere and never reported as the app's failure. A cancel is `cancelled`, running out of wall time is a lost attempt retried on another job node (fuel is the deterministic cap, and `timeout` is the leader's deadline), reads fill to the requested size, a compute run sees a constant context, and `wasi:random` is capped per call. Accepted: stack depth may differ by CPU, so a run at the recursion limit can end differently on two job nodes. | A customer must never pay for, or be told about, a fault of someone else's hardware. The recursion-limit case is a known gap. |
 | CA26 | Job-node admission is a cluster identity key: every cluster node derives one Ed25519 key from the cluster key, the job node is started with its public half, and every assignment and bundle upload carries a signature. Runs are keyed by app, run and attempt, and a report also binds the digest of the exact assignment it ran. | Only an attested TD of this cluster can hold the cluster key, so a signature proves the sender is a node of the cluster, with no attestation fetch or cache on the job node. This replaces CA10. A job node also prepares every bundle on the compute world, so a signed app component is refused (`BAD_BUNDLE`) too. |
 | CA27 | A job node decides input integrity once, from the uploaded bytes in memory, so its own disk can never turn a correct input into a signed failure. A `computeAttempt` entry records the job key and the assignment digest, and every replica verifies a final report against both. Later read failures are lost attempts. | The disk of a job node is outside the trust boundary, and a report must be checkable by a replica that never talked to the job node. |
-| CA28 | A run that can never be granted (its fuel alone exceeds the quota, or it was released), or that is granted but taken by no job node within `QUEUED_RUN_TIMEOUT` (10 minutes of healthy time, at most twice that), ends as failed with reason `refused`, and a run the queue grants no place in that time ends `not-granted`. Every value a job node signs is bounded at apply: output sizes and count, fuel within the declared cap, CPU and memory within the run's caps. An input of an active run is pinned as a reference, so R8 cannot collect it until the run is final. | No run may occupy an app's active set forever, and a compromised job node cannot make a replica apply an absurd value. |
+| CA28 | A run that can never be granted (its fuel alone exceeds the quota, or it was released), or that is granted but taken by no job node within `QUEUED_RUN_TIMEOUT` (10 minutes of healthy time, at most twice that), ends as failed with reason `refused`, and a run the queue grants no place in that time ends `not-granted`. Every value a job node signs is bounded at apply: output sizes and count, fuel within the declared cap, CPU and memory within the run's caps. An input of an active run is pinned as a reference, so retention cannot collect it until the run is final. | No run may occupy an app's active set forever, and a compromised job node cannot make a replica apply an absurd value. |
 | CA29 | Assignments are deterministic: each wrap's ephemeral key and nonce derive from the file key and the run, attempt, kind, index and job key. The leader delivers an assignment before committing its attempt. A cancel bills the usage the job node signed when it stopped, and has none when the job node does not answer. | Any leader can rebuild the exact assignment an attempt's digest names, and a busy or unreachable job node costs no attempt. |
-| CA30 | A file is a sealed blob: it shares the blob id namespace, `BlobRef` replaces a separate file id, and there is no delete. Retention is R8: a file nothing refers to is forgotten `BLOB_IDLE_MS` after it was made, and the quota is released when it is collected. | One identifier and one retention rule for every byte an app holds, and a reference in state is the only thing that has to be kept honest. |
+| CA30 | A file is a sealed blob: it shares the blob id namespace, `BlobRef` replaces a separate file id, and there is no delete. Retention is that of blobs: a file nothing refers to is forgotten `BLOB_IDLE_MS` after it was made, and the quota is released when it is collected. | One identifier and one retention rule for every byte an app holds, and a reference in state is the only thing that has to be kept honest. |
 | CA31 | A run's outputs are registered as sealed files by the final entry, before the result method applies, and are kept only if the result method stores their `BlobRef`. Inputs are pinned while the run is active. | An output the app never claims cannot linger or hold quota, and an input cannot be collected under a run that reads it. |
 | CA32 | One crate builds two components: the app component (world `app`, imports `runs`) and the compute component (world `compute`, imports `job`, export `run`). `meroctl app build` writes both, the compute one through `--cfg calimero_compute` in its own target directory, and the signed manifest carries it as `compute`. | The compute component has no state, `xcall`, events, blobs, `runs` or `wasi:http` to import, so what a job node can do is enforced by the import check, and authors write one crate. |
 | CA33 | Install prepares the compute component on the compute engine only and requires its ABI to be the compute world's and to list exactly the app ABI's compute methods with the same caps (`400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH`). Both come from one signed release. | The two components cannot drift: the app's result methods, caps and the compute methods a job node runs always describe the same methods. |
 | CA34 | A run pins the compute component of the release the app was running when its start was logged (`RunRecord.compute_bundle`, filled by the leader into the entry, never read at apply). An app with no compute component cannot start a run (`no compute component`), so a raw single `.wasm` upload cannot start runs. | Every replica records the same hash, and a restart on another job node, or after an upgrade, runs the same component. |
 | CA35 | The leader sends a job node only the run's compute component as `Assignment.bundle`, and the job node refuses an app component. Billing and the result method stay on the app component, and the compute usage series carry `app`, `org` and `developer`. | A job node never receives code that could reach state, and the organization is billed against the release that started the run. |
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Job nodes
+
+Code: `NodeRole::Job`, `job_node.rs`, `node/job.rs`.
+
+`POST /ops/nodes { id, addr, zone?, role?, pool? }` (operator-signed; `role` is in the signed
+arguments unless it is `replica`, `pool` only when set; `"replica"` default, `"job"`; any other role
+is refused) registers a node that only runs compute.
+It is in the directory but never a Raft member (not even a learner: a member keeps its log sealed
+under K_c, which a job node never holds), never a replica, blob (a sealed file included) or bundle
+target, majority member, presence peer, CSP origin or cluster-key recipient.
+Every site that picks nodes for the cluster's own work reads `SystemState::replica_nodes` /
+`replica_node(id)`, never `nodes`; `/ops/apps/{app}/replicas` naming a job node answers `400
+JOB_NODE`, `internal/cluster-key` for one is refused, `/ops/placement` lists it with `role` and app
+counts stay replica-only.
+`DELETE /ops/nodes/{id}` removes one without touching system voters.
+A node's role is fixed (`RegisterNode` refuses another role for an id; remove it first) and
+`/ops/nodes` refuses `role: job` for a system voter, learner or `--peers` id (`NODE_HOLDS_CLUSTER`);
+removal changes system membership only for a node that is in it.
+Nodes are reached by id: Raft's `PeerTransport::send` takes the address `Node::replica_addr(id)`
+holds (the directory's, else `--peers`; none for a job node), and `internal/cluster-key` the one
+`Node::key_recipient_addr(id)` holds (the directory's, else the system group's membership, else
+`--peers` only before genesis), and address-only callers (`Node::peer`, so `peer_post` and streams)
+resolve it by a normalised comparison (`system::normalize_addr`) and refuse anything that is not a
+replica's, so the cluster secret never leaves for a job node.
+`RegisterNode` refuses an address another id holds (`ADDRESS_TAKEN` at the API).
+A ceremony holder is resolved through `replica_node`.
+Registering a job node (`POST /ops/nodes`, `role: job`) answers `409 CLUSTER_NOT_UPGRADED` unless
+every replica node, voter and learner runs at least this node's release, so no job record exists
+while an older node could misread it (upgrade the voters first).
+Upgrade the voters before anything else: the `RegisterNode` refusals (role fixed, address taken)
+bind only nodes that run this release.
+A node registered as a replica is admitted as a learner only after it attests its transport key as a
+cluster node (`attests_as_replica`): a job node registered as a replica never is, and `--peers` must
+list only replica nodes.
+`merod run --job-node` calls `run_job(JobConfig)`: no store, K_c, KMS, Raft or system group; it
+serves `/health`, `/attestation` (only `purpose=jobs`, answering `jobKey` bound with the transport
+key, release, cluster and node id in one quote; every other purpose or none is 404, so no channel
+that attests a transport key opens to it; a cluster node answers `purpose=jobs` with 404) and `GET
+/job/load` (`{ running, capacity }`, capacity is `--job-slots`, default `RUNS_PER_JOB_NODE` = 2).
+Its Ed25519 job key is made in memory at start.
+Leader side: `Node::attest_job(id, app)` fetches `purpose=jobs` over a fresh nonce, verifies it with
+`verify_job_key` under the peer policy (`--peer-profiles`, `--peer-min-release`), keeps the result
+`JOB_ATTEST_TTL` (60 s) for as long as the directory's `node_epoch` for the id is unchanged (any
+registration or removal) and until a channel to it fails (`forget_job`); it fails outright when the
+directory could not be brought up to date.
+`attest_job` also refuses a release the app's org or account has not approved (`release_may_hold`,
+as `may_send` does), and `/ops/placement` reads a job node's release through the same cached
+attestation; `GET /ops/job-nodes/{id}/attestation` (ops token) answers the leader's check without
+the per-app approval as `{ state: admitted|refused|unreachable, node, release|reason }`
+(`JobAttestError` tells a failed request from a refusal, by status: 5xx, 408, 425, 429 and transport
+failures are unreachable, any other non-2xx is refused; `404` for a non-job node);
+`Node::job_load(peer)` asks over a sealed channel pinned to the attested transport key.
+
+### Job runs
+
+Code: `job_node/{admission,bundles,runs,exec}.rs`, `job_wire.rs`.
+
+A job node runs one attempt of a compute run per assignment, all inside the sealed channel.
+
+**Who may give it work**: only the cluster whose identity key it was started with (`merod run
+--job-node --cluster-identity HEX`, from `GET /ops/cluster` / `meroctl ops cluster`).
+The identity is an Ed25519 key derived from K_c (`backup::cluster_identity_key`, seed
+`HMAC-SHA256(K_c, "calimero.cluster-identity.v1")`), so a valid signature shows a node of this
+cluster signed; the job node fetches and attests nothing about the sender, and has no `--peers`; a
+key that is not a curve point or is of small order is refused at start (`check_cluster_identity`),
+signatures are checked strictly, and the identity is bound into the job node's `purpose=jobs` quote
+(`AttestationDoc::cluster_identity`, `job_key_binding`) so the leader's `attest_job` refuses a job
+node that serves another cluster.
+`PUT /job/bundles/{hash}` takes a component only with `x-bundle-signature`, the identity's signature
+over `"calimero.compute.bundle.v1\0" || hash` (`403 BAD_SIGNATURE`), then checks the hash and
+prepares it once on the compute engine (`MAX_JOB_BUNDLES` kept, least recently used first); only a
+compute component (`calimero:app/compute`, its ABI listing compute methods) prepares, and an app
+component is refused with `400 BAD_BUNDLE` even when the cluster signed it, so the job node never
+links storage, state or the network for it.
+`POST /job/runs` (at most `MAX_ASSIGNMENT_BYTES`) takes an `Assignment` (`job_wire`: app, run,
+attempt, method, args, bundle, caller, owner, `startTsMs`, budget, inputs `{id = the file id, size,
+sha256, segments = the hex SHA-256 of each segment, wrapped}`, wrapped seed, hex token, `signature`)
+signed by the identity over a length-prefixed binary message of every field (`assignment_message`,
+big-endian integers; `Node::sign_assignment` is the cluster side).
+Refusals, in order: shape (`400 BAD_ASSIGNMENT`/`BAD_BUDGET`, duplicate input ids, `413
+TOO_MANY_INPUTS`/`INPUT_TOO_LARGE`/`INPUTS_TOO_LARGE`), `403 BAD_SIGNATURE`, then an assignment
+already held answers its state (`409 RUN_CONFLICT` if it differs), `503 BUSY` at the node's
+`--job-slots` runs waiting or running or when the finished outputs held on disk plus the most each
+active run and the new one may still write exceed `MAX_FINISHED_BYTES` (nothing is evicted, the
+leader collects or deletes), `409 NEED_BUNDLE`, `400 NOT_COMPUTE` (the compute ABI must list the
+method as a compute method), `400 BAD_WRAP` (every wrapped key opens at admission through
+`unwrap_for_job`, so a key made for another node, run, attempt or index never gets in).
+Runs are keyed by `(app, run, attempt)` (run ids are per app) and every other route is
+`/job/runs/{app}/{run}/{attempt}/...` with the app id URL-encoded; they need the run token in
+`x-run-token` (constant-time compare); a wrong token answers exactly as an unknown run, `404
+UNKNOWN_RUN`, which the leader treats as lost.
+`PUT.../inputs/{i}/{k}` takes segment `k` of input `i`, in any order, only if its length is the
+segment's and its SHA-256 is the one the assignment lists (`400 BAD_SEGMENT`, `404
+NO_SUCH_SEGMENT`); an input whose list does not hash to its id is `400 BAD_ASSIGNMENT`; each segment
+is written at `k * SEGMENT_BYTES` in the input's scratch file, and when the last one is in the file
+is streamed through the opener from disk (`exec::input_matches`) to prove it opens under the run's
+key to the declared size and plaintext SHA-256; an input that does not match ends the run on the
+spot with a signed `integrity` report, since the leader sent it; the leader sends the segments of an
+input one at a time, from its store or fetched from a replica; the run starts on its own OS thread
+when every input is in (at once for none).
+Sealed request bodies are decrypted and buffered before any route check, bounded by the sealed
+in-flight cap; that is accepted.
+`GET.../{attempt}` answers `{ state: awaiting|running|done|lost, progress?, report?, signature? }`:
+`done` carries the signed report, a failed run included; `lost` is a run this node could not serve
+(`Unavailable` trap, thread panic, node file I/O, an input that fails to open during the run, which
+is the node's own disk), never signed, which the leader restarts elsewhere with the next attempt.
+`GET.../outputs/{i}/{k}` gives one segment of an output's ciphertext, read by range from the scratch
+file (`404 NO_SUCH_SEGMENT` past the last), and `.../outputs/{i}/key` its data key (hex), once done;
+outputs are listed in the order the run finished them.
+`DELETE` sets the cancel flag, waits `CANCEL_WAIT` for the run to stop, answers its last status and
+drops it with its scratch files (a run that did not stop stays and answers `running`); runs not
+deleted are swept `JOB_RESULT_TTL` after they end, runs still waiting for inputs end lost and are
+swept after `AWAITING_INPUTS_TTL`; the scratch directory is emptied at start, so a restarted node
+knows no runs.
+The run is the compute component's `run` export, invoked as an action with a compute context over
+the files of the assignment only (`Assignment.bundle` names the compute component's hash): inputs
+are streamed from the scratch ciphertext through `FileOpener` and checked with `finish_expecting` at
+the end, and a failure then is a read error, so the run is lost, never signed as `integrity`.
+Outputs are sealed to disk under a fresh key each (`NewFile.ciphertext` stays empty); engine
+`WasmtimeEngine::for_compute`, run through `WasmtimeEngine::run_compute` (`ComputeRun`), the setup
+`crates/meroctl/compute` also calls, so only the file provider differs.
+A trap maps to the reason structurally (`calimero_app_engine_wasmtime::ending_of`, which
+`exec::classify` maps onto `FailReason`): fuel, memory, cancelled, trap (fault, stack, any other
+denied call), app-error; a wall clock that ran out (`Timeout`) is a lost attempt, so the outcome
+never depends on the machine and only fuel is the deterministic cap.
+A trap or app-error report also carries the text (`Report::message`, signed, at most
+`MAX_REPORT_MESSAGE_BYTES`).
+The `Report` (`job_wire`) holds app, run, attempt, status, reason, the result bytes, outputs `{id =
+the file id, size, sha256, segments}` and usage as integers (`cpuMicros` thread CPU, `gibMicros`
+peak memory times wall, `fuel`); the job key signs `"calimero.compute.report.v1\0"`, the SHA-256 of
+the assignment message it ran (so a report stands for that assignment only) and the length-prefixed
+fields, output ids, hashes and segment hashes as their 32 decoded bytes (`report_message`); one
+encoding only: ids and hashes are lowercase 64 hex, a done report has no reason, a failed one has a
+reason and neither result nor outputs, and `verify_report(job_key, assignment_digest, report,
+signature)` is the one check the leader uses.
+`Assignment`'s `Debug` hides the token and the wrapped keys; the seed and keys live in `Zeroizing`,
+except the copy of the seed the host core keeps in its `Invocation` for the run's life.
+A job node feeds no metrics series: a compute run leaves every `calimero_app_*` series of the
+cluster unchanged until the leader counts it.
+The leader's reads from a job node (`attest_job`, `job_load`) stop at `MAX_JOB_RESPONSE_BYTES`.
+
+### Compute runs
+
+Code: `component/runs.rs`.
+
+A call, timer, `init` or result method starts a run with `runs.start`.
+The host puts `Outcome::compute_starts` (and `compute_cancels`) in its outcome, and the node fills
+the app's `owner` (`Outcome::name_owner`).
+The payer is the leader's to read from fresh system state when it acquires.
+A read-only member's call that starts or cancels a run is refused like one that writes keys.
+`apply` (status `Ok` only) writes a `RunRecord` per run as a hidden row (`rows::CRUN`, by run id)
+and adds its id to `ComponentHead::active_runs`.
+At most `MAX_ACTIVE_RUNS` runs are active; a start past it or of a known id is dropped.
+`finished_runs` keeps the last `FINISHED_RUNS_KEPT` (256) finished ids, oldest first, and a record
+leaves with its id.
+The record pins the bundle that ran at start, so an upgrade does not move it.
+It pins the compute component the same way: `RunRecord::compute_bundle` is the group's own
+(`ComponentHead::compute_bundle`, set with the bundle by the app log's `Init` or `Upgrade` entry) at
+the moment the start applies, never a value the leader read from the system group.
+Apply never reads system state, because the system group and the app's log are different logs: a
+delayed or failed system write cannot give a run a compute component that did not ship with the
+group's bundle.
+An upgrade that would leave an active run's result method undeclared (`RunNeedsResultMethod`,
+checked on the leader inside the proposal) is refused.
+An app whose running release has no compute component (a raw upload, or a release without one)
+cannot start a run: `runs.start` answers the soft error `NO_COMPUTE_COMPONENT` and nothing is
+recorded.
+A run recorded before this has no `compute_bundle`; the leader that drives runs must treat none as
+no compute component.
+An input of a run is one of the app's own sealed files (a blob record with a `file` seal), named
+once; the host refuses a plain blob, an unknown id and a file the same run just made.
+A start whose input is no longer a sealed file the app holds when it applies is dropped.
+An active run's inputs count as references of the app (`pin_inputs`: one more at the start, one less
+at the final), so R8 keeps them even when no state refers to them.
+They are forgotten `BLOB_IDLE_MS` after the run is final, like any file nothing refers to.
+Two more entries move a run.
+`computeAttempt { run, attempt, node, jobKey, assignmentDigest, tsMs }` applies to an active run
+whose cancel was not requested, when `attempt` is the next number and at most `MAX_ATTEMPTS` (3) and
+both keys are hashes (64 lowercase hex); it sets `running`.
+`computeFinal { run, attempt, outcome, report?, signature?, outputs, usage, result, baseIndex, tsMs,
+idTerm, idSeq }` ends it.
+The first valid final of the run's latest attempt (0 before any) wins and any later one is a no-op.
+A job outcome (`done`, or `failed` with `fuel | memory | trap | app-error | integrity | cancelled`)
+needs a report and signature that `verify_report` accepts under the latest attempt's `jobKey` and
+`assignmentDigest`, for this app, run and attempt, with the same status and reason, and `outputs`
+and `usage` exactly the report's.
+A `cancelled` final (or `failed cancelled`) needs `cancelRequested`, and is either the leader's (no
+report, zero usage) or carries the job node's report (status failed, reason cancelled) that verifies
+like any other, with its usage.
+Other leader outcomes carry no report, no outputs and zero usage: `failed lost` needs every attempt
+used, `failed quota` (the outputs would pass the payer's file quota) no further state, `failed
+timeout` a run that was assigned, `failed refused` (an acquire refused for good) a run with no
+attempt.
+Outputs are bounded (`MAX_NEW_FILES`, `MAX_FILE_BYTES` each, `MAX_COMPUTE_FILE_BYTES` together), and
+a job's usage cannot pass its caps (fuel; CPU micros and memory-GiB-micros at most the wall cap plus
+`DEADLINE_GRACE`, 60 s).
+An output id that is not a blob id, is already a blob of the app or is listed twice is refused.
+A final registers each output as a sealed file of the app in the same entry and before `result`
+applies (`BlobTable::add_file`, the path a run's own files take, with the plaintext hash and wrapped
+key), so a `BlobRef` the result method stores is counted.
+An output the result method does not store is forgotten `BLOB_IDLE_MS` later, and the org's file
+quota is released when the leader collects it.
+`AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave,
+so `storage_put` accepts those references.
+A final marks each output `FileSeal.output`, the flag that makes it publishable (only a signed done
+report carries outputs).
+
+**Run logs: none are kept.** An app's log lines (stdout, stderr, `log`) may hold user data, which
+neither Calimero nor the operator may see, so no node keeps a compute run's log, and a production
+node does not even collect a call's, view's, timer's or action's: its host drops every line
+(`HostCore::with_logs`, off unless `Config::app_logs`).
+A development node (`Config::app_logs`, `--dev`, `merod local`) prints each line to its own log
+(`node::component::print_app_logs`, target `app_log`, with app, kind and method) and stores none;
+`meroctl local compute run` prints a compute method's on stderr.
+A job node seals none (its `Report::log` is always none, and `GET
+/job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key`, deprecated since 1.0.0-rc.36, answer
+`404 NO_LOG` for any run, `runs::no_log`), and a leader never asks for one: it sends no `x-run-log`
+header, without which a job node of an earlier release (1.0.0-rc.35 and before) answers its report
+as it was before logs, signed without one.
+A report that names a log does not hold up (`report_is_valid`), so its attempt is lost and runs on
+the next job node.
+`Report::log` stays in the wire format and in `report_message` (a log appends
+`calimero.compute.report.log.v1\0` and the ref as an output's), and apply is unchanged, so a final
+an earlier leader logged with `FinalEntry::log` replays identically: `check_final` takes a log only
+when it is the report's, and `apply_compute_final` keeps it only if it is a new file within
+`MAX_RUN_LOG_BYTES` (`kept_log`), as a sealed file marked `FileSeal.log` (not `output`) that
+`runs.publish` refuses, that is neither a pipeline output nor a run input, and that the app's code
+does not see (`NodeFiles::sealed`).
+`RunRecord::log` names it, held with one reference until `finish_run` drops the record from the last
+`FINISHED_RUNS_KEPT`; it counts toward the app's file quota and goes `BLOB_IDLE_MS` after its
+record.
+Nothing answers it: the files export refuses a `FileSeal.log` file as unknown (`404`), the run view
+answers `logs: []`, and `GET /apps/{app}/runs/{run}/logs` (deprecated since 1.0.0-rc.36,
+`api-deprecations.toml`) answers `{ logs: [] }` behind `files_gate` (a stranger gets `403`).
+The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method,
+attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is
+the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
+The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in
+`calimero-app-engine-wasmtime`).
+The cluster tests' fixture (`apps/fixture-compute`) takes it as the SDK's `ComputeOutcome` and
+stores each output's `BlobRef` when the run is done.
+Every permanent refusal changes nothing and answers `AppError` with the reason as `error`; only a
+stale `baseIndex` answers `conflict` (retry on the current state) and leaves the run active.
+`init` starts runs on its own bundle.
+The result method runs with `runs_provider(Some(run))`, which leaves out the run that is ending, so
+its own start of the same job is a new run.
+`new_file_bytes` counts only the new files of a final's result method for the one charge gate, and
+`None` on overflow refuses the entry: the leader charged and stored the outputs before it took the
+proposal lock.
+A final over the log's cap loses only its result method's outcome, and its outputs stay registered.
+A final over the cap even without it is not built (`FINAL_TOO_LARGE`), and the leader ends the run
+`Failed{tooLarge}`, its own reason, not a timeout.
+A run record that cannot be read makes the host deny start and cancel (`RUN_RECORDS_UNREADABLE`).
+A run being cancelled is not the answer to a start of the same job.
+Applying a final records it, releases the inputs, registers the outputs, then applies `result` as a
+call's outcome (only if its status is `Ok`; its own starts and cancels included).
+A queued run whose fuel exceeds a lowered `computeFuelPerOrg` is marked `RunSlot::refused`, and the
+leader ends it `failed refused`.
+The system group queues runs (`SystemState::compute`, `RunSlot`).
+`AcquireRun` (idempotent; payer must be the app's, fuel at most `MAX_COMPUTE_FUEL`) and `ReleaseRun`
+run the grant pass.
+Capacity is per pool: `SystemState::pools` (`POST /ops/pools`, operator-signed `cluster /
+__set_pools / { pools }`, refused `409 UPGRADE_PENDING` by `Node::require_current_release` while a
+node is behind) names each pool's `runsPerNode` and `maxMemoryMib`, a job node's `NodeRecord::pool`
+(empty is `DEFAULT_POOL`) puts it in one, and a pool's capacity is its nodes times `runsPerNode`
+(`pool_capacity`); a node in a pool the cluster does not define adds none.
+A run goes to the smallest pool whose `maxMemoryMib` fits its caps (`pool_for`, `RunSlot::pool`),
+`AcquireRun` refuses one that fits none (`RUN_NO_POOL`, permanent), and `pick_job` keeps only job
+nodes of the slot's pool; `AcquireRun { pool: Some(name) }` (a pipeline step's) takes that pool
+instead when it fits the memory cap.
+`SetPools` refuses removing a pool that still has job nodes or runs (`POOL_IN_USE`).
+`SystemState::price_table` (`GET`/`POST /ops/prices`, operator-signed `cluster / __set_price_table /
+{ table }`, same release gate) holds the `calimero_pipeline::PriceTable`; `SetPriceTable` accepts
+only `version` = current + 1 (`PRICE_VERSION`) and a nonzero fuel rate (`BAD_PRICES`).
+With no pools it is the legacy single pool: registered job nodes times `RUNS_PER_JOB_NODE` (2).
+Whether a node is reachable or runs a release an org approved is the leader's attested view, not
+replicated state, so `apply` cannot count it and the leader bounds a run's wait instead.
+A payer's limits (`SystemState::payer_quotas`: runs, fuel, file bytes) are its override in
+`SystemState::org_quotas` where it has one (`POST /ops/quotas` with `org`: a field set to `null`
+clears it; operator-signed `cluster / __set_org_quotas / { payer, quotas }`, refused `409
+UPGRADE_PENDING` while a node is behind; all fields cleared removes the entry), else the cluster's.
+`grant_runs`, the `AcquireRun` fuel refusal, the refused marking and the file-bytes charges read
+them; lowering an override never revokes a granted run, new grants wait.
+Free places go to the payers in turn: the one served longest ago (`run_served`, a count of grants,
+kept only for payers that still have runs), then the one whose oldest waiting run has the smallest
+`seq`; and a payer at `maxConcurrentRunsPerOrg` (4) or over `computeFuelPerOrg` (10 x
+`MAX_COMPUTE_FUEL`), or its override, is passed over for the pass.
+`RegisterNode`, `RemoveNode`, `SetQuotas`, `SetPools`, `TransferApp` (an app leaving a personal
+organization moves its payer) and `remove_app` (`DeleteApp`, `DeleteOrg`, `DeleteTeam`) re-run it,
+and a granted run is never taken back.
+`AcquireRun` answers `{ state: granted | queued | refused, code, retryable }`.
+Retryable codes are `NOT_PAYER` and `APP_QUEUE_FULL`; permanent ones are `NO_SUCH_APP`,
+`FUEL_OVER_RUN_MAX`, `FUEL_OVER_QUOTA`, `RUN_NO_POOL` and `RELEASED`.
+It refuses a run id released before (`released_runs`, the last 256 per app), past `MAX_ACTIVE_RUNS`
+runs queued for the app, and a run whose fuel alone exceeds `computeFuelPerOrg`.
+`AcquireRun` and `ReleaseRun` are proposed only once a job node is registered, which already
+requires every system node to be on this release.
+`computeStarts` and `computeCancels` follow the rule files do: a node never moves to a new release
+in place (its storage key is per release), so an older replica that would miss run records is
+retired with its release, and an older node cannot prepare a bundle with compute methods (unknown
+kind, forbidden import).
+
+### Driving compute runs
+
+Code: `node/component/compute.rs`, `compute/{job_io,finish}.rs`.
+
+`lib.rs` calls `Node::drive_runs` every `JOB_POLL` (2 s) and when a call commits (`runs_kick`).
+For each component app this node leads, one task per app frees stray slots and starts a step task
+for each active run not already being stepped.
+One step runs per run at a time, so a run stuck in a long transfer never delays another run's step
+or cancel.
+A step that finds this node no longer leads its term does nothing.
+A step works from the replicated record and the system state, so a new leader resumes where the last
+stopped.
+What the leader keeps in memory (`Watch`, per run and leadership term) is one healthy-time
+accumulator, when a job node last answered in that time, the valid report a job node gave, whether
+this leader sent the attempt, the last progress and the outputs staged for a final.
+The healthy-time accumulator counts the time in rounds whose system read succeeded; the lost clock,
+the run deadline and `QUEUED_RUN_TIMEOUT` count only it, so a system-group outage burns none of
+them.
+A new leader starts the lost clock at takeover.
+The held report is kept per attempt, so the leader's own failing charge, push or propose never
+counts as silence; a job node that will not hand its outputs over still does.
+Outage credit is capped at `QUEUED_RUN_TIMEOUT`, and the lost and cancel clocks also end at 10 times
+their limit in wall time.
+A running run ends by timeout at an absolute ceiling of wall cap + `DEADLINE_GRACE` +
+`QUEUED_RUN_TIMEOUT` on the app clock from the attempt's `tsMs`, which survives leader changes.
+The unplaced and cancel clocks start when the current leader first sees the run in that state and
+restart with each term: unplaced `QUEUED_RUN_TIMEOUT` of healthy time, cancel `CANCEL_DEADLINE` (20
+s) of healthy time.
+A loss the job node announces (`lost`, a new key, `UNKNOWN_RUN` after sending) first finishes from a
+held report (`lost_unless_held`).
+A queued run takes `AcquireRun` first (only when a job node is registered; the payer comes from
+fresh system state; a permanent refusal ends the run `Failed{refused}`, a retryable one waits).
+Once granted, `Node::survey_jobs` attests each job node and asks its load outside the assignment
+lock, then `pick_job` under it picks, among the nodes of the run's pool, the fewest runs, then the
+lowest id; a node that lost an attempt is picked only if no other is free.
+The assignment is built and delivered (component, assignment, inputs) to that node first, and only
+then is the attempt committed with the job key and the digest, so a busy or unreachable node (503 is
+not a failed channel) spends no attempt and the next candidate is tried.
+A delivered run whose attempt did not commit is deleted.
+Choosing and reserving a place is serialized (`assigning`, `reserved`), the transfers are not.
+A granted run that no job node takes for `QUEUED_RUN_TIMEOUT` (10 min) ends `Failed{refused}`, and
+one the queue grants no place in that time (no job node, or every place held) ends
+`Failed{notGranted}`; `NotGranted` and `Refused` need a run with no attempt.
+A run whose pinned compute component is no longer installed (a fresh system read confirms it) ends
+`Failed{refused}` at once.
+A wall clock that ran out on a job node is a lost attempt, so such a run is retried and ends
+`Failed{lost}` after `MAX_ATTEMPTS`.
+A new term keeps the outputs staged for the same attempt (`ComputeState::take`) so they are charged
+once, and a charge that failed is refunded only if it may have committed (`charge_may_have_landed`).
+A queued run's view also carries `queue { state: unplaced | waiting | granted, pool, capacity,
+reason? }` for those who may list the app's files, read from the leader's system state
+(`Node::queue_json`); a waiting run's `reason` is `SystemState::wait_reason`, the tests `grant_runs`
+applies in the order `NO_CAPACITY`, `POOL_FULL`, `PAYER_AT_RUN_QUOTA`, `PAYER_AT_FUEL_QUOTA`.
+A run that has waited `NO_CAPACITY` for `NO_CAPACITY_WARN_AFTER` (60 s) of healthy time logs one
+`warn!` per leadership term.
+The run's record and the `GET /apps/{app}/runs/{run}` answer show progress and the failure text
+(`final.message`, the job's signed `Report::message`) only to those who may list the app's files.
+The leader assigns and pushes only the run's compute component (`RunRecord.compute_bundle`, named by
+`Assignment.bundle`, fetched by `push_bundle` through `bundle_wasm` and signed with `sign_bundle`),
+never the app component.
+A queued run recorded without one (only a record from before compute components existed) ends
+`Failed{refused}` at once, before a slot is taken or a job node contacted.
+Usage is billed to the run's `bundle`, the app component that started it, and the result method runs
+on the replicas' app component.
+The assignment is a pure function of the record, the app's blob records (each input's `FileSeal`
+wrapped key) and the job node's keys (`build_assignment`).
+The assignment is signed by the cluster identity, and `wrap_for_job_derived` derives each wrap's
+ephemeral key and nonce from the app file key, so a new leader rebuilds the very bytes the digest
+names; a digest or job key that differs means the attempt is lost.
+The run token is `HMAC(file key, run | attempt)`.
+A run polls `GET /job/runs/{app}/{run}/{attempt}`, and `running` is the heartbeat.
+`404 UNKNOWN_RUN` or `awaiting` makes the leader send (component on `NEED_BUNDLE`, assignment,
+inputs) unless it already sent in this leadership, in which case the attempt is lost.
+No answer for `JOB_LOST_AFTER` (20 s) loses the attempt, after the leader looks at the record, a
+held report and one fresh poll (`rescue`).
+A `lost` answer, or a report that does not hold up, loses the attempt too.
+A report holds up when its app, run, attempt, signature (under the recorded job key and assignment
+digest) and usage (within the caps) are right, and a cancel was asked for if it says cancelled.
+The next attempt goes to another job node, and at `MAX_ATTEMPTS` the run ends `Failed{lost}`.
+A done report is checked, then its outputs are charged to the payer before any is fetched
+(`QUOTA_EXCEEDED` ends the run `Failed{quota}`).
+The outputs are fetched one segment at a time: each segment is checked against the signed list as it
+arrives (a mismatch loses the attempt), fed to a running opener and stored and pushed before the
+next is asked for; the size and plaintext hash are proved after the last (`store_file` in
+`node/component/compute/finish.rs`).
+Each answer counts as the job node being alive, and the number of segments of an output already
+stored is kept in the watch (`Watch::fetched`), so a cut fetch resumes at the next segment, reading
+the stored ones back from this node.
+Each output is then stored as a run-created file is: its data key wrapped under the app file key
+into the `FileMark` (a `FileSeal` once registered) and the ciphertext pushed to a majority of the
+group's voters through `push_files`.
+The final entry registers them (Compute runs, above), and the result method runs inside it
+(`blob_view_with_outputs` lets it store their `BlobRef`s).
+The final is built by `logged_entry` inside `propose_led`; a final answered `conflict` is run again,
+and one the record shows still active after commit is refused for good (a reported one makes the
+attempt lost and its staged outputs are discarded).
+Staged outputs are undone (refund, delete bytes) on every exit but the commit of the final that
+holds them.
+The bytes are deleted only after a barrier and a strong read show the app holds no blob of that id
+(`delete_unmarked_outputs`), since another leader's final may register the same content, and a
+replica refuses to delete bytes an app holds.
+A sweep (`sweep_watches`) undoes the staged outputs of ended runs the app holds no blob for, and
+counts a final whose proposal's answer was lost; a final the state refused for good is not proposed
+again until the record changes.
+After a final commits the leader releases the slot, deletes the job run and adds the usage to
+`calimero_app_compute_*` and `calimero_app_calls_total{kind="compute"}`; slots whose run is no
+longer active are released each round.
+Retention releases the quota of an output the result method did not store, as for any file.
+A cancel first takes a report the job already has (a `done` run keeps its outputs), else deletes the
+job run and ends the run `Cancelled` with the usage in the job node's signed cancelled report, or
+with none if it does not answer.
+A run that did not stop is deleted again next round, but `CANCEL_DEADLINE` of healthy time from the
+first sight of the cancel ends it, from the held report if any, else `Cancelled` with no usage;
+later reports are refused and the first final wins.
+No final report by the attempt's `tsMs` + `wallSecs` + `DEADLINE_GRACE`, less this leader's outages,
+ends it `Failed{timeout}`.
+Every job-channel failure goes through `forget_job`.
+`job_call` runs every control request (status poll, delete, load, output key) in its own pool
+(`MAX_INFLIGHT_JOB_CONTROL`) within `JOB_CONTROL_TIMEOUT` (5 s), and a wait of that long for a place
+is `BusyHere`: it is this node's queue, not the job node's silence, so the poll is `Deferred` and
+nothing is forgotten.
+The attestation fetch has `JOB_ATTEST_TIMEOUT` (10 s), so a frozen job node cannot stall a round or
+starve control calls.
+`job_transfer` (assignment, component, inputs, output bodies) has its own pool
+(`MAX_INFLIGHT_JOB_OPS`) and 300 s.
+A cancel whose poll gets no answer ends from the held report if any (while that report only waits on
+the leader's own writes the run stays open, up to the run ceiling), else cancelled with no usage,
+without a delete.
+`GET /apps/{app}/runs/{run}` and `GET /apps/{app}/runs?limit=&before=` (`AppMachine::runs_page`,
+newest `startTsMs` first, ties by run id descending, `limit` 1 to 100, a `before` cursor of
+`startTsMs:run` bounded by `MAX_RUNS_CURSOR_BYTES`, at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT`
+records read per page) are the reserved view `__run` answered by the leader (`Node::run_view`), one
+shared `run_json` for both; they show plaintext sizes and hashes of files only to those who may list
+the files.
+
+### Pipeline runs
+
+Code: `component/pipelines.rs` apply, `node/component/compute/pipelines.rs` leader loop,
+`api/pipelines.rs` routes.
+
+A pipeline run lives in the app group of an app made from a release that registered the pipeline,
+compute-only apps included (their group gets an `init` entry with no outcome, `init_compute_only`,
+so it has the component executor that holds files).
+`PipelineRun` is a hidden row (`rows::CPIPE`, by run id) with the release's `version`, the
+pipeline's `hash` and the compute component, all fixed at start, with `modules` (reference to the
+module release's compute hash, copied from the release's pins), the bound `inputs` and `params`, the
+`caller`, `payer`, and per step a `StepState` of counters and flags only (`status`, `started`,
+`fan`, `finished`, `failed_items`, `cost`, `run_cost`, `capped`, `results_bytes`,
+`results_too_large`, `reason`), so a step completion rewrites a record whose size does not grow with
+the fan-out; the head keeps `active_pipelines` (at most `MAX_ACTIVE_PIPELINE_RUNS`, 8) and the last
+`FINISHED_PIPELINE_RUNS_KEPT` (64) finished ids.
+Three entries move it, all judged on the record and the entry alone: `pipelineStart` (pins every
+input, +1 hold; refused for a known id, a full app or an input that is not a held file),
+`pipelineStep { run, step, decision }` (a pending step takes its first decision only; `Start { runs,
+fan }` writes one `RunRecord` per run, id `<run>.<step>.<index>`, no result method,
+`RunRecord::pipeline` linking it with its `index`, and records `fan: { total, items, batch, allowed
+}`; `More { runs }` is accepted only while the step runs, only for the next indices below `total`
+and until failures pass `allowed`; a start the app's `MAX_ACTIVE_RUNS` cannot hold or after a cancel
+or a failFast stop changes nothing, one that can never work fails the step; `Failed` is also
+accepted for a running fan-out with runs left to create) and `pipelineCancel` (flags the run and its
+active step runs).
+A step's per-run data lives in hidden rows of their own (`rows::CITEM`, key `<pipeline
+run>/<step>/<index as 8 digits>`, `ItemRow { cached_key, outputs, result }`), written once when the
+run ends or is answered from the cache; a run that made nothing has none.
+The run's compute id is `run_id(pipeline, step, index)` and its link (`RunRecord::pipeline`) carries
+the index, so a run's end finds its row without a search.
+Every run that finished has a row, an empty one for a run that failed, so a step's rows number its
+`finished`; `StepState::cached_count` and `cached_items` are counters.
+`AppMachine::pipeline_run` reads the record and fills each step's `runs`, `run_outputs`,
+`run_results` and `cached_keys` from the rows, stopping once it has found `finished` of them; apply
+reads the record alone and never stores those fields.
+`pipeline_head` is the record without them: the leader's loop, the list view, the events view
+(`items: false`) and a retry read it, and the loop fills only the steps that pending steps and
+running fan-outs name (`fill_steps`).
+The leader keeps the runs of each fan-out it started in memory by (group, pipeline run, step), so a
+wave is cut from them and no item row is read again; entries go when the step has no run left to
+start or the node stops leading, and a rebuild that fails (rows unreadable) gets `Failed` for the
+step.
+A step with fewer readable rows than `finished` is flagged `items_unreadable`, which warns on read,
+and `plan` fails a step built from it with `ITEMS_UNREADABLE` rather than build from partial data;
+apply never reads rows except to drop them, so replicas stay in agreement.
+Dropping an ended run's record deletes its item rows and releases the pins on their outputs in the
+same apply.
+A record 1.0.0-rc.19 wrote (or an rc.19 leader answers) keeps the per-run data inline and has no
+`started`: `StepState` reads it through `StepStateRepr` (`started` = its `runs`,
+`cached_count`/`cached_items` from `cachedRuns`, `results_bytes` summed) and counts its finished
+runs as `legacy_items`, which `fill` and `drop_step_items` take as found, keeping and releasing the
+record's own outputs, results and cache keys; a step that finishes on this release writes rows for
+its later runs only.
+`apply_compute_final` settles the step of a linked run in the same apply: outputs pinned (+1 each,
+released when the record is dropped), outputs and results kept per run index (item rows, so
+`<step>.outputs` is in item order), a result up to `MAX_STEP_RESULT_BYTES` and a step's together up
+to `MAX_STEP_RESULTS_BYTES` (past it none are kept and `results_too_large` is set), failed items
+counted from the runs that failed or were cancelled; the step is `succeeded` once every run it will
+have is final and `failed_items` is at most `fan.allowed` (zero while the run is cancelled or
+stopping), else `failed` (one item over cancels its active runs and no more are created), and the
+run ended once every step is settled (inputs released; `succeededWithFailures` when a step tolerated
+failed items).
+`PipelineRun::fail_fast` (the pipeline's `failFast`) makes the first failed step set `stopping`, end
+the pending steps `cancelled` and flag the running steps' runs.
+The leader's loop (`Node::drive_pipelines`, beside `drive_runs`) is stateless: `plan` decides every
+pending step from the records (start when its needs succeeded, `skipped` for no items,
+`upstreamFailed` when one failed, `cancelled` for a cancelled or stopping run) and the next `More`
+wave of each running fan-out (`maxParallel` less its active runs, the app's room, `MAX_STEP_RUNS`),
+and each wave is also cut so its encoded runs stay within `MAX_DECISION_RUNS_BYTES` (a run that
+cannot fit one decision alone fails the step with `RUN_TOO_LARGE`), and each decision is proposed
+only while it still applies (the step pending, or the fan-out's next index unchanged).
+A pipeline whose definition is gone (`pipeline_by_hash` answers 404) gets
+`Failed{PIPELINE_UNAVAILABLE}` for its steps that have not started or have runs left to create.
+A step in another package's module (`bundle_of`) is built with that module's caps
+(`caps_of_component` per bundle) and `StepRun::compute_bundle` (none for `self`); apply accepts only
+a bundle the run pinned (`UNKNOWN_MODULE` fails the step), writes it as the `RunRecord`'s
+`compute_bundle`, and the cache key uses it.
+Owner, payer, `bundle` (usage) and file keys stay the app's; the job node is pushed the module's
+component like any compute component.
+It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute
+component's caps (`caps_of_component`, read from its ABI with the compute engine's `abi_of`, never
+by compiling it: the install compiled it once to verify it).
+A step's args are its `args` with `params.x` replaced by the run's value or the default and
+`<step>.result` by that step's result as JSON; no args is no bytes; its inputs are `inputs.x` and
+`<step>.outputs`, deduplicated, at most `MAX_PIPELINE_RUN_INPUTS` (10,000, which the job node's
+admission and `MAX_ASSIGNMENT_BYTES` (8 MiB) allow; a run an app starts keeps `MAX_RUN_INPUTS`).
+A `forEach` step makes one run per batch of items; its inputs are the step's `inputs` references in
+the order written with the run's item files where `item` stands (first when it is not listed), and
+`item` in `args` is the item (a file id or a result value; a list for a batch above 1).
+`collect: <step>.outputs` is one run over all of that step's outputs in item order, then its other
+`inputs`.
+A step's `pool` is carried on `StepRun::pool` into `RunRecord::pool`; `AcquireRun { pool }` then
+puts the slot in that pool (`RUN_NO_POOL` when the cluster lacks it or its `maxMemoryMib` is below
+the run's memory), so `pick_job` uses only its job nodes.
+A step without `pool` keeps `pool_for`.
+The leader proposes `pool` only while `Node::nodes_behind_release` is empty (an older node would
+drop it), else `None`.
+Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's
+members) start, cancel or retry a run, even where an `anyone` grant admits others (`403 FORBIDDEN`);
+anyone who reaches the app reads it without results or file hashes.
+The routes judge the request against the pinned pipeline first (`NO_SUCH_PIPELINE`, `BAD_INPUTS`,
+`BAD_PARAMS`, `TOO_MANY_PIPELINE_RUNS`, `PIPELINES_NEED_ONE_SERVICE`, `CLUSTER_NOT_UPGRADED`); start
+and cancel travel as the host commands `__pipeline_start` and `__pipeline_cancel` to the leader,
+reads as the reserved view `__pipeline_run` (`PIPELINE_VIEW`).
+A run with no result method ends with an empty result outcome and prepares nothing on the replica
+engine.
+
+**Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row
+`rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed
+report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and
+the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they
+outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`).
+A cached run has no proof: its item row keeps its cache key (`StepState::cached_keys` once read).
+`PipelineRun::input_files` records each input's size and hash at start.
+`GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else
+`403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{
+receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module
+name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules),
+signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" ||
+JCS(receipt)`).
+`?version=2` (`ReceiptQuery`; `400 BAD_VERSION` for another) adds each proof's `job` evidence
+(`JobEvidence`, from the final's report, kept in its own row `rows::CREPORT` by run id so the proof
+row keeps the shape a release before reads) and `jobAttestations`: `computeAttempt` carries the job
+node's attestation the leader admitted it on (`AttemptEntry::job_attestation`, kept on `Attempt`;
+proposed only for a pipeline's run, only while every replica runs this release,
+`Node::replicas_take_logs` (job nodes apply no log, so one that is down does not hold it back), and
+only while the pipeline run keeps none for that job key yet, so a fan-out logs it about once per job
+node), and a linked run's final writes it once per pipeline run and job key (`rows::CJOB`,
+`<pipeline run>/<job key>`); both go with the proofs.
+The view adds evidence only when asked (`evidence: true`), so an API node on the release before
+still reads the leader's answer.
+The client checks it all (`calimero_client::receipt::verify_job_reports`, `Client::verify_receipt`).
+Module logs are not in the receipt.
+
+**Cost cap** (`PipelineRun::cost: CostCap { maxCost, priceVersion, table, worstCase }`, set by the
+start route from `sys_fresh`'s price table, `NO_PRICE_TABLE` without one; the table is copied so
+apply reads no system state): `PipelineRun::committed_cost` is the sum over steps of
+`StepState::cost` (priced usage of finished runs, `priced_cost`, added in `settle_step_run` even
+after the step ended) and, for a running step, its active runs (`started - finished`) times
+`StepState::run_cost` (the worst case of one run, set when a wave starts).
+`plan` cuts each wave to what `Budget::afford` allows and, when the cap kept runs out that the wave
+would otherwise carry, adds `Failed{COST_CAP}` for the step in the same round; apply refuses a
+`Start`/`More` whose new runs' worst case would pass the cap (`COST_CAP`, nothing changes) and takes
+`Failed{COST_CAP}` on a running step as `StepState::capped`: no more runs, the active ones finish
+and are paid for, then the step fails with that reason.
+Cached runs cost zero; the view shows `cost`, `costSoFar` and each step's `cost` as decimal strings.
+
+**Retries**: `POST /apps/{app}/pipeline-runs/{run}/retry { limits?, maxCost? }`
+(`api/pipelines.rs::retry`) reads the ended run through the reserved view, refuses a running one
+(`STILL_RUNNING`), checks `limits` against the method's caps (`check_limits`: `BAD_LIMITS`,
+`LIMIT_EXCEEDS_CAP`) and starts a new run through the same `start_launch` as a start, with the
+original's `version`, `hash`, `computeBundle`, `inputs` and `params`.
+`PipelineStartEntry`/`PipelineRun` carry `retry_of` and `limits` (a `calimero_pipeline::Limits` per
+step, applied by `build_step` over the pipeline's own with `Limits::overridden_by`, then clamped to
+the method's caps); apply refuses limits for a step the run lacks.
+Failed items rerun because only done runs write cache entries and the key leaves caps out.
+
+**Events**: `GET /apps/{app}/pipeline-runs/{run}/events` (`api/pipeline_events.rs`; SSE, the run
+view's gate, so who reads the run subscribes) sends `snapshot`, then `run` and `step` events, then
+`end` and closes.
+The events are `calimero_client::pipeline_events` structs read from the `__pipeline_run` view with
+`files: false` (`RunProgress::from_view`), never a filtered copy of the record.
+The source is the strong view, polled every `PIPELINE_EVENTS_POLL` (500 ms) and diffed, so a
+follower answers through the leader as `GET.../pipeline-runs/{run}` does; access is judged when the
+stream opens.
+A view that answers 503 is tried again on the next poll; any other error ends the stream and frees
+its slot.
+Bounds: `MAX_RUN_SUBSCRIBERS_PER_APP` (64 per node, `429 TOO_MANY_SUBSCRIBERS`,
+`Node::pipeline_subscribers`), keep-alive every 15 s, and `PIPELINE_EVENTS_MAX_SECS` (1 h).
+
+**Validate and estimate** (`api/pipelines.rs`; reads only, nothing logged): `POST
+/pipelines/validate { source, package?, version? }` (a signed-in account) answers `{ ok, errors: [{
+path, code, message }], pipeline?, worstCaseFuel?, worstCaseCost? }` through
+`Node::validate_pipeline`, which compiles and, for a release the caller sees (`sees_release`, else
+`404`; one of `package` and `version` alone is `400 BAD_RELEASE`), checks against the `Env` install
+builds (`packages/pipelines.rs::env_for`: the release's compute methods as `self`, `resolve_modules`
+for the caller, `pool_ceilings`) and prices with the price table read through `sys_fresh`.
+`POST /apps/{app}/pipelines/{name}/estimate { inputs? | counts?, params? }` (`may_run`, the start's
+gate) answers `calimero_pipeline::estimate` over the pinned pipeline and the run's modules as
+decimal strings with `priceVersion` when a table exists; input ids are only counted, never checked
+for being held (`400 BAD_INPUTS` for both forms at once or an undeclared input).
+
+**Step cache** (`component/step_cache.rs`): a hidden row family `rows::CCACHE` keyed by cache key
+holds `CacheEntry { outputs, result, ts_ms, source_run }`, the head keeps the keys oldest first
+(`step_cache`).
+The leader makes the key (`cache_key`: SHA-256 of the JCS of compute bundle, method, args hash, each
+input's plaintext SHA-256 in order; not caps, so a retry with raised limits still hits) in
+`build_step`, puts it in `StepRun::cache_key` (none for `cache: false` or an input of unknown
+content), and apply never recomputes it; `RunRecord::cache_key` carries it, and a linked run that
+ends done writes or refreshes its entry (a result past `MAX_STEP_RESULT_BYTES` is not cached) and
+pins its outputs for the entry's life.
+`plan` puts each run the cache answers (`CacheView::hit`: an entry whose outputs are all held) in
+`Start`/`More` `cached: [{ index, key }]` instead of `runs`; hits cost no room, and a wave ends at
+the first miss past its size.
+Apply takes the hits as finished runs in index order (an item row each with `cached_key`, `finished`
+counted, no `RunRecord`), settling the step at once when no run is left; a hit whose entry or
+outputs are gone ends the wave there (`CACHE_GONE` if it is the first), so the leader decides that
+index again.
+Entries leave past `MAX_CACHE_ENTRIES` (oldest first) and after `CACHE_TTL_MS` by the applied
+entry's timestamp (`expire_step_cache`, at most `CACHE_EXPIRY_STEP` per entry), releasing their
+holds; a hit refreshes the entry and moves it last.
+`StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start
+naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`, and `503 UNAVAILABLE` when the
+app's leader does not answer.

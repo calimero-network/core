@@ -8,9 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.confirm_only import ConfirmOnly
-from ...models.deployment_secret_clear_response_200 import (
-    DeploymentSecretClearResponse200,
-)
+from ...models.deployment_secret_cleared import DeploymentSecretCleared
 from ...models.error import Error
 from typing import cast
 
@@ -41,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentSecretClearResponse200, Error]]:
+) -> Optional[Union[DeploymentSecretCleared, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentSecretClearResponse200.from_dict(response.json())
+        response_200 = DeploymentSecretCleared.from_dict(response.json())
 
         return response_200
 
@@ -90,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentSecretClearResponse200, Error]]:
+) -> Response[Union[DeploymentSecretCleared, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -105,7 +103,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[DeploymentSecretClearResponse200, Error]]:
+) -> Response[Union[DeploymentSecretCleared, Error]]:
     """Remove a deployment's value of a secret
 
      Its instances that set no value of their own fall back to the operator's. A manager, with a step-up
@@ -126,7 +124,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentSecretClearResponse200, Error]]
+        Response[Union[DeploymentSecretCleared, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -148,7 +146,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[DeploymentSecretClearResponse200, Error]]:
+) -> Optional[Union[DeploymentSecretCleared, Error]]:
     """Remove a deployment's value of a secret
 
      Its instances that set no value of their own fall back to the operator's. A manager, with a step-up
@@ -169,7 +167,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentSecretClearResponse200, Error]
+        Union[DeploymentSecretCleared, Error]
     """
 
     return sync_detailed(
@@ -186,7 +184,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[DeploymentSecretClearResponse200, Error]]:
+) -> Response[Union[DeploymentSecretCleared, Error]]:
     """Remove a deployment's value of a secret
 
      Its instances that set no value of their own fall back to the operator's. A manager, with a step-up
@@ -207,7 +205,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentSecretClearResponse200, Error]]
+        Response[Union[DeploymentSecretCleared, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -227,7 +225,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[DeploymentSecretClearResponse200, Error]]:
+) -> Optional[Union[DeploymentSecretCleared, Error]]:
     """Remove a deployment's value of a secret
 
      Its instances that set no value of their own fall back to the operator's. A manager, with a step-up
@@ -248,7 +246,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentSecretClearResponse200, Error]
+        Union[DeploymentSecretCleared, Error]
     """
 
     return (

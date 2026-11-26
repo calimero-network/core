@@ -6,38 +6,36 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..types import UNSET, Unset
 from typing import cast, Union
-from typing import Union
 
 T = TypeVar("T", bound="AppEntry")
 
 
 @_attrs_define
 class AppEntry:
-    """An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw
-    upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as
-    1.0.0-rc.1).
+    """An app as `GET /apps` lists it: `package` and `version` name the release it runs where the caller may read it
+    (`null` otherwise, and for a raw upload); `?package=` keeps the instances whose row names that package, `deployment`
+    the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
 
         Attributes:
             app_id (str):
             name (str):
             owner (str):
-            org (Union[None, str]):
+            org (str):
             bundle (str):
             package (Union[None, str]):
             version (Union[None, str]):
-            deployment (Union[None, Unset, str]):
+            deployment (Union[None, str]):
     """
 
     app_id: str
     name: str
     owner: str
-    org: Union[None, str]
+    org: str
     bundle: str
     package: Union[None, str]
     version: Union[None, str]
-    deployment: Union[None, Unset, str] = UNSET
+    deployment: Union[None, str]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,7 +45,6 @@ class AppEntry:
 
         owner = self.owner
 
-        org: Union[None, str]
         org = self.org
 
         bundle = self.bundle
@@ -58,11 +55,8 @@ class AppEntry:
         version: Union[None, str]
         version = self.version
 
-        deployment: Union[None, Unset, str]
-        if isinstance(self.deployment, Unset):
-            deployment = UNSET
-        else:
-            deployment = self.deployment
+        deployment: Union[None, str]
+        deployment = self.deployment
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -75,10 +69,9 @@ class AppEntry:
                 "bundle": bundle,
                 "package": package,
                 "version": version,
+                "deployment": deployment,
             }
         )
-        if deployment is not UNSET:
-            field_dict["deployment"] = deployment
 
         return field_dict
 
@@ -91,12 +84,7 @@ class AppEntry:
 
         owner = d.pop("owner")
 
-        def _parse_org(data: object) -> Union[None, str]:
-            if data is None:
-                return data
-            return cast(Union[None, str], data)
-
-        org = _parse_org(d.pop("org"))
+        org = d.pop("org")
 
         bundle = d.pop("bundle")
 
@@ -114,14 +102,12 @@ class AppEntry:
 
         version = _parse_version(d.pop("version"))
 
-        def _parse_deployment(data: object) -> Union[None, Unset, str]:
+        def _parse_deployment(data: object) -> Union[None, str]:
             if data is None:
                 return data
-            if isinstance(data, Unset):
-                return data
-            return cast(Union[None, Unset, str], data)
+            return cast(Union[None, str], data)
 
-        deployment = _parse_deployment(d.pop("deployment", UNSET))
+        deployment = _parse_deployment(d.pop("deployment"))
 
         app_entry = cls(
             app_id=app_id,

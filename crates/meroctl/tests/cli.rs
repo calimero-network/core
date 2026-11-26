@@ -328,6 +328,14 @@ fn scenario(root: &Path, url: &str) {
     let _ = alice.run(&["app", "install", "--path", path(&kv_1_1)]);
     let versions = alice.run(&["app", "versions", "com.test.kv"]);
     assert_eq!(versions["versions"].as_array().unwrap().len(), 2);
+    // Each release says its kind: an upload is private, here to its installer alone.
+    for listed in [
+        &versions["versions"][0],
+        &alice.run(&["app", "list"])["packages"][0]["versions"][0],
+    ] {
+        assert_eq!(listed["visibility"], "private", "{listed}");
+        assert_eq!(listed["orgs"], json!([]), "{listed}");
+    }
     assert_eq!(
         alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"
@@ -996,13 +1004,15 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
         app.join("Cargo.toml"),
         "[package]\nname = \"dep\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
          package = \"com.test.dep\"\noutbound = [\"https://api.example.com/v1/\"]\n\n\
-         [package.metadata.calimero.secrets.API_KEY]\nhosts = [\"api.example.com\"]\n\
+         [package.metadata.calimero.secrets.API_KEY]\nhost = \"api.example.com\"\n\
+         paths = [\"/v1/\"]\nheader = \"x-api-key\"\n\
          description = \"the API's key\"\nrequired = false\n",
     )
     .unwrap();
     // A WASM of each release's own: one that ships in another signer's package
     // is refused, and the node names an instance's release by its WASM.
     let wasm = app.join("app.wasm");
+    let org = s(&alice.run(&["org", "list"])["namespaces"][0]["orgId"]);
     let release = |version: &str| {
         std::fs::write(&wasm, variant(kv, &format!("dep-{version}"))).unwrap();
         alice.try_run(&[
@@ -1013,6 +1023,8 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
             path(&wasm),
             "--version",
             version,
+            "--install-org",
+            &org,
         ])
     };
     let shipped = release("1.0.0").unwrap();

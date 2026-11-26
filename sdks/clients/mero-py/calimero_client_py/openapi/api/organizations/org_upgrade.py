@@ -104,7 +104,8 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -145,7 +146,8 @@ def sync(
 
     Args:
         org (str):
-        body (OrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -181,7 +183,8 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -220,7 +223,8 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

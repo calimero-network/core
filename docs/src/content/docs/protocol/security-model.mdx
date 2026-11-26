@@ -62,7 +62,22 @@ code, and app code beyond what its owner approved.
   passkey step-up for owners.
 - **Exfiltration over the network** — outbound HTTPS only to hosts the operator
   allows, under prefixes the app's signed manifest declares and its approver
-  approved, from writing runs only.
+  approved, from writing runs only. An API key goes only where the signed
+  manifest binds it, attached by the node: the app never places or reads one
+  ([Secrets](/protocol/secrets/)), but a raw request can still use it for
+  anything it allows under its bound paths. For a service where that matters,
+  a first-party [connector](/build/guides/connectors/) is the only way to its
+  host: the node builds each request from a declared operation and typed
+  fields, attaches the key through its binding, and returns only declared
+  fields. The app's own code is not stopped from sending what it reads to an
+  approved host; an organization that needs that guarantee turns egress off
+  (for itself or one instance), and then no request or connector call leaves
+  for its apps whatever an approval says
+  ([Egress off](/build/guides/outbound/#egress-off)). The instance's owner and
+  managers see each request's host, path, status and secret names in its
+  outbound audit, refusals while egress is off included, so a release that
+  turns an approved host or a secret to another use shows up there; the audit
+  reports, it does not stop anything.
 - **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
   are an hour old whose reuse after that revokes the session (a copy taken
   within the hour refreshes beside its owner until then), revocation that
@@ -103,21 +118,28 @@ code, and app code beyond what its owner approved.
 
 - **The system state on unapproved nodes.** Every node of the cluster, whatever
   its release, holds the whole system state: accounts, passkeys' public keys,
-  memberships, approvals, refresh-token hashes. Realms per approver are the
-  next phase (`docs/specs/gate-system-group.md`).
-- **Commands without a proof.** Commands other than the decisions above
-  (passkeys, API keys, refresh tokens, memberships, invites, node registration,
-  replicas, quotas) still name an actor any node of the cluster can claim.
+  memberships, approvals, app records, refresh-token and API-key hashes, invites.
+  Its log and snapshots are sealed at rest under K_c, which every release holds
+  ([The system group](/protocol/system-group/)).
+- **Commands without a proof.** Housekeeping commands (creating or deleting an
+  app, changing its access or metadata, creating an organization or a team,
+  uploading a bundle, installing a package, labels, aliases, session
+  revocations) still name an actor any node of the cluster can claim; the
+  decisions, credentials, memberships, invites and operator commands above
+  carry proofs ([system group](/protocol/system-group/#decisions-carry-their-proof)).
 - **Which node a client talks to.** A client checks that a node is attested,
   not that the user's approver approved its release, so it sends credentials and
-  passkey assertions to any attested node (F5 in the design).
+  passkey assertions to any attested node. A sign-in's challenge is not bound to
+  the node that issued it: any registered node can take it from its issuer
+  (`internal/challenge/take`), so a modified image a person signs in through
+  can finish a ceremony another node began.
 
 - **Rollback, partly.** A rollback shorter than one checkpoint (1 s) looks like
   a crash; a store spliced from rows of different ages is not caught; an
   operator can force a rollback (`--accept-rollback`), which is visible in
-  `/health` and `/ops/status` but not yet in the attested KMS evidence; and an
-  older mero-kms without counters starts nodes unprotected. Requiring the
-  owner's consent to force one is not done.
+  `/health` and `/ops/status` but not in the attested KMS evidence; and an
+  older mero-kms without counters starts nodes unprotected. Forcing one needs no
+  consent from the app's owner.
 - **The recovery disk's holder.** Whoever holds an app's upgrades holds the key
   to its recovery-disk files: where governance gives app upgrades to the
   operator, the operator's backup key opens every app's state and the whole

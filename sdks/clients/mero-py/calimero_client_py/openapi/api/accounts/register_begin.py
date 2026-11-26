@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
+from ...models.passkey_challenge import PasskeyChallenge
 from ...models.register_begin_body import RegisterBeginBody
-from ...models.register_begin_response_200 import RegisterBeginResponse200
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, RegisterBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     if response.status_code == 200:
-        response_200 = RegisterBeginResponse200.from_dict(response.json())
+        response_200 = PasskeyChallenge.from_dict(response.json())
 
         return response_200
 
@@ -58,7 +58,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, RegisterBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -71,7 +71,7 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RegisterBeginBody,
-) -> Response[Union[Error, RegisterBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
@@ -89,7 +89,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RegisterBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs(
@@ -107,7 +107,7 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RegisterBeginBody,
-) -> Optional[Union[Error, RegisterBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
@@ -125,7 +125,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RegisterBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return sync_detailed(
@@ -138,7 +138,7 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RegisterBeginBody,
-) -> Response[Union[Error, RegisterBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
@@ -156,7 +156,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RegisterBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs(
@@ -172,7 +172,7 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RegisterBeginBody,
-) -> Optional[Union[Error, RegisterBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
@@ -190,7 +190,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RegisterBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return (

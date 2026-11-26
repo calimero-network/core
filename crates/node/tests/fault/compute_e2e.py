@@ -70,11 +70,11 @@ PART_BYTES = 16 << 20  # the most one upload request carries
 OPERATOR_SEED = "09" * 32  # the node tests' operator key (harness OPERATOR_SEED, [9; 32])
 OPERATOR_PUBLIC = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"  # its verify key
 IN_PROCESS = [
-    ("forged final", "compute_runs", "a_final_not_signed_by_the_assigned_job_node_changes_nothing"),
+    ("forged final", "it", "compute_runs::a_final_not_signed_by_the_assigned_job_node_changes_nothing"),
     ("key isolation", "it", "job_runs::a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_and_keys"),
     ("seed determinism", "it", "job_runs::a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_the_same_bytes"),
-    ("kept output", "compute_runs", "an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run_reads_it_back"),
-    ("unkept output", "compute_runs", "an_output_the_result_method_does_not_store_is_collected_and_its_quota_released"),
+    ("kept output", "it", "compute_runs::an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run_reads_it_back"),
+    ("unkept output", "it", "compute_runs::an_output_the_result_method_does_not_store_is_collected_and_its_quota_released"),
     ("retired job node", "it", "job_nodes::a_job_node_on_a_retired_release_is_not_attested"),
 ]
 RESULTS: list[tuple[str, bool]] = []
@@ -401,7 +401,7 @@ def local_part(wd, compute, csv_path, policy, start, rows):
     run = subprocess.run([str(BIN / "meroctl"), "local", "compute", "run", str(compute), "--method", "redact", "--args", f"@{args}",
                           "--input", str(csv_path), "--out", str(out)], capture_output=True, text=True, check=True)
     result = json.loads(base64.b64decode(re.search(r"result \(base64\): (\S+)", run.stdout).group(1)))
-    return (out / "output-0").read_bytes(), result["cells"]
+    return (out / "output-0").read_bytes(), int(result["cells"])  # a decimal string (D20)
 
 
 def download(cl, app, blob, grant=None, key=None):
@@ -491,7 +491,7 @@ def redact_job(cl):
     parts = len(view["parts"])
     check("11a job done after its job node was killed mid-run",
           view["status"] == "done" and rec["state"] == "done" and len(attempts) >= 2 and attempts[-1] != killed_node
-          and view["totalRows"] == REDACT_ROWS and view["rowsDone"] == REDACT_ROWS and parts == 3
+          and int(view["totalRows"]) == REDACT_ROWS and int(view["rowsDone"]) == REDACT_ROWS and parts == 3
           and refused and not_theirs,
           f"{REDACT_ROWS} rows in {len(data)} bytes, parts of {REDACT_PER_PART}; admin set the policy, a member "
           f"was refused it: {refused}; another member was refused the uploader's file: {not_theirs}; "
@@ -526,7 +526,7 @@ def redact_job(cl):
         stable = stable and out[5] == "" and out[2] != src[2] and out[3] != src[3] and out[4] != src[4]
     cells = sum(c for _, c in refs)
     check("11c no email, phone or card is left, pseudonyms are stable across rows and parts, counts match",
-          not leaks and stable and len(set(tokens.values())) == len(tokens) and view["cellsRedacted"] == cells,
+          not leaks and stable and len(set(tokens.values())) == len(tokens) and int(view["cellsRedacted"]) == cells,
           f"{len(originals)} source rows, {len(tokens)} distinct names, columns {REDACT_COLUMNS}",
           f"patterns left: {leaks or 'none'}; {len(rows)} rows out, {len(tokens)} pseudonyms each the HMAC of its name; "
           f"cells redacted {view['cellsRedacted']} (local runs {cells})")

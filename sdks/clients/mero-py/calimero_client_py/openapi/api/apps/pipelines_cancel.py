@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.pipelines_cancel_response_200 import PipelinesCancelResponse200
+from ...models.pipeline_cancelled import PipelineCancelled
 from typing import cast
 
 
@@ -30,9 +30,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PipelinesCancelResponse200]]:
+) -> Optional[Union[Error, PipelineCancelled]]:
     if response.status_code == 200:
-        response_200 = PipelinesCancelResponse200.from_dict(response.json())
+        response_200 = PipelineCancelled.from_dict(response.json())
 
         return response_200
 
@@ -64,7 +64,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PipelinesCancelResponse200]]:
+) -> Response[Union[Error, PipelineCancelled]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -78,7 +78,7 @@ def sync_detailed(
     run: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PipelinesCancelResponse200]]:
+) -> Response[Union[Error, PipelineCancelled]]:
     """Cancel a pipeline run
 
      The owner and the organization's members. Its pending steps end cancelled and its running steps'
@@ -95,7 +95,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PipelinesCancelResponse200]]
+        Response[Union[Error, PipelineCancelled]]
     """
 
     kwargs = _get_kwargs(
@@ -115,7 +115,7 @@ def sync(
     run: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PipelinesCancelResponse200]]:
+) -> Optional[Union[Error, PipelineCancelled]]:
     """Cancel a pipeline run
 
      The owner and the organization's members. Its pending steps end cancelled and its running steps'
@@ -132,7 +132,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PipelinesCancelResponse200]
+        Union[Error, PipelineCancelled]
     """
 
     return sync_detailed(
@@ -147,7 +147,7 @@ async def asyncio_detailed(
     run: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PipelinesCancelResponse200]]:
+) -> Response[Union[Error, PipelineCancelled]]:
     """Cancel a pipeline run
 
      The owner and the organization's members. Its pending steps end cancelled and its running steps'
@@ -164,7 +164,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PipelinesCancelResponse200]]
+        Response[Union[Error, PipelineCancelled]]
     """
 
     kwargs = _get_kwargs(
@@ -182,7 +182,7 @@ async def asyncio(
     run: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PipelinesCancelResponse200]]:
+) -> Optional[Union[Error, PipelineCancelled]]:
     """Cancel a pipeline run
 
      The owner and the organization's members. Its pending steps end cancelled and its running steps'
@@ -199,7 +199,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PipelinesCancelResponse200]
+        Union[Error, PipelineCancelled]
     """
 
     return (

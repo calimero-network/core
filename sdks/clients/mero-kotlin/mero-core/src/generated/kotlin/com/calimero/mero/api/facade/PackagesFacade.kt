@@ -30,7 +30,7 @@ class PackagesFacade internal constructor(
      */
     suspend fun bundlePut(
         body: kotlin.ByteArray,
-    ): BundlePut200Response =
+    ): BundleStored =
         api(null, null, emptySet()).packages.bundlePut(body = body)
 
     /**
@@ -68,7 +68,7 @@ class PackagesFacade internal constructor(
      */
     suspend fun originsList(
         `package`: kotlin.String,
-    ): OriginsList200Response =
+    ): OriginList =
         api(null, null, emptySet()).packages.originsList(`package` = `package`)
 
     /**
@@ -86,13 +86,13 @@ class PackagesFacade internal constructor(
         `package`: kotlin.String,
         origin: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): OriginsRemove200Response =
+    ): OriginRemoved =
         api(passkey, null, emptySet()).packages.originsRemove(`package` = `package`, originsRemoveRequest = OriginsRemoveRequest(origin = origin))
 
     /**
      * A release's capabilities
      *
-     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -104,7 +104,7 @@ class PackagesFacade internal constructor(
         `package`: kotlin.String,
         version: kotlin.String,
         service: kotlin.String? = null,
-    ): PackageCapabilities200Response =
+    ): CapabilityCard =
         api(null, null, emptySet()).packages.packageCapabilities(`package` = `package`, version = version, service = service)
 
     /**
@@ -126,6 +126,8 @@ class PackagesFacade internal constructor(
     /**
      * Install a release from the registry
      *
+     * For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
+     *
      * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      *
      * `POST /packages/install` (`package_install`).
@@ -135,8 +137,9 @@ class PackagesFacade internal constructor(
     suspend fun install(
         `package`: kotlin.String,
         version: kotlin.String,
-    ): OpsPackageInstall200Response =
-        api(null, null, emptySet()).packages.packageInstall(packageInstallRequest = PackageInstallRequest(`package` = `package`, version = version))
+        org: kotlin.String? = null,
+    ): PackageInstalled =
+        api(null, null, emptySet()).packages.packageInstall(packageInstallRequest = PackageInstallRequest(`package` = `package`, version = version, org = org))
 
     /**
      * Installed packages
@@ -149,7 +152,7 @@ class PackagesFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun list(): PackageList200Response =
+    suspend fun list(): PackageList =
         api(null, null, emptySet()).packages.packageList()
 
     /**
@@ -166,7 +169,7 @@ class PackagesFacade internal constructor(
     suspend fun pipelines(
         `package`: kotlin.String,
         version: kotlin.String,
-    ): kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue> =
+    ): kotlin.collections.Map<kotlin.String, ReleasePipeline> =
         api(null, null, emptySet()).packages.packagePipelines(`package` = `package`, version = version)
 
     /**
@@ -188,7 +191,7 @@ class PackagesFacade internal constructor(
     /**
      * Upload a signed release
      *
-     * A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.
+     * A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.
      *
      * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      *
@@ -198,8 +201,9 @@ class PackagesFacade internal constructor(
      */
     suspend fun upload(
         body: kotlin.ByteArray,
-    ): OpsPackageInstall200Response =
-        api(null, null, emptySet()).packages.packageUpload(body = body)
+        org: kotlin.String? = null,
+    ): PackageInstalled =
+        api(null, null, emptySet()).packages.packageUpload(body = body, org = org)
 
     /**
      * Uninstall one version

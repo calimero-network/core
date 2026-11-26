@@ -12,7 +12,8 @@ use crate::table::{FindOpts, Iter, DEFAULT_LIMIT, MAX_LIMIT};
 /// One key-value entry read from the store.
 pub(crate) type Entry = (Vec<u8>, Vec<u8>);
 
-/// `parts` encoded, refused over [`MAX_SDK_KEY_BYTES`] (D50).
+/// `parts` encoded, refused over [`MAX_SDK_KEY_BYTES`], one byte under the host's
+/// 1,024-byte key limit.
 pub(crate) fn encode(parts: &[KeyPart]) -> Result<Vec<u8>, StorageError> {
     let encoded = key::encode(parts);
     check_key(&encoded)?;
@@ -100,17 +101,17 @@ pub(crate) fn read_count<S: Store>(store: &S, key: &[u8], name: &str) -> Result<
 
 /// Delete every key under `prefix`, a batch of at most [`MAX_RANGE_BATCH`] at a time, and
 /// return how many there were.
-pub(crate) fn clear_prefix<S: Store>(store: &mut S, prefix: &[u8]) -> u64 {
+pub(crate) fn clear_prefix<S: Store>(store: &mut S, prefix: &[u8]) -> Result<u64, StorageError> {
     let (start, end) = bounds(prefix);
     let mut removed = 0;
     loop {
         // A fresh cursor per batch: the previous batch is gone, so this one starts after it.
         let batch = store.range(&start, &end, false).next(MAX_RANGE_BATCH);
         if batch.is_empty() {
-            return removed;
+            return Ok(removed);
         }
         for (k, _) in batch {
-            store.delete(&k);
+            store.delete(&k)?;
             removed += 1;
         }
     }
@@ -118,7 +119,11 @@ pub(crate) fn clear_prefix<S: Store>(store: &mut S, prefix: &[u8]) -> u64 {
 
 /// Delete at most `max` keys under `prefix`, in key order, a batch at a time; returns how
 /// many were deleted and whether none is left.
-pub(crate) fn delete_some<S: Store>(store: &mut S, prefix: &[u8], max: u64) -> (u64, bool) {
+pub(crate) fn delete_some<S: Store>(
+    store: &mut S,
+    prefix: &[u8],
+    max: u64,
+) -> Result<(u64, bool), StorageError> {
     let (start, end) = bounds(prefix);
     let mut removed = 0;
     while removed < max {
@@ -126,14 +131,14 @@ pub(crate) fn delete_some<S: Store>(store: &mut S, prefix: &[u8], max: u64) -> (
         let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
         let batch = store.range(&start, &end, false).next(want);
         if batch.is_empty() {
-            return (removed, true);
+            return Ok((removed, true));
         }
         for (k, _) in batch {
-            store.delete(&k);
+            store.delete(&k)?;
             removed += 1;
         }
     }
-    (removed, store.range(&start, &end, false).next(1).is_empty())
+    Ok((removed, store.range(&start, &end, false).next(1).is_empty()))
 }
 
 /// Read up to `limit + 1` entries under the encoded `base` and cut the page at `limit`.

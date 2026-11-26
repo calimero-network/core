@@ -133,7 +133,7 @@ call. A delivered xcall makes no synchronous call.
 
 **Concurrency.** The SDK runs an `async fn` method with a small executor of its
 own: it polls the method until every future it awaits waits on an xcall, then
-sends those xcalls to the node in one `xcall.batch` (WIT `calimero:app@0.5.6`)
+sends those xcalls to the node in one `xcall.batch` (WIT `calimero:app@0.5.7`)
 and polls again with the answers. Futures awaited one after another make one
 batch each; futures awaited together (`app::join!(a, b)`, `app::join_all(v)`)
 are in one batch, which the node runs at once:
@@ -157,7 +157,7 @@ refused request in its place.
 | Synchronous xcalls one run makes, batched or not (`MAX_SYNC_XCALLS`); a batch that would pass it is refused whole | 16 |
 | Arguments of one (`MAX_SYNC_XCALL_ARGS_BYTES`) | 512 KiB |
 | Answer handed back for one (`MAX_SYNC_XCALL_RESULT_BYTES`) | 1 MiB |
-| How long a run waits (`SYNC_XCALL_WAIT`): for one call, or for a whole batch (one deadline) | 3 s |
+| How long a run waits (`SYNC_XCALL_WAIT`): for one call, or for a whole batch (one deadline); never past the run's own wall clock, which then ends it `Timeout` | 3 s |
 
 A request still running at the deadline is told it timed out; a call may still
 commit in its target, and the sender's retry replays it. A component built
@@ -194,3 +194,76 @@ developer is over its fuel cap for the day.
 
 An empty or overlong app id or method, or a reserved (`__`) method, is refused
 at the send.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Delegation
+
+Code: `SystemCmd::SetDelegation`, `SystemState::delegations`, `Node::caller_for` and `forwarded` in
+`node/component.rs`; docs: protocol xcall "As the person".
+
+A person lets an app call another as them.
+The release the source runs lists, per reference in its signed `uses`, the methods it calls as the
+person (`BundleUse::methods`); `PUT /apps/{app}/delegations/{target}` (`api::apps::app_delegate`)
+grants exactly those for the target's package, with the person's passkey over `<source> / __delegate
+/ { target, methods }` (`system::delegation_args`), both apps reachable by them and in one
+organization (`Feature::Delegation`, rc.31); `DELETE` takes it back without a passkey; `GET
+/apps/{app}/delegations` lists the caller's own.
+Deleting either app drops the grant (`remove_app`).
+The grant route is `holder` (never a package-bound session); an app's frontend asks on the consent
+page (`delegate { app, target }`, `consent_page::delegate_request`: both apps and the methods from
+`api::apps::delegation_plan`, the page stale when the source's release moved, and `act` runs
+`api::apps::delegate` after checking the methods are still those shown).
+A run whose caller is a person offers that person to the apps it calls (`forwarded`): a synchronous
+call or view (`NodeXcall::person`) and a message (`XcallOut::on_behalf_of` ->
+`Outgoing::on_behalf_of`, written only from the logged cluster version that brings
+`Feature::Delegation`, `Node::carries_person`, as the row is replicated state).
+`caller_for` decides at the source, for a delivery when it is delivered: as the person, with
+`CallRequest::via` / `ViewRequest::via` = the source, where they granted the source that method of
+the target and still reach it; else as `Caller::App(source)` with no person named.
+The target's host core gets `via` with `HostCore::with_via` (`env::via`); the usual ABI checks apply
+to the person, so a `confirm` method is refused (`ConfirmRequired`).
+A run another app called offers no one onward.
+
+### Xcalls
+
+(D13, D25, D29, `component/xcall.rs`.)
+
+An `Ok` entry's `Outcome::xcalls` go to the source's outbox (`XcallHead` in `ComponentHead`, rows
+`rows::COUT ‖ seq`, at most `MAX_OUTBOX`).
+The source leader's timer poll (`Node::deliver_xcalls`, at most `DELIVER_BATCH` a round) delivers
+the head through `call_component` with `CallRequest::xcall = XcallFrom { source, seq }`,
+`Caller::App`, a `node:xcall-…` key; the target checks the boundary again (`same_boundary`: one
+org), its watermark (`XcallHead::seen`, D25: answered as delivered without running), the ABI
+(`allowApps`, `"*"` = any; `abi_check`), runs `kind = xcall-deliver` and records `CallEntry::xcall`,
+whose apply moves the watermark whatever the status.
+The source then logs `componentXcallDone { seq, dead }`.
+Timeouts and `5xx` are retried (`xcall_retry`, in memory, `backoff_ms`) until `XCALL_WINDOW_MS` from
+the send; a missing target, another org's, a wasmer app, or the window passing dead-letters it
+(`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its ABI allows
+the system.
+`GET /apps/{app}/xcalls` (owner or org admin; a node without a replica asks one, `internal/xcalls`,
+`Node::app_xcalls`).
+
+### Synchronous xcalls
+
+Code: `NodeXcall`.
+
+A run made with a key (`RunExtras::key`: a call's `call:<caller>:<idempotency key>`, a tick's
+`tick:<method>:<slot>`, an action's `action:<id>`, a view's placeholder) reaches other apps through
+`xcall.call`/`xcall.view`.
+The target must be another component app within `same_boundary` (any other answer is one `no such
+app in this organization`).
+A call goes through `call_component` with the host core's derived key, `Caller::App(source)` and
+`CallRequest::sync_from` (the target checks the boundary again and runs it as `xcall-deliver`, so it
+reaches no further); a view through `Node::view` (strong).
+The run's thread waits at most `SYNC_XCALL_WAIT` (3 s) while the runtime runs it, and never past its
+own deadline; two apps calling each other at once both end `Timeout` at their deadline.
+A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or view would
+(`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for them with one
+`SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock for the slowest
+request, not their sum; requests to one target take turns on its lock.

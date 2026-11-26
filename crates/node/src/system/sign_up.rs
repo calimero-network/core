@@ -9,11 +9,15 @@
 )]
 use super::*;
 
+/// What a sign-up invite's creation or withdrawal answers (`#InviteKey`): its key.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteKeyAnswer {
+    pub invite_key: String,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
         SystemCmd::SetSignUp {
             policy,
@@ -56,7 +60,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::SetSignUp { policy, actor, .. } => {
@@ -76,23 +80,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             s.runs_sign_up(&actor)?;
             if invite.created_by != actor {
-                return Err("a sign-up invite names who issued it");
+                return Err("a sign-up invite names who issued it".into());
             }
             hex32(&invite_key).ok_or("an invite key is 32 bytes, hex")?;
             if s.invites.contains_key(&invite_key) || s.sign_up_invites.contains_key(&invite_key) {
-                return Err("invite exists");
+                return Err("invite exists".into());
             }
             if s.sign_up_invites.len() >= MAX_SIGN_UP_INVITES {
-                return Err("quota exceeded: sign-up invites");
+                return Err(Rejection::quota("sign-up invites"));
             }
             if invite.uses_left == 0 || invite.uses_left > MAX_SIGN_UP_INVITE_USES {
-                return Err("a sign-up invite creates 1 to 10000 accounts");
+                return Err("a sign-up invite creates 1 to 10000 accounts".into());
             }
             if invite.expires_at <= invite.created_at {
-                return Err("a sign-up invite expires after it is made");
+                return Err("a sign-up invite expires after it is made".into());
             }
             let _prev = s.sign_up_invites.insert(invite_key.clone(), invite);
-            Ok(json!({ "inviteKey": invite_key }))
+            Ok(json!(InviteKeyAnswer { invite_key }))
         }
         SystemCmd::RevokeSignUpInvite {
             invite_key, actor, ..
@@ -102,7 +106,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .sign_up_invites
                 .remove(&invite_key)
                 .ok_or("no such sign-up invite")?;
-            Ok(json!({ "inviteKey": invite_key }))
+            Ok(json!(InviteKeyAnswer { invite_key }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.

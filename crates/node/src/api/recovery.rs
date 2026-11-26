@@ -51,7 +51,7 @@ async fn recovery_create(
             consent: c.consent,
         })
         .await?;
-    Ok(Json(json!({ "code": code })))
+    Ok(Json(json!(RecoveryCode { code })))
 }
 
 /// Remove the account's recovery code, approved with a passkey (412 first).
@@ -92,11 +92,7 @@ fn recovery_pending(node: &Node, account: &str) -> Option<crate::types::PendingA
 }
 
 fn account_recovery_pending() -> ApiError {
-    ApiError::new(
-        409,
-        "RECOVERY_PENDING",
-        crate::system::ACCOUNT_RECOVERY_PENDING,
-    )
+    crate::node::rejected(crate::system::ACCOUNT_RECOVERY_PENDING)
 }
 
 fn no_account_recovery() -> ApiError {
@@ -104,7 +100,7 @@ fn no_account_recovery() -> ApiError {
 }
 
 pub(super) fn recovery_not_ready(ready_at: u64) -> ApiError {
-    ApiError::new(409, "RECOVERY_NOT_READY", crate::system::RECOVERY_NOT_READY)
+    crate::node::rejected(crate::system::RECOVERY_NOT_READY)
         .with_details(json!({ "readyAt": ready_at }))
 }
 
@@ -142,6 +138,7 @@ async fn account_recovery_begin(
             recovery_key: key,
             expires: now_secs() + CHALLENGE_TTL,
         },
+        None,
     )?;
     let (name, exclude): (String, Vec<Value>) = node.sys(|s| {
         s.accounts.get(&account).map_or_else(Default::default, |a| {
@@ -160,9 +157,9 @@ async fn account_recovery_begin(
         &passkeys::cluster_tag(&node),
         None,
     );
-    Ok(Json(json!({
-        "challengeId": id,
-        "options": {
+    Ok(Json(json!(super::auth::PasskeyChallenge {
+        challenge_id: id,
+        options: json!({
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
             "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
@@ -171,7 +168,7 @@ async fn account_recovery_begin(
             "timeout": 60000,
             "attestation": "none",
             "authenticatorSelection": { "residentKey": "required", "userVerification": "required" },
-        }
+        }),
     })))
 }
 
@@ -297,8 +294,9 @@ pub(super) struct RecoveryFinish {
 /// answer is the session.
 async fn account_recovery_finish(
     State(node): State<Arc<Node>>,
+    sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RecoveryFinish>,
-) -> ApiResult {
+) -> ApiResult<Json<SessionAnswer>> {
     let Some(confirm) = body.confirm else {
         let allow = match &body.account_id {
             Some(account) => {
@@ -326,6 +324,7 @@ async fn account_recovery_finish(
                 session,
                 account: body.account_id,
             },
+            sealed.map(|Extension(s)| s),
         )?;
         return Err(confirm_required(
             "sign in with the passkey the recovery adds",
@@ -434,6 +433,12 @@ async fn recovery_set(
             )
         })?;
     }
+    // Only a removal is judged by the rule; a rotation asks no node anything.
+    let needs_recovery =
+        body.public_key.is_none() && super::deployments::deployment_needs_recovery(&node).await;
+    if body.public_key.is_none() && !node.sys(|s| s.may_remove_recovery(&org, needs_recovery)) {
+        return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+    }
     let args = json!({ "publicKey": body.public_key });
     let consent = org_consent(&node, &p, &org, "__set_recovery_key", &args, body.confirm).await?;
     let _ok = node
@@ -443,6 +448,7 @@ async fn recovery_set(
             at: recovery_now(&node),
             actor,
             consent,
+            deployment_needs_recovery: needs_recovery,
         })
         .await?;
     Ok(Json(json!({})))
@@ -588,4 +594,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/orgs/{org}/recovery/start", post(recovery_start))
         .route("/orgs/{org}/recovery/cancel", post(recovery_cancel))
         .route("/orgs/{org}/recovery/finish", post(recovery_finish))
+}
+
+/// `POST /auth/recovery`: the account's recovery code, shown once.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RecoveryCode {
+    code: String,
 }

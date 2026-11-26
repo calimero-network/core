@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.capability_card import CapabilityCard
 from ...models.error import Error
-from ...models.package_capabilities_response_200 import PackageCapabilitiesResponse200
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -41,9 +41,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PackageCapabilitiesResponse200]]:
+) -> Optional[Union[CapabilityCard, Error]]:
     if response.status_code == 200:
-        response_200 = PackageCapabilitiesResponse200.from_dict(response.json())
+        response_200 = CapabilityCard.from_dict(response.json())
 
         return response_200
 
@@ -75,7 +75,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PackageCapabilitiesResponse200]]:
+) -> Response[Union[CapabilityCard, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -90,7 +90,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     service: Union[Unset, str] = UNSET,
-) -> Response[Union[Error, PackageCapabilitiesResponse200]]:
+) -> Response[Union[CapabilityCard, Error]]:
     """A release's capabilities
 
      What the release is and may do, read from its signed manifest and the ABI its service component
@@ -100,9 +100,10 @@ def sync_detailed(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -116,7 +117,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PackageCapabilitiesResponse200]]
+        Response[Union[CapabilityCard, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -138,7 +139,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     service: Union[Unset, str] = UNSET,
-) -> Optional[Union[Error, PackageCapabilitiesResponse200]]:
+) -> Optional[Union[CapabilityCard, Error]]:
     """A release's capabilities
 
      What the release is and may do, read from its signed manifest and the ABI its service component
@@ -148,9 +149,10 @@ def sync(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -164,7 +166,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PackageCapabilitiesResponse200]
+        Union[CapabilityCard, Error]
     """
 
     return sync_detailed(
@@ -181,7 +183,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     service: Union[Unset, str] = UNSET,
-) -> Response[Union[Error, PackageCapabilitiesResponse200]]:
+) -> Response[Union[CapabilityCard, Error]]:
     """A release's capabilities
 
      What the release is and may do, read from its signed manifest and the ABI its service component
@@ -191,9 +193,10 @@ async def asyncio_detailed(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -207,7 +210,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PackageCapabilitiesResponse200]]
+        Response[Union[CapabilityCard, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -227,7 +230,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     service: Union[Unset, str] = UNSET,
-) -> Optional[Union[Error, PackageCapabilitiesResponse200]]:
+) -> Optional[Union[CapabilityCard, Error]]:
     """A release's capabilities
 
      What the release is and may do, read from its signed manifest and the ABI its service component
@@ -237,9 +240,10 @@ async def asyncio(
     `uses` would create with it (`members`, by path, each with its release, signer and own
     destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
     create is not installed here. `service` names the service whose card to read (default: the release's
-    only one). A session bound to the package reads every release of it. `404` for a release the caller
-    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
-    `400 BAD_REQUEST` for an over-long `service`.
+    only one). A session bound to the package reads what its account does (every release of it recorded
+    before releases were public or private). `404` for a release the caller may not see, `400
+    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
+    for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -253,7 +257,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PackageCapabilitiesResponse200]
+        Union[CapabilityCard, Error]
     """
 
     return (

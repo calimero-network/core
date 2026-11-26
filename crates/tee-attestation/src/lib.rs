@@ -54,6 +54,9 @@
 //!
 //! **Warning**: Mock attestations bypass all TEE security guarantees and should
 //! never be trusted in production environments.
+//!
+//! Spec: [TEE attestation](https://calimero-network.github.io/core/protocol/tee-attestation/).
+//! Crate guide: [`crates/tee-attestation/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/tee-attestation/AGENTS.md).
 
 mod error;
 mod evidence;
@@ -75,7 +78,7 @@ pub use generate::{generate_mock_attestation, is_mock_quote};
 pub use kms_evidence::KmsEvidence;
 pub use policy::{
     MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,
-    TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
+    DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER, TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
 };
 pub use quote::{CertificationData, QeReportCertificationDataInfo, Quote, QuoteBody, QuoteHeader};
 #[cfg(feature = "mock-attestation")]

@@ -19,10 +19,10 @@ use crate::types::{
 };
 
 /// The world the app component's ABI names.
-const WORLD: &str = "calimero:app@0.5.6";
+const WORLD: &str = "calimero:app@0.5.7";
 /// The world the compute component's ABI names.
-const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.6";
-/// The ABI version this SDK writes (D51).
+const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.7";
+/// The ABI version this SDK writes; a field nodes must enforce raises it.
 const ABI_VERSION: u64 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -218,7 +218,7 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                     ));
                 }
                 attrs.every = Some(lit.value());
-                // A timer's caller is always `System` (D13), so `every` implies it (Ruling 26).
+                // A timer's caller is always `System`, so `every` implies `allow(system)`.
                 attrs.allow_system = true;
             }
             "compute" => attrs.compute = Some(compute_attr(&attr)?),
@@ -309,7 +309,9 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
                         "app method parameters are owned values, decoded from JSON",
                     ));
                 }
-                check_wire(&pt.ty)?;
+                check_wire(&pt.ty).map_err(|e| {
+                    syn::Error::new(e.span(), format!("parameter `{}`: {e}", pi.ident))
+                })?;
                 params.push((pi.ident.clone(), (*pt.ty).clone()));
             }
         }
@@ -382,7 +384,7 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
     };
 
     if kind != Kind::Init {
-        check_wire(&ok)?;
+        check_wire(&ok).map_err(|e| syn::Error::new(e.span(), format!("result: {e}")))?;
     }
 
     Ok(Some(Method {
@@ -997,12 +999,12 @@ mod tests {
         assert!(out.contains(&compute_methods), "{out}");
         assert!(
             out.contains(
-                r#",\"world\":\"calimero:app/compute@0.5.6\"}"#.replace(r#"\""#, "\"").as_str()
+                r#",\"world\":\"calimero:app/compute@0.5.7\"}"#.replace(r#"\""#, "\"").as_str()
             ),
             "{out}"
         );
         assert!(
-            out.contains(r#",\"world\":\"calimero:app@0.5.6\"}"#.replace(r#"\""#, "\"").as_str()),
+            out.contains(r#",\"world\":\"calimero:app@0.5.7\"}"#.replace(r#"\""#, "\"").as_str()),
             "{out}"
         );
     }

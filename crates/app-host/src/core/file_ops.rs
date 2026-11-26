@@ -10,6 +10,7 @@ use crate::files::{
     MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
     RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
+use crate::fuel::{per_byte, FUEL_HOST_CALL};
 use crate::types::{HostDenied, InvocationKind};
 
 /// A file writer handed to the guest; the WIT `writer` resource maps onto it.
@@ -111,6 +112,7 @@ impl HostCore {
         id: WriterId,
         bytes: &[u8],
     ) -> Result<Result<(), String>, HostDenied> {
+        self.burn(per_byte(bytes.len()));
         self.may_write_files("files.write")?;
         let len = bytes.len() as u64;
         let written = self.files.written;
@@ -194,6 +196,7 @@ impl HostCore {
     /// Turns a done compute run's output into a plain blob; the file reaches the outcome only
     /// if the run ends `Ok`. Logged writes only.
     pub fn compute_publish(&mut self, id: &str) -> Result<Result<String, String>, HostDenied> {
+        self.burn(per_byte(id.len()));
         if !self.is_logged_write() {
             return Err(self.denied("runs.publish"));
         }
@@ -210,6 +213,7 @@ impl HostCore {
         }
         match self.provider.publish(id) {
             Ok(file) => {
+                self.burn(per_byte(usize::try_from(file.size).unwrap_or(usize::MAX)));
                 let blob = file.id.clone();
                 self.files.published.push(file);
                 Ok(Ok(blob))
@@ -221,11 +225,14 @@ impl HostCore {
 
     /// Drops a writer (the WIT resource's destructor); an unfinished one leaves no file.
     pub fn writer_close(&mut self, id: WriterId) {
+        // A resource's drop is not wrapped by the engine: its base is owed here.
+        self.burn(FUEL_HOST_CALL);
         let _ = self.files.writers.remove(&id.0);
     }
 
     /// Opens a file the app marks. A compute run only.
     pub fn files_open(&mut self, id: &str) -> Result<Result<ReaderId, String>, HostDenied> {
+        self.burn(per_byte(id.len()));
         self.may_read_files("files.open", Some(id))?;
         if self.inv.compute.is_none() {
             return Err(HostDenied::new(
@@ -302,15 +309,19 @@ impl HostCore {
                 ReadError::Corrupt => Err(HostDenied::new(FILE_CORRUPT)),
             };
         }
+        self.burn(per_byte(out.len()));
         Ok(Ok(out))
     }
 
     /// Drops a reader (the WIT resource's destructor).
     pub fn reader_close(&mut self, id: ReaderId) {
+        // A resource's drop is not wrapped by the engine: its base is owed here.
+        self.burn(FUEL_HOST_CALL);
         let _ = self.files.readers.remove(&id.0);
     }
 
     pub fn files_info(&self, id: &str) -> Result<Option<FileInfo>, HostDenied> {
+        self.burn(per_byte(id.len()));
         self.may_read_files("files.info", Some(id))?;
         Ok(self.file_info(id))
     }

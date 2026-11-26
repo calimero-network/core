@@ -72,7 +72,7 @@ pub enum StorageError {
     /// NaN has no deterministic form and is refused.
     #[error("NaN is not allowed in stored values")]
     Nan,
-    /// A key is longer than the host accepts (D50).
+    /// A key is longer than the host accepts (1,024 bytes; the SDK stops at 1,023).
     #[error("key is {len} bytes, over the {max} byte limit")]
     KeyTooLong {
         /// The offending length.
@@ -120,6 +120,19 @@ pub enum StorageError {
     /// A text has no character with this id.
     #[error("no character with id {0}")]
     UnknownId(u64),
+    /// The host refused a write past one of the run's limits (WIT `put-checked`, 0.5.7):
+    /// nothing was written. Every node answers the same for the same run. An app that answers
+    /// `Ok` after it keeps the run's earlier writes, so pass it on (`?`) unless the method
+    /// means to commit them; split the work over several calls.
+    #[error("the run passed its {limit} limit: {attempted}, over {max}")]
+    RunLimit {
+        /// Which limit.
+        limit: RunLimit,
+        /// The limit: 10,000 writes or 1 MiB.
+        max: u64,
+        /// What the run would have reached: the write's number, or its bytes with it.
+        attempted: u64,
+    },
     /// One edit would pass a run's write limits (`MAX_RUN_WRITES`, `MAX_RUN_BYTES`), so it
     /// was refused before any write; split it over several calls.
     #[error(
@@ -131,6 +144,32 @@ pub enum StorageError {
         /// The bytes it would write, as the host counts them.
         bytes: usize,
     },
+}
+
+/// Which of a run's write limits a write passed ([`StorageError::RunLimit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunLimit {
+    /// 10,000 writes (`put`, `delete`, `add`) per run.
+    Writes,
+    /// 1 MiB written per run: keys, values, events, xcalls.
+    Bytes,
+}
+
+impl RunLimit {
+    /// The name in errors and in `AppError` `RunLimit`'s `limit` field.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Writes => "writes",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
+impl core::fmt::Display for RunLimit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A failure of a table operation.
@@ -148,8 +187,48 @@ pub enum TableError {
 }
 
 impl From<StorageError> for AppError {
+    /// `Storage` with the message, except a run limit, which is the typed `RunLimit` with
+    /// `limit` (`"writes"` or `"bytes"`), `max` and `attempted` (decimal strings, as every
+    /// 64-bit integer in JSON).
     fn from(e: StorageError) -> Self {
+        if let StorageError::RunLimit {
+            limit,
+            max,
+            attempted,
+        } = e
+        {
+            return AppError::with_fields(
+                "RunLimit",
+                json!({
+                    "limit": limit.as_str(),
+                    "max": max.to_string(),
+                    "attempted": attempted.to_string(),
+                }),
+            );
+        }
         AppError::with_fields("Storage", json!({ "message": e.to_string() }))
+    }
+}
+
+impl AppError {
+    /// A host's soft error as `code` with its message, except the run's bytes limit
+    /// (`entry too large: the run would write <n> bytes, over <max>`, which `emit`, `xcall`
+    /// and `start_action` answer past 1 MiB written), which is the typed `RunLimit`, as a
+    /// refused storage write is.
+    pub(crate) fn host_soft(code: &str, message: String) -> Self {
+        let parsed = message
+            .strip_prefix("entry too large: the run would write ")
+            .and_then(|rest| rest.split_once(" bytes, over "))
+            .and_then(|(n, max)| Some((n.parse().ok()?, max.parse().ok()?)));
+        match parsed {
+            Some((attempted, max)) => StorageError::RunLimit {
+                limit: RunLimit::Bytes,
+                max,
+                attempted,
+            }
+            .into(),
+            None => AppError::with_fields(code, json!({ "message": message })),
+        }
     }
 }
 

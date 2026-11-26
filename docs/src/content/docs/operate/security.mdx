@@ -72,7 +72,7 @@ signature is used once.
 **If the seed leaks**, the owner rotates the key: a recovery under way is
 cancelled and the old seed is refused from then on. An owner who has lost both
 every passkey and the seed cannot recover the organization; neither can anyone
-else. Design: [`docs/specs/org-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/org-recovery.md).
+else. See [Recovery](/protocol/organizations/#recovery).
 
 ## Recovering an account
 
@@ -96,8 +96,8 @@ it), and signs the new passkey in; machines that used a key need a new one. Nobo
 nodes never hold the code, the start names the one passkey it may add, and the
 finish needs that passkey. One recovery runs at a time, and a code starts only
 one. Someone who steals the code is stopped by any of the account's passkeys
-within the 72 hours. Design:
-[`docs/specs/account-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/account-recovery.md).
+within the 72 hours. See
+[Account recovery](/protocol/identities/#account-recovery).
 
 ## The recovery disk
 
@@ -107,8 +107,9 @@ mero-kms: that is what lets them outlive every key service. Who that is
 follows `--app-upgrades`:
 
 - **`owner` (the default):** each organization's files open with the key its
-  org-wide `MANAGE_APPLICATION` holders set (`POST /orgs/{org}/backup-key`,
-  with a passkey). The operator holds the disk but reads nothing on it.
+  owner and admins, who approve its upgrades, set (`POST /orgs/{org}/backup-key`,
+  with a passkey; org-wide `MANAGE_APPLICATION` holders below cluster version
+  1.0.0-rc.38). The operator holds the disk but reads nothing on it.
 - **`operator`:** every app's files open with the operator's key (`POST
   /ops/backup-key`, signed with the operator key). The operator can then read
   every app's state from the disk. That is no new power (an operator that
@@ -229,6 +230,27 @@ on approved.
 - The token reaches only counts, placement, quotas, backups and the decisions
   governance gave the operator.
 
+## What the TEE does not protect: the app's own code
+
+The TEE keeps an app's data from the operator and from Calimero. It does not
+keep it from the app itself: the app's code reads the data, and where the
+operator allows a host, the release declares it and the organization approved
+it, that code may send whatever it read there, the developer's analytics
+included. Approving a host is trusting the code with it.
+
+Egress off is the owner's hard guarantee against that. An organization's owner
+or an admin turns it off for the organization (`POST /orgs/{org}/egress`
+`{ "egress": false }`) or one instance (`POST /apps/{app}/egress`), with a
+passkey; `meroctl org egress <org> off [--app <app>]`. While it is off, no
+outbound request leaves the cluster for the apps it covers, whatever their code
+or manifest says and whatever an approval (the organization's or the
+operator's) says, and the organization approves no new host. Turning it back on
+is made only on the node's consent page, shown as a red change. Compute runs
+never send anything, so they need no switch. See
+[Egress off](/build/guides/outbound/#egress-off); what an app can do with
+secrets is in the protocol chapter *Secrets and what an app can and cannot do
+with them*.
+
 ## Outbound HTTPS and secrets
 
 Apps can make HTTPS requests only through the five gates described in
@@ -237,6 +259,16 @@ variables or a loopback sidecar, are bound to packages, signers and hosts, are
 filled in by the node and are redacted from what the app sees. Keep `hosts`
 as narrow as the apps need; `"*"` means any host an installed manifest
 declares.
+
+An instance's owner and its organization's admins read its outbound requests
+(`meroctl instance outbound-log`, `GET /apps/{app}/outbound-log`): host, path
+without its query, method, status or failure, the names of the credential
+bindings the node attached and
+the sizes, never a value, a body, a query string or a header. The audit lives
+in each node's memory, behind the same access check as the app's other
+management routes, and is served by that route alone: it is not written to the
+node's log or `/ops/metrics`. See
+[What the owner sees](/build/guides/outbound/#what-the-owner-sees).
 
 ## Files on the host
 
@@ -255,13 +287,14 @@ declares.
 
 A host can stop a node, copy its disk and start it later on the copy; sealing
 hides the content, not its age. A node whose key comes from a mero-kms that keeps
-rollback counters (`docs/specs/rollback-protection.md`) keeps a counter in its
-sealed store and in mero-kms, raises both every second, and refuses to start on
-a store behind mero-kms's: a restored older copy, an empty store under a node id
-that ran before, or another node's store.
+rollback counters keeps a counter in its sealed store and in mero-kms, raises
+both every second, and refuses to start on a store behind mero-kms's: a restored
+older copy, an empty store under a node id that ran before, or another node's
+store ([Rollback protection](/protocol/encryption/#rollback-protection)).
 
 - **One node behind:** wipe its data directory, remove it (`DELETE /ops/nodes/{id}`)
-  and register it under a new node id; it joins empty and catches up.
+  and register it under a new node id; it joins empty and catches up
+  ([A node refuses to start as rolled back](/operate/runbooks/#a-node-refuses-to-start-as-rolled-back)).
 - **Every node behind, or the newest disks lost:** start each node once with
   `merod run --accept-rollback`. mero-kms raises the cluster's rollback epoch,
   which `/health` (`rollbackEpoch`) and `/ops/status` report: a forced rollback is

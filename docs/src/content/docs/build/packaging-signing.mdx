@@ -147,8 +147,12 @@ detail.
 
      Creating an instance of a release with `create` references first creates
      each of them: in the same organization, by the same owner, from the release
-     its lock pinned (else the newest installed one inside its range; a package
-     with none answers `409 USES_NOT_INSTALLED`), named `<instance>.<name>`. The
+     its lock pinned (else the newest installed one inside its range), among the
+     installed releases the creator may use, those signed by the same key as
+     the instance's own package, and, for an instance from a deployment, those
+     the same deployment offers; a package with none answers
+     `409 USES_NOT_INSTALLED`, as for a package that is not installed at all,
+     named `<instance>.<name>`. The
      instance's record names them (`links`), the create answers them, and an
      `init` that takes a `links` parameter is told their ids:
 
@@ -161,9 +165,9 @@ detail.
      `attach` references are never created.
 
      The instance and its members are one unit. An instance created from a
-     deployment's offer gives each member the same deployment, though the
-     deployment offers only the instance's release (its offer covers the
-     unit): every member's usage is billed to the deployment's developer, and
+     deployment's offer gives each member the same deployment, which need not
+     offer the member's release when the same key signed it (the instance's
+     offer covers the unit): every member's usage is billed to the deployment's developer, and
      the deployment's secret values fill what the member's own release
      declares, as they do the instance's. Deleting the
      instance deletes every member with it, down to the members' own members
@@ -254,9 +258,14 @@ detail.
    checks it against the package's own compute methods and the cluster's pools:
    the module is `self` (or left out) or another installed package by its exact
    name, optionally pinned (`module: com.acme.pdf@0.1.0`; without a version, the
-   newest release the installer sees). That package must ship a compute component;
-   its methods and caps are the ones the step is checked against, a module the
-   installer cannot see or that has none is `UNKNOWN_MODULE`, and the release
+   newest release the installer may pin). That package must ship a compute component;
+   its methods and caps are the ones the step is checked against. A module is pinned
+   only from a release the installer may use that is public or the operator's, signed
+   by the package's own signer, or, for a release installed private, private to every
+   organization the release is for; anything else, or a module with no compute
+   component, is `UNKNOWN_MODULE`. An install of the same release again (for another
+   organization, or public) keeps its pins and is refused the same way when a pin no
+   longer meets that rule, so it never widens who runs a private module. The release
    keeps running the module release it was installed against until the pipeline's
    own package is released again. The module's package cannot be uninstalled while
    such a release exists (`409 MODULE_IN_USE`). The step's files, payer and usage
@@ -325,11 +334,12 @@ attestation in your own code; it is still listed.
 The next line says what an organization that lets updates apply on their own
 (`autoApply: noDestinations`, [Updates that apply on their
 own](/protocol/upgrades/#updates-that-apply-on-their-own)) would see: only a
-green release of an app whose unit sends nothing out, before or after, and that
-removes no method, applies on its own, after the hold, and it moves the app
-alone: the apps it created stay on the releases they run until an owner or admin
-moves the unit. A green release that can send data out, or that removes a
-method another app may call, still waits for an owner's or admin's approval.
+green release of an app whose unit sends nothing out, before or after, that
+removes no method and moves none of the apps the release creates, applies on its
+own, after the hold. A green release that can send data out, removes a method or
+moves the apps the release creates still waits for an owner's or admin's
+approval: an update on its own moves the app alone, so an owner or admin moves
+the unit whole.
 
 A release is **red**, and waits for a person's approval, when it is signed by
 another key, can send data somewhere new, declares another state version,

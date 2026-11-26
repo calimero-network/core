@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.confirm_only import ConfirmOnly
 from ...models.error import Error
-from ...models.recovery_finish_response_200 import RecoveryFinishResponse200
+from ...models.recovery_finished import RecoveryFinished
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, RecoveryFinishResponse200]]:
+) -> Optional[Union[Error, RecoveryFinished]]:
     if response.status_code == 200:
-        response_200 = RecoveryFinishResponse200.from_dict(response.json())
+        response_200 = RecoveryFinished.from_dict(response.json())
 
         return response_200
 
@@ -86,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, RecoveryFinishResponse200]]:
+) -> Response[Union[Error, RecoveryFinished]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[Error, RecoveryFinishResponse200]]:
+) -> Response[Union[Error, RecoveryFinished]]:
     """Finish an organization recovery
 
      The account that started it, once `readyAt` passed; `412` first.
@@ -119,7 +119,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RecoveryFinishResponse200]]
+        Response[Union[Error, RecoveryFinished]]
     """
 
     kwargs = _get_kwargs(
@@ -139,7 +139,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[Error, RecoveryFinishResponse200]]:
+) -> Optional[Union[Error, RecoveryFinished]]:
     """Finish an organization recovery
 
      The account that started it, once `readyAt` passed; `412` first.
@@ -158,7 +158,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RecoveryFinishResponse200]
+        Union[Error, RecoveryFinished]
     """
 
     return sync_detailed(
@@ -173,7 +173,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[Error, RecoveryFinishResponse200]]:
+) -> Response[Union[Error, RecoveryFinished]]:
     """Finish an organization recovery
 
      The account that started it, once `readyAt` passed; `412` first.
@@ -192,7 +192,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RecoveryFinishResponse200]]
+        Response[Union[Error, RecoveryFinished]]
     """
 
     kwargs = _get_kwargs(
@@ -210,7 +210,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[Error, RecoveryFinishResponse200]]:
+) -> Optional[Union[Error, RecoveryFinished]]:
     """Finish an organization recovery
 
      The account that started it, once `readyAt` passed; `412` first.
@@ -229,7 +229,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RecoveryFinishResponse200]
+        Union[Error, RecoveryFinished]
     """
 
     return (

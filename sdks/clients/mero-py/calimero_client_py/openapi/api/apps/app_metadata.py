@@ -7,16 +7,16 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_metadata_body import AppMetadataBody
 from ...models.app_metadata_response_200 import AppMetadataResponse200
 from ...models.error import Error
+from ...models.metadata_body import MetadataBody
 from typing import cast
 
 
 def _get_kwargs(
     app: str,
     *,
-    body: AppMetadataBody,
+    body: MetadataBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -79,7 +79,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppMetadataBody,
+    body: MetadataBody,
 ) -> Response[Union[AppMetadataResponse200, Error]]:
     """Set an app's metadata
 
@@ -90,7 +90,8 @@ def sync_detailed(
 
     Args:
         app (str):
-        body (AppMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -116,7 +117,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppMetadataBody,
+    body: MetadataBody,
 ) -> Optional[Union[AppMetadataResponse200, Error]]:
     """Set an app's metadata
 
@@ -127,7 +128,8 @@ def sync(
 
     Args:
         app (str):
-        body (AppMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -148,7 +150,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppMetadataBody,
+    body: MetadataBody,
 ) -> Response[Union[AppMetadataResponse200, Error]]:
     """Set an app's metadata
 
@@ -159,7 +161,8 @@ async def asyncio_detailed(
 
     Args:
         app (str):
-        body (AppMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -183,7 +186,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppMetadataBody,
+    body: MetadataBody,
 ) -> Optional[Union[AppMetadataResponse200, Error]]:
     """Set an app's metadata
 
@@ -194,7 +197,8 @@ async def asyncio(
 
     Args:
         app (str):
-        body (AppMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

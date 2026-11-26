@@ -10,14 +10,28 @@
 use super::*;
 use crate::proof::verify_consent;
 
+/// What an organization recovery's start answers: when it started and when it may finish
+/// (Unix seconds).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryStarted {
+    pub started_at: u64,
+    pub ready_at: u64,
+}
+
+/// What an organization recovery's finish answers: the organization and the owners it replaced.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryFinished {
+    pub org: OrgId,
+    pub previous_owners: Vec<AccountId>,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
     match cmd {
-        // Account recovery (`docs/specs/account-recovery.md`): making and
+        // Account recovery ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): making and
         // removing a code, and cancelling a recovery, are the account's own
         // passkey consent; starting is the code key's signature over the
         // new passkey; finishing is that new passkey's sign-in assertion
@@ -54,12 +68,12 @@ pub(super) fn authorize(
             signature,
         } => {
             if s.recovery_keys.get(recovery_key) != Some(account) {
-                return Err(UNKNOWN_RECOVERY_CODE);
+                return Err(UNKNOWN_RECOVERY_CODE.into());
             }
             let used =
                 crate::proof::verify_recover(recovery_key, account, credential, *at, signature)?;
             if s.used_proofs.contains(&used) {
-                return Err("that recovery was used already");
+                return Err("that recovery was used already".into());
             }
             Ok(Some(used))
         }
@@ -97,7 +111,7 @@ pub(super) fn authorize(
                 || refresh.record.passkey.as_deref() != Some(pending.credential.id.as_str())
                 || refresh.record.app.is_some()
             {
-                return Err("the session is for another passkey");
+                return Err("the session is for another passkey".into());
             }
             let args = sign_in_args(&refresh.hash, &refresh.record);
             proofs.states(&st, "session", "__sign_in", &|a| *a == args)?;
@@ -138,7 +152,7 @@ pub(super) fn authorize(
             let used =
                 crate::proof::verify_recovery(&key.public_key, org, account, nonce, signature)?;
             if s.used_proofs.contains(&used) {
-                return Err("that recovery signature was used already");
+                return Err("that recovery signature was used already".into());
             }
             Ok(Some(used))
         }
@@ -208,7 +222,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::ImportHolder {
@@ -228,10 +242,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !backup_key_fits(&public_key) {
-                return Err(BAD_BACKUP_KEY);
+                return Err(BAD_BACKUP_KEY.into());
             }
             if !s.may_set_backup_key(&holder, &actor) {
-                return Err(NOT_BACKUP_HOLDER);
+                return Err(NOT_BACKUP_HOLDER.into());
             }
             let key = BackupKey {
                 holder: holder.clone(),
@@ -248,10 +262,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.accounts.contains_key(&account) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             if s.recovery_keys.contains_key(&recovery_key) {
-                return Err("that recovery code is in use");
+                return Err("that recovery code is in use".into());
             }
             // One code per account: a new one replaces the old.
             s.recovery_keys.retain(|_, a| *a != account);
@@ -262,7 +276,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let before = s.recovery_keys.len();
             s.recovery_keys.retain(|_, a| *a != account);
             if s.recovery_keys.len() == before {
-                return Err("no recovery code is set");
+                return Err("no recovery code is set".into());
             }
             Ok(Value::Null)
         }
@@ -274,10 +288,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if s.recovery_keys.get(&recovery_key) != Some(&account) {
-                return Err(UNKNOWN_RECOVERY_CODE);
+                return Err(UNKNOWN_RECOVERY_CODE.into());
             }
             if !s.accounts.contains_key(&account) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             // One at a time: a code holder cannot replace a pending
             // recovery with their own, nor stack a second.
@@ -289,7 +303,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     .values()
                     .any(|p| p.credential.id == credential.id)
             {
-                return Err("credential already registered");
+                return Err("credential already registered".into());
             }
             // Single use, whether it finishes or is cancelled.
             let _spent = s.recovery_keys.remove(&recovery_key);
@@ -298,7 +312,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 started_at: at,
                 ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
             };
-            let out = pending.json(&account);
+            let out = json!(pending.view(&account));
             let _prev = s.account_recoveries.insert(account, pending);
             Ok(out)
         }
@@ -311,7 +325,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .get(&account)
                 .is_none_or(|p| p.credential.id != credential_id)
             {
-                return Err(NO_ACCOUNT_RECOVERY_PENDING);
+                return Err(NO_ACCOUNT_RECOVERY_PENDING.into());
             }
             let _gone = s.account_recoveries.remove(&account);
             Ok(Value::Null)
@@ -331,10 +345,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(RECOVERY_NOT_READY);
             }
             if s.credentials.contains_key(&p.credential.id) {
-                return Err("credential already registered");
+                return Err("credential already registered".into());
             }
             if s.refresh_known(&refresh.hash) {
-                return Err("refresh token already issued");
+                return Err("refresh token already issued".into());
             }
             let mut credential = p.credential.clone();
             // The finish's assertion moved the passkey's counter: the
@@ -387,12 +401,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             public_key,
             at,
             actor,
+            deployment_needs_recovery,
             ..
         } => {
+            let keeps_key =
+                public_key.is_none() && !s.may_remove_recovery(&org, deployment_needs_recovery);
             let recovery = public_key.map(|k| recovery_key_of(k, at)).transpose()?;
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.role(&actor) != Some(OrgRole::Owner) {
-                return Err(OWNER_ONLY_RECOVERY);
+                return Err(OWNER_ONLY_RECOVERY.into());
+            }
+            if keeps_key {
+                return Err(RECOVERY_KEY_REQUIRED);
             }
             // A new key, or none: a recovery under way ends with the old one.
             o.recovery = recovery;
@@ -402,11 +422,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             org, account, at, ..
         } => {
             if !s.accounts.contains_key(&account) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.role(&account) == Some(OrgRole::Owner) {
-                return Err("that account owns the organization already");
+                return Err("that account owns the organization already".into());
             }
             let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
             if r.pending.is_some() {
@@ -417,7 +437,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 started_at: at,
                 ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
             };
-            let out = json!({ "startedAt": pending.started_at, "readyAt": pending.ready_at });
+            let out = json!(RecoveryStarted {
+                started_at: pending.started_at,
+                ready_at: pending.ready_at,
+            });
             r.pending = Some(pending);
             Ok(out)
         }
@@ -429,23 +452,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.role(&actor) != Some(OrgRole::Owner) {
-                return Err(OWNER_ONLY_RECOVERY);
+                return Err(OWNER_ONLY_RECOVERY.into());
             }
             let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
             if r.pending.as_ref().map(|p| &p.account) != Some(&account) {
-                return Err(NO_RECOVERY_PENDING);
+                return Err(NO_RECOVERY_PENDING.into());
             }
             r.pending = None;
             Ok(Value::Null)
         }
         SystemCmd::FinishRecovery { org, at, actor, .. } => {
             if !s.accounts.contains_key(&actor) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
             let Some(p) = r.pending.as_ref().filter(|p| p.account == actor) else {
-                return Err(NO_RECOVERY_PENDING);
+                return Err(NO_RECOVERY_PENDING.into());
             };
             if at < p.ready_at {
                 return Err(RECOVERY_NOT_READY);
@@ -476,7 +499,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     app.owner.clone_from(&actor);
                 }
             }
-            Ok(json!({ "org": org, "previousOwners": previous }))
+            Ok(json!(RecoveryFinished {
+                org,
+                previous_owners: previous,
+            }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
@@ -493,25 +519,25 @@ fn import_holder(
     seed: u64,
     apps: Vec<ImportedApp>,
     at: u64,
-) -> Result<Value, &'static str> {
+) -> Result<Value, Rejection> {
     if holder == BackupHolder::Operator || s.governance().app_upgrades == Authority::Operator {
-        return Err(NOT_IMPORTABLE);
+        return Err(NOT_IMPORTABLE.into());
     }
     if slice.holder != holder || !backup_key_fits(&public_key) {
-        return Err("the slice is not that holder's, or its key is malformed");
+        return Err("the slice is not that holder's, or its key is malformed".into());
     }
     match &holder {
         BackupHolder::Org(org) => {
             if s.orgs.contains_key(org) || slice.org.as_ref().map(|o| &o.org_id) != Some(org) {
-                return Err(ALREADY_HERE);
+                return Err(ALREADY_HERE.into());
             }
         }
         BackupHolder::Account(account) => {
             if s.accounts.contains_key(account) {
-                return Err(ALREADY_HERE);
+                return Err(ALREADY_HERE.into());
             }
         }
-        BackupHolder::Operator => return Err(NOT_IMPORTABLE),
+        BackupHolder::Operator => return Err(NOT_IMPORTABLE.into()),
     }
     let mut seen = BTreeSet::new();
     for a in &apps {
@@ -523,7 +549,8 @@ fn import_holder(
             && a.replicas.iter().all(|id| s.replica_node(id).is_some());
         if !fits {
             return Err(
-                "an imported app is not the slice's, is here already, or names unknown replicas",
+                "an imported app is not the slice's, is here already, or names unknown replicas"
+                    .into(),
             );
         }
     }
@@ -538,7 +565,7 @@ fn import_holder(
         .flat_map(|a| a.passkeys.iter())
         .any(|c| s.credentials.contains_key(&c.id))
     {
-        return Err(ALREADY_HERE);
+        return Err(ALREADY_HERE.into());
     }
     for (hash, bundle) in &slice.bundles {
         if !s.bundles.contains_key(hash) {
@@ -548,7 +575,7 @@ fn import_holder(
     for a in &apps {
         let record = &slice.apps[&a.app_id];
         if !s.bundles.contains_key(&record.bundle) {
-            return Err(RESTORE_BUNDLE_GONE);
+            return Err(RESTORE_BUNDLE_GONE.into());
         }
     }
     // Checked: from here nothing is refused.

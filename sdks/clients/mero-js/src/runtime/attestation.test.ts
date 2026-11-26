@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fromHex, hex } from '../crypto/internal.js';
 import type { SignedNodeRelease } from '../sealed/release.js';
@@ -17,6 +17,11 @@ import {
   type NodePolicy,
 } from './attestation.js';
 
+// Collateral as the DCAP stand-in below reads it: only its TCB info's evaluation data
+// number, which the verifier holds to core's floor (20). Hoisted for the mock.
+const current = vi.hoisted(() => ({ tcb_info: JSON.stringify({ tcbEvaluationDataNumber: 20 }) }));
+const CURRENT = current as DcapCollateral;
+
 // The quote's collateral source, seen from the library: no test reaches Intel or the mirror.
 const dcapCalls = vi.hoisted(() => ({ getCollateral: [] as unknown[][], getCollateralFromPcs: 0, unbundled: false }));
 vi.mock('@phala/dcap-qvl', () => ({
@@ -28,13 +33,13 @@ vi.mock('@phala/dcap-qvl', () => ({
     dcapCalls.getCollateral.push(args);
     if (args[0] === 'http://down.test') throw new TypeError('fetch failed');
     if (args[0] === 'http://bad.test') throw new Error('Failed to parse TCB info');
-    return {} as DcapCollateral;
+    return current as DcapCollateral;
   },
   get getCollateralFromPcs() {
     if (dcapCalls.unbundled) return undefined;
     return async () => {
       dcapCalls.getCollateralFromPcs += 1;
-      return {} as DcapCollateral;
+      return current as DcapCollateral;
     };
   },
 }));
@@ -74,7 +79,7 @@ interface Td {
  * for its quote: it answers as `@phala/dcap-qvl` would for a genuine quote from
  * the TD described by `td`, binding what `td` says.
  */
-function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8Array } = {}) {
+function node(td: Td = {}, opts: { claimed?: string; claimedProfile?: string; quote?: string; app?: Uint8Array } = {}) {
   let asked = '';
   const queries: URLSearchParams[] = [];
   const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -87,7 +92,7 @@ function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8
         transportKey: hex(TRANSPORT_KEY),
         appHash: hex(opts.app ?? new Uint8Array(32)),
         nonce: asked,
-        release: { version: opts.claimed ?? '2.3.87', profile: 'locked-read-only' },
+        release: { version: opts.claimed ?? '2.3.87', profile: opts.claimedProfile ?? 'locked-read-only' },
         cluster: 'test',
         node: 1,
         mock: false,
@@ -125,7 +130,7 @@ function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8
 async function attest(
   td: Td,
   release: Partial<NonNullable<NodePolicy['release']>> = {},
-  opts: { claimed?: string; quote?: string; app?: Uint8Array; policy?: Partial<NodePolicy>; verify?: boolean } = {},
+  opts: { claimed?: string; claimedProfile?: string; quote?: string; app?: Uint8Array; policy?: Partial<NodePolicy>; verify?: boolean } = {},
 ) {
   const n = node(td, opts);
   // dcap-qvl's verify is synchronous: the report is computed once the doc is served.
@@ -139,18 +144,25 @@ async function attest(
         if (!report) throw new Error('no report');
         return report;
       },
-      fetchCollateral: async () => ({}) as DcapCollateral,
+      fetchCollateral: async () => CURRENT,
       ...release,
     },
     ...opts.policy,
   };
+  // A release mirror (`{cloudUrl}/api/tee/node-releases/{version}`) answers the fixture and is recorded.
+  const mirrorAsked: string[] = [];
   const wrapped = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/api/tee/node-releases/')) {
+      mirrorAsked.push(url);
+      return new Response(JSON.stringify({ data: R87 }));
+    }
     const response = await n.fetchImpl(input, init);
     report = await n.verify();
     return response;
   }) as typeof fetch;
   const result = opts.verify ? verifyNode(BASE, policy, wrapped) : fetchAttestedKey(BASE, policy, wrapped);
-  return { result, releaseSource, queries: n.queries };
+  return { result, releaseSource, queries: n.queries, mirrorAsked };
 }
 
 describe('fetchAttestedKey with a release policy (core Measurements::Release)', () => {
@@ -308,9 +320,26 @@ describe("the quote's collateral", () => {
   });
 
   it('is checked for age on the path a node is attested through', async () => {
-    const stale = async () => ({ tcb_info: JSON.stringify({ issueDate: '2020-01-01T00:00:00Z' }) }) as DcapCollateral;
+    const stale = async () =>
+      ({ tcb_info: JSON.stringify({ issueDate: '2020-01-01T00:00:00Z', tcbEvaluationDataNumber: 20 }) }) as DcapCollateral;
     const { result } = await attest({}, { fetchCollateral: stale, maxCollateralAgeDays: 30 });
     await expect(result).rejects.toThrow(/more than the 30 this client accepts/);
+  });
+
+  // Core's nodes refuse a verdict computed against Intel TCB evaluation data below
+  // DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER (crates/tee-attestation); so does this client.
+  it('is held to the TCB evaluation data floor on the path a node is attested through', async () => {
+    const baseline = (number: number) => async () =>
+      ({ tcb_info: JSON.stringify({ tcbEvaluationDataNumber: number }) }) as DcapCollateral;
+    const old = (await attest({}, { fetchCollateral: baseline(17) })).result;
+    await expect(old).rejects.toThrow(/Intel TCB evaluation data 17, older than the minimum 20/);
+    await expect((await attest({}, { fetchCollateral: baseline(20) })).result).resolves.toEqual(TRANSPORT_KEY);
+    await expect((await attest({}, { fetchCollateral: baseline(22) })).result).resolves.toEqual(TRANSPORT_KEY);
+    // A policy raises the floor, never lowers it.
+    const raised = (await attest({}, { fetchCollateral: baseline(21), minTcbEvaluationDataNumber: 22 })).result;
+    await expect(raised).rejects.toThrow(/evaluation data 21, older than the minimum 22/);
+    const lowered = (await attest({}, { fetchCollateral: baseline(17), minTcbEvaluationDataNumber: 0 })).result;
+    await expect(lowered).rejects.toThrow(/evaluation data 17, older than the minimum 20/);
   });
 });
 
@@ -354,6 +383,27 @@ describe('verifyNode: the record of what was verified', () => {
       checkedAt: expect.any(Number),
     });
     expect(verification.checkedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('trusts any listed profile, judging the quote against the one the node names', async () => {
+    const STAGING = { profiles: ['debug', 'debug-read-only'], allowDebugProfile: true };
+    const { verification } = await verified({ image: DEBUG_IMAGE }, STAGING, { claimedProfile: 'debug' });
+    expect(verification.profile).toBe('debug');
+    // A production node is refused by a list without its profile...
+    const { result: prod } = await attest({}, STAGING);
+    await expect(prod).rejects.toThrow(/profile "locked-read-only", which is not one of debug, debug-read-only/);
+    // ...and a node naming a listed profile its quote is not is refused by the measurements.
+    const { result: lying } = await attest({ image: IMAGE }, STAGING, { claimedProfile: 'debug' });
+    await expect(lying).rejects.toThrow(/not an image this verifier trusts/);
+  });
+
+  it('never trusts a listed debug profile without allowDebugProfile, nor an empty or doubled choice', async () => {
+    const { result } = await attest({ image: DEBUG_IMAGE }, { profiles: ['locked-read-only', 'debug'] }, { claimedProfile: 'debug' });
+    await expect(result).rejects.toThrow(/"debug", which an operator can read/);
+    const { result: empty } = await attest({}, { profiles: [] });
+    await expect(empty).rejects.toThrow(/profiles is empty/);
+    const { result: both } = await attest({}, { profile: 'locked-read-only', profiles: ['locked-read-only'] });
+    await expect(both).rejects.toThrow(/not both/);
   });
 
   it('names the debug profile only when it was allowed and matched', async () => {
@@ -418,5 +468,56 @@ describe('an app-bound attestation (the node binds its own record of the app)', 
   it('records the bound app hash of a mock attestation too, marked as mock', async () => {
     const { verification } = await verifyNode(BASE, { allowMock: true, app: 'app-1' }, mockNode(APP_HASH));
     expect(verification).toMatchObject({ mock: true, appHash: hex(APP_HASH) });
+  });
+});
+
+describe("the default mirrors follow the page's Calimero Cloud", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Attest with no `releaseSource` and no collateral fetch, so both come from the default mirrors. */
+  async function defaults() {
+    dcapCalls.getCollateral.length = 0;
+    const { result, mirrorAsked } = await attest({}, { releaseSource: undefined, fetchCollateral: undefined });
+    await expect(result).resolves.toEqual(TRANSPORT_KEY);
+    return { release: mirrorAsked, collateral: dcapCalls.getCollateral.map((a) => a[0]) };
+  }
+
+  it("a page on staging's apps domain reads staging's mirrors", async () => {
+    vi.stubGlobal('location', { hostname: 'abc.apps.relay.staging.cloud.calimero.network' });
+    expect(await defaults()).toEqual({
+      release: ['https://staging.cloud.calimero.network/api/tee/node-releases/2.3.87'],
+      collateral: ['https://staging.cloud.calimero.network/api/tee/pcs'],
+    });
+  });
+
+  it("production pages, every other host and Node (no location) read production's", async () => {
+    const production = {
+      release: ['https://cloud.calimero.network/api/tee/node-releases/2.3.87'],
+      collateral: ['https://cloud.calimero.network/api/tee/pcs'],
+    };
+    expect(globalThis.location).toBeUndefined();
+    expect(await defaults()).toEqual(production);
+    for (const hostname of [
+      'abc.apps.calimero.network',
+      'localhost',
+      'my-app.vercel.app',
+      'evil-apps.relay.staging.cloud.calimero.network.attacker.com',
+      'xapps.relay.staging.cloud.calimero.network',
+    ]) {
+      vi.stubGlobal('location', { hostname });
+      expect(await defaults(), hostname).toEqual(production);
+    }
+  });
+
+  it('an explicit releaseSource or collateralSource wins on staging too', async () => {
+    vi.stubGlobal('location', { hostname: 'abc.apps.relay.staging.cloud.calimero.network' });
+    dcapCalls.getCollateral.length = 0;
+    const { result, mirrorAsked } = await attest(
+      {},
+      { releaseSource: 'https://mirror.example', fetchCollateral: undefined, collateralSource: 'https://pccs.example' },
+    );
+    await expect(result).resolves.toEqual(TRANSPORT_KEY);
+    expect(mirrorAsked).toEqual(['https://mirror.example/api/tee/node-releases/2.3.87']);
+    expect(dcapCalls.getCollateral.map((a) => a[0])).toEqual(['https://pccs.example']);
   });
 });

@@ -1,6 +1,6 @@
-//! Updates that apply on their own (C9; docs: protocol upgrades "Updates that apply on
-//! their own"): the system leader's pass, from `reconcile`, at most every
-//! [`AUTO_UPDATE_EVERY`].
+//! Updates that apply on their own: the system leader's pass, from `reconcile`, at most
+//! every [`AUTO_UPDATE_EVERY`]
+//! ([Updates that apply on their own](https://calimero-network.github.io/core/protocol/upgrades/#updates-that-apply-on-their-own)).
 //!
 //! Each pass finds the apps an update would apply to on its own now
 //! (`SystemState::auto_update_candidates`: a `noDestinations` policy, the newer releases
@@ -242,7 +242,7 @@ impl Node {
                         // A failure of the release itself is noted on the app, which
                         // leaves the candidates; any other is tried again after a backoff.
                         let _r = self.with_auto_update_memory(|mem| mem.failed(m, now));
-                        warn!(app = %app.app_id, version = %to.version, error = %e.message, "an update did not apply on its own");
+                        warn!(app = %app.app_id, version = %to.version, status = e.status, code = %e.code, "an update did not apply on its own");
                     }
                 }
                 continue 'apps;

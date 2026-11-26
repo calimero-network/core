@@ -1,12 +1,14 @@
 //! The consent page's organization kinds beyond creating, inviting and
 //! joining (`createOrg`, `createInvite`, `acceptInvite`, in the parent): what
-//! an app's frontend, refused every organization route since #4934, asks the
+//! an app's frontend, refused every organization route, asks the
 //! person to approve for a "server" (an organization) it manages.
 //!
 //! - Membership: `leaveOrg`, `removeMember`, `setMemberRole`,
 //!   `setMemberTeams`, `removeMemberTeams`, `revokeInvite`.
 //! - Settings: `renameOrg`, `deleteOrg`, `setCapabilities` (a member's or a
-//!   default), `setAllApps`.
+//!   default), `setAllApps`, `setEgress` (the organization's or one instance's
+//!   egress switch; on again is a red change, shown as one, and this page is the
+//!   only place it is made).
 //!
 //! Each is judged at request time with the predicates the log applies (the
 //! role, `MANAGE_MEMBERS`, a team's lead, admin), so nobody approves what the
@@ -23,7 +25,8 @@ use serde_json::{json, Value};
 use super::{attention, phrase, plain_date, role_words, stale, Acted};
 use crate::api::{
     delete_org, remove_member, remove_member_teams, rename_org, revoke_invite, set_all_apps,
-    set_capabilities, set_member_role, set_member_teams, CapabilitiesBody, ConfirmBody, Principal,
+    set_capabilities, set_egress, set_member_role, set_member_teams, CapabilitiesBody, ConfirmBody,
+    EgressBody, Principal,
 };
 use crate::error::ApiError;
 use crate::node::Node;
@@ -117,6 +120,17 @@ pub struct SetAllAppsSubject {
     all_apps: bool,
 }
 
+/// `setEgress`: the organization's egress switch, or with `app` one instance's of it.
+/// `egress: true` turns it back on (a red change), `false` off.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EgressSubject {
+    org: String,
+    #[serde(default)]
+    app: Option<String>,
+    egress: bool,
+}
+
 /// What an organization request asks, by kind.
 pub(super) enum OrgAsk {
     Leave(OrgSubject),
@@ -129,6 +143,7 @@ pub(super) enum OrgAsk {
     Delete(OrgSubject),
     SetCapabilities(SetCapabilitiesSubject),
     SetAllApps(SetAllAppsSubject),
+    SetEgress(EgressSubject),
 }
 
 /// What approving an organization request does, with the facts the page
@@ -188,6 +203,13 @@ pub(super) enum OrgAction {
         all_apps: bool,
         /// Whether the page showed they have it now.
         from: bool,
+    },
+    SetEgress {
+        org: String,
+        app: Option<String>,
+        egress: bool,
+        /// Whether the page showed the switch off now.
+        from_off: bool,
     },
 }
 
@@ -425,6 +447,7 @@ pub(super) async fn request(
         OrgAsk::Delete(sub) => delete(s, account, sub),
         OrgAsk::SetCapabilities(sub) => capabilities(s, account, sub),
         OrgAsk::SetAllApps(sub) => all_apps(s, account, sub),
+        OrgAsk::SetEgress(sub) => egress(s, account, sub),
     })
 }
 
@@ -686,8 +709,13 @@ fn set_teams(
     }
     let (o, _role) = org_for(s, &org, actor)?;
     o.role(&account).ok_or_else(not_a_member)?;
-    crate::system::judge_team_rows(&o, &account, &teams, actor)
-        .map_err(|e| refusal(e, "BAD_TEAMS"))?;
+    let held = s.cluster_brings(crate::system::cluster_version::Feature::HeldTeamGrants);
+    crate::system::judge_team_rows(&o, &account, &teams, actor, held).map_err(|e| {
+        match e.kind() {
+            crate::system::RejectionKind::Rejected => refusal(e.message(), "BAD_TEAMS"),
+            _ => crate::node::rejected(e),
+        }
+    })?;
     let name = o.name.clone();
     let who = person(s, &o, actor, &account);
     let ids: Vec<String> = teams.iter().map(|r| r.team.clone()).collect();
@@ -731,7 +759,7 @@ fn set_teams(
 
 /// A refusal the log would answer, before it is asked: a batch's shape is
 /// `400 code`, anything else `403`.
-fn refusal(e: &'static str, code: &str) -> ApiError {
+fn refusal(e: &str, code: &str) -> ApiError {
     match e {
         "name at least one team" | "too many teams in one step" | "a team is named twice" => {
             ApiError::bad_request(code, e)
@@ -1194,6 +1222,144 @@ fn all_apps(
     ))
 }
 
+/// Whether the switch `app` names (the organization's without one) is off now.
+fn egress_off_now(s: &SystemState, org: &Org, app: Option<&str>) -> bool {
+    match app {
+        None => org.egress_off,
+        Some(id) => s.apps.get(id).is_some_and(|a| a.egress_off),
+    }
+}
+
+fn egress(
+    s: &SystemState,
+    actor: &str,
+    sub: EgressSubject,
+) -> Result<(OrgAction, Value), ApiError> {
+    let EgressSubject { org, app, egress } = sub;
+    id_fits("org", &org)?;
+    if let Some(id) = &app {
+        id_fits("app", id)?;
+    }
+    let (o, role) = org_for(s, &org, actor)?;
+    let target = match &app {
+        None => None,
+        Some(id) => Some(
+            s.apps
+                .get(id)
+                .filter(|a| a.org == org)
+                .ok_or_else(|| ApiError::not_found("no such app"))?,
+        ),
+    };
+    if role < OrgRole::Admin {
+        return Err(ApiError::forbidden(
+            "only the organization's owner or an admin turns its egress off or on",
+        ));
+    }
+    let from_off = egress_off_now(s, &o, app.as_deref());
+    if from_off != egress {
+        return Err(ApiError::conflict(if egress {
+            "egress is on already"
+        } else {
+            "egress is off already"
+        }));
+    }
+    let name = o.name.clone();
+    let what = target.map_or_else(
+        || format!("the apps of {name}"),
+        |a| format!("the app {}", a.name),
+    );
+    // What on lets out: the hosts the organization approved (or the operator, where it
+    // holds outbound approvals), each reached again by the apps' own code.
+    let approved: Vec<String> = {
+        let approvals = if s.governance().outbound == crate::system::Authority::Operator {
+            &s.operator_outbound
+        } else {
+            &o.outbound_approvals
+        };
+        let mut hosts: Vec<String> = approvals
+            .values()
+            .flat_map(|a| a.prefixes.iter().map(|p| super::host_of(p)))
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    };
+    let still_off = egress && app.is_some() && o.egress_off;
+    let (title, points, attention, after) = if egress {
+        let mut points = vec![
+            format!(
+                "The code of {what} may send requests, with whatever data it reads, to the hosts \
+                 approved for it. Data sent there leaves your Calimero cluster, and the \
+                 cluster cannot see what the app does with it there."
+            ),
+            "Turning egress off again takes effect at once.".to_owned(),
+        ];
+        if still_off {
+            points.push(format!(
+                "{name} keeps egress off for all its apps: nothing leaves until it is on there too."
+            ));
+        }
+        (
+            format!("Let {what} send data outside the cluster"),
+            points,
+            vec![super::attention(
+                "egressOn",
+                format!(
+                    "This turns off the guarantee that {what} cannot send your data outside the cluster."
+                ),
+                approved.clone(),
+            )],
+            format!(
+                "Once you approve, {what} may send data to approved hosts outside the cluster."
+            ),
+        )
+    } else {
+        (
+            format!("Stop {what} from sending data outside the cluster"),
+            vec![
+                format!(
+                    "No request leaves the cluster for {what}, whatever its code or its \
+                     approvals say, from its next request on."
+                ),
+                "Approvals stay recorded; nothing is approved while the organization's egress is off."
+                    .to_owned(),
+            ],
+            Vec::new(),
+            format!("Once you approve, {what} cannot send data outside the cluster."),
+        )
+    };
+    let model = json!({
+        "kind": "setEgress",
+        "scope": scope(&org, &name),
+        "headline": title,
+        "title": title,
+        "points": points,
+        "attention": attention,
+        "before": format!(
+            "Until you approve, egress stays {} for {what}.",
+            if from_off { "off" } else { "on" }
+        ),
+        "after": after,
+        "notes": [],
+        "egress": {
+            "org": org,
+            "app": app,
+            "egress": egress,
+            "class": if egress { "red" } else { "green" },
+            "approvedHosts": approved,
+        },
+    });
+    Ok((
+        OrgAction::SetEgress {
+            org,
+            app,
+            egress,
+            from_off,
+        },
+        model,
+    ))
+}
+
 // ---------------------------------------------------------------- approving
 
 /// The facts the page showed that could change before the approval: a
@@ -1257,6 +1423,19 @@ pub(super) fn still_current(node: &Node, action: &OrgAction) -> Result<(), ApiEr
                 Err(stale("whether they get every app added later"))
             }
         }
+        OrgAction::SetEgress {
+            org, app, from_off, ..
+        } => {
+            let now = s
+                .orgs
+                .get(org)
+                .map(|o| egress_off_now(s, o, app.as_deref()));
+            if now == Some(*from_off) {
+                Ok(())
+            } else {
+                Err(stale("the egress switch"))
+            }
+        }
     })
 }
 
@@ -1318,6 +1497,9 @@ pub(super) async fn act(
             all_apps,
             ..
         } => set_all_apps(node, p, org, account, all_apps, confirm).await?,
+        OrgAction::SetEgress {
+            org, app, egress, ..
+        } => set_egress(node, p, org, app, EgressBody { egress, confirm }).await?,
     };
     let outcome = v
         .as_object()

@@ -20,7 +20,7 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
   Sigstore-verified release policy. A host that names an older release is held
   by `MERO_TEE_MIN_VERSION`; one that names another URL reaches a KMS the policy
   refuses.
-- **Key release** (`kms/`): challenge, this TD's quote over it, a signed request with
+- **Key release** (`kms.rs`, `kms/`): challenge, this TD's quote over it, a signed request with
   the identity's libp2p key; the KMS answers with the key for
   `{namespace}/{profile}/{peerId}`, sealed to the request (`kms/sealed.rs`).
 - **Disk key** (`disk_key.rs`): `fetch_disk_key(url, identity, create)` returns the key
@@ -37,7 +37,7 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
   only); `read_evidence` reads it back, refusing any other filesystem, more
   than `MAX_EVIDENCE_BYTES` or an unknown field. The node reports it, bound
   into its quote, at `GET /attestation?purpose=kms`.
-- **Rollback counters** (`kms/rollback.rs`, `docs/specs/rollback-protection.md`):
+- **Rollback counters** (`kms/rollback.rs`, [Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)):
   `/attest` asks for `capabilities`; a mero-kms that keeps counters answers
   `["rollback/v1"]` and commits to them (`attest_binding_v2`), so a relay cannot strip
   them. `fetch_storage_key(.., rollback_node)` then sends `rollbackNodeId` (quote:

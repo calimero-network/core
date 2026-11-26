@@ -4,6 +4,11 @@
 //!
 //! This crate is pure logic. Accounts, credentials and revocations are stored
 //! by the caller (the node keeps them in the system group).
+//!
+//! Spec: [Accounts,
+//! passkeys & sessions](https://calimero-network.github.io/core/protocol/identities/),
+//! [Sessions and authority](https://calimero-network.github.io/core/protocol/sessions-and-authority/).
+//! Crate guide: [`crates/identity/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/identity/AGENTS.md).
 
 use ring::digest::{digest, SHA256};
 use ring::rand::SystemRandom;

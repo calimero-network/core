@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_org_upgrade_body import OpsOrgUpgradeBody
+from ...models.org_upgrade_body import OrgUpgradeBody
 from ...models.upgrade_run import UpgradeRun
 from typing import cast
 
@@ -16,7 +16,7 @@ from typing import cast
 def _get_kwargs(
     org: str,
     *,
-    body: OpsOrgUpgradeBody,
+    body: OrgUpgradeBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -84,7 +84,7 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OpsOrgUpgradeBody,
+    body: OrgUpgradeBody,
 ) -> Response[Union[Error, UpgradeRun]]:
     """An operator's upgrade run
 
@@ -94,7 +94,8 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OpsOrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +121,7 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OpsOrgUpgradeBody,
+    body: OrgUpgradeBody,
 ) -> Optional[Union[Error, UpgradeRun]]:
     """An operator's upgrade run
 
@@ -130,7 +131,8 @@ def sync(
 
     Args:
         org (str):
-        body (OpsOrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -151,7 +153,7 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OpsOrgUpgradeBody,
+    body: OrgUpgradeBody,
 ) -> Response[Union[Error, UpgradeRun]]:
     """An operator's upgrade run
 
@@ -161,7 +163,8 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OpsOrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -185,7 +188,7 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OpsOrgUpgradeBody,
+    body: OrgUpgradeBody,
 ) -> Optional[Union[Error, UpgradeRun]]:
     """An operator's upgrade run
 
@@ -195,7 +198,8 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OpsOrgUpgradeBody):
+        body (OrgUpgradeBody): The request body of `POST /orgs/{org}/upgrade`, `POST
+            /ops/orgs/{org}/upgrade`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

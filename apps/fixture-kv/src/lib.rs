@@ -11,7 +11,7 @@ pub struct Entry {
     pub value: String,
 }
 
-/// A note, full-text searchable by title and body (spec section 7).
+/// A note, full-text searchable by title and body.
 #[derive(Record)]
 #[table(key = "id", search = ["title", "body"])]
 pub struct Note {
@@ -33,8 +33,8 @@ pub struct Beat {
     pub at: u64,
 }
 
-/// A `beat` tick as `beats` lists it (D20: 64-bit integers are decimal strings).
-#[derive(serde::Serialize)]
+/// A `beat` tick as `beats` lists it (64-bit integers as decimal strings).
+#[derive(serde::Serialize, AbiType)]
 pub struct BeatOut {
     pub scheduled: String,
     pub previous: Option<String>,
@@ -49,7 +49,7 @@ pub struct Kv {
     beat_count: Counter,
     /// `failUntil` and `stallUntil`, app times in ms as decimal strings.
     beat_faults: UnorderedMap<String, String>,
-    /// Uploaded blobs by name (R8): a typed reference keeps the blob alive.
+    /// Uploaded blobs by name: a typed reference keeps the blob alive.
     files: UnorderedMap<String, BlobRef>,
     notes: Table<Note>,
     /// What `onXcallFailed` was told, by method: `"<app>|<reason>"`.
@@ -97,8 +97,8 @@ struct SetArgs<'a> {
     value: &'a str,
 }
 
-/// A file as `file` lists it (D20: the size as a decimal string).
-#[derive(serde::Serialize)]
+/// A file as `file` lists it (the size as a decimal string).
+#[derive(serde::Serialize, AbiType)]
 pub struct FileOut {
     pub id: String,
     pub size: String,
@@ -232,8 +232,8 @@ impl Kv {
     }
 
     /// Sets `key` as `set` does, once the captcha service `captcha` accepted Cloudflare
-    /// Turnstile token `token`: the service checks it with Turnstile from its own call
-    /// (D76), all inside this one.
+    /// Turnstile token `token`: the service checks it with Turnstile from its own call,
+    /// all inside this one.
     pub async fn set_human_turnstile(
         &mut self,
         key: String,
@@ -272,6 +272,16 @@ impl Kv {
         Ok(())
     }
 
+    /// Writes `n` keys (`quiet-0` ..) of `size` bytes each without events, so only the run's
+    /// write limits (10,000 writes, 1 MiB) stop it: the refused write's typed `RunLimit`.
+    pub fn fill_quiet(&mut self, n: u32, size: u32) -> app::Result<()> {
+        let value = "x".repeat(size as usize);
+        for i in 0..n {
+            let _event = self.upsert(&format!("quiet-{i}"), &value)?;
+        }
+        Ok(())
+    }
+
     /// Never returns: runs until the node's fuel or wall-clock budget stops it.
     pub fn spin(&mut self) -> app::Result<()> {
         let mut n: u64 = 0;
@@ -280,23 +290,23 @@ impl Kv {
         }
     }
 
-    /// The entry timestamp this call ran at (D19); writes nothing.
+    /// The entry timestamp this call ran at; writes nothing.
     pub fn stamp(&mut self) -> app::Result<u64> {
         Ok(env::time_now())
     }
 
-    /// The time a view sees: the last applied entry's timestamp (D19).
+    /// The time a view sees: the last applied entry's timestamp.
     #[app::view]
     pub fn time_now(&self) -> app::Result<u64> {
         Ok(env::time_now())
     }
 
-    /// A fresh unique id (D52); writes nothing.
+    /// A fresh unique id; writes nothing.
     pub fn new_id(&mut self) -> app::Result<String> {
         Ok(env::unique_id())
     }
 
-    /// A timer (D34): records the tick's slot and the previous one. A tick fails while
+    /// A timer: records the tick's slot and the previous one. A tick fails while
     /// its slot is within a `failBeats` window, and spins (until the node's deadline)
     /// while its entry time is within a `stallBeats` window.
     #[app::every("1h")]
@@ -387,7 +397,7 @@ impl Kv {
         Ok(self.files.get(&name)?.map(|b| b.grant(ttl)))
     }
 
-    /// Sends `setFromApp { key, value }` to app `app` (D25).
+    /// Sends `setFromApp { key, value }` to app `app`.
     pub fn relay(&mut self, app: String, key: String, value: String) -> app::Result<()> {
         env::xcall(
             &app,
@@ -456,7 +466,8 @@ impl Kv {
             env::xcall_call::<u32, _>(&b, "slowBump", &args),
         );
         let counts = vec![x?, y?];
-        // Host calls, not a busy loop: the wall clock stops the run before its fuel does.
+        // Host calls, not a busy loop. Each costs fuel per byte, so the test that
+        // stalls gives its cluster fuel enough for the wall clock to stop the run first.
         while stall == Some(true) {
             let _ = std::hint::black_box(env::random_bytes(1 << 20));
         }
@@ -465,7 +476,8 @@ impl Kv {
 
     /// Draws 1 MiB of randomness from the host `spins` times, then counts one more under
     /// `key` and answers the count: a slow target for `bumpBoth`. The host fills the bytes,
-    /// so the call takes wall time without spending its fuel. Also stores the run's time
+    /// which costs fuel per byte, so the test sizing it in wall time lifts its fuel.
+    /// Also stores the run's time
     /// (the entry's, stamped as the run starts) under `<key>@<count>`, so a test tells calls
     /// that started together from calls that took turns.
     #[app::allow(app = "*")]
@@ -516,7 +528,7 @@ impl Kv {
         Ok(who())
     }
 
-    /// The platform's report of an xcall it dead-lettered (D29).
+    /// The platform's report of an xcall it dead-lettered.
     #[app::allow(system)]
     pub fn on_xcall_failed(
         &mut self,
@@ -538,13 +550,15 @@ impl Kv {
         Ok(page.items.into_iter().collect())
     }
 
-    /// Starts the `enrich` action for `key` (D17); returns its key.
+    /// Starts the `enrich` action for `key`; returns its key.
     pub fn start_enrich(&mut self, key: String) -> app::Result<String> {
         env::start_action("enrich", &KeyArg { key: &key })
     }
 
-    /// An action (D12): reads `key` through a view, sends it to the echo host with the
-    /// action's key and a secret, and writes what came back through `applyEnrichment`.
+    /// An action: reads `key` through a view, sends it to the echo host with the
+    /// action's key, and writes what came back through `applyEnrichment`. A secret the
+    /// release binds to the echo host (`ECHO_KEY`, in tests) is attached by the node, never
+    /// named here.
     #[app::action]
     pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
         let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
@@ -552,8 +566,7 @@ impl Kv {
             "https://echo.outbound.test/v1/enrich?v={}",
             value.unwrap_or_default()
         ))
-        .header("Idempotency-Key", &ctx.key())
-        .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
+        .header("Idempotency-Key", &ctx.key());
         let response = ctx.fetch(&request)?;
         let summary = format!("{} {}", response.status, response.text());
         ctx.call::<(), _>(
@@ -566,7 +579,7 @@ impl Kv {
         Ok(())
     }
 
-    /// An action that fails at once with an app error (D22).
+    /// An action that fails at once with an app error.
     #[app::action]
     pub fn explode(_ctx: &mut ActionCtx) -> app::Result<()> {
         app::bail!(Error::BeatFailed)
@@ -585,7 +598,7 @@ impl Kv {
         Ok(self.enrichments.get(&key)?)
     }
 
-    /// The platform's report of an action that failed for good (D22).
+    /// The platform's report of an action that failed for good.
     pub fn on_action_failed(
         &mut self,
         action_id: String,

@@ -1,4 +1,4 @@
-//! How a failed run becomes one `TrapKind` (spec section 5, error mapping).
+//! How a failed run becomes one `TrapKind`.
 
 use calimero_app_host::{HostDenied, TrapKind};
 use thiserror::Error;
@@ -8,7 +8,7 @@ use wasmtime::PoolConcurrencyLimitError;
 use wasmtime::Trap;
 use wasmtime_wasi::I32Exit;
 
-/// The detail of a run refused because the node has no instance slot free (Ruling 22).
+/// The detail of a run refused because the node has no instance slot free.
 pub(crate) const POOL_EXHAUSTED: &str = "instance pool exhausted";
 /// The detail of a run refused because the node could not allocate its instance.
 pub(crate) const ALLOCATION_FAILED: &str = "instance allocation failed";
@@ -21,8 +21,9 @@ const COUNT_LIMIT_PREFIX: &str = "resource limit exceeded";
 #[error("memory or table limit reached")]
 pub(crate) struct GrowRefused;
 
-/// The detail of a run that used its whole wall-clock budget.
-pub const WALL_CLOCK_EXCEEDED: &str = "wall clock exceeded";
+/// The detail of a run that used its whole wall-clock budget (the host core's, which a host
+/// call that ends past the deadline answers too).
+pub use calimero_app_host::WALL_CLOCK_EXCEEDED;
 /// The detail of a memory growth the operating system refused.
 pub(crate) const MEMORY_UNAVAILABLE: &str = "memory allocation failed";
 /// The detail of a run ended by its interrupt flag.
@@ -39,7 +40,8 @@ pub(crate) struct Cancelled;
 #[error("memory allocation failed")]
 pub(crate) struct GrowFailed;
 
-/// A panic in host code, caught at the engine boundary (S6).
+/// A panic in host code, caught at the engine boundary: it ends the run as `Fault`,
+/// never the node.
 #[derive(Debug, Error)]
 #[error("host panic")]
 pub(crate) struct HostPanic;
@@ -57,11 +59,11 @@ pub(crate) fn denied(refusal: HostDenied) -> Error {
 }
 
 /// Classifies a failed run. The detail never carries guest arguments, results or
-/// account ids (S10): it is the trap code or a fixed text.
+/// account ids: it is the trap code or a fixed text.
 ///
 /// Node load is not the guest's fault: an instance pool with no free slot, or an
 /// allocation the OS refused while instantiating or growing memory, is `Unavailable` (not
-/// logged, retried with the same key; D23, D36).
+/// logged, retried with the same key).
 pub(crate) fn classify(err: &Error, phase: Phase) -> (TrapKind, String) {
     if let Some(refusal) = err.downcast_ref::<HostDenied>() {
         return (TrapKind::HostDenied, refusal.to_string());

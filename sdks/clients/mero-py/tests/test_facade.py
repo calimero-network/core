@@ -14,8 +14,8 @@ import pytest
 
 from calimero_client_py import CloudError, FeatureNotActive, SoftPasskey, facade
 from calimero_client_py.openapi.models import (
-    InviteCreateResponse200,
-    OrgCreateResponse200,
+    InviteMade,
+    OrgCreated,
 )
 
 from test_openapi_client import (
@@ -63,7 +63,7 @@ def test_a_method_takes_flattened_keywords_and_answers_the_model():
     client = client_on(native)
     client.use_passkey(SoftPasskey())
     r = client.orgs.invite_create(org="o 1", role="member", teams=["t"], ttl_secs=60)
-    assert isinstance(r, InviteCreateResponse200)
+    assert isinstance(r, InviteMade)
     assert r.token == "t-1"
     first, second = native.sent
     assert first["path"] == "/orgs/o%201/invites"
@@ -1020,7 +1020,7 @@ def test_the_byte_routes():
 def test_the_typed_answer_is_the_generated_model():
     native = Native(answer(200, {"orgId": "o1"}))
     r = client_on(native).orgs.create(name="Acme")
-    assert isinstance(r, OrgCreateResponse200)
+    assert isinstance(r, OrgCreated)
     assert r.org_id == "o1"
 
 

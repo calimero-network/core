@@ -17,7 +17,9 @@ use axum::routing::{any, get};
 use axum::Extension;
 use axum::Router;
 use calimero_sealed::client::{SealedTransport as Client, StaleTransportKey};
-use calimero_sealed::{intercept, LowOrder, PeerKey, SealedOptions, SealedTransport};
+use calimero_sealed::{
+    intercept, LowOrder, PeerKey, SealedOptions, SealedSession, SealedTransport,
+};
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use futures_util::StreamExt;
 use ring::hkdf;
@@ -50,6 +52,13 @@ async fn events() -> impl IntoResponse {
 async fn caller(peer: Option<Extension<PeerKey>>) -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "peer": peer.map(|Extension(PeerKey(key))| hex::encode(key)),
+    }))
+}
+
+/// Which sealed session the opened request says it came in.
+async fn session(session: Option<Extension<SealedSession>>) -> impl IntoResponse {
+    axum::Json(serde_json::json!({
+        "session": session.map(|Extension(SealedSession(id))| hex::encode(id)),
     }))
 }
 
@@ -87,6 +96,7 @@ async fn serve_recorded(
     let app = Router::new()
         .route("/events", get(events))
         .route("/caller", get(caller))
+        .route("/session", get(session))
         .route("/{*rest}", any(echo));
     // The envelope wraps the router from outside, so an opened request is routed afresh.
     let app = tower::Layer::layer(
@@ -301,8 +311,8 @@ async fn required_mode_refuses_plain_requests() {
     assert_eq!(allowed.status(), 200);
 }
 
-/// Xil's review, issue 13: a relay between client and node set the outer
-/// Origin and X-Forwarded-Host, and the node read them as the sealed request's.
+/// A relay between client and node may set the outer Origin and X-Forwarded-Host;
+/// the node never reads them as the sealed request's.
 #[tokio::test]
 async fn a_relay_cannot_choose_the_origin_the_node_reads() {
     let (url, transport, _h) = serve(SealedOptions::default()).await;
@@ -593,4 +603,51 @@ fn a_low_order_peer_key_derives_nothing() {
     for point in [[0; 32], one, order_8] {
         assert_eq!(transport.derive(&point, SALT, INFO).unwrap_err(), LowOrder);
     }
+}
+
+/// Every request opened in one sealed session names that session, another
+/// session names another, and a plain request names none: what the node keys
+/// its per-client limits on.
+#[tokio::test]
+async fn an_opened_request_names_its_session() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    let ask = |client: Client| {
+        let http = http.clone();
+        let url = url.clone();
+        async move {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let req = http.get(url.join("session").unwrap()).build().unwrap();
+                let v: serde_json::Value = client.execute(req).await.unwrap().json().await.unwrap();
+                seen.push(v["session"].as_str().unwrap().to_owned());
+            }
+            seen
+        }
+    };
+    let one = ask(Client::with_key(
+        url.clone(),
+        http.clone(),
+        transport.public_key(),
+    ))
+    .await;
+    let two = ask(Client::with_key(
+        url.clone(),
+        http.clone(),
+        transport.public_key(),
+    ))
+    .await;
+    assert_eq!(one[0], one[1], "one session, one name");
+    assert_eq!(two[0], two[1]);
+    assert_ne!(one[0], two[0], "two sessions, two names");
+
+    let plain: serde_json::Value = http
+        .get(url.join("session").unwrap())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(plain["session"], serde_json::Value::Null);
 }

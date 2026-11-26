@@ -22,12 +22,12 @@
 //! origin's: its own rp-id, sessions bound to the package and naming the
 //! origin, removal ending them. Its consent says so
 //! (`{ origin, rpId, served: true }`), so a consent to a plain origin never
-//! makes one served. Design: `docs/specs/custom-domains.md`.
+//! makes one served. Design: [Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::system::{SystemState, OPERATOR};
+use crate::system::{Rejection, SystemState, OPERATOR};
 use crate::types::AccountId;
 
 /// How many origins one package registers.
@@ -219,7 +219,14 @@ impl SystemState {
         };
         match self.publisher_of_signer(&p.signer_id) {
             Some(org) => self.manages_apps(org, account, None),
-            None => p.owner == account,
+            // A first installer, only while a release of it is theirs to use (from the
+            // version that brings private releases, so earlier entries replay as they applied).
+            None => {
+                p.owner == account
+                    && (!self
+                        .cluster_brings(crate::system::cluster_version::Feature::PrivateReleases)
+                        || p.versions.values().any(|v| self.sees_release(v, account)))
+            }
         }
     }
 
@@ -251,9 +258,9 @@ impl SystemState {
         served: bool,
         actor: AccountId,
         at: u64,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, Rejection> {
         if !self.manages_package(&package, &actor) {
-            return Err("only the package's manager registers its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first");
+            return Err("only the package's manager registers its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first".into());
         }
         let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;
         if served {
@@ -261,32 +268,34 @@ impl SystemState {
         }
         if let Some(held) = self.package_origins.get(&origin) {
             if held.package != package {
-                return Err("another package registered that origin");
+                return Err("another package registered that origin".into());
             }
             if held.rp_id != resolved {
-                return Err("that origin is registered with another rpId; remove it first");
+                return Err("that origin is registered with another rpId; remove it first".into());
             }
             if held.served != served {
-                return Err("that origin is registered with the other `served`; remove it first");
+                return Err(
+                    "that origin is registered with the other `served`; remove it first".into(),
+                );
             }
-            return Ok(origin_json(&origin, held));
+            return Ok(json!(origin_json(&origin, held)));
         }
         if self.origins_of(&package).count() >= MAX_ORIGINS_PER_PACKAGE {
-            return Err("quota exceeded: origins per package");
+            return Err(Rejection::quota("origins per package"));
         }
         if served
             && self.origins_of(&package).filter(|(_, o)| o.served).count()
                 >= MAX_SERVED_ORIGINS_PER_PACKAGE
         {
-            return Err("quota exceeded: served origins per package");
+            return Err(Rejection::quota("served origins per package"));
         }
         if served
             && self.package_origins.values().filter(|o| o.served).count() >= MAX_SERVED_ORIGINS
         {
-            return Err("quota exceeded: served origins");
+            return Err(Rejection::quota("served origins"));
         }
         if self.package_origins.len() >= MAX_PACKAGE_ORIGINS {
-            return Err("quota exceeded: origins");
+            return Err(Rejection::quota("origins"));
         }
         let record = PackageOrigin {
             package,
@@ -295,7 +304,7 @@ impl SystemState {
             added_at: at,
             served,
         };
-        let out = origin_json(&origin, &record);
+        let out = json!(origin_json(&origin, &record));
         let _prev = self.package_origins.insert(origin, record);
         Ok(out)
     }
@@ -306,19 +315,23 @@ impl SystemState {
         package: &str,
         origin: &str,
         actor: &str,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, Rejection> {
         if !self.manages_package(package, actor) {
-            return Err("only the package's manager removes its origins");
+            return Err("only the package's manager removes its origins".into());
         }
         if self
             .package_origins
             .get(origin)
             .is_none_or(|o| o.package != package)
         {
-            return Err("that origin is not registered for this package");
+            return Err("that origin is not registered for this package".into());
         }
         let _gone = self.package_origins.remove(origin);
-        Ok(json!({ "package": package, "origin": origin, "removed": true }))
+        Ok(json!(OriginRemoved {
+            package: package.to_owned(),
+            origin: origin.to_owned(),
+            removed: true,
+        }))
     }
 
     /// Forget the origins of a package no longer installed, so whoever
@@ -328,17 +341,38 @@ impl SystemState {
     }
 }
 
-/// A registration as the API answers it.
+/// What removing an origin answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OriginRemoved {
+    pub package: String,
+    pub origin: String,
+    pub removed: bool,
+}
+
+/// A registration as the API answers it (`#PackageOrigin`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginView {
+    pub package: String,
+    pub origin: String,
+    pub rp_id: String,
+    pub added_by: AccountId,
+    /// RFC 3339.
+    pub added_at: String,
+    pub served: bool,
+}
+
+/// `o`, registered for `origin`, as the API answers it.
 #[must_use]
-pub fn origin_json(origin: &str, o: &PackageOrigin) -> Value {
-    json!({
-        "package": o.package,
-        "origin": origin,
-        "rpId": o.rp_id,
-        "addedBy": o.added_by,
-        "addedAt": crate::system::rfc3339(o.added_at),
-        "served": o.served,
-    })
+pub fn origin_json(origin: &str, o: &PackageOrigin) -> OriginView {
+    OriginView {
+        package: o.package.clone(),
+        origin: origin.to_owned(),
+        rp_id: o.rp_id.clone(),
+        added_by: o.added_by.clone(),
+        added_at: crate::system::rfc3339(o.added_at),
+        served: o.served,
+    }
 }
 
 #[cfg(test)]

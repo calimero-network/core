@@ -134,15 +134,21 @@ runs:
         cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}
         cache-workspace-crates: ${{ inputs.workspace-crates }}
+        # The commit the target dir was built from (next step). Not under target/:
+        # rust-cache deletes every file at target/'s root before it saves, so a
+        # marker there never reached the cache and every job rebuilt every
+        # workspace crate. An extra directory is saved as it is.
+        cache-directories: ${{ (runner.os == 'Linux' && inputs.workspace-crates == 'true') && format('{0}/ci-cache-commit', runner.temp) || '' }}
 
-    # See `workspace-crates`. .ci-cache-commit names the commit a target dir was built
-    # from; the job that saves the cache builds this checkout, so it records HEAD.
+    # See `workspace-crates`. $RUNNER_TEMP/ci-cache-commit/commit names the commit a
+    # target dir was built from; the job that saves the cache builds this checkout,
+    # so it records HEAD.
     - name: Mark what changed since the cached build
       if: runner.os == 'Linux' && inputs.rust-cache == 'true' && inputs.workspace-crates == 'true'
       shell: bash
       run: |
         set -uo pipefail
-        marker="$GITHUB_WORKSPACE/target/.ci-cache-commit"
+        marker="$RUNNER_TEMP/ci-cache-commit/commit"
         base=$(cat "$marker" 2>/dev/null || true)
         git ls-files -z | xargs -0 touch -c -h -d '2000-01-01T00:00:00Z'
         if [ -n "$base" ] && { git cat-file -e "$base^{commit}" 2>/dev/null \
@@ -154,5 +160,5 @@ runs:
           git ls-files -z | xargs -0 touch -c -h
           echo "no cache commit to compare with${base:+ ($base unreachable)}: every file counts as changed"
         fi
-        mkdir -p "$GITHUB_WORKSPACE/target"
+        mkdir -p "$GITHUB_WORKSPACE/target" "$(dirname "$marker")"
         git rev-parse HEAD > "$marker"

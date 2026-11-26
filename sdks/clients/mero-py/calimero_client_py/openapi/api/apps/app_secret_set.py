@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_secret_set_body import AppSecretSetBody
-from ...models.app_secret_set_response_200 import AppSecretSetResponse200
 from ...models.error import Error
+from ...models.secret_set import SecretSet
 from typing import cast
 
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppSecretSetResponse200, Error]]:
+) -> Optional[Union[Error, SecretSet]]:
     if response.status_code == 200:
-        response_200 = AppSecretSetResponse200.from_dict(response.json())
+        response_200 = SecretSet.from_dict(response.json())
 
         return response_200
 
@@ -88,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppSecretSetResponse200, Error]]:
+) -> Response[Union[Error, SecretSet]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -103,14 +103,15 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Response[Union[AppSecretSetResponse200, Error]]:
+) -> Response[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -126,7 +127,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppSecretSetResponse200, Error]]
+        Response[Union[Error, SecretSet]]
     """
 
     kwargs = _get_kwargs(
@@ -148,14 +149,15 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Optional[Union[AppSecretSetResponse200, Error]]:
+) -> Optional[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -171,7 +173,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppSecretSetResponse200, Error]
+        Union[Error, SecretSet]
     """
 
     return sync_detailed(
@@ -188,14 +190,15 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Response[Union[AppSecretSetResponse200, Error]]:
+) -> Response[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -211,7 +214,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppSecretSetResponse200, Error]]
+        Response[Union[Error, SecretSet]]
     """
 
     kwargs = _get_kwargs(
@@ -231,14 +234,15 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppSecretSetBody,
-) -> Optional[Union[AppSecretSetResponse200, Error]]:
+) -> Optional[Union[Error, SecretSet]]:
     """Set an app's own value of a declared secret
 
-     Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint),
-    kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the
-    organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent.
-    `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409
-    CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     Attached by the node only where the secret's binding says (its host, header or body field), never
+    shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of
+    the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{
+    name, fingerprint }`: the value is never in the consent. `404` for a name the release does not
+    declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an
+    earlier release.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -254,7 +258,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppSecretSetResponse200, Error]
+        Union[Error, SecretSet]
     """
 
     return (

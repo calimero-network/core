@@ -21,7 +21,7 @@ async fn app_attestation(
     headers: HeaderMap,
     Path(app_id): Path<String>,
     Query(q): Query<AppAttestQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<AppAttestations>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
@@ -49,15 +49,23 @@ async fn app_attestation(
         }
         .await;
         replicas.push(match doc {
-            Ok(d) => json!({ "node": id, "attestation": d }),
-            Err(e) => json!({ "node": id, "error": e }),
+            Ok(d) => ReplicaAttestation::Attested {
+                node: *id,
+                attestation: d,
+            },
+            Err(e) => ReplicaAttestation::Unreachable {
+                node: *id,
+                error: e,
+            },
         });
     }
     // The cluster, said over the caller's attested channel: what each
     // replica's quote must bind, since the documents came in the clear.
-    Ok(Json(
-        json!({ "appId": app_id, "cluster": node.config.cluster, "replicas": replicas }),
-    ))
+    Ok(Json(AppAttestations {
+        app_id,
+        cluster: node.config.cluster.clone(),
+        replicas,
+    }))
 }
 
 /// `422 INIT_FAILED`: app `app_id`'s `init` failed with the app log's `error`.
@@ -89,7 +97,8 @@ pub(crate) async fn offered_bundle(
                 .values()
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
-                    let r = s.offered_release(o)?;
+                    // An offer serves only while its owner's side may still use the release.
+                    let r = s.offered_release(o).filter(|r| s.offer_serves(d, r))?;
                     Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
@@ -189,6 +198,30 @@ pub(crate) const NO_ORGANIZATION: &str = "NO_ORGANIZATION";
 pub(crate) const STANDALONE_INSTANCE: &str = "STANDALONE_INSTANCE";
 /// `400 ORG_INSTANCE`: an `org` instance asks for a new organization.
 pub(crate) const ORG_INSTANCE: &str = "ORG_INSTANCE";
+
+/// `account`'s only organization (`member` or above), on fresh state: `None` when it is in
+/// none, `400 ORG_REQUIRED` when it is in several.
+pub(crate) async fn only_org(node: &Node, account: &str) -> Result<Option<String>, ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    let mine: Vec<String> = node.sys(|s| s.orgs_of(account).into_iter().cloned().collect());
+    match mine.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(one.clone())),
+        _ => Err(ApiError::bad_request(
+            ORG_REQUIRED,
+            "you are in several organizations: name the one this is for (`org`)",
+        )),
+    }
+}
+
+/// `409 NO_ORGANIZATION`: what `needs` asks for an organization the caller is in, and it is in none.
+pub(crate) fn no_organization(needs: &str) -> ApiError {
+    ApiError::new(
+        409,
+        NO_ORGANIZATION,
+        &format!("{needs}, and you are in none: create one or accept an invite first"),
+    )
+}
 
 /// The instance mode of `release` (`instanceOrg` in its signed manifest): the one its
 /// record keeps, else (a release recorded before the node kept it) its `.mpk`'s. A raw
@@ -302,27 +335,15 @@ async fn instance_org(
             ))
         }
         (InstanceOrg::Standalone, _) | (InstanceOrg::Either, Some(_)) => {}
-        (InstanceOrg::Org | InstanceOrg::Either, None) => {
-            let _caught_up = node.sys_fresh().await;
-            let mine: Vec<String> = node.sys(|s| s.orgs_of(owner).into_iter().cloned().collect());
-            match mine.as_slice() {
-                [one] => return Ok(one.clone()),
-                [] if mode == InstanceOrg::Org => {
-                    return Err(ApiError::new(
-                        409,
-                        NO_ORGANIZATION,
-                        &format!("an instance of {label} goes into an organization you are in, and you are in none: create one or accept an invite first"),
-                    ))
-                }
-                [] => {}
-                _ => {
-                    return Err(ApiError::bad_request(
-                        ORG_REQUIRED,
-                        "you are in several organizations: name the one the instance goes into (`org`)",
-                    ))
-                }
+        (InstanceOrg::Org | InstanceOrg::Either, None) => match only_org(node, owner).await? {
+            Some(one) => return Ok(one),
+            None if mode == InstanceOrg::Org => {
+                return Err(no_organization(&format!(
+                    "an instance of {label} goes into an organization you are in"
+                )))
             }
-        }
+            None => {}
+        },
     }
     // A new organization, its creator the owner, approving this node's release as the
     // personal one did.
@@ -394,6 +415,10 @@ pub(super) struct CreateAppBody {
     /// unit_offer }`). The node's own, never a client's.
     #[serde(skip)]
     unit_offer: Option<PackageRef>,
+    /// A unit's member: the release `unit_members` chose for it, which it runs as judged
+    /// there. The node's own, never a client's.
+    #[serde(skip)]
+    unit_release: Option<PackageRef>,
     /// Asked by a session bound to the package's own frontend through the consent page's
     /// install sheet: it runs a release that frontend sees, as `POST /apps` from that
     /// session does. The node's own, never a client's.
@@ -435,6 +460,7 @@ pub(crate) async fn create_installed(
         metadata: Value::Null,
         deployment: i.deployment,
         unit_offer: None,
+        unit_release: None,
         from_frontend: i.from_frontend,
     };
     create_instance(node, p, owner, body, 0).await
@@ -522,7 +548,12 @@ async fn create_instance(
     depth: usize,
 ) -> Result<Value, ApiError> {
     let now = now_secs();
-    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_offer) {
+    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_release) {
+        // A unit's member: the release `unit_members` chose, nothing else.
+        (_, Some(chosen)) => {
+            let (bundle, compute) = chosen_parts(node, chosen)?;
+            (bundle, compute, Some(chosen.clone()))
+        }
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
         (Some(d), None) => {
@@ -545,19 +576,22 @@ async fn create_instance(
             .await?;
             (bundle, compute, Some(release))
         }
-        // A unit's member, or an app from a release or a bundle.
-        _ => {
+        // An app from a release or a bundle.
+        (None, None) => {
+            // Checked above: a bound session names its own package only.
+            let via = if p.bound_app().is_some() || body.from_frontend {
+                Via::Frontend
+            } else {
+                Via::Account
+            };
             bundle_named(
                 node,
                 body.bundle.clone(),
                 body.package.as_deref(),
                 body.version.as_deref(),
                 body.service.as_deref(),
-                &owner,
-                // Checked above: a bound session names its own package only. A member from
-                // a deployment runs the release its instance's offered release pins, whether
-                // or not its owner sees it otherwise, as the instance does.
-                p.bound_app().is_some() || body.unit_offer.is_some() || body.from_frontend,
+                (&owner, body.org.as_deref()),
+                via,
             )
             .await?
         }
@@ -573,7 +607,7 @@ async fn create_instance(
     if executor != crate::types::Executor::Component {
         return Err(ApiError::unsupported_bundle());
     }
-    // A component's confirm methods are its ABI's (S5), never the request's.
+    // A component's confirm methods are its ABI's, never the request's.
     if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len()) > crate::node::MAX_ARGS_BYTES {
         return Err(crate::node::args_too_large());
     }
@@ -625,7 +659,7 @@ async fn create_instance(
     let mut init_args = body.init_args;
     let links = match &release {
         Some(release) => {
-            let unit = unit_members(node, release).await?;
+            let unit = unit_members(node, release, &owner, body.deployment.as_deref()).await?;
             if unit.is_empty() {
                 BTreeMap::new()
             } else {
@@ -659,6 +693,12 @@ async fn create_instance(
                 });
                 let mut links = BTreeMap::new();
                 for (name, (package, version)) in unit.members {
+                    let chosen = PackageRef {
+                        package: package.clone(),
+                        version: version.clone(),
+                        service: None,
+                        compute: false,
+                    };
                     let member = CreateAppBody {
                         name: format!("{}.{name}", body.name),
                         bundle: None,
@@ -672,6 +712,7 @@ async fn create_instance(
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
                         unit_offer: unit_offer.clone(),
+                        unit_release: Some(chosen),
                         from_frontend: body.from_frontend,
                     };
                     let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
@@ -720,6 +761,7 @@ async fn create_instance(
                 links,
                 attached: BTreeMap::new(),
                 restore_point: None,
+                egress_off: false,
             }),
             unit_offer: body.unit_offer,
             offers_only,
@@ -743,13 +785,13 @@ async fn create_instance(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(json!({
-        "appId": app_id,
-        "contextId": hex::encode(sha256(app_id.as_bytes())),
-        "group": out["group"],
-        "replicas": out["replicas"],
-        "compute": has_compute,
-        "links": links_answer,
+    Ok(json!(AppCreated {
+        context_id: hex::encode(sha256(app_id.as_bytes())),
+        app_id,
+        group: out["group"].as_u64().unwrap_or_default(),
+        replicas: serde_json::from_value(out["replicas"].clone()).unwrap_or_default(),
+        compute: has_compute,
+        links: links_answer,
     }))
 }
 
@@ -767,13 +809,32 @@ impl Unit {
     }
 }
 
+/// The app component and compute component of the installed release `r`, a unit member's.
+fn chosen_parts(node: &Node, r: &PackageRef) -> Result<(String, Option<String>), ApiError> {
+    let (services, compute) = node
+        .sys(|s| {
+            let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
+            Some((v.app_parts().clone(), v.compute.clone()))
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    let key = r.service.as_deref().unwrap_or_default();
+    let bundle = services
+        .get(key)
+        .cloned()
+        .ok_or_else(|| crate::packages::no_such_service(&r.package, &r.version, key, &services))?;
+    Ok((bundle, compute.get(key).cloned()))
+}
+
 /// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
-/// release of the package inside its range; a package with none is `409
-/// USES_NOT_INSTALLED`, naming what to install.
+/// release of the package inside its range, among those `creator` may use, the release's
+/// own signer published, or someone acting for the owner of `deployment` (the instance's)
+/// may use; a package with none is `409 USES_NOT_INSTALLED`, naming what to install.
 pub(crate) async fn unit_members(
     node: &Node,
     release: &crate::system::PackageRef,
+    creator: &str,
+    deployment: Option<&str>,
 ) -> Result<Unit, ApiError> {
     let Some(version) = node.sys(|s| {
         s.packages
@@ -811,9 +872,21 @@ pub(crate) async fn unit_members(
         let range = semver::VersionReq::parse(&u.range)
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
         let installed: Vec<String> = node.sys(|s| {
+            let same_signer = s.same_signer(&release.package, &u.package);
+            let serves = |v: &crate::system::PackageVersion| {
+                deployment
+                    .and_then(|d| s.deployments.get(d))
+                    .is_some_and(|d| s.offer_serves(d, v))
+            };
             s.packages
                 .get(&u.package)
-                .map(|p| p.versions.keys().cloned().collect())
+                .map(|p| {
+                    p.versions
+                        .iter()
+                        .filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))
+                        .map(|(k, _)| k.clone())
+                        .collect()
+                })
                 .unwrap_or_default()
         });
         let chosen = match &u.version {
@@ -889,44 +962,44 @@ async fn app_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Query(q): Query<AppListQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<AppList>> {
     let p = principal(&node, &headers).await?;
     let account = p
         .as_ref()
         .and_then(|p| p.caller.account().map(str::to_owned));
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
-    let apps: Vec<Value> = node.sys(|s| {
+    let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
+    let key = p.as_ref().and_then(|p| p.api_key.clone());
+    let apps: Vec<AppEntry> = node.sys(|s| {
         s.apps
             .values()
-            .map(|a| (a, s.running_release(a)))
-            .filter(|(_, r)| {
-                bound
-                    .as_ref()
-                    .is_none_or(|pkg| r.as_ref().is_some_and(|r| r.package == *pkg))
+            .filter(|a| {
+                key.as_ref()
+                    .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
             })
-            .filter(|(a, _)| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
-            .filter(|(a, _)| s.may_reach(a, account.as_deref()))
-            .filter(|(a, _)| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
-            .filter(|(_, r)| {
-                q.package
-                    .as_ref()
-                    .is_none_or(|p| r.as_ref().is_some_and(|r| r.package == *p))
-            })
-            .map(|(a, release)| {
-                json!({
-                    "appId": a.app_id,
-                    "name": a.name,
-                    "owner": a.owner,
-                    "org": a.org,
-                    "bundle": a.bundle,
-                    "package": release.as_ref().map(|r| &r.package),
-                    "version": release.as_ref().map(|r| &r.version),
-                    "deployment": a.deployment,
+            .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
+            .filter(|a| s.may_reach(a, account.as_deref()))
+            .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
+            .map(|a| (a, crate::report::release_of_app(s, a, reader)))
+            // Releases may share a WASM: filter by the release the row names, not the bundle's.
+            .filter(|(_, release)| {
+                [&bound, &q.package].into_iter().flatten().all(|pkg| {
+                    release.as_ref().is_some_and(|r| r.package == *pkg)
                 })
+            })
+            .map(|(a, release)| AppEntry {
+                app_id: a.app_id.clone(),
+                name: a.name.clone(),
+                owner: a.owner.clone(),
+                org: a.org.clone(),
+                bundle: a.bundle.clone(),
+                package: release.as_ref().map(|r| r.package.clone()),
+                version: release.as_ref().map(|r| r.version.clone()),
+                deployment: a.deployment.clone(),
             })
             .collect()
     });
-    Ok(Json(json!({ "apps": apps })))
+    Ok(Json(AppList { apps }))
 }
 
 /// Delete an app instance: its owner, or an admin of its organization. An instance whose
@@ -973,9 +1046,11 @@ async fn app_delete(
             members: whole.then(|| unit.clone()),
         })
         .await?;
-    Ok(Json(
-        json!({ "appId": app_id, "deleted": true, "members": unit }),
-    ))
+    Ok(Json(json!(AppDeleted {
+        app_id,
+        deleted: true,
+        members: unit,
+    })))
 }
 
 async fn app_get(
@@ -987,7 +1062,7 @@ async fn app_get(
     let p = principal(&node, &headers).await?;
     // As in `gate`: an anonymous caller is judged on the cluster's latest
     // system state too, so an app made private through another node is hidden
-    // here at once (#4723). `principal` already read fresh for a credential.
+    // here at once. `principal` already read fresh for a credential.
     // Read before the record, so the record answered is the fresh one.
     if p.is_none() {
         node.sys_fresh().await;
@@ -1053,9 +1128,6 @@ fn refuse_app_invite(
         Ok(())
     })
 }
-
-/// `409`: the instance's release or organization does not allow guests.
-pub(crate) const GUESTS_NOT_ALLOWED: &str = "GUESTS_NOT_ALLOWED";
 
 /// Mint an instance invite: whoever manages the instance's guests, with their passkey over
 /// the invite's key and terms (`412` first). The first request makes the token and keeps it
@@ -1151,7 +1223,7 @@ async fn app_invite_create(
             consent: c.consent,
         })
         .await?;
-    Ok(Json(json!({ "token": token })))
+    Ok(Json(json!(AppInviteMade { token })))
 }
 
 /// The instance's pending invites, for whoever manages its guests: key, uses left, expiry,
@@ -1171,23 +1243,21 @@ async fn app_invite_list(
         if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
             return Err(ApiError::not_found("no such app"));
         }
-        let invites: Vec<Value> = s
+        let invites: Vec<AppInviteView> = s
             .app_invites
             .iter()
             .filter(|(_, i)| i.app == app_id)
-            .map(|(k, i)| {
-                json!({
-                    "inviteKey": k,
-                    "usesLeft": i.uses_left,
-                    "expiresAt": i.expires_at,
-                    "expired": i.expires_at <= now,
-                    "createdBy": i.created_by,
-                    "createdAt": i.created_at,
-                    "scope": i.scope,
-                })
+            .map(|(k, i)| AppInviteView {
+                invite_key: k.clone(),
+                uses_left: i.uses_left,
+                expires_at: i.expires_at,
+                expired: i.expires_at <= now,
+                created_by: i.created_by.clone(),
+                created_at: i.created_at,
+                scope: i.scope.clone(),
             })
             .collect();
-        Ok(Json(json!({ "invites": invites })))
+        Ok(Json(json!(AppInviteList { invites })))
     })
 }
 
@@ -1313,7 +1383,7 @@ async fn app_transfer(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
     }
     // Before organizations are ordinary, an app in a personal organization handed to
@@ -1390,7 +1460,7 @@ async fn app_move(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
     }
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
@@ -1431,6 +1501,7 @@ async fn app_metadata(
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
     p.within(&node, &node.app(&app_id).await?)?;
+    p.settings_write()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
@@ -1443,8 +1514,8 @@ async fn app_metadata(
     Ok(Json(json!({})))
 }
 
-/// A component app's xcalls (D25, D29): messages waiting in its outbox and its dead
-/// letters, newest last. The app's owner's or an org admin's, from a replica.
+/// A component app's xcalls: messages waiting in its outbox and its dead letters, newest
+/// last. The app's owner's or an org admin's, from a replica.
 async fn app_xcalls(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1476,12 +1547,12 @@ async fn app_storage(
     let _p = gate(&node, &headers, &app, "*", false).await?;
     let stats = node.storage_stats(&app).await?;
     let last_write = node.last_write_ms(&app).await;
-    Ok(Json(json!({
-        "keys": stats.keys,
-        "bytes": stats.bytes,
-        "blobs": stats.blobs.len(),
-        "blobBytes": stats.blob_bytes,
-        "lastWriteAt": last_write.map(|ms| ms / 1000),
+    Ok(Json(json!(AppStorage {
+        keys: stats.keys,
+        bytes: stats.bytes,
+        blobs: stats.blobs.len() as u64,
+        blob_bytes: stats.blob_bytes,
+        last_write_at: last_write.map(|ms| ms / 1000),
     })))
 }
 
@@ -1502,7 +1573,7 @@ async fn app_abi(
     let bundle = node.running_bundle(&app);
     let wasm = node.bundle_wasm(&bundle).await?;
     let abi = crate::component::embedded_abi(&wasm);
-    Ok(Json(json!({ "bundle": bundle, "abi": abi })))
+    Ok(Json(json!(AppAbi { bundle, abi })))
 }
 
 /// The app's OpenAPI document, generated from the ABI of the bundle the app group runs
@@ -1530,24 +1601,29 @@ async fn app_openapi(
         version: bundle,
         app: Some(app_id),
     };
-    Ok(Json(calimero_app_abi::openapi::document(&abi, &info)))
+    Ok(Json(json!(AppOpenApi(
+        match calimero_app_abi::openapi::document(&abi, &info) {
+            Value::Object(m) => m,
+            _ => serde_json::Map::new(),
+        }
+    ))))
 }
 
-/// One day of an app's usage book on the wire: every figure a decimal string (D20).
-/// `wallMs` is for information only; the quota counts fuel (D76).
-fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
-    json!({
-        "date": crate::component::utc_date(day),
-        "runs": u.runs.to_string(),
-        "fuel": u.fuel.to_string(),
-        "wallMs": u.wall_ms.to_string(),
-        "writes": u.writes.to_string(),
-        "bytesWritten": u.bytes_written.to_string(),
-        "events": u.events.to_string(),
-    })
+/// One day of an app's usage book on the wire: every figure a decimal string.
+/// `wallMs` is for information only; the quota counts fuel.
+fn usage_day(day: u64, u: &crate::component::DayUsage) -> UsageDay {
+    UsageDay {
+        date: crate::component::utc_date(day),
+        runs: u.runs.to_string(),
+        fuel: u.fuel.to_string(),
+        wall_ms: u.wall_ms.to_string(),
+        writes: u.writes.to_string(),
+        bytes_written: u.bytes_written.to_string(),
+        events: u.events.to_string(),
+    }
 }
 
-/// What an app's runs used (Q20), for its owner and the admins of its organization
+/// What an app's runs used, for its owner and the admins of its organization
 /// only: `today` and `days`, the last 30 days before it (oldest first), each UTC on
 /// the node's app time; a day nothing ran is zeros, and so is every day of an app
 /// recorded before components (SDK 0.12, no longer run).
@@ -1569,10 +1645,34 @@ async fn app_usage(
     let today = crate::component::utc_day(node.app_clock().now_ms());
     let day = |d: u64| usage_day(d, &book.on(d));
     let first = today.saturating_sub(crate::component::USAGE_DAYS - 1);
-    Ok(Json(json!({
-        "today": day(today),
-        "days": (first..today).map(day).collect::<Vec<_>>(),
+    Ok(Json(json!(AppUsage {
+        today: day(today),
+        days: (first..today).map(day).collect(),
     })))
+}
+
+/// The outbound requests the instance's runs made, newest first, for its
+/// owner and the admins of its organization only: when, the method, host and path
+/// (no query), the status or why it failed, the secret names asked for, and the
+/// sizes; never a value, a body, a query string or a header. Each replica keeps
+/// what its own runs sent, in memory ([`calimero_outbound::OutboundAudit`]).
+async fn app_outbound_log(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its outbound log",
+        ));
+    }
+    Ok(Json(
+        serde_json::to_value(node.outbound_log(&app).await).unwrap_or_default(),
+    ))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -1694,9 +1794,11 @@ pub(crate) async fn delegate(
             consent,
         })
         .await?;
-    Ok(Json(
-        json!({ "source": source_id, "target": target_id, "methods": methods }),
-    ))
+    Ok(Json(json!(DelegationMade {
+        source: source_id.to_owned(),
+        target: target_id.to_owned(),
+        methods,
+    })))
 }
 
 /// Take back what the caller let `source` do on `target` as them: no passkey, as it only
@@ -1754,7 +1856,10 @@ async fn app_delegations(
             .cloned()
             .unwrap_or_default()
     });
-    Ok(Json(json!({ "source": source_id, "delegations": granted })))
+    Ok(Json(json!(Delegations {
+        source: source_id,
+        delegations: granted,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -1830,29 +1935,39 @@ async fn app_secrets(
             .map(|h| h.keys().cloned().collect())
             .unwrap_or_default()
     });
-    let secrets: serde_json::Map<String, Value> = declared
+    let secrets: BTreeMap<String, SecretView> = declared
         .into_iter()
         .map(|(name, d)| {
-            let mut row = json!({
-                "hosts": d.hosts, "description": d.description, "required": d.required,
-                "source": "cluster",
-            });
+            let mut row = SecretView {
+                host: d.host.clone(),
+                paths: d.paths.clone(),
+                binding: d.describe(&name),
+                description: d.description.clone(),
+                required: d.required,
+                source: "cluster".to_owned(),
+                header: d.header.clone(),
+                format: d.format.clone(),
+                body_field: d.body_field.clone(),
+                fingerprint: None,
+                set_by: None,
+                set_at: None,
+            };
             if let Some(o) = own.get(&name).filter(|o| o.is_object()) {
-                row["source"] = json!("app");
-                row["fingerprint"] = o["fingerprint"].clone();
-                row["setBy"] = o["setBy"].clone();
-                row["setAt"] = o["setAt"].clone();
+                "app".clone_into(&mut row.source);
+                row.fingerprint = o["fingerprint"].as_str().map(str::to_owned);
+                row.set_by = o["setBy"].as_str().map(str::to_owned);
+                row.set_at = o["setAt"].as_u64();
             } else if from_deployment.contains(&name) {
-                row["source"] = json!("deployment");
+                "deployment".clone_into(&mut row.source);
             }
             (name, row)
         })
         .collect();
-    Ok(Json(json!({ "secrets": secrets })))
+    Ok(Json(json!(AppSecrets { secrets })))
 }
 
-/// Set the instance's own value of a secret its release declares, sent only to that
-/// secret's declared hosts and never shown again: the owner's (or whoever manages the
+/// Set the instance's own value of a secret its release declares, attached only where
+/// that secret's binding says and never shown again: the owner's (or whoever manages the
 /// organization's apps), with a step-up over `{ name, fingerprint }` (never the value).
 async fn app_secret_set(
     State(node): State<Arc<Node>>,
@@ -1900,9 +2015,11 @@ async fn app_secret_set(
     if a.status != Status::Ok {
         return Err(ApiError::conflict(a.error.as_str().unwrap_or("refused")));
     }
-    Ok(Json(
-        json!({ "name": name, "fingerprint": fingerprint, "index": a.index }),
-    ))
+    Ok(Json(json!(SecretSet {
+        name,
+        fingerprint,
+        index: a.index,
+    })))
 }
 
 /// Remove the instance's own value of a secret: the operator's applies again. Same rules
@@ -1941,7 +2058,10 @@ async fn app_secret_clear(
             "this app holds no value of that secret",
         ));
     }
-    Ok(Json(json!({ "name": name, "index": a.index })))
+    Ok(Json(json!(SecretCleared {
+        name,
+        index: a.index,
+    })))
 }
 
 /// The references of the release `app` runs (`uses` in its signed manifest), by name; none
@@ -1982,7 +2102,7 @@ fn link_row(
     name: &str,
     u: Option<&calimero_bundle::BundleUse>,
     linked: Option<&str>,
-) -> Value {
+) -> LinkRow {
     let release = linked
         .and_then(|id| node.sys(|s| s.apps.get(id).cloned()))
         .and_then(|a| node.release_of_app(&a))
@@ -1991,15 +2111,15 @@ fn link_row(
         (Some(u), Some(r)) => Some(in_range(u, r)),
         _ => None,
     };
-    json!({
-        "name": name,
-        "package": u.map(|u| &u.package),
-        "range": u.map(|u| &u.range),
-        "mode": u.map(|u| u.mode),
-        "app": linked,
-        "version": release.map(|r| r.version),
-        "inRange": fits,
-    })
+    LinkRow {
+        name: name.to_owned(),
+        package: u.map(|u| u.package.clone()),
+        range: u.map(|u| u.range.clone()),
+        mode: u.map(|u| u.mode),
+        app: linked.map(str::to_owned),
+        version: release.map(|r| r.version),
+        in_range: fits,
+    }
 }
 
 /// An instance's links (`GET /apps/{app}/links`): each reference of the release it runs,
@@ -2020,7 +2140,7 @@ async fn app_links(
             .or_else(|| app.attached.get(name))
             .map(String::as_str)
     };
-    let mut rows: Vec<Value> = uses
+    let mut rows: Vec<LinkRow> = uses
         .iter()
         .map(|(name, u)| link_row(&node, name, Some(u), linked(name)))
         .collect();
@@ -2029,7 +2149,10 @@ async fn app_links(
             rows.push(link_row(&node, name, None, linked(name)));
         }
     }
-    Ok(Json(json!({ "app": app_id, "links": rows })))
+    Ok(Json(json!(AppLinkList {
+        app: app_id,
+        links: rows,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -2064,7 +2187,10 @@ async fn app_link(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     let target = node.app(&target_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor) && s.manages_app(&target, &actor)) {
+    if !node.sys(|s| {
+        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))
+            && fresh_record(s, &target).is_some_and(|target| s.manages_app(target, &actor))
+    }) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if target_id == app_id || target.org != app.org {
@@ -2108,7 +2234,12 @@ async fn app_link(
             consent,
         })
         .await?;
-    Ok(Json(link_row(&node, &name, Some(u), Some(&target_id))))
+    Ok(Json(json!(link_row(
+        &node,
+        &name,
+        Some(u),
+        Some(&target_id)
+    ))))
 }
 
 /// Detach the app attached under `name` (`SystemCmd::LinkApp` with no target): whoever
@@ -2124,7 +2255,7 @@ async fn app_unlink(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if !app.attached.contains_key(&name) {
@@ -2156,6 +2287,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/usage", get(app_usage))
+        .route("/apps/{app}/outbound-log", get(app_outbound_log))
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))
@@ -2180,4 +2312,220 @@ pub(super) fn routes() -> Router<Arc<Node>> {
             "/apps/{app}/secrets/{name}",
             put(app_secret_set).delete(app_secret_clear),
         )
+}
+
+/// `GET /apps/{app}/attestation`: the app, the cluster each replica's quote must bind, and
+/// each replica's receipt-key attestation (or why it could not be fetched).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppAttestations {
+    app_id: String,
+    cluster: String,
+    replicas: Vec<ReplicaAttestation>,
+}
+
+/// One replica's receipt-key attestation, or the error fetching it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ReplicaAttestation {
+    /// The replica's attestation document.
+    Attested { node: u64, attestation: Value },
+    /// Why the replica's document could not be fetched.
+    Unreachable { node: u64, error: String },
+}
+
+/// What `POST /apps` answers: the new instance, its context id, its group and replicas,
+/// whether its release ships a compute component, and the apps it created with it by name.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppCreated {
+    app_id: String,
+    context_id: String,
+    group: u64,
+    replicas: Vec<u64>,
+    compute: bool,
+    links: BTreeMap<String, String>,
+}
+
+/// `GET /apps`: the instances the caller reaches.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppList {
+    apps: Vec<AppEntry>,
+}
+
+/// An instance as `GET /apps` lists it: the release it runs (`null` for none known) and the
+/// deployment it came from.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppEntry {
+    app_id: String,
+    name: String,
+    owner: String,
+    org: String,
+    bundle: String,
+    package: Option<String>,
+    version: Option<String>,
+    deployment: Option<String>,
+}
+
+/// What `DELETE /apps/{app}` answers: the app, and the members of its unit that went with it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppDeleted {
+    app_id: String,
+    deleted: bool,
+    members: Vec<String>,
+}
+
+/// What `POST /apps/{app}/invites` answers: the invite's token, shown once.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppInviteMade {
+    token: String,
+}
+
+/// `GET /apps/{app}/invites`: the instance's invites.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppInviteList {
+    invites: Vec<AppInviteView>,
+}
+
+/// An instance invite: its key, uses left, expiry, maker and the grant scope it carries.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppInviteView {
+    invite_key: String,
+    uses_left: u32,
+    expires_at: u64,
+    expired: bool,
+    created_by: String,
+    created_at: u64,
+    scope: Option<Value>,
+}
+
+/// `GET /apps/{app}/storage`: keys, bytes, blobs, and when it last committed a write (Unix
+/// seconds; `null` before its first).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppStorage {
+    keys: u64,
+    bytes: u64,
+    blobs: u64,
+    blob_bytes: u64,
+    last_write_at: Option<u64>,
+}
+
+/// `GET /apps/{app}/abi`: the bundle the app group runs and the ABI it embeds (`null`: none).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppAbi {
+    bundle: String,
+    abi: Option<Value>,
+}
+
+/// `GET /apps/{app}/openapi.json`: the app's OpenAPI document, generated from its ABI.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(super) struct AppOpenApi(serde_json::Map<String, Value>);
+
+/// One day of an app's usage book: every figure a decimal string; `wallMs` is for
+/// information only.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UsageDay {
+    date: String,
+    runs: String,
+    fuel: String,
+    wall_ms: String,
+    writes: String,
+    bytes_written: String,
+    events: String,
+}
+
+/// `GET /apps/{app}/usage`: today, and the 30 days before it, oldest first.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppUsage {
+    today: UsageDay,
+    days: Vec<UsageDay>,
+}
+
+/// What `PUT /apps/{app}/delegations/{target}` answers: the methods the caller let `source`
+/// call on `target` as them.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct DelegationMade {
+    source: String,
+    target: String,
+    methods: Vec<String>,
+}
+
+/// `GET /apps/{app}/delegations`: what the caller lets `source` do as them, by target.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct Delegations {
+    source: String,
+    delegations: BTreeMap<String, Vec<String>>,
+}
+
+/// `GET /apps/{app}/secrets`: each secret the release declares, by name.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppSecrets {
+    secrets: BTreeMap<String, SecretView>,
+}
+
+/// A declared secret: where it goes, and whose value it takes (`app`: the instance's own,
+/// with its fingerprint; `deployment`; `cluster`: the operator's).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SecretView {
+    host: String,
+    paths: Vec<String>,
+    binding: String,
+    description: String,
+    required: bool,
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    set_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    set_at: Option<u64>,
+}
+
+/// What `PUT /apps/{app}/secrets/{name}` answers: the value's fingerprint and the app log's entry.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct SecretSet {
+    name: String,
+    fingerprint: String,
+    index: u64,
+}
+
+/// What `DELETE /apps/{app}/secrets/{name}` answers: the app log's entry.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct SecretCleared {
+    name: String,
+    index: u64,
+}
+
+/// `GET /apps/{app}/links`: each reference of the release the instance runs and what is linked.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppLinkList {
+    app: String,
+    links: Vec<LinkRow>,
+}
+
+/// One link of an instance: the reference (`null` fields for one its release no longer names),
+/// the app linked, its release and whether it is in the reference's range (`null`: nothing linked).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LinkRow {
+    name: String,
+    package: Option<String>,
+    range: Option<String>,
+    mode: Option<calimero_bundle::UseMode>,
+    app: Option<String>,
+    version: Option<String>,
+    in_range: Option<bool>,
 }

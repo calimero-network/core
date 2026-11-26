@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.public_link_list_response_200 import PublicLinkListResponse200
+from ...models.public_links import PublicLinks
 from typing import cast
 
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PublicLinkListResponse200]]:
+) -> Optional[Union[Error, PublicLinks]]:
     if response.status_code == 200:
-        response_200 = PublicLinkListResponse200.from_dict(response.json())
+        response_200 = PublicLinks.from_dict(response.json())
 
         return response_200
 
@@ -62,7 +62,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PublicLinkListResponse200]]:
+) -> Response[Union[Error, PublicLinks]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,7 +75,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PublicLinkListResponse200]]:
+) -> Response[Union[Error, PublicLinks]]:
     """An instance's public links
 
      For whoever may change its access: each link's key, terms and creator, never a token.
@@ -90,7 +90,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PublicLinkListResponse200]]
+        Response[Union[Error, PublicLinks]]
     """
 
     kwargs = _get_kwargs(
@@ -108,7 +108,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PublicLinkListResponse200]]:
+) -> Optional[Union[Error, PublicLinks]]:
     """An instance's public links
 
      For whoever may change its access: each link's key, terms and creator, never a token.
@@ -123,7 +123,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PublicLinkListResponse200]
+        Union[Error, PublicLinks]
     """
 
     return sync_detailed(
@@ -136,7 +136,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PublicLinkListResponse200]]:
+) -> Response[Union[Error, PublicLinks]]:
     """An instance's public links
 
      For whoever may change its access: each link's key, terms and creator, never a token.
@@ -151,7 +151,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PublicLinkListResponse200]]
+        Response[Union[Error, PublicLinks]]
     """
 
     kwargs = _get_kwargs(
@@ -167,7 +167,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PublicLinkListResponse200]]:
+) -> Optional[Union[Error, PublicLinks]]:
     """An instance's public links
 
      For whoever may change its access: each link's key, terms and creator, never a token.
@@ -182,7 +182,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PublicLinkListResponse200]
+        Union[Error, PublicLinks]
     """
 
     return (

@@ -34,8 +34,8 @@ class DeploymentsFacade internal constructor(
         deployer: com.calimero.mero.Deployer,
         until: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): DeployerGrant200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deployerGrant(deployerGrantRequest = DeployerGrantRequest(deployer = deployer, until = until))
+    ): DeployerGranted =
+        api(passkey, null, emptySet()).signUpAndDeployments.deployerGrant(deployerBody = DeployerBody(deployer = deployer, until = until))
 
     /**
      * The deployers
@@ -48,7 +48,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun deployerList(): DeployerList200Response =
+    suspend fun deployerList(): DeployerList =
         api(null, null, emptySet()).signUpAndDeployments.deployerList()
 
     /**
@@ -65,13 +65,13 @@ class DeploymentsFacade internal constructor(
     suspend fun deployerRevoke(
         key: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeployerRevoke200Response =
+    ): DeployerRevoked =
         api(passkey, null, emptySet()).signUpAndDeployments.deployerRevoke(key = key)
 
     /**
      * Create a deployment
      *
-     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).
+     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain). An organization owns a deployment only holding a recovery key (`POST /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.38.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -85,8 +85,8 @@ class DeploymentsFacade internal constructor(
         name: kotlin.String,
         owner: com.calimero.mero.Deployer,
         passkey: PasskeyProvider? = null,
-    ): DeploymentCreate200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentCreate(deploymentCreateRequest = DeploymentCreateRequest(name = name, owner = owner))
+    ): DeploymentCreated =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentCreate(deploymentBody = DeploymentBody(name = name, owner = owner))
 
     /**
      * Delete a deployment
@@ -102,7 +102,7 @@ class DeploymentsFacade internal constructor(
     suspend fun delete(
         id: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentDelete200Response =
+    ): DeploymentDeleted =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentDelete(id = id)
 
     /**
@@ -118,7 +118,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun get(
         id: kotlin.String,
-    ): DeploymentGet200Response =
+    ): PublicDeployment =
         api(null, null, emptySet()).signUpAndDeployments.deploymentGet(id = id)
 
     /**
@@ -132,7 +132,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun list(): DeploymentList200Response =
+    suspend fun list(): DeploymentList =
         api(null, null, emptySet()).signUpAndDeployments.deploymentList()
 
     /**
@@ -152,8 +152,8 @@ class DeploymentsFacade internal constructor(
         `package`: kotlin.String,
         version: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentOffer(id = id, deploymentOfferRequest = DeploymentOfferRequest(app = app, `package` = `package`, version = version))
+    ): AppOffered =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentOffer(id = id, offerBody = OfferBody(app = app, `package` = `package`, version = version))
 
     /**
      * The organizations a deployment serves
@@ -168,7 +168,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun orgs(
         id: kotlin.String,
-    ): DeploymentOrgs200Response =
+    ): DeploymentOrgs =
         api(null, null, emptySet()).signUpAndDeployments.deploymentOrgs(id = id)
 
     /**
@@ -188,13 +188,13 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         name: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentSecretClear200Response =
+    ): DeploymentSecretCleared =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretClear(id = id, name = name)
 
     /**
      * Set a deployment's value of a secret
      *
-     * Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+     * Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -209,8 +209,8 @@ class DeploymentsFacade internal constructor(
         name: kotlin.String,
         value: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentSecretSet200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretSetRequest = DeploymentSecretSetRequest(value = value))
+    ): DeploymentSecretSet =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretBody = DeploymentSecretBody(value = value))
 
     /**
      * A deployment's secrets
@@ -225,7 +225,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun secrets(
         id: kotlin.String,
-    ): DeploymentSecrets200Response =
+    ): DeploymentSecrets =
         api(null, null, emptySet()).signUpAndDeployments.deploymentSecrets(id = id)
 
     /**
@@ -243,7 +243,7 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         app: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
+    ): AppWithdrawn =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentWithdraw(id = id, app = app)
 
     /**
@@ -261,7 +261,7 @@ class DeploymentsFacade internal constructor(
         uses: kotlin.Long? = null,
         ttlSecs: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): SignUpInviteCreate200Response =
+    ): SignUpInviteMade =
         api(passkey, null, emptySet()).signUpAndDeployments.signUpInviteCreate(signUpInviteCreateRequest = SignUpInviteCreateRequest(uses = uses, ttlSecs = ttlSecs))
 
     /**
@@ -273,7 +273,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpInviteList(): SignUpInviteList200Response =
+    suspend fun signUpInviteList(): SignUpInviteList =
         api(null, null, emptySet()).signUpAndDeployments.signUpInviteList()
 
     /**
@@ -304,7 +304,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpPublic(): SignUpPublic200Response =
+    suspend fun signUpPublic(): SignUpPublic =
         api(null, null, emptySet()).signUpAndDeployments.signUpPublic()
 
     /**

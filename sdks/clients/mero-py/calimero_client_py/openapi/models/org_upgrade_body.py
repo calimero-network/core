@@ -20,7 +20,8 @@ T = TypeVar("T", bound="OrgUpgradeBody")
 
 @_attrs_define
 class OrgUpgradeBody:
-    """
+    """The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`.
+
     Attributes:
         package (str):
         version (str):

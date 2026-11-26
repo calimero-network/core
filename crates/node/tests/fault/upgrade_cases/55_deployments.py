@@ -11,6 +11,8 @@ import tarfile
 import urllib.parse
 from pathlib import Path
 
+import ed25519_sign
+from rv2 import b64url
 from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
                           signed_ops, subset, until)
 from upgrade_path import case
@@ -75,7 +77,8 @@ class DeploymentUsedSecrets(DeepCase):
         dex = person(w, "dex")
         used = _pack(dex, w, USED, "1.0.0", _component(w, "used-secrets"), {
             "outbound": [f"https://{HOST}/"],
-            "secrets": {"NEAR_AI_API_KEY": {"hosts": [HOST], "required": True}},
+            "secrets": {"NEAR_AI_API_KEY": {"host": HOST, "paths": ["/"], "header": "authorization",
+                                            "format": "Bearer {}", "required": True}},
         })
         notes = _pack(dex, w, NOTES, "1.0.0", _component(w, "uses-secrets"), {
             "uses": {"inference": {"package": USED, "range": "^1", "version": "1.0.0"}},
@@ -205,6 +208,83 @@ class DeploymentOfferUpgrades(DeepCase):
            "the new offer, before it is accepted")
         cato.raw("post", f"apps/{early}/upgrade", {})
         s["running"]["early"] = "1.2.0"
+        self.check(w, s)
+
+
+@case
+class DeploymentNamedToCustomers(DeepCase):
+    name = "deployment-named-to-customers"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = "a deployment offering a release, and a customer's instance from it"
+    verifies = ("`GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name "
+                "(names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second "
+                "instance from it is named the same way")
+
+    def populate(self, w):
+        drew, cass = people(w, "drew", "cass")
+        install(drew, w, "kv-o-1.0.0.mpk")
+        d = drew.raw("post", "deployments", {"name": "drew-labs", "owner": {"account": drew.id}})["id"]
+        drew.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        org = new_org(cass, "Named Customer Org")
+        app = cass.raw("post", "apps", {"name": "named-1", "deployment": d, "package": OFFERED, "org": org})["appId"]
+        return {"deployment": d, "org": org, "apps": [app]}
+
+    def check(self, w, s):
+        drew, cass = people(w, "drew", "cass")
+        d = s["deployment"]
+        owner = drew.get(f"deployments/{d}")["owner"]
+        eq(owner.get("kind"), "account", "the deployment's owner kind")
+        for app in s["apps"]:
+            eq(cass.get(f"apps/{app}/update").get("deployment"), {"id": d, "name": "drew-labs", "owner": owner},
+               f"instance {app}'s update names its deployment and owner")
+
+    def exercise(self, w, s):
+        cass = person(w, "cass")
+        s["apps"].append(cass.raw("post", "apps", {"name": "named-2", "deployment": s["deployment"],
+                                                   "package": OFFERED, "org": s["org"]})["appId"])
+        self.check(w, s)
+
+
+def _recovery_key(seed: bytes) -> str:
+    return b64url(ed25519_sign.public_key(seed))
+
+
+@case
+class DeploymentNeedsRecovery(DeepCase):
+    name = "deployment-needs-recovery"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = "an organization with a recovery key, and a deployment it owns"
+    verifies = ("the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns "
+                "the deployment, before the passkey; on the new release rotating it succeeds, and another "
+                "organization without a key is refused a deployment")
+
+    def populate(self, w):
+        ruth = person(w, "ruth")
+        org = new_org(ruth, "Recoverable Deployer Org")
+        ruth.raw("post", f"orgs/{org}/recovery", {"publicKey": _recovery_key(b"\x11" * 32)})
+        d = ruth.raw("post", "deployments", {"name": "ruth-labs", "owner": {"org": org}})["id"]
+        return {"org": org, "deployment": d, "key": _recovery_key(b"\x11" * 32)}
+
+    def check(self, w, s):
+        ruth = person(w, "ruth")
+        eq((ruth.get(f"orgs/{s['org']}").get("recovery") or {}).get("publicKey"), s["key"],
+           "the deploying organization's recovery key")
+        eq(ruth.get(f"deployments/{s['deployment']}").get("owner", {}).get("kind"), "org", "the org's deployment")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": None},
+                                                         approve=False),
+                "removing the recovery key of an organization that owns a deployment")
+
+    def exercise(self, w, s):
+        ruth = person(w, "ruth")
+        s["key"] = _recovery_key(b"\x12" * 32)
+        ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": s["key"]})
+        bare = new_org(ruth, "Keyless Deployer Org")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", "deployments", {"name": "keyless",
+                                                                                 "owner": {"org": bare}},
+                                                         approve=False),
+                "a deployment of an organization without a recovery key")
         self.check(w, s)
 
 

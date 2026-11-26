@@ -2259,6 +2259,26 @@ impl Fixture {
             .map_err(Box::new)
     }
 
+    /// `complete`, sent again with the same upload after each `503 FILES_UNAVAILABLE` once its
+    /// `retryAfter` passed, as a client does; any other refusal, or none landing in 15 s, fails.
+    async fn complete_retrying(&self, via: usize, upload: &str) -> Value {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let e = match self.complete(via, upload).await {
+                Ok(done) => return done,
+                Err(e) => e,
+            };
+            let (status, code, details) = refusal(e);
+            assert_eq!((status, code.as_str()), (503, "FILES_UNAVAILABLE"));
+            let after = Duration::from_secs(details["retryAfter"].as_u64().unwrap());
+            assert!(
+                tokio::time::Instant::now() + after < deadline,
+                "complete still answers 503 after 15 s"
+            );
+            tokio::time::sleep(after).await;
+        }
+    }
+
     async fn abort(&self, via: usize, upload: &str) -> Answer {
         self.clients[via]
             .apps()
@@ -2296,6 +2316,8 @@ impl Fixture {
     }
 }
 
+/// An upload in three parts commits one file mark in one entry, and charges nothing before
+/// `complete`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_three_part_upload_commits_one_mark_at_one_index() {
     let f = start_with(Cluster::start_with(3, more_time).await).await;
@@ -2873,7 +2895,10 @@ async fn a_failed_push_is_retried_and_complete_answers_503_until_it_lands() {
     for i in (0..3).filter(|i| *i != leader) {
         f.node(i).set_peer_blobs(PeerBlobs::Accept);
     }
-    let done = f.complete(leader, &upload).await.unwrap();
+    // The pushes went on in the background with backoff (up to `PUSH_RETRY_MAX`, 5 s, longer
+    // than this 3 s wait): a `complete` can still answer 503 until the next attempt lands, so
+    // the client retries with the same key, as the 503 says.
+    let done = f.complete_retrying(leader, &upload).await;
     assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
     f.until("one mark on each replica", || f.marks() == 3).await;
     assert_eq!(f.charged().await, plain.len() as u64);

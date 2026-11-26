@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_list_response_200 import AppListResponse200
+from ...models.app_list import AppList
 from ...models.error import Error
 from ...types import UNSET, Unset
 from typing import cast
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppListResponse200, Error]]:
+) -> Optional[Union[AppList, Error]]:
     if response.status_code == 200:
-        response_200 = AppListResponse200.from_dict(response.json())
+        response_200 = AppList.from_dict(response.json())
 
         return response_200
 
@@ -63,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppListResponse200, Error]]:
+) -> Response[Union[AppList, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -77,7 +77,7 @@ def sync_detailed(
     client: AuthenticatedClient,
     package: Union[Unset, str] = UNSET,
     bundle: Union[Unset, str] = UNSET,
-) -> Response[Union[AppListResponse200, Error]]:
+) -> Response[Union[AppList, Error]]:
     """Apps the caller reaches
 
      The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
@@ -93,7 +93,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppListResponse200, Error]]
+        Response[Union[AppList, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -113,7 +113,7 @@ def sync(
     client: AuthenticatedClient,
     package: Union[Unset, str] = UNSET,
     bundle: Union[Unset, str] = UNSET,
-) -> Optional[Union[AppListResponse200, Error]]:
+) -> Optional[Union[AppList, Error]]:
     """Apps the caller reaches
 
      The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
@@ -129,7 +129,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppListResponse200, Error]
+        Union[AppList, Error]
     """
 
     return sync_detailed(
@@ -144,7 +144,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient,
     package: Union[Unset, str] = UNSET,
     bundle: Union[Unset, str] = UNSET,
-) -> Response[Union[AppListResponse200, Error]]:
+) -> Response[Union[AppList, Error]]:
     """Apps the caller reaches
 
      The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
@@ -160,7 +160,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppListResponse200, Error]]
+        Response[Union[AppList, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -178,7 +178,7 @@ async def asyncio(
     client: AuthenticatedClient,
     package: Union[Unset, str] = UNSET,
     bundle: Union[Unset, str] = UNSET,
-) -> Optional[Union[AppListResponse200, Error]]:
+) -> Optional[Union[AppList, Error]]:
     """Apps the caller reaches
 
      The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
@@ -194,7 +194,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppListResponse200, Error]
+        Union[AppList, Error]
     """
 
     return (

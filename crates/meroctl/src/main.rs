@@ -7,6 +7,9 @@
 //! (`instance`); a namespace is an organization (`org`); a group is one
 //! of its teams (`team`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
+//!
+//! Spec: [meroctl CLI reference](https://calimero-network.github.io/core/operate/meroctl/).
+//! Crate guide: [`crates/meroctl/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/meroctl/AGENTS.md).
 
 use std::path::PathBuf;
 
@@ -34,6 +37,7 @@ mod node;
 mod ops;
 mod pipeline;
 mod proxy;
+mod registry;
 mod run;
 
 use env::{
@@ -184,6 +188,10 @@ enum Cmd {
     /// node; and a cluster's compute (pipelines, run logs).
     #[command(subcommand)]
     Cloud(cloud::CloudCmd),
+    /// The app registry `app publish` publishes to: list, search, a
+    /// package's versions, one release; `login` saves an API key for private
+    /// packages and `--mine`. No node.
+    Registry(registry::RegistryArgs),
     /// Organizations (v1's namespaces): members, invites, teams, metadata, approvals.
     #[command(subcommand, name = "org")]
     Namespace(namespace::NamespaceCmd),
@@ -396,6 +404,12 @@ async fn main() -> eyre::Result<()> {
         };
         return print(&cloud::run(cmd, &home).await?);
     }
+    if matches!(cli.cmd, Cmd::Registry(_)) {
+        let Cmd::Registry(args) = cli.cmd else {
+            unreachable!()
+        };
+        return print(&registry::run(args, &home).await?);
+    }
     if matches!(cli.cmd, Cmd::Local(_)) {
         let Cmd::Local(cmd) = cli.cmd else {
             unreachable!()
@@ -406,7 +420,7 @@ async fn main() -> eyre::Result<()> {
         let Cmd::App(cmd) = cli.cmd else {
             unreachable!()
         };
-        return print(&app::run_offline(cmd).await?);
+        return print(&app::run_offline(cmd, &home).await?);
     }
 
     if let Cmd::Attest {
@@ -616,6 +630,7 @@ async fn main() -> eyre::Result<()> {
         Cmd::Node(_)
         | Cmd::Local(_)
         | Cmd::Cloud(_)
+        | Cmd::Registry(_)
         | Cmd::Ops(_)
         | Cmd::Login { .. }
         | Cmd::Logout { .. }
@@ -697,6 +712,27 @@ mod tests {
             ],
             &["meroctl", "attest", "app", "c"],
             &["meroctl", "app", "new", "x"],
+            &["meroctl", "registry", "list", "--mine"],
+            &[
+                "meroctl",
+                "registry",
+                "--registry",
+                "http://127.0.0.1:1",
+                "search",
+                "kv",
+                "store",
+            ],
+            &[
+                "meroctl",
+                "registry",
+                "versions",
+                "com.example.kv",
+                "--api-key",
+                "k",
+            ],
+            &["meroctl", "registry", "get", "com.example.kv@1.0.0"],
+            &["meroctl", "registry", "login"],
+            &["meroctl", "app", "install", "com.example.kv"],
             &["meroctl", "cloud", "compute", "logs", "a", "r"],
             &["meroctl", "cloud", "compute", "pipeline", "runs", "a"],
             &[

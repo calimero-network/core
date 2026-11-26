@@ -61,6 +61,7 @@ A few series keep conventional names (`http_requests_total`,
 | `calimero_system_state_bytes` | | The system state's serialized size in bytes, as this node last checkpointed (every system snapshot) or restored it; `0` before either. The whole state is one checkpoint row: a system snapshot carries it across frames of about 1 MiB, but every snapshot build serializes it under the lock applies wait on, so system writes stall for longer as it grows. Sign-in proofs are forgotten once their sessions expire ([`ExpireProofs`](/protocol/upgrades/#the-cluster-version)); what is left grows with accounts, organizations and apps. |
 | `calimero_group_diverged` | `group`, `peer` | On an app group's leader: present only while the latest comparison found the replica `peer` (a node id) holding a different state at the same log index; the value is that index. The leader compares every minute ([State digests](/protocol/replication/#state-digests)). Anything here is a bug or a disk fault: [A replica's state differs](/operate/runbooks/#a-replicas-state-differs). |
 | `calimero_group_divergences_total` | | Counter: times a leader found a replica's state newly different from its own. |
+| `calimero_group_digest_comparisons_total` | `group` | Counter, on an app group's leader: comparisons with a replica that agreed or differed. Zero while `calimero_group_diverged` is absent means no comparison ran, not that the replicas agree. |
 | `calimero_group_applied` | `group` | An app group's applied index here, per hosted group (the label is the group number, not the app's name). |
 | `calimero_build_info` | `release` | Always `1`; `release` is this node's release. |
 | `calimero_group_term` | `group` | The group's Raft term here; `group` is `system` or an app group's number. A change is an election. |
@@ -249,10 +250,19 @@ RUST_LOG=debug merod --node n1 run
 RUST_LOG=info,calimero_node=debug,openraft=info merod --node n1 run
 ```
 
-Account ids and anything a user or an app wrote stay out of `info!` and
-above (`scripts/check-no-user-data-at-info.py` checks the code), because an
-operator's log store receives the default level. App ids and group numbers do
-appear. Lines worth knowing:
+Every line at the default level reaches the operator: on a mero-tee image,
+vector ships it to the operator's `logs-endpoint`. So nothing a user, an app, a
+peer or an upstream wrote is logged at `info!`, `warn!` or `error!`: no account
+id at `info!`, and no error's words where they can quote input (a request's URL,
+path or body, an app's trap or event, a peer's error message, a serde_json
+snippet of an entry). Such a line carries what the node names instead: a kind
+or code (`refusal=NotApproved`, `code=CONFLICT`, `error_kind=a JSON data
+error`), an id, a host, a declared URL prefix, a count or a length; the full
+words go to the API caller who caused them, or to `debug!`.
+`scripts/check-no-user-data-at-info.py` checks the code, and
+`scripts/check-no-user-data-at-info.allow` lists, with a reason each, the
+lines whose error text is the node's own (disk, RocksDB, Raft, attestation).
+App ids and group numbers do appear. Lines worth knowing:
 
 | Level | Message | Means |
 | --- | --- | --- |
@@ -262,6 +272,7 @@ appear. Lines worth knowing:
 | warn | `a registered node could not join yet` | The leader could not add it; it retries. |
 | info | `fetched and verified a release` | A registry release was downloaded and checked. |
 | warn | `could not start app group` | A replica could not open an app; see the error. |
+| warn | `outbound request refused` | An app's outbound request was refused: `refusal` is `NotApproved`, `AwaitingApproval` or `Invalid`, with its `host`; the app gets the reason. |
 | warn | `backup failed` | A periodic backup could not be written. |
 | warn | `apps whose holder set no backup key are not on the recovery disk` | `--recovery-dir` is set, but the operator or some organizations set no backup key; their apps are not covered. |
 | warn | `recovery disk write failed` | A pass of the recovery disk could not be written; see the error. |
@@ -271,3 +282,23 @@ appear. Lines worth knowing:
 
 The Raft engine (openraft) is quiet by default; raise it with
 `RUST_LOG=openraft=info` when you debug elections or membership.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Ops credentials and metrics
+
+`--ops-token-sha256` gives the node only the token's hash (machine metadata then holds nothing
+usable); `GET /ops/metrics` is Prometheus text (directory counts, this node's groups, streams,
+system membership, build release; per-group Raft term, lags and quorum age; store sizes; and, from
+`metrics::track` on the router, requests by route template and status, error codes, latency per
+route group and body bytes; WASM run time by kind, `calimero_wasm_run_duration_seconds{kind}` from
+`metrics::wasm_run` in `Node::metered` and the view and action runs; a logged call's `run` and
+`commit` time, `calimero_call_phase_duration_seconds{phase}`, observed in `call_local_component`
+once the entry is appended), never names or state: labels are templates, groups, codes, kinds,
+phases and numbers, and ids only on the usage series (`usage.rs`).
+`--metrics-listen` (`Config::metrics_listen`) serves the same text at plain-HTTP `GET /metrics` for
+a scraper, nothing else (`api::plain_metrics`).

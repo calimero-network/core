@@ -47,7 +47,7 @@ class PublicFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun health(): Health200Response =
+    suspend fun health(): Health =
         api(null, null, emptySet()).publicApi.health()
 
     /**
@@ -63,7 +63,7 @@ class PublicFacade internal constructor(
      */
     suspend fun publisherBinding(
         signer: kotlin.String,
-    ): PublisherBinding200Response =
+    ): PublisherBinding =
         api(null, null, emptySet()).publicApi.publisherBinding(signer = signer)
 
     /**
@@ -77,7 +77,7 @@ class PublicFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun releasesPublic(): ReleasesPublic200Response =
+    suspend fun releasesPublic(): ClusterReleases =
         api(null, null, emptySet()).publicApi.releasesPublic()
 
     /**
@@ -99,6 +99,6 @@ class PublicFacade internal constructor(
         apps: kotlin.collections.List<RestoreRecoverHolderRequestAppsInner>? = null,
         code: kotlin.collections.List<RestoreRecoverHolderRequestCodeInner>? = null,
         operator: DeviceSigner? = null,
-    ): RestoreRecoverHolder200Response =
+    ): HolderRecovered =
         api(null, operator, emptySet()).publicApi.restoreRecoverHolder(restoreRecoverHolderRequest = RestoreRecoverHolderRequest(holder = holder, slice = slice, apps = apps, code = code))
 }

@@ -227,3 +227,110 @@ on that release and nothing written before it is replayed ([changelog](https://g
 sizes; with the key, it also opens each group's metadata (vote, applied index,
 membership). It opens the store for writing, so stop the node first.
 
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### App state on disk
+
+Code: `app.rs`, `component.rs`.
+
+`AppMachine` holds no state in memory but its small `Head` (bundle, executor, the component's host
+records).
+The app's keys are hidden rows of its group (`rows::CKV`), idempotency records too (`rows::CIDEM`),
+events a ring of `EVENT_RING` (`rows::EVENT`).
+The system group stays in memory (`Machine::IN_MEMORY`).
+Backups (`Node::backup`) copy the group's sealed snapshot file with a sealed manifest beside it
+(`backup::Manifest`: app, group, index, SHA-256, `backup::FORMAT`, the `merod` and release that
+wrote it, bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
+`backup::find` checks one, `backup::latest` opens one with K_c.
+The file and its manifest are synced before the rename that lists the backup, and the directory
+after it (likewise kept code and the kept cluster key).
+That file work (`keep_cluster_key`, `keep_code`, `backup::write`) runs off the async workers
+(`node::off_workers`): a copy and its fsyncs on a slow disk would stop every group's heartbeats on
+the worker.
+
+### Rollback counter
+
+Code: `crates/node/src/rollback.rs`, `crates/kms-client/src/kms/rollback.rs`
+([rollback protection](/protocol/encryption/#rollback-protection)).
+
+With a key from mero-kms that keeps counters (`kms::KmsCounter`, `Config::rollback`), the node keeps
+an entry `(generation, mark)` in its store (`Engine::put_node_meta`, row `rollback`, bound to its
+node id) and raises it with mero-kms's every `CHECKPOINT_EVERY` (1 s), store first
+(`Checkpoints::run`, from `lib.rs`).
+`Node::start` judges the store before any group starts (`rollback::judge`): behind mero-kms, empty
+under a used id, mero-kms without the node's entry, another node's store, or a protected store
+answered without counters are refused; a KMS without counters and a store without one start
+unprotected.
+`Config::accept_rollback` (`merod run --accept-rollback`) resets the node's entry to the store's and
+raises the cluster epoch.
+Reported in `/ops/status` (`rollback`) and `/health` (`rollbackEpoch`).
+
+### Restore
+
+Code: `node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`.
+
+Operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the signature
+(`backup::find`, `Found::check_release`, the bundle the backup's head names still installed,
+`require_current_release`).
+`SystemCmd::RestoreApp` moves the app to a new group with the receiving node first
+(`AppRecord.restore`, so `ensure_app_group` forms it with that seed alone and `reconcile` never
+inits it); the seed `Group::replace_state`s the backup into it (rows opened and sealed again for the
+new group, hidden keys re-hidden), appends `componentRestored` (sets `ComponentHead::id_term_base`
+past every restored id term: the new group's terms restart at 1, D52), `snapshot_through` +
+`purge_log_through` that entry so the others can only catch up from that snapshot, adds them as
+learners, makes them voters and logs `FinishRestore`.
+Calls and views answer `409 APP_RESTORING` meanwhile (`restore::refuse_while_restoring`).
+The old group's files are kept (`reconcile` drops a stopped group's files only for a deleted app).
+
+### Founding again
+
+Code: `--restore-from DIR` with `--bootstrap`, `Node::refound`.
+
+Backups also hold the system group (`backup::SYSTEM`, written by its leader, or by every node with
+`ops/backup?all=true`), the code it names (`backup::keep_code`, sealed under `HMAC(K_c,
+"calimero.backup.code.v1")`) and K_c wrapped under each release's K_r (`backup::keep_cluster_key`).
+`cluster_key::resolve` takes K_c from the copy this node's K_r opens (`backup::cluster_key_from`);
+`Node::start` forms the system group with the founder alone; `reconcile` (empty state) calls
+`refound`: governance and operator key must match the backup's, no old replica node may still answer
+at an address `--peers` does not reuse, then `Group::replace_machine_data` with the state
+`system::refound` made (fleet = `--peers`, every app `PendingRestore::AWAITING_BACKUP`, hosted
+nowhere), `snapshot_through` + `purge_log_through`; the other peers join as registered learners.
+
+### Recovery disk
+
+Code: `recovery_disk.rs`, `node/recovery_disk.rs`, `api/backup_keys.rs`; holder side
+`calimero_client::recovery`.
+
+With `--recovery-dir`, every `node::recovery_disk::RECOVERY_EVERY` (5 min) each node writes, for
+every app it holds (leader or not; `Node::write_recovery`), the app's snapshot as portable rows
+(`calimero_log::read_snapshot_rows`: hidden rows by the key they hide), the code it runs, and per
+holder its `system::HolderSlice` (the operator's: the whole `SystemState`), each a `.rbak` file
+sealed to the holder's X25519 key (HPKE; a fresh data key per file, chunked as files are) and signed
+by the receipt key, its `purpose=receipts` attestation in the header
+(`recovery_disk::attestation_nonce`).
+The holder is whoever upgrades the app (`SystemState::backup_holder`: the operator, else the app's
+org or owner account; a publisher-upgraded package's too).
+`SetBackupKey` (`Feature::BackupKeys`; `SystemState::may_set_backup_key`, `backup_keys`):
+`/ops/backup-key` (operator-signed `operator / __set_backup_key / { publicKey }`),
+`/orgs/{org}/backup-key` and `/auth/backup-key` (passkey, `org:<org>` / `account:<a>`).
+A subject unchanged since its last file is not written again; `KEEP` (3) per subject.
+Operator recovery: `merod --bootstrap --recover-from DIR` forms the system group alone and writes no
+genesis; `POST /ops/recover` (`Node::recover_system`: the `system` and `code` files' keys, the same
+checks as `refound`) seeds it; `POST /ops/apps/{app}/restore { recovery }` restores each app
+(`Group::replace_state_rows` in `Node::seed_with`).
+An org or account: `POST /recover/holder` from the holder's device (its keys), admitted by the
+operator's signature over `cluster / __recover_holder / system::import_holder_args`;
+`SystemCmd::ImportHolder` adds the org, accounts (and `credentials`), apps (each in a new group
+seeded by the receiving node), bundles, releases and the key, refused where any is here.
+`GET /ops/recovery-files` lists headers and signatures, never keys.
+Sealed files: each segment an app's files list is copied beside its files as stored (`seg-<hash>`,
+`write_recovery_segment`; unlisted ones go after `SEGMENT_KEEP`), loaded back and checked by hash
+before a restore (`Node::load_recovery_segments`, `409 RECOVERY_SEGMENTS_MISSING`), and each file's
+data key is wrapped again under the new cluster's file key (`node::recovery_disk::rewrap_row`, from
+`AppMeta::file_key`).
+Every recovery file used is attested under the peer policy (`Node::check_recovery_attestation`, `400
+UNATTESTED_RECOVERY_FILE`).

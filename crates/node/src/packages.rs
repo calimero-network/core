@@ -16,18 +16,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use calimero_app_downloader::source::http::HttpRegistry;
+use calimero_app_downloader::source::http::{HttpRegistry, RegistryStatus};
 use calimero_app_downloader::{AppRequest, AppSource};
 use calimero_app_host::{Abi, MethodKind};
 use calimero_bundle::VerifiedBundle;
-use serde_json::{json, Value};
+use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::compile::Engine;
 use crate::error::ApiError;
 use crate::node::Node;
 use crate::system::{
-    compare_versions, BundleSource, PackageRef, PackageVersion, SystemCmd, SystemState,
+    compare_versions, BundleSource, PackageRef, PackageVersion, SystemCmd, SystemState, Visibility,
+    OPERATOR,
 };
 use crate::types::{now_secs, Components};
 
@@ -37,6 +40,28 @@ pub(crate) mod pipelines;
 /// so the blob limit (v1 allowed 512 MiB; a blob here must reach a
 /// majority inside one sealed request).
 pub const MAX_MPK_BYTES: usize = crate::node::MAX_BLOB_BYTES;
+
+/// The header naming the account a private install is for, sent with the registry's credential.
+pub const INSTALL_ACCOUNT_HEADER: &str = "x-calimero-install-account";
+
+/// The refusal when the registry takes the install account as linked to no Cloud developer.
+pub const ACCOUNT_NOT_LINKED: &str = "ACCOUNT_NOT_LINKED";
+const REGISTRY_NOT_LINKED: &str = "account_not_linked"; // the registry's `error` for it
+
+/// How a create or upgrade reaches the release it names, besides the account's own rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    /// The account's own rule ([`SystemState::sees_release`]).
+    Account,
+    /// A session bound to the package's frontend ([`SystemState::sees_release_from`]).
+    Frontend,
+}
+
+impl Via {
+    fn sees(self, s: &SystemState, v: &PackageVersion, actor: &str) -> bool {
+        s.sees_release_from(v, actor, self == Self::Frontend)
+    }
+}
 
 /// The release a bundle hash came from, as the system log recorded it.
 #[derive(Clone, Debug)]
@@ -102,7 +127,15 @@ fn compile_refusal(e: ApiError, service: &str, compute: bool) -> ApiError {
 }
 
 /// Verify a `.mpk`: signature, digests, runtime version, and that it has WASM.
-pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
+/// Unpacking and hashing a large package takes long enough to stop an async
+/// worker, so it runs on the blocking pool.
+pub async fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
+    tokio::task::spawn_blocking(move || verify_sync(&mpk))
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+}
+
+fn verify_sync(mpk: &Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
     if mpk.len() > MAX_MPK_BYTES {
         return Err(ApiError::new(
             413,
@@ -110,7 +143,7 @@ pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError
             &format!("a package is limited to {} MiB", MAX_MPK_BYTES >> 20),
         ));
     }
-    let bundle = VerifiedBundle::open(mpk, &runtime_version())
+    let bundle = VerifiedBundle::open(Arc::clone(mpk), &runtime_version())
         .map_err(|e| ApiError::bad_request("BAD_PACKAGE", &format!("{e:#}")))?;
     let contents = bundle
         .contents()
@@ -161,25 +194,44 @@ fn compute_abi_agrees(main: &Abi, compute: &Abi) -> Result<(), String> {
 }
 
 impl Node {
-    fn registry(&self) -> Result<HttpRegistry, ApiError> {
+    /// The operator's registry (`--registry-url`), with its credential (the URL's userinfo)
+    /// only when `credential`.
+    fn registry(&self, credential: bool) -> Result<HttpRegistry, ApiError> {
+        let mut url = self.registry_url()?;
+        if !credential {
+            let _user = url.set_username("");
+            let _password = url.set_password(None);
+        }
+        HttpRegistry::new(url).map_err(|e| ApiError::internal(&format!("{e:#}")))
+    }
+
+    fn registry_url(&self) -> Result<url::Url, ApiError> {
         let base = self.config.registry.as_ref().ok_or_else(|| {
             ApiError::bad_request(
                 "NO_REGISTRY",
                 "this node has no registry configured (--registry-url)",
             )
         })?;
-        let url = base
-            .parse()
-            .map_err(|e| ApiError::internal(&format!("invalid registry URL: {e}")))?;
-        HttpRegistry::new(url).map_err(|e| ApiError::internal(&format!("{e:#}")))
+        base.parse()
+            .map_err(|e| ApiError::internal(&format!("invalid registry URL: {e}")))
     }
 
-    /// `package@version`'s `.mpk` from the registry, unverified.
-    async fn fetch_from_registry(
-        &self,
+    /// `package@version`'s `.mpk` from `registry`, unverified; `None` when it serves none.
+    async fn fetch_from(
+        registry: HttpRegistry,
         package: &str,
         version: &str,
-    ) -> Result<Arc<[u8]>, ApiError> {
+    ) -> Result<Option<Arc<[u8]>>, ApiError> {
+        Self::fetch_raw(registry, package, version)
+            .await
+            .map_err(unreachable_registry)
+    }
+
+    async fn fetch_raw(
+        registry: HttpRegistry,
+        package: &str,
+        version: &str,
+    ) -> eyre::Result<Option<Arc<[u8]>>> {
         let req = AppRequest {
             application_id: None,
             package,
@@ -187,34 +239,95 @@ impl Node {
             bytecode_id: None,
             context_id: None,
         };
-        match self.registry()?.fetch(&req).await {
-            Ok(Some(bytes)) => Ok(bytes),
-            Ok(None) => Err(ApiError::not_found(&format!(
+        registry.fetch(&req).await
+    }
+
+    /// `package@version` for an install by `actor`, and whether it is public: served without
+    /// the registry's credential, it is; else it is fetched with the credential, naming the
+    /// installing account (none for the operator), and is private.
+    async fn fetch_for_install(
+        &self,
+        package: &str,
+        version: &str,
+        actor: &str,
+    ) -> Result<(Arc<[u8]>, Visibility), ApiError> {
+        // A registry that asks for a sign-in (401, 403) serves no public release.
+        match Self::fetch_raw(self.registry(false)?, package, version).await {
+            Ok(Some(mpk)) => return Ok((mpk, Visibility::Public)),
+            Ok(None) => {}
+            Err(e) if asks_sign_in(&e) => {}
+            Err(e) => return Err(unreachable_registry(e)),
+        }
+        let url = self.registry_url()?;
+        if url.username().is_empty() && url.password().is_none() {
+            return Err(ApiError::not_found(&format!(
                 "the registry has no {package}@{version}"
-            ))),
-            Err(e) => Err(ApiError::unavailable(&format!(
-                "the registry could not be reached: {e:#}"
-            ))),
+            )));
+        }
+        let mut registry = self.registry(true)?;
+        if actor != OPERATOR {
+            registry = registry
+                .with_header(INSTALL_ACCOUNT_HEADER, actor)
+                .map_err(|e| ApiError::internal(&format!("{e:#}")))?;
+        }
+        match Self::fetch_raw(registry, package, version).await {
+            Ok(Some(mpk)) => Ok((mpk, Visibility::Private)),
+            Ok(None) => Err(not_for_this_account(package, version)),
+            Err(e) if actor != OPERATOR && refused_as_not_linked(&e) => Err(account_not_linked()),
+            Err(e) => Err(unreachable_registry(e)),
         }
     }
 
-    /// Install `package@version` from the registry.
+    /// The organization `actor` installs for: `named`, which it must be a member of, else
+    /// its only one (`None`: it is in none, and a private release is then its installers'
+    /// alone). The operator installs for none.
+    async fn install_org(
+        &self,
+        actor: &str,
+        named: Option<&str>,
+    ) -> Result<Option<String>, ApiError> {
+        if actor == OPERATOR {
+            return Ok(None);
+        }
+        let _caught_up = self.sys_fresh().await;
+        // Below the feature `record_release` drops the org, so none is asked for.
+        if !self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::PrivateReleases))
+        {
+            return Ok(None);
+        }
+        let Some(org) = named else {
+            return crate::api::apps::only_org(self, actor).await;
+        };
+        if !self.sys(|s| s.member_of(org, actor)) {
+            return Err(ApiError::not_found("no such organization"));
+        }
+        Ok(Some(org.to_owned()))
+    }
+
+    /// Install `package@version` from the registry for `org` (named, else the installer's
+    /// only one), public or private as the registry serves it.
     pub async fn install_from_registry(
         &self,
         package: &str,
         version: &str,
         actor: &str,
-    ) -> Result<Value, ApiError> {
+        org: Option<&str>,
+    ) -> Result<PackageInstalled, ApiError> {
         self.refuse_undeployable(actor).await?;
+        let org = self.install_org(actor, org).await?;
         // Before the fetch, judged by the key the package is pinned to (none
-        // yet: unbound); `record_release` judges the verified key again.
+        // yet: unbound, as for a package the actor may not use); `record_release` judges
+        // the verified key again.
         let pinned = self
-            .sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
+            .sys(|s| {
+                s.package_used(package, actor, false)
+                    .map(|p| p.signer_id.clone())
+            })
             .unwrap_or_default();
         self.refuse_stalled_install(actor, &pinned)?;
-        let mpk = self.fetch_from_registry(package, version).await?;
+        let (mpk, visibility) = self.fetch_for_install(package, version, actor).await?;
         let verified = self
-            .verify_release(mpk, BundleSource::Registry, actor)
+            .verify_release(mpk, BundleSource::Registry, actor, visibility, org)
             .await?;
         if verified.package != package || verified.release.version != version {
             return Err(ApiError::bad_request(
@@ -256,26 +369,41 @@ impl Node {
         Err(crate::node::not_a_deployer())
     }
 
-    /// Install an uploaded `.mpk`.
-    pub async fn install_upload(&self, mpk: Arc<[u8]>, actor: &str) -> Result<Value, ApiError> {
+    /// Install an uploaded `.mpk`, private to `org` (named, else the installer's only one;
+    /// in none, to its installers).
+    pub async fn install_upload(
+        &self,
+        mpk: Arc<[u8]>,
+        actor: &str,
+        org: Option<&str>,
+    ) -> Result<PackageInstalled, ApiError> {
         self.refuse_undeployable(actor).await?;
+        let org = self.install_org(actor, org).await?;
         let verified = self
-            .verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)
+            .verify_release(
+                Arc::clone(&mpk),
+                BundleSource::Upload,
+                actor,
+                Visibility::Private,
+                org,
+            )
             .await?;
         self.record_release(verified, Some(mpk)).await
     }
 
     /// Everything about a release that can be checked before the log records
-    /// it, including the signer pin `apply` checks again.
+    /// it, including the signer pin `apply` checks again; installed `visibility` for `org`.
     async fn verify_release(
         &self,
         mpk: Arc<[u8]>,
         source: BundleSource,
         actor: &str,
+        visibility: Visibility,
+        org: Option<String>,
     ) -> Result<Verified, ApiError> {
         let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
         let mpk_size = mpk.len() as u64;
-        let (bundle, wasm) = verify(mpk)?;
+        let (bundle, wasm) = verify(mpk).await?;
         crate::consent_page::remember_release_facts(self, &mpk_hash, &bundle, &wasm);
         let manifest = bundle.manifest();
         let package = manifest.package.clone();
@@ -418,7 +546,53 @@ impl Node {
             return Err(ApiError::conflict(crate::system::SHIPS_IN_OTHER_PACKAGE));
         }
         let pools = self.pool_ceilings();
-        let modules = self.resolve_modules(&service_pipelines.0, actor).await;
+        let orgs: BTreeSet<String> = org.into_iter().collect();
+        // Judged on the release as this install leaves it: an install again keeps its pins
+        // and adds its organization, or makes it public.
+        let kept = self.sys(|s| {
+            s.packages
+                .get(&package)?
+                .versions
+                .get(&manifest.app_version)
+                .cloned()
+        });
+        let (after, orgs_after, pinned) = match &kept {
+            Some(v) => (
+                if visibility == Visibility::Public {
+                    Some(visibility)
+                } else {
+                    v.visibility
+                },
+                v.orgs.union(&orgs).cloned().collect(),
+                v.pipelines
+                    .values()
+                    .flat_map(|r| r.modules.clone())
+                    .collect(),
+            ),
+            None => (Some(visibility), orgs.clone(), BTreeMap::new()),
+        };
+        // An install again that would leave the release one its installer may not use (an
+        // account in no organization, of a release private to some) is refused, as the
+        // registry refuses an account it does not serve.
+        if let Some(v) = &kept {
+            let mut merged = v.clone();
+            merged.visibility = after;
+            merged.orgs.clone_from(&orgs_after);
+            let _new = merged.installers.insert(actor.to_owned());
+            if !self.sys(|s| s.sees_release(&merged, actor)) {
+                return Err(not_for_this_account(&package, &manifest.app_version));
+            }
+        }
+        let private_for = (after == Some(Visibility::Private)).then_some(&orgs_after);
+        let modules = self
+            .resolve_modules(
+                &service_pipelines.0,
+                actor,
+                &signer_id,
+                private_for,
+                &pinned,
+            )
+            .await;
         let mut pipeline_refs = BTreeMap::new();
         for (compiled, record) in pipelines::register(&service_pipelines, &pools, &modules)? {
             let _prev = wasm_by_hash.insert(compiled.hash, compiled.canonical);
@@ -463,6 +637,8 @@ impl Node {
                 // Every release says, absent being `either`.
                 instance_org: Some(manifest.instance_org.unwrap_or_default()),
                 guests: Some(manifest.guests.unwrap_or_default()),
+                visibility: Some(visibility),
+                orgs,
             },
             wasm: wasm_by_hash,
         })
@@ -474,7 +650,7 @@ impl Node {
         &self,
         mut v: Verified,
         upload: Option<Arc<[u8]>>,
-    ) -> Result<Value, ApiError> {
+    ) -> Result<PackageInstalled, ApiError> {
         // An older node drops `uses`: they are recorded once every node keeps them, and an
         // install of the same release after that fills them in. The release installs either
         // way, as it did before they were kept.
@@ -503,6 +679,16 @@ impl Node {
             .is_err()
         {
             v.release.guests = None;
+        }
+        // And who may use it: an older node drops both, so the release keeps the rule from
+        // before; a later install the registry serves to anyone makes it public.
+        if self
+            .require_features(&[crate::system::cluster_version::Feature::PrivateReleases])
+            .await
+            .is_err()
+        {
+            v.release.visibility = None;
+            v.release.orgs.clear();
         }
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         // An older node drops `components` and would apply the release as an app's, and drops
@@ -537,12 +723,12 @@ impl Node {
                 release: v.release,
             })
             .await?;
-        Ok(json!({
-            "package": v.package,
-            "version": version,
-            "signerId": v.signer_id,
-            "services": services,
-        }))
+        Ok(PackageInstalled {
+            package: v.package,
+            version,
+            signer_id: v.signer_id,
+            services,
+        })
     }
 
     /// The release `app` runs ([`SystemState::running_release`]): the one its
@@ -581,7 +767,7 @@ impl Node {
     /// checked against the hash the log recorded and verified again.
     pub async fn release_wasm(&self, hash: &str, r: &Release) -> Result<Vec<u8>, ApiError> {
         let mpk = self.release_mpk(&r.at.package, &r.version).await?;
-        let (_bundle, wasm) = verify(mpk)?;
+        let (_bundle, wasm) = verify(mpk).await?;
         let service = r.at.service.clone().unwrap_or_default();
         let bytes = wasm
             .into_iter()
@@ -611,7 +797,28 @@ impl Node {
         v: &PackageVersion,
     ) -> Result<Arc<[u8]>, ApiError> {
         let mpk: Arc<[u8]> = match v.source {
-            BundleSource::Registry => self.fetch_from_registry(package, &v.version).await?,
+            // Public: served to anyone, else (the publisher made it private since) with the
+            // credential. Private, or recorded before: with it, naming no account. Pinned by the
+            // recorded hash below.
+            BundleSource::Registry => {
+                let public = v.visibility == Some(Visibility::Public);
+                let anonymous = if public {
+                    match Self::fetch_raw(self.registry(false)?, package, &v.version).await {
+                        Ok(found) => found,
+                        Err(e) if asks_sign_in(&e) => None,
+                        Err(e) => return Err(unreachable_registry(e)),
+                    }
+                } else {
+                    None
+                };
+                match anonymous {
+                    Some(mpk) => Some(mpk),
+                    None => Self::fetch_from(self.registry(true)?, package, &v.version).await?,
+                }
+                .ok_or_else(|| {
+                    ApiError::not_found(&format!("the registry has no {package}@{}", v.version))
+                })?
+            }
             BundleSource::Upload => match self.engine.get_blob(&v.mpk) {
                 Ok(Some(b)) => b.into(),
                 _ => self.fetch_blob(&v.mpk).await?.into(),
@@ -632,22 +839,21 @@ impl Node {
     }
 
     /// The bundle hash `package@version` (service `service`) runs, installing
-    /// the release from the registry first if the fleet lacks it. A release
+    /// the release from the registry first, for `org`, if the fleet lacks it. A release
     /// `actor` may not see (`SystemState::sees_release`) counts as lacking:
     /// installing it from the registry makes it theirs too, and one the
-    /// registry does not have answers as a missing release does. `frontend`:
-    /// the caller came through `package`'s own frontend (a session bound to
-    /// it), which is public by name, so every release of it is theirs to run.
+    /// registry does not have answers as a missing release does. `via`: how the caller
+    /// reaches it besides its account's own rule.
     pub async fn resolve_release(
         &self,
         package: &str,
         version: Option<&str>,
         service: Option<&str>,
-        actor: &str,
-        frontend: bool,
+        (actor, org): (&str, Option<&str>),
+        via: Via,
     ) -> Result<String, ApiError> {
         let (bundle, _compute, _release) = self
-            .resolve_release_parts(package, version, service, actor, frontend)
+            .resolve_release_parts(package, version, service, (actor, org), via)
             .await?;
         Ok(bundle)
     }
@@ -660,8 +866,8 @@ impl Node {
         package: &str,
         version: Option<&str>,
         service: Option<&str>,
-        actor: &str,
-        frontend: bool,
+        (actor, org): (&str, Option<&str>),
+        via: Via,
     ) -> Result<(String, Option<String>, PackageRef), ApiError> {
         // No version: the latest installed release `actor` sees. A registry
         // install always names its version.
@@ -672,7 +878,7 @@ impl Node {
                     let p = s.packages.get(package)?;
                     p.versions
                         .values()
-                        .filter(|v| frontend || s.sees_release(v, actor))
+                        .filter(|v| via.sees(s, v, actor))
                         .max_by(|a, b| compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })
@@ -687,13 +893,15 @@ impl Node {
             s.packages
                 .get(package)
                 .and_then(|p| p.versions.get(&version))
-                .filter(|v| frontend || s.sees_release(v, actor))
+                .filter(|v| via.sees(s, v, actor))
                 .map(|v| (v.app_parts().clone(), v.compute.clone()))
         };
         let (services, compute) = match self.sys(seen) {
             Some(s) => s,
             None => {
-                let _ = self.install_from_registry(package, &version, actor).await?;
+                let _ = self
+                    .install_from_registry(package, &version, actor, org)
+                    .await?;
                 self.sys(seen).ok_or_else(|| {
                     ApiError::unavailable("the release was installed but is not visible yet")
                 })?
@@ -714,6 +922,41 @@ impl Node {
     }
 }
 
+/// `404`: the registry does not serve `package@version` to this account.
+fn not_for_this_account(package: &str, version: &str) -> ApiError {
+    ApiError::not_found(&format!(
+        "the registry has no {package}@{version} for this account"
+    ))
+}
+
+/// Whether the registry refused the install account as linked to no Calimero Cloud developer:
+/// `403 { "error": "account_not_linked" }`, which it answers for any package name.
+fn refused_as_not_linked(e: &eyre::Report) -> bool {
+    e.downcast_ref::<RegistryStatus>().is_some_and(|r| {
+        r.status == StatusCode::FORBIDDEN && r.error.as_deref() == Some(REGISTRY_NOT_LINKED)
+    })
+}
+
+/// `403 ACCOUNT_NOT_LINKED`: what the person does about [`refused_as_not_linked`].
+fn account_not_linked() -> ApiError {
+    ApiError::new(
+        403,
+        ACCOUNT_NOT_LINKED,
+        "the registry installs private packages only for a node account linked to a Calimero Cloud developer: link this account in Calimero Cloud, under your node accounts, then install again",
+    )
+}
+
+/// A registry's `401` or `403`: it serves nothing without a sign-in.
+fn asks_sign_in(e: &eyre::Report) -> bool {
+    e.downcast_ref::<RegistryStatus>()
+        .is_some_and(|r| matches!(r.status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
+}
+
+/// `503`: the registry did not serve a fetch.
+fn unreachable_registry(e: eyre::Report) -> ApiError {
+    ApiError::unavailable(&format!("the registry could not be reached: {e:#}"))
+}
+
 /// `400 NO_SUCH_SERVICE`: `key` names none of `services`, or is empty and the
 /// release has several.
 pub(crate) fn no_such_service(
@@ -731,4 +974,14 @@ pub(crate) fn no_such_service(
             format!("{package}@{version} has no service {key}")
         },
     )
+}
+
+/// A release installed: its package, version, pinned signer and services (name to bundle hash).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageInstalled {
+    pub package: String,
+    pub version: String,
+    pub signer_id: String,
+    pub services: BTreeMap<String, String>,
 }

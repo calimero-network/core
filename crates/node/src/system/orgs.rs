@@ -9,11 +9,70 @@
 )]
 use super::*;
 
+/// What `CreateOrg` answers: the new organization, and its app team when it is made with one
+/// (the consent page's `createOrg` for a package).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgCreated {
+    pub org_id: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<TeamId>,
+}
+
+/// What redeeming an invite answers: the organization joined; for an instance invite, the
+/// instance and whether the account is a member of its organization (else a guest).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteRedeemed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+    pub org: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<bool>,
+}
+
+/// What `DeleteOrg` answers: the instances deleted with it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OrgDeleted {
+    pub apps: Vec<AppId>,
+}
+
+/// What `RenameOrg` answers.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgRenamed {
+    pub org_id: OrgId,
+    pub name: String,
+}
+
+/// What `CreateTeam` answers.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamCreated {
+    pub team_id: TeamId,
+}
+
+/// What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances
+/// deleted with them, and with `keepApps` those kept instead (`apps` then empty).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamDeleted {
+    pub teams: Vec<TeamId>,
+    pub apps: Vec<AppId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_apps: Option<Vec<AppId>>,
+}
+
+/// What `SetOrgSettings` answers: the settings after the change.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgSettingsSet {
+    pub org: OrgId,
+    pub allow_guests: bool,
+    pub allow_public_links: bool,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
     match cmd {
         SystemCmd::DeleteOrg {
@@ -133,7 +192,7 @@ pub(super) fn authorize(
                 return Ok(None);
             }
             if consent.is_null() {
-                return Err(DELETE_TEAM_NEEDS_CONSENT);
+                return Err(DELETE_TEAM_NEEDS_CONSENT.into());
             }
             let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
             let args = super::delete_team_args(team, &apps, *keep_apps);
@@ -267,11 +326,11 @@ pub(super) fn authorize(
             ..
         } => {
             if !s.invites.contains_key(invite_key) {
-                return Err(INVITE_GONE);
+                return Err(INVITE_GONE.into());
             }
             let used = crate::proof::verify_invite_redeem(invite_key, account, *now, signature)?;
             if s.used_proofs.contains(&used) {
-                return Err("that redemption was used already");
+                return Err("that redemption was used already".into());
             }
             Ok(Some(used))
         }
@@ -282,7 +341,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::CreateOrg {
@@ -298,13 +357,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             capabilities,
         } => {
             if !s.accounts.contains_key(&actor) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             if app_team
                 .as_ref()
                 .is_some_and(|p| !s.packages.contains_key(p))
             {
-                return Err("no such package");
+                return Err("no such package".into());
             }
             if name_fits {
                 org_name_fits(&name)?;
@@ -314,7 +373,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
             if s.orgs.contains_key(&org_id) {
-                return Err("organization exists");
+                return Err("organization exists".into());
             }
             if personal && s.ordinary_orgs() {
                 return Err(super::NO_PERSONAL_ORGS);
@@ -333,7 +392,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     })
                     .count();
                 if owned >= s.quotas.max_orgs_per_account as usize {
-                    return Err("quota exceeded: organizations");
+                    return Err(Rejection::quota("organizations"));
                 }
             }
             let mut org = new_org(org_id.clone(), name, actor.clone(), release, personal);
@@ -348,7 +407,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             };
             let Some(package) = app_team else {
                 set_default(s);
-                return Ok(json!({ "orgId": org_id }));
+                return Ok(json!(OrgCreated {
+                    org_id,
+                    team_id: None
+                }));
             };
             // The package's app team, as `ScopeApps` makes one for a package
             // with no instances here yet: open (standalone), the creator its
@@ -373,7 +435,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             match scoped {
                 Ok(v) => {
                     set_default(s);
-                    Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] }))
+                    Ok(json!(OrgCreated {
+                        org_id,
+                        team_id: v["teams"][0]["teamId"].as_str().map(str::to_owned),
+                    }))
                 }
                 Err(why) => {
                     let _gone = s.orgs.remove(&org_id);
@@ -388,11 +453,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let o = s.orgs.get(&org).ok_or("no such organization")?;
             if o.role(&actor) != Some(OrgRole::Owner) {
-                return Err("only the organization's owner deletes it");
+                return Err("only the organization's owner deletes it".into());
             }
             let owner = Deployer::Org(org.clone());
             if s.deployments.values().any(|d| d.owner == owner) {
-                return Err("the organization owns a deployment; delete it first");
+                return Err("the organization owns a deployment; delete it first".into());
             }
             let _gone = s.orgs.remove(&org);
             s.invites.retain(|_, i| i.org != org);
@@ -418,18 +483,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             for a in &apps {
                 s.remove_app(a);
             }
-            Ok(json!({ "apps": apps }))
+            Ok(json!(OrgDeleted { apps }))
         }
         SystemCmd::RenameOrg {
             org, name, actor, ..
         } => {
             let o = m.org_mut(&org)?;
             if o.role(&actor) < Some(OrgRole::Admin) {
-                return Err(ONLY_ADMINS_RENAME);
+                return Err(ONLY_ADMINS_RENAME.into());
             }
             org_name_fits(&name)?;
             o.name.clone_from(&name);
-            Ok(json!({ "orgId": org, "name": name }))
+            Ok(json!(OrgRenamed { org_id: org, name }))
         }
         SystemCmd::SetOrgMetadata {
             org,
@@ -441,7 +506,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if o.role(&actor) < Some(OrgRole::Admin)
                 && !o.may(&actor, None, crate::types::caps::MANAGE_METADATA)
             {
-                return Err("not allowed to change this organization's metadata");
+                return Err("not allowed to change this organization's metadata".into());
             }
             o.metadata = metadata;
             Ok(Value::Null)
@@ -455,10 +520,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             metadata_fits(&metadata)?;
             let o = m.org_mut(&org)?;
             if o.role(&account).is_none() {
-                return Err("not a member");
+                return Err("not a member".into());
             }
             if actor != account && o.role(&actor) < Some(OrgRole::Admin) {
-                return Err("a member's metadata is theirs or an admin's to set");
+                return Err("a member's metadata is theirs or an admin's to set".into());
             }
             if metadata.is_null() {
                 let _gone = o.member_metadata.remove(&account);
@@ -479,15 +544,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let actor_role = o.role(&actor).ok_or("not a member")?;
             let current = o.role(&account);
             if actor_role < OrgRole::Admin {
-                return Err("only admins manage members");
+                return Err("only admins manage members".into());
             }
             if (role == OrgRole::Owner || current == Some(OrgRole::Owner))
                 && actor_role != OrgRole::Owner
             {
-                return Err("only the owner changes ownership");
+                return Err("only the owner changes ownership".into());
             }
             if !known {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             if role == OrgRole::Owner {
                 // One owner: the previous one becomes an admin.
@@ -511,10 +576,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let target = o.role(&account).ok_or("not a member")?;
             let leaving = actor == account;
             if target == OrgRole::Owner {
-                return Err("transfer ownership before removing the owner");
+                return Err("transfer ownership before removing the owner".into());
             }
             if !leaving && actor_role < OrgRole::Admin {
-                return Err("only admins remove members");
+                return Err("only admins remove members".into());
             }
             let _prev = o.members.remove(&account);
             let _caps = o.capabilities.remove(&account);
@@ -538,7 +603,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let o = m.org_mut(&org)?;
             if o.teams.contains_key(&team_id) {
-                return Err("team exists");
+                return Err("team exists".into());
             }
             // An admin anywhere, a team's lead below it; a member with
             // CREATE_TEAM at the top; a member who writes a team and holds
@@ -561,7 +626,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
             };
             if !allowed {
-                return Err("not allowed to create this team");
+                return Err("not allowed to create this team".into());
             }
             // Its creator leads it.
             let mut members = BTreeMap::new();
@@ -581,7 +646,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     default_capabilities: None,
                 },
             );
-            Ok(json!({ "teamId": team_id }))
+            Ok(json!(TeamCreated { team_id }))
         }
         SystemCmd::SetTeamMember {
             org,
@@ -593,13 +658,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let role = role.unwrap_or(if lead {
                 TeamRole::Lead
             } else {
                 TeamRole::Member
             });
-            set_team_row(o, &team, &account, role, capabilities, &actor)?;
+            set_team_row(o, &team, &account, role, capabilities, &actor, held)?;
             Ok(Value::Null)
         }
         SystemCmd::SetTeamMembers {
@@ -613,6 +681,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // All or nothing: each row is judged as its own
             // `SetTeamMember` would be, in order, on a copy kept only
             // when every one holds.
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let mut next = o.clone();
             for row in teams {
@@ -624,6 +695,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     role,
                     row.capabilities,
                     &actor,
+                    held,
                 )?;
             }
             *o = next;
@@ -642,24 +714,24 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let o = m.org_mut(&org)?;
             if !o.teams.contains_key(&team) {
-                return Err("no such team");
+                return Err("no such team".into());
             }
             use crate::types::caps;
             if name.is_some() && !o.manages_team(&actor, &team) {
-                return Err("not allowed to rename this team");
+                return Err("not allowed to rename this team".into());
             }
             if join.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_VISIBILITY) {
-                return Err("not allowed to change this team's visibility");
+                return Err("not allowed to change this team's visibility".into());
             }
             if let Some(m) = &metadata {
                 metadata_fits(m)?;
             }
             if metadata.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_METADATA) {
-                return Err("not allowed to change this team's metadata");
+                return Err("not allowed to change this team's metadata".into());
             }
             // An app team (`metadata.app.package` at the top) installs an
             // app in the organization: only an admin makes, changes or
-            // drops one, and a package has one app team here (G9).
+            // drops one, and a package has one app team here.
             let current = o.teams.get(&team).ok_or("no such team")?;
             let parent_after = parent.clone().unwrap_or_else(|| current.parent.clone());
             let package_before = current.app_package().map(str::to_owned);
@@ -676,11 +748,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             };
             if package_before != package_after {
                 if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
-                    return Err(ONLY_ADMINS_INSTALL);
+                    return Err(ONLY_ADMINS_INSTALL.into());
                 }
                 if let Some(p) = &package_after {
                     if o.app_team(p).is_some_and(|t| t.team_id != team) {
-                        return Err(APP_TEAM_EXISTS);
+                        return Err(APP_TEAM_EXISTS.into());
                     }
                 }
             }
@@ -694,11 +766,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                         }
                     };
                 if !may_move {
-                    return Err("not allowed to move this team there");
+                    return Err("not allowed to move this team there".into());
                 }
                 if let Some(p) = to {
                     if o.subtree(&team).contains(p) {
-                        return Err("a team cannot move under itself");
+                        return Err("a team cannot move under itself".into());
                     }
                 }
             }
@@ -756,12 +828,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let apps = s.team_apps(&org, &team);
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if !o.teams.contains_key(&team) {
-                return Err("no such team");
+                return Err("no such team".into());
             }
             if !o.manages_team(&actor, &team)
                 && !o.may(&actor, None, crate::types::caps::DELETE_TEAM)
             {
-                return Err("not allowed to delete this team");
+                return Err("not allowed to delete this team".into());
             }
             let gone = o.subtree(&team);
             for t in &gone {
@@ -778,9 +850,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 a.access = a.access.without_teams(&gone);
             }
             if keep_apps {
-                return Ok(json!({ "teams": gone, "apps": [], "keptApps": apps }));
+                return Ok(json!(TeamDeleted {
+                    teams: gone,
+                    apps: Vec::new(),
+                    kept_apps: Some(apps),
+                }));
             }
-            Ok(json!({ "teams": gone, "apps": apps }))
+            Ok(json!(TeamDeleted {
+                teams: gone,
+                apps,
+                kept_apps: None,
+            }))
         }
         SystemCmd::SetCapabilities {
             org,
@@ -790,26 +870,30 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             if o.role(&account).is_none() {
-                return Err("not a member");
+                return Err("not a member".into());
             }
             match team {
                 Some(t) => {
                     if !o.manages_team(&actor, &t)
                         && !o.may(&actor, Some(&t), crate::types::caps::MANAGE_MEMBERS)
                     {
-                        return Err("not allowed to manage this team");
+                        return Err("not allowed to manage this team".into());
                     }
+                    team_grant_refusal(o, &t, &actor, Some(capabilities), held)?;
                     let rec = o.teams.get_mut(&t).ok_or("no such team")?;
                     if !rec.members.contains_key(&account) {
-                        return Err("not a member of this team");
+                        return Err("not a member of this team".into());
                     }
                     let _prev = rec.capabilities.insert(account, capabilities);
                 }
                 None => {
                     if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
-                        return Err("only admins manage members");
+                        return Err("only admins manage members".into());
                     }
                     let _prev = o.capabilities.insert(account, capabilities);
                 }
@@ -825,10 +909,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let o = m.org_mut(&org)?;
             if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
-                return Err(ONLY_ADMINS_ALL_APPS);
+                return Err(ONLY_ADMINS_ALL_APPS.into());
             }
             if o.role(&account).is_none() {
-                return Err("not a member");
+                return Err("not a member".into());
             }
             if all_apps {
                 let _new = o.all_apps.insert(account);
@@ -844,10 +928,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let Some(team) = team else {
                 if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
-                    return Err("only admins manage members");
+                    return Err("only admins manage members".into());
                 }
                 o.default_capabilities = capabilities;
                 return Ok(Value::Null);
@@ -856,8 +943,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !o.manages_team(&actor, &team)
                 && !o.may(&actor, Some(&team), crate::types::caps::MANAGE_MEMBERS)
             {
-                return Err("not allowed to manage this team");
+                return Err("not allowed to manage this team".into());
             }
+            team_grant_refusal(o, &team, &actor, Some(capabilities), held)?;
             let t = o.teams.get_mut(&team).ok_or("no such team")?;
             t.default_capabilities = Some(capabilities);
             Ok(Value::Null)
@@ -908,7 +996,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 && role < OrgRole::Admin
                 && !invite.teams.iter().all(|t| o.sees_team(&actor, t))
             {
-                return Err("an invite names only teams the inviter sees");
+                return Err("an invite names only teams the inviter sees".into());
             }
             // INVITE_MEMBERS: below admin, the capability for the
             // organization (an invite naming no team) or for each team named
@@ -922,13 +1010,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     .all(|t| o.may(&actor, Some(t), crate::types::caps::INVITE_MEMBERS))
             };
             if role < OrgRole::Admin && !may_invite {
-                return Err("inviting here needs the INVITE_MEMBERS capability");
+                return Err("inviting here needs the INVITE_MEMBERS capability".into());
             }
             if invite.role > role || (invite.role == OrgRole::Owner) {
-                return Err("cannot invite above your own role");
+                return Err("cannot invite above your own role".into());
             }
             if invite.all_apps && role < OrgRole::Admin {
-                return Err(ONLY_ADMINS_ALL_APPS);
+                return Err(ONLY_ADMINS_ALL_APPS.into());
             }
             if invite
                 .capabilities
@@ -940,7 +1028,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(CANNOT_GRANT_UNHELD);
             }
             if s.sign_up_invites.contains_key(&invite_key) {
-                return Err("invite exists");
+                return Err("invite exists".into());
             }
             // Its creator is the actor, whatever the entry says.
             let invite = Invite {
@@ -959,7 +1047,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.accounts.contains_key(&account) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             let org = s.redeem_org_invite(
                 &invite_key,
@@ -968,7 +1056,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 free_when_unchanged,
                 clamp_grants,
             )?;
-            Ok(json!({ "org": org }))
+            Ok(json!(InviteRedeemed {
+                app: None,
+                org,
+                member: None,
+            }))
         }
         SystemCmd::SetOrgSettings {
             org,
@@ -977,10 +1069,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.is_org_admin(&org, &actor) {
-                return Err("only the organization's owner or an admin changes its settings");
+                return Err(
+                    "only the organization's owner or an admin changes its settings".into(),
+                );
             }
             if settings.is_empty() {
-                return Err("no setting to change");
+                return Err("no setting to change".into());
             }
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if let Some(allow) = settings.allow_guests {
@@ -989,10 +1083,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if let Some(allow) = settings.allow_public_links {
                 o.allow_public_links = allow;
             }
-            Ok(json!({
-                "org": org,
-                "allowGuests": o.allow_guests,
-                "allowPublicLinks": o.allow_public_links,
+            Ok(json!(OrgSettingsSet {
+                allow_guests: o.allow_guests,
+                allow_public_links: o.allow_public_links,
+                org,
             }))
         }
         SystemCmd::RevokeInvite {
@@ -1003,10 +1097,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let inv = s.invites.get(&invite_key).ok_or(INVITE_GONE)?;
             if inv.org != org {
-                return Err(INVITE_GONE);
+                return Err(INVITE_GONE.into());
             }
             if !s.sees_invite(inv, &actor) {
-                return Err("only the invite's creator, an admin, or whoever manages every team it names may revoke it");
+                return Err("only the invite's creator, an admin, or whoever manages every team it names may revoke it".into());
             }
             let _gone = s.invites.remove(&invite_key);
             Ok(Value::Null)
@@ -1065,6 +1159,7 @@ pub(super) fn new_org(
         personal,
         allow_guests: true,
         allow_public_links: true,
+        egress_off: false,
         upgrade_policy: None,
         app_upgrade_policies: BTreeMap::new(),
         pending_upgrades: BTreeMap::new(),

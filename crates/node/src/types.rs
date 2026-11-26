@@ -27,7 +27,7 @@ pub enum Caller {
     /// The app itself: an `xcall` from app `app` (then the caller is the calling
     /// app). Never from a client: the API builds callers from credentials.
     App { app: AppId },
-    /// The platform itself: a component's timer ticks (D34), which reach only
+    /// The platform itself: a component's timer ticks, which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
     /// An anonymous visitor through one of the instance's public links
@@ -71,7 +71,7 @@ impl Caller {
         matches!(self, Self::Account { .. } | Self::ApiKey { .. })
     }
 
-    /// The caller as the component host core sees it (the WIT `caller`, D13).
+    /// The caller as the component host core sees it (the WIT `caller`).
     #[must_use]
     pub fn to_host(&self) -> calimero_app_host::Caller {
         use calimero_app_host::Caller as H;
@@ -551,6 +551,13 @@ pub struct AppRecord {
     /// writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_point: Option<RestorePoint>,
+    /// The instance's own egress switch, off: no outbound request leaves the cluster for
+    /// it, whatever its release declares and whatever its organization approved
+    /// (`SystemCmd::SetEgress` naming the app; [`Org::egress_off`] turns off every app of
+    /// the organization). It stays with the instance when it moves. Left out when `false`
+    /// (egress on, the default), so a record writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub egress_off: bool,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the
@@ -942,6 +949,67 @@ pub struct ApiKeyRecord {
     pub upgrades: Option<UpgradeScope>,
 }
 
+/// A confirm call approved with the passkey consent that makes an API key
+/// (`POST /auth/apikeys { then }`), run before the key exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeyFollowUp {
+    pub app: AppId,
+    pub method: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+}
+
+impl KeyFollowUp {
+    /// The follow-up as the key's consent and the system log state it, its
+    /// arguments hashed under `salt` so a guess at them cannot be checked.
+    #[must_use]
+    pub fn signed(&self, salt: &[u8]) -> SignedFollowUp {
+        let mut bytes = salt.to_vec();
+        bytes.extend_from_slice(self.args_bytes().as_bytes());
+        SignedFollowUp {
+            app: self.app.clone(),
+            method: self.method.clone(),
+            args_hash: hex::encode(calimero_identity::sha256(&bytes)),
+        }
+    }
+
+    /// The arguments with every object's keys sorted by UTF-8 bytes, in compact
+    /// `serde_json` output (numbers as parsed, not as sent): one
+    /// form for equal arguments, another for any two that differ.
+    fn args_bytes(&self) -> String {
+        fn sorted(v: &serde_json::Value) -> serde_json::Value {
+            match v {
+                serde_json::Value::Object(fields) => {
+                    let mut keys: Vec<&String> = fields.keys().collect();
+                    keys.sort();
+                    serde_json::Value::Object(
+                        keys.into_iter()
+                            .map(|k| (k.clone(), sorted(&fields[k])))
+                            .collect(),
+                    )
+                }
+                serde_json::Value::Array(items) => {
+                    serde_json::Value::Array(items.iter().map(sorted).collect())
+                }
+                other => other.clone(),
+            }
+        }
+        sorted(&self.args).to_string()
+    }
+}
+
+/// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
+/// salt, then `KeyFollowUp::args_bytes`): the system log reaches nodes
+/// the app's organization never approved, so it holds none of an app's data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignedFollowUp {
+    pub app: AppId,
+    pub method: String,
+    pub args_hash: String,
+}
+
 /// What an upgrade key ([`ApiKeyRecord::upgrades`]) may do: upgrade `app`
 /// to a release of `package` signed by `signer`, proving each upgrade with
 /// the Ed25519 key its secret stands for (`proof::api_key_public`), so a
@@ -1147,7 +1215,7 @@ pub struct Org {
     #[serde(default)]
     pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
     /// The organization's recovery key and any recovery under way
-    /// (`docs/specs/org-recovery.md`); absent for an organization that never
+    /// ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)); absent for an organization that never
     /// set one, as every organization written before this field was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<OrgRecovery>,
@@ -1180,6 +1248,15 @@ pub struct Org {
     /// `true` (the default).
     #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
     pub allow_public_links: bool,
+    /// Egress off for every app of it: no outbound request leaves the cluster for any of
+    /// them, whatever their releases declare, and over every outbound approval, which it
+    /// also refuses to add (`SystemCmd::SetEgress`; `calimero_outbound::EGRESS_OFF`). The
+    /// owner's hard guarantee that the apps' code cannot send its data out. Set by its
+    /// owner or an admin; off is instant, on again only through the consent page. Left out
+    /// when `false` (egress on, the default), so an organization from before writes as it
+    /// did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub egress_off: bool,
     /// The update policy of every app of it that sets none of its own
     /// (`SystemCmd::SetUpgradePolicy` without an app); absent, [`UpgradePolicy::default`]:
     /// nothing updates on its own and one owner's or admin's approval applies an update.
@@ -1266,7 +1343,7 @@ impl Default for UpgradePolicy {
 impl UpgradePolicy {
     /// `Err` with the apply error when `hold_hours` is outside
     /// [`MIN_HOLD_HOURS`]..=[`MAX_HOLD_HOURS`].
-    pub fn check(&self) -> Result<(), &'static str> {
+    pub fn check(&self) -> Result<(), crate::system::Rejection> {
         if (MIN_HOLD_HOURS..=MAX_HOLD_HOURS).contains(&self.hold_hours) {
             Ok(())
         } else {
@@ -1427,7 +1504,7 @@ pub struct PendingRecovery {
 pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
 
 /// An account recovery started with the account's recovery code, not
-/// finished or cancelled yet (`docs/specs/account-recovery.md`): the passkey
+/// finished or cancelled yet ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): the passkey
 /// it adds, [`RECOVERY_DELAY_SECS`] after the start (the same delay as an
 /// organization's), unless one of the account's passkeys cancels first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1442,17 +1519,27 @@ pub struct PendingAccountRecovery {
 }
 
 impl PendingAccountRecovery {
-    /// What the start answers and `/auth/me` shows: never the credential's
-    /// public key.
+    /// What the start answers and `/auth/me` shows: never the credential's public key.
     #[must_use]
-    pub fn json(&self, account: &str) -> serde_json::Value {
-        serde_json::json!({
-            "accountId": account,
-            "credentialId": self.credential.id,
-            "startedAt": self.started_at,
-            "readyAt": self.ready_at,
-        })
+    pub fn view(&self, account: &str) -> AccountRecoveryPending {
+        AccountRecoveryPending {
+            account_id: account.to_owned(),
+            credential_id: self.credential.id.clone(),
+            started_at: self.started_at,
+            ready_at: self.ready_at,
+        }
     }
+}
+
+/// An account recovery under way: the passkey it would add, when it started and when it may
+/// finish (Unix seconds).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRecoveryPending {
+    pub account_id: AccountId,
+    pub credential_id: String,
+    pub started_at: u64,
+    pub ready_at: u64,
 }
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).
@@ -1792,7 +1879,7 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// Who receives an event (R9). Resolved when the event is sent to a
+/// Who receives an event. Resolved when the event is sent to a
 /// subscriber, against the system state of that moment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1840,7 +1927,7 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
-    /// A component's event: who receives it (R9), checked when it is sent.
+    /// A component's event: who receives it, checked when it is sent.
     /// `None` for an event that goes to everyone who reaches the app (one an SDK
     /// 0.12 app recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]

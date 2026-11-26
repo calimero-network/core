@@ -283,6 +283,14 @@ export function createRoutes(api: RouteClient) {
       openapi: (args: operations['app_openapi']['parameters']['path'], options?: MethodOptions): Promise<operations['app_openapi']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}/openapi.json","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_openapi']['responses'][200]['content']['application/json']>,
       /**
+       * An app's outbound requests.
+       *
+       * `GET /apps/{app}/outbound-log` (`app_outbound_log`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      outboundLog: (args: operations['app_outbound_log']['parameters']['path'], options?: MethodOptions): Promise<operations['app_outbound_log']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/outbound-log","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_outbound_log']['responses'][200]['content']['application/json']>,
+      /**
        * A pipeline run's receipt.
        *
        * `GET /apps/{app}/pipeline-runs/{run}/receipt` (`pipeline_receipt_receipt`). **Who:** signed in (a session or an API key).
@@ -455,6 +463,15 @@ export function createRoutes(api: RouteClient) {
        */
       secretSet: (args: operations['app_secret_set']['parameters']['path'] & operations['app_secret_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_secret_set']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"PUT","path":"/apps/{app}/secrets/{name}","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_secret_set']['responses'][200]['content']['application/json']>,
+      /**
+       * Turn one app's egress off or on.
+       *
+       * `POST /apps/{app}/egress` (`app_set_egress`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      setEgress: (args: operations['app_set_egress']['parameters']['path'] & operations['app_set_egress']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_set_egress']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/egress","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_set_egress']['responses'][200]['content']['application/json']>,
       /**
        * What an app stores.
        *
@@ -1455,6 +1472,15 @@ export function createRoutes(api: RouteClient) {
       delete: (args: operations['org_delete']['parameters']['path'] & Partial<NonNullable<operations['org_delete']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['org_delete']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/orgs/{org}","pathParams":["org"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_delete']['responses'][200]['content']['application/json']>,
       /**
+       * Turn the organization's egress off or on.
+       *
+       * `POST /orgs/{org}/egress` (`org_egress`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      egress: (args: operations['org_egress']['parameters']['path'] & operations['org_egress']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_egress']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/orgs/{org}/egress","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_egress']['responses'][200]['content']['application/json']>,
+      /**
        * One organization.
        *
        * `GET /orgs/{org}` (`org_get`). **Who:** signed in (a session or an API key).
@@ -1855,8 +1881,8 @@ export function createRoutes(api: RouteClient) {
        * `POST /packages` (`package_upload`). **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      upload: (args: RawBody, options?: MethodOptions): Promise<operations['package_upload']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/packages","pathParams":[],"query":[],"body":"raw","optionalBody":false,"media":"application/octet-stream","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_upload']['responses'][200]['content']['application/json']>,
+      upload: (args: NonNullable<operations['package_upload']['parameters']['query']> & RawBody, options?: MethodOptions): Promise<operations['package_upload']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/packages","pathParams":[],"query":["org"],"body":"raw","optionalBody":false,"media":"application/octet-stream","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_upload']['responses'][200]['content']['application/json']>,
       /**
        * Uninstall one version.
        *

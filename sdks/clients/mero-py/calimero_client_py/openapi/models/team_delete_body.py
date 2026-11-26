@@ -19,11 +19,13 @@ T = TypeVar("T", bound="TeamDeleteBody")
 
 @_attrs_define
 class TeamDeleteBody:
-    """
-    Attributes:
-        keep_apps (Union[Unset, bool]):
-        confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
-            request sent again with it approves exactly that request.
+    """`DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits stay, and the passkey
+    confirmation after the `412`.
+
+        Attributes:
+            keep_apps (Union[Unset, bool]):
+            confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
+                request sent again with it approves exactly that request.
     """
 
     keep_apps: Union[Unset, bool] = UNSET

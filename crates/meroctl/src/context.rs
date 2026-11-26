@@ -177,6 +177,13 @@ pub enum ContextCmd {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
+    /// The instance's recent outbound HTTPS requests, newest first: host, path (no
+    /// query), status or failure, secret names, sizes; never a value or body. Its
+    /// owner and its organization's admins only.
+    OutboundLog {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+    },
     /// The ABI of the bundle the instance runs.
     Abi {
         #[arg(value_name = "INSTANCE")]
@@ -276,7 +283,8 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
         } => {
             let (package, version, bundle) = match path {
                 Some(path) => {
-                    let installed = crate::app::install_file(env, &path).await?;
+                    let installed =
+                        crate::app::install_file(env, &path, namespace.as_deref()).await?;
                     match installed["bundle"].as_str() {
                         Some(b) => (None, None, Some(b.to_owned())),
                         None => (
@@ -441,6 +449,9 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
         )?,
         ContextCmd::Storage { context } => {
             to_json(&apps.storage(&env.app(&context).await?).await?)?
+        }
+        ContextCmd::OutboundLog { context } => {
+            to_json(&apps.outbound_log(&env.app(&context).await?).await?)?
         }
         ContextCmd::Abi { context } => to_json(&apps.abi(&env.app(&context).await?).await?)?,
         ContextCmd::Presence(PresenceCmd::List { context }) => {

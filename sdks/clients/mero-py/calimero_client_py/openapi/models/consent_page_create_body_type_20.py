@@ -9,9 +9,7 @@ from ..types import UNSET, Unset
 from ..models.consent_page_create_body_type_20_kind import (
     ConsentPageCreateBodyType20Kind,
 )
-from ..types import UNSET, Unset
 from typing import cast
-from typing import Union
 
 if TYPE_CHECKING:
     from ..models.consent_page_create_body_type_20_subject import (
@@ -27,13 +25,13 @@ class ConsentPageCreateBodyType20:
     """
     Attributes:
         kind (ConsentPageCreateBodyType20Kind):
+        subject (ConsentPageCreateBodyType20Subject):
         return_to (str):
-        subject (Union[Unset, ConsentPageCreateBodyType20Subject]):
     """
 
     kind: ConsentPageCreateBodyType20Kind
+    subject: "ConsentPageCreateBodyType20Subject"
     return_to: str
-    subject: Union[Unset, "ConsentPageCreateBodyType20Subject"] = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.consent_page_create_body_type_20_subject import (
@@ -42,22 +40,19 @@ class ConsentPageCreateBodyType20:
 
         kind = self.kind.value
 
-        return_to = self.return_to
+        subject = self.subject.to_dict()
 
-        subject: Union[Unset, dict[str, Any]] = UNSET
-        if not isinstance(self.subject, Unset):
-            subject = self.subject.to_dict()
+        return_to = self.return_to
 
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
             {
                 "kind": kind,
+                "subject": subject,
                 "returnTo": return_to,
             }
         )
-        if subject is not UNSET:
-            field_dict["subject"] = subject
 
         return field_dict
 
@@ -70,19 +65,14 @@ class ConsentPageCreateBodyType20:
         d = dict(src_dict)
         kind = ConsentPageCreateBodyType20Kind(d.pop("kind"))
 
-        return_to = d.pop("returnTo")
+        subject = ConsentPageCreateBodyType20Subject.from_dict(d.pop("subject"))
 
-        _subject = d.pop("subject", UNSET)
-        subject: Union[Unset, ConsentPageCreateBodyType20Subject]
-        if isinstance(_subject, Unset):
-            subject = UNSET
-        else:
-            subject = ConsentPageCreateBodyType20Subject.from_dict(_subject)
+        return_to = d.pop("returnTo")
 
         consent_page_create_body_type_20 = cls(
             kind=kind,
-            return_to=return_to,
             subject=subject,
+            return_to=return_to,
         )
 
         return consent_page_create_body_type_20

@@ -28,87 +28,89 @@ import okhttp3.Call
 import okhttp3.HttpUrl
 
 import com.calimero.mero.api.models.App
-import com.calimero.mero.api.models.AppAbi200Response
+import com.calimero.mero.api.models.AppAbi
 import com.calimero.mero.api.models.AppAccessRequest
-import com.calimero.mero.api.models.AppApproveUpgrade200Response
 import com.calimero.mero.api.models.AppApproveUpgradeRequest
-import com.calimero.mero.api.models.AppAttestation200Response
-import com.calimero.mero.api.models.AppCreate200Response
+import com.calimero.mero.api.models.AppAttestations
 import com.calimero.mero.api.models.AppCreateRequest
-import com.calimero.mero.api.models.AppDelegate200Response
+import com.calimero.mero.api.models.AppCreated
 import com.calimero.mero.api.models.AppDelegateRequest
-import com.calimero.mero.api.models.AppDelegations200Response
-import com.calimero.mero.api.models.AppDelete200Response
-import com.calimero.mero.api.models.AppEgress200Response
-import com.calimero.mero.api.models.AppInviteCreate200Response
+import com.calimero.mero.api.models.AppDeleted
 import com.calimero.mero.api.models.AppInviteCreateRequest
-import com.calimero.mero.api.models.AppInviteList200Response
-import com.calimero.mero.api.models.AppLink200Response
+import com.calimero.mero.api.models.AppInviteList
+import com.calimero.mero.api.models.AppInviteMade
+import com.calimero.mero.api.models.AppLinkList
 import com.calimero.mero.api.models.AppLinkRequest
-import com.calimero.mero.api.models.AppLinks200Response
-import com.calimero.mero.api.models.AppList200Response
-import com.calimero.mero.api.models.AppMetadataRequest
-import com.calimero.mero.api.models.AppMethod200Response
+import com.calimero.mero.api.models.AppList
 import com.calimero.mero.api.models.AppMethodRequest
-import com.calimero.mero.api.models.AppMove200Response
 import com.calimero.mero.api.models.AppMoveRequest
-import com.calimero.mero.api.models.AppPolicySetRequest
-import com.calimero.mero.api.models.AppRunLogs200Response
-import com.calimero.mero.api.models.AppRuns200Response
-import com.calimero.mero.api.models.AppSecretClear200Response
-import com.calimero.mero.api.models.AppSecretSet200Response
+import com.calimero.mero.api.models.AppMoved
 import com.calimero.mero.api.models.AppSecretSetRequest
-import com.calimero.mero.api.models.AppSecrets200Response
-import com.calimero.mero.api.models.AppStorage200Response
+import com.calimero.mero.api.models.AppSecrets
+import com.calimero.mero.api.models.AppSetEgressRequest
+import com.calimero.mero.api.models.AppStorage
 import com.calimero.mero.api.models.AppTransferRequest
-import com.calimero.mero.api.models.AppUndo200Response
 import com.calimero.mero.api.models.AppUndoRequest
-import com.calimero.mero.api.models.AppUndoView200Response
 import com.calimero.mero.api.models.AppUnlinkRequest
-import com.calimero.mero.api.models.AppUpdate200Response
-import com.calimero.mero.api.models.AppUpgrade200Response
 import com.calimero.mero.api.models.AppUpgradeRequest
 import com.calimero.mero.api.models.AppUpgradeUnitRequest
-import com.calimero.mero.api.models.AppUsage200Response
-import com.calimero.mero.api.models.AppXcalls200Response
-import com.calimero.mero.api.models.BlobDelete200Response
-import com.calimero.mero.api.models.BlobInfo200Response
-import com.calimero.mero.api.models.BlobList200Response
-import com.calimero.mero.api.models.BlobUpload200Response
+import com.calimero.mero.api.models.AppUsage
+import com.calimero.mero.api.models.ApprovalLogged
+import com.calimero.mero.api.models.BlobList
+import com.calimero.mero.api.models.BlobStored
+import com.calimero.mero.api.models.BlobView
 import com.calimero.mero.api.models.ConfirmOnly
+import com.calimero.mero.api.models.DelegationMade
+import com.calimero.mero.api.models.Delegations
+import com.calimero.mero.api.models.EgressSet
+import com.calimero.mero.api.models.EgressView
 import com.calimero.mero.api.models.Error
-import com.calimero.mero.api.models.ExportsExport200Response
 import com.calimero.mero.api.models.ExportsExportRequest
-import com.calimero.mero.api.models.FileInfo200Response
-import com.calimero.mero.api.models.FilesList200Response
-import com.calimero.mero.api.models.FilesUpload200Response
-import com.calimero.mero.api.models.Intents200Response
+import com.calimero.mero.api.models.FileExport
+import com.calimero.mero.api.models.FileList
+import com.calimero.mero.api.models.FileStored
+import com.calimero.mero.api.models.FileView
+import com.calimero.mero.api.models.IntentResult
 import com.calimero.mero.api.models.IntentsRequest
-import com.calimero.mero.api.models.PipelineReceiptReceipt200Response
-import com.calimero.mero.api.models.PipelinesCancel200Response
-import com.calimero.mero.api.models.PipelinesEstimateRun200Response
+import com.calimero.mero.api.models.LinkRow
+import com.calimero.mero.api.models.Logged
+import com.calimero.mero.api.models.MetadataBody
+import com.calimero.mero.api.models.MethodResult
+import com.calimero.mero.api.models.OutboundLog
+import com.calimero.mero.api.models.PartTaken
+import com.calimero.mero.api.models.PipelineCancelled
+import com.calimero.mero.api.models.PipelineRunList
+import com.calimero.mero.api.models.PipelineStarted
+import com.calimero.mero.api.models.PipelineValidation
 import com.calimero.mero.api.models.PipelinesEstimateRunRequest
-import com.calimero.mero.api.models.PipelinesRetry200Response
 import com.calimero.mero.api.models.PipelinesRetryRequest
-import com.calimero.mero.api.models.PipelinesStart200Response
 import com.calimero.mero.api.models.PipelinesStartRequest
-import com.calimero.mero.api.models.PipelinesValidate200Response
 import com.calimero.mero.api.models.PipelinesValidateRequest
 import com.calimero.mero.api.models.PolicyView
-import com.calimero.mero.api.models.PresenceGet200Response
+import com.calimero.mero.api.models.PresenceList
 import com.calimero.mero.api.models.PresencePublishRequest
-import com.calimero.mero.api.models.PublicLinkCreate200Response
 import com.calimero.mero.api.models.PublicLinkCreateRequest
-import com.calimero.mero.api.models.PublicLinkList200Response
+import com.calimero.mero.api.models.PublicLinkMade
+import com.calimero.mero.api.models.PublicLinks
 import com.calimero.mero.api.models.Run
+import com.calimero.mero.api.models.RunEstimate
+import com.calimero.mero.api.models.RunList
+import com.calimero.mero.api.models.RunLogs
+import com.calimero.mero.api.models.SecretCleared
+import com.calimero.mero.api.models.SecretSet
+import com.calimero.mero.api.models.SignedPipelineReceipt
+import com.calimero.mero.api.models.UndoDone
+import com.calimero.mero.api.models.UndoView
+import com.calimero.mero.api.models.UpdateView
+import com.calimero.mero.api.models.UpgradeApplied
+import com.calimero.mero.api.models.UpgradePolicyBody
 import com.calimero.mero.api.models.UpgradeRun
-import com.calimero.mero.api.models.UploadBegin200Response
 import com.calimero.mero.api.models.UploadBeginRequest
-import com.calimero.mero.api.models.UploadComplete200Response
-import com.calimero.mero.api.models.UploadPart200Response
-import com.calimero.mero.api.models.UploadStatus200Response
-import com.calimero.mero.api.models.Views200Response
+import com.calimero.mero.api.models.UploadStatus
+import com.calimero.mero.api.models.UploadView
+import com.calimero.mero.api.models.ViewResult
 import com.calimero.mero.api.models.ViewsRequest
+import com.calimero.mero.api.models.XcallsReport
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -143,7 +145,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s ABI
      * The ABI its bundle embeds: methods, events, errors and state. &#x60;abi&#x60; is the bundle&#39;s own document, free-form here: its format is the ABI&#39;s, not this API&#39;s.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return AppAbi200Response
+     * @return AppAbi
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -152,11 +154,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appAbi(app: kotlin.String) : AppAbi200Response = withContext(Dispatchers.IO) {
+    suspend fun appAbi(app: kotlin.String) : AppAbi = withContext(Dispatchers.IO) {
         val localVarResponse = appAbiWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppAbi200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppAbi
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -175,16 +177,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s ABI
      * The ABI its bundle embeds: methods, events, errors and state. &#x60;abi&#x60; is the bundle&#39;s own document, free-form here: its format is the ABI&#39;s, not this API&#39;s.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<AppAbi200Response?>
+     * @return ApiResponse<AppAbi?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appAbiWithHttpInfo(app: kotlin.String) : ApiResponse<AppAbi200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appAbiWithHttpInfo(app: kotlin.String) : ApiResponse<AppAbi?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appAbiRequestConfig(app = app)
 
-        return@withContext request<Unit, AppAbi200Response>(
+        return@withContext request<Unit, AppAbi>(
             localVariableConfig
         )
     }
@@ -294,7 +296,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Where the app&#39;s policy asks for a second approver (&#x60;409 ONE_APPROVAL&#x60; otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over &#x60;&lt;app&gt; / __approve_upgrade / { package, version, targets, class }&#x60; (the class the classifier gives now, over the unit with &#x60;unit&#x60;). Another owner or admin then applies it with &#x60;POST /apps/{app}/upgrade&#x60; (or &#x60;/upgrade-unit&#x60; for a unit&#39;s approval), which until then answers &#x60;409 SECOND_APPROVAL_REQUIRED&#x60;. One waits per app, for a week at most; a newer one replaces it, and another approver&#39;s of the same update is &#x60;409 APPROVAL_PENDING&#x60; (apply it instead). &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a part&#39;s release no longer installed: class &#x60;red&#x60; with &#x60;unclassified&#x60; reasons) below 1.0.0-rc.35, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appApproveUpgradeRequest 
-     * @return AppApproveUpgrade200Response
+     * @return ApprovalLogged
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -303,11 +305,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appApproveUpgrade(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : AppApproveUpgrade200Response = withContext(Dispatchers.IO) {
+    suspend fun appApproveUpgrade(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : ApprovalLogged = withContext(Dispatchers.IO) {
         val localVarResponse = appApproveUpgradeWithHttpInfo(app = app, appApproveUpgradeRequest = appApproveUpgradeRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppApproveUpgrade200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ApprovalLogged
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -327,16 +329,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Where the app&#39;s policy asks for a second approver (&#x60;409 ONE_APPROVAL&#x60; otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over &#x60;&lt;app&gt; / __approve_upgrade / { package, version, targets, class }&#x60; (the class the classifier gives now, over the unit with &#x60;unit&#x60;). Another owner or admin then applies it with &#x60;POST /apps/{app}/upgrade&#x60; (or &#x60;/upgrade-unit&#x60; for a unit&#39;s approval), which until then answers &#x60;409 SECOND_APPROVAL_REQUIRED&#x60;. One waits per app, for a week at most; a newer one replaces it, and another approver&#39;s of the same update is &#x60;409 APPROVAL_PENDING&#x60; (apply it instead). &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a part&#39;s release no longer installed: class &#x60;red&#x60; with &#x60;unclassified&#x60; reasons) below 1.0.0-rc.35, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appApproveUpgradeRequest 
-     * @return ApiResponse<AppApproveUpgrade200Response?>
+     * @return ApiResponse<ApprovalLogged?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appApproveUpgradeWithHttpInfo(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : ApiResponse<AppApproveUpgrade200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appApproveUpgradeWithHttpInfo(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : ApiResponse<ApprovalLogged?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appApproveUpgradeRequestConfig(app = app, appApproveUpgradeRequest = appApproveUpgradeRequest)
 
-        return@withContext request<AppApproveUpgradeRequest, AppApproveUpgrade200Response>(
+        return@withContext request<AppApproveUpgradeRequest, ApprovalLogged>(
             localVariableConfig
         )
     }
@@ -371,7 +373,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Each replica&#39;s &#x60;/attestation?purpose&#x3D;receipts&#x60; for &#x60;nonce&#x60; (32 bytes, hex), or why it could not be had (&#x60;error&#x60;), and &#x60;cluster&#x60;, the cluster id each quote binds (with the replica&#39;s &#x60;node&#x60;): the documents are fetched in the clear, so their own &#x60;cluster&#x60; and &#x60;node&#x60; fields count for nothing. Any other query parameter is ignored.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param nonce 
-     * @return AppAttestation200Response
+     * @return AppAttestations
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -380,11 +382,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appAttestation(app: kotlin.String, nonce: kotlin.String) : AppAttestation200Response = withContext(Dispatchers.IO) {
+    suspend fun appAttestation(app: kotlin.String, nonce: kotlin.String) : AppAttestations = withContext(Dispatchers.IO) {
         val localVarResponse = appAttestationWithHttpInfo(app = app, nonce = nonce)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppAttestation200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppAttestations
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -404,16 +406,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Each replica&#39;s &#x60;/attestation?purpose&#x3D;receipts&#x60; for &#x60;nonce&#x60; (32 bytes, hex), or why it could not be had (&#x60;error&#x60;), and &#x60;cluster&#x60;, the cluster id each quote binds (with the replica&#39;s &#x60;node&#x60;): the documents are fetched in the clear, so their own &#x60;cluster&#x60; and &#x60;node&#x60; fields count for nothing. Any other query parameter is ignored.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param nonce 
-     * @return ApiResponse<AppAttestation200Response?>
+     * @return ApiResponse<AppAttestations?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appAttestationWithHttpInfo(app: kotlin.String, nonce: kotlin.String) : ApiResponse<AppAttestation200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appAttestationWithHttpInfo(app: kotlin.String, nonce: kotlin.String) : ApiResponse<AppAttestations?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appAttestationRequestConfig(app = app, nonce = nonce)
 
-        return@withContext request<Unit, AppAttestation200Response>(
+        return@withContext request<Unit, AppAttestations>(
             localVariableConfig
         )
     }
@@ -449,7 +451,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Create an app instance
      * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;; the single &#x60;access&#x60; mode of earlier releases is &#x60;400 ACCESS_REMOVED&#x60;, never read as no grants). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
-     * @return AppCreate200Response
+     * @return AppCreated
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -458,11 +460,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appCreate(appCreateRequest: AppCreateRequest) : AppCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun appCreate(appCreateRequest: AppCreateRequest) : AppCreated = withContext(Dispatchers.IO) {
         val localVarResponse = appCreateWithHttpInfo(appCreateRequest = appCreateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppCreated
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -481,16 +483,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Create an app instance
      * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;; the single &#x60;access&#x60; mode of earlier releases is &#x60;400 ACCESS_REMOVED&#x60;, never read as no grants). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
-     * @return ApiResponse<AppCreate200Response?>
+     * @return ApiResponse<AppCreated?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appCreateWithHttpInfo(appCreateRequest: AppCreateRequest) : ApiResponse<AppCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appCreateWithHttpInfo(appCreateRequest: AppCreateRequest) : ApiResponse<AppCreated?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appCreateRequestConfig(appCreateRequest = appCreateRequest)
 
-        return@withContext request<AppCreateRequest, AppCreate200Response>(
+        return@withContext request<AppCreateRequest, AppCreated>(
             localVariableConfig
         )
     }
@@ -525,7 +527,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param target 
      * @param appDelegateRequest 
-     * @return AppDelegate200Response
+     * @return DelegationMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -534,11 +536,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appDelegate(app: kotlin.String, target: kotlin.String, appDelegateRequest: AppDelegateRequest) : AppDelegate200Response = withContext(Dispatchers.IO) {
+    suspend fun appDelegate(app: kotlin.String, target: kotlin.String, appDelegateRequest: AppDelegateRequest) : DelegationMade = withContext(Dispatchers.IO) {
         val localVarResponse = appDelegateWithHttpInfo(app = app, target = target, appDelegateRequest = appDelegateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppDelegate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DelegationMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -559,16 +561,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param target 
      * @param appDelegateRequest 
-     * @return ApiResponse<AppDelegate200Response?>
+     * @return ApiResponse<DelegationMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appDelegateWithHttpInfo(app: kotlin.String, target: kotlin.String, appDelegateRequest: AppDelegateRequest) : ApiResponse<AppDelegate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appDelegateWithHttpInfo(app: kotlin.String, target: kotlin.String, appDelegateRequest: AppDelegateRequest) : ApiResponse<DelegationMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appDelegateRequestConfig(app = app, target = target, appDelegateRequest = appDelegateRequest)
 
-        return@withContext request<AppDelegateRequest, AppDelegate200Response>(
+        return@withContext request<AppDelegateRequest, DelegationMade>(
             localVariableConfig
         )
     }
@@ -603,7 +605,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * What you let an app do as you
      * The apps you let this app call as you, each with the methods (&#x60;SetDelegation&#x60;). A session bound to an app&#39;s frontend reads its own app&#39;s only.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return AppDelegations200Response
+     * @return Delegations
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -612,11 +614,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appDelegations(app: kotlin.String) : AppDelegations200Response = withContext(Dispatchers.IO) {
+    suspend fun appDelegations(app: kotlin.String) : Delegations = withContext(Dispatchers.IO) {
         val localVarResponse = appDelegationsWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppDelegations200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as Delegations
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -635,16 +637,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * What you let an app do as you
      * The apps you let this app call as you, each with the methods (&#x60;SetDelegation&#x60;). A session bound to an app&#39;s frontend reads its own app&#39;s only.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return ApiResponse<AppDelegations200Response?>
+     * @return ApiResponse<Delegations?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appDelegationsWithHttpInfo(app: kotlin.String) : ApiResponse<AppDelegations200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appDelegationsWithHttpInfo(app: kotlin.String) : ApiResponse<Delegations?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appDelegationsRequestConfig(app = app)
 
-        return@withContext request<Unit, AppDelegations200Response>(
+        return@withContext request<Unit, Delegations>(
             localVariableConfig
         )
     }
@@ -676,7 +678,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Delete an app
      * The owner or an organization admin. An instance whose release created apps with it (&#x60;uses&#x60; with &#x60;mode: create&#x60;, its &#x60;links&#x60;) is deleted with every one of them, theirs included, listed in &#x60;members&#x60;; a member is not deleted alone while its instance stands (&#x60;409 UNIT_MEMBER&#x60;), and an instance with members waits for every node to run 1.0.0-rc.32 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;).  **Who:** a passkey session (an API key is refused).
      * @param app 
-     * @return AppDelete200Response
+     * @return AppDeleted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -685,11 +687,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appDelete(app: kotlin.String) : AppDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun appDelete(app: kotlin.String) : AppDeleted = withContext(Dispatchers.IO) {
         val localVarResponse = appDeleteWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppDeleted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -708,16 +710,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Delete an app
      * The owner or an organization admin. An instance whose release created apps with it (&#x60;uses&#x60; with &#x60;mode: create&#x60;, its &#x60;links&#x60;) is deleted with every one of them, theirs included, listed in &#x60;members&#x60;; a member is not deleted alone while its instance stands (&#x60;409 UNIT_MEMBER&#x60;), and an instance with members waits for every node to run 1.0.0-rc.32 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;).  **Who:** a passkey session (an API key is refused).
      * @param app 
-     * @return ApiResponse<AppDelete200Response?>
+     * @return ApiResponse<AppDeleted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appDeleteWithHttpInfo(app: kotlin.String) : ApiResponse<AppDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appDeleteWithHttpInfo(app: kotlin.String) : ApiResponse<AppDeleted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appDeleteRequestConfig(app = app)
 
-        return@withContext request<Unit, AppDelete200Response>(
+        return@withContext request<Unit, AppDeleted>(
             localVariableConfig
         )
     }
@@ -747,9 +749,9 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/egress
      * Where an app&#39;s unit may send data
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none. &#x60;egress&#x60;: &#x60;off&#x60; while its organization (&#x60;offBy: organization&#x60;) or the instance (&#x60;instance&#x60;) turned egress off (&#x60;offBy&#x60; and &#x60;summary&#x60; are absent while it is on), when none of the destinations is reached and &#x60;summary&#x60; says the app cannot send data outside the cluster.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return AppEgress200Response
+     * @return EgressView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -758,11 +760,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appEgress(app: kotlin.String) : AppEgress200Response = withContext(Dispatchers.IO) {
+    suspend fun appEgress(app: kotlin.String) : EgressView = withContext(Dispatchers.IO) {
         val localVarResponse = appEgressWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppEgress200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as EgressView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -779,18 +781,18 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/egress
      * Where an app&#39;s unit may send data
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none. &#x60;egress&#x60;: &#x60;off&#x60; while its organization (&#x60;offBy: organization&#x60;) or the instance (&#x60;instance&#x60;) turned egress off (&#x60;offBy&#x60; and &#x60;summary&#x60; are absent while it is on), when none of the destinations is reached and &#x60;summary&#x60; says the app cannot send data outside the cluster.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<AppEgress200Response?>
+     * @return ApiResponse<EgressView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appEgressWithHttpInfo(app: kotlin.String) : ApiResponse<AppEgress200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appEgressWithHttpInfo(app: kotlin.String) : ApiResponse<EgressView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appEgressRequestConfig(app = app)
 
-        return@withContext request<Unit, AppEgress200Response>(
+        return@withContext request<Unit, EgressView>(
             localVariableConfig
         )
     }
@@ -896,7 +898,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * A token whose redeemer is named on this instance only (an &#x60;account&#x60; grant: a guest, or a named member when they are a member of its organization; never added to the organization), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7), on any instance. &#x60;scope&#x60; (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance&#39;s access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appInviteCreateRequest 
-     * @return AppInviteCreate200Response
+     * @return AppInviteMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -905,11 +907,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appInviteCreate(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : AppInviteCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun appInviteCreate(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : AppInviteMade = withContext(Dispatchers.IO) {
         val localVarResponse = appInviteCreateWithHttpInfo(app = app, appInviteCreateRequest = appInviteCreateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -929,16 +931,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * A token whose redeemer is named on this instance only (an &#x60;account&#x60; grant: a guest, or a named member when they are a member of its organization; never added to the organization), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7), on any instance. &#x60;scope&#x60; (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance&#39;s access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appInviteCreateRequest 
-     * @return ApiResponse<AppInviteCreate200Response?>
+     * @return ApiResponse<AppInviteMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appInviteCreateWithHttpInfo(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : ApiResponse<AppInviteCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appInviteCreateWithHttpInfo(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : ApiResponse<AppInviteMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appInviteCreateRequestConfig(app = app, appInviteCreateRequest = appInviteCreateRequest)
 
-        return@withContext request<AppInviteCreateRequest, AppInviteCreate200Response>(
+        return@withContext request<AppInviteCreateRequest, AppInviteMade>(
             localVariableConfig
         )
     }
@@ -972,7 +974,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An instance&#39;s invites
      * For whoever may change its access: keys, terms and scope, never a token.  **Who:** a passkey session (an API key is refused).
      * @param app 
-     * @return AppInviteList200Response
+     * @return AppInviteList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -981,11 +983,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appInviteList(app: kotlin.String) : AppInviteList200Response = withContext(Dispatchers.IO) {
+    suspend fun appInviteList(app: kotlin.String) : AppInviteList = withContext(Dispatchers.IO) {
         val localVarResponse = appInviteListWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1004,16 +1006,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An instance&#39;s invites
      * For whoever may change its access: keys, terms and scope, never a token.  **Who:** a passkey session (an API key is refused).
      * @param app 
-     * @return ApiResponse<AppInviteList200Response?>
+     * @return ApiResponse<AppInviteList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appInviteListWithHttpInfo(app: kotlin.String) : ApiResponse<AppInviteList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appInviteListWithHttpInfo(app: kotlin.String) : ApiResponse<AppInviteList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appInviteListRequestConfig(app = app)
 
-        return@withContext request<Unit, AppInviteList200Response>(
+        return@withContext request<Unit, AppInviteList>(
             localVariableConfig
         )
     }
@@ -1127,7 +1129,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param name 
      * @param appLinkRequest 
-     * @return AppLink200Response
+     * @return LinkRow
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1136,11 +1138,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appLink(app: kotlin.String, name: kotlin.String, appLinkRequest: AppLinkRequest) : AppLink200Response = withContext(Dispatchers.IO) {
+    suspend fun appLink(app: kotlin.String, name: kotlin.String, appLinkRequest: AppLinkRequest) : LinkRow = withContext(Dispatchers.IO) {
         val localVarResponse = appLinkWithHttpInfo(app = app, name = name, appLinkRequest = appLinkRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppLink200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as LinkRow
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1161,16 +1163,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param name 
      * @param appLinkRequest 
-     * @return ApiResponse<AppLink200Response?>
+     * @return ApiResponse<LinkRow?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appLinkWithHttpInfo(app: kotlin.String, name: kotlin.String, appLinkRequest: AppLinkRequest) : ApiResponse<AppLink200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appLinkWithHttpInfo(app: kotlin.String, name: kotlin.String, appLinkRequest: AppLinkRequest) : ApiResponse<LinkRow?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appLinkRequestConfig(app = app, name = name, appLinkRequest = appLinkRequest)
 
-        return@withContext request<AppLinkRequest, AppLink200Response>(
+        return@withContext request<AppLinkRequest, LinkRow>(
             localVariableConfig
         )
     }
@@ -1205,7 +1207,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * List an app&#39;s links to the apps its release uses
      * One row per reference (&#x60;uses&#x60;) of the release the app runs, with the app linked under it: a member made with the instance (&#x60;mode: create&#x60;) or an app its owner attached (&#x60;mode: attach&#x60;), &#x60;null&#x60; when none. &#x60;version&#x60; is the release that app runs and &#x60;inRange&#x60; whether it is inside the reference&#39;s range (&#x60;null&#x60; with nothing linked). A link the release no longer names is listed with &#x60;package&#x60;, &#x60;range&#x60; and &#x60;mode&#x60; &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return AppLinks200Response
+     * @return AppLinkList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1214,11 +1216,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appLinks(app: kotlin.String) : AppLinks200Response = withContext(Dispatchers.IO) {
+    suspend fun appLinks(app: kotlin.String) : AppLinkList = withContext(Dispatchers.IO) {
         val localVarResponse = appLinksWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppLinks200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppLinkList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1237,16 +1239,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * List an app&#39;s links to the apps its release uses
      * One row per reference (&#x60;uses&#x60;) of the release the app runs, with the app linked under it: a member made with the instance (&#x60;mode: create&#x60;) or an app its owner attached (&#x60;mode: attach&#x60;), &#x60;null&#x60; when none. &#x60;version&#x60; is the release that app runs and &#x60;inRange&#x60; whether it is inside the reference&#39;s range (&#x60;null&#x60; with nothing linked). A link the release no longer names is listed with &#x60;package&#x60;, &#x60;range&#x60; and &#x60;mode&#x60; &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<AppLinks200Response?>
+     * @return ApiResponse<AppLinkList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appLinksWithHttpInfo(app: kotlin.String) : ApiResponse<AppLinks200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appLinksWithHttpInfo(app: kotlin.String) : ApiResponse<AppLinkList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appLinksRequestConfig(app = app)
 
-        return@withContext request<Unit, AppLinks200Response>(
+        return@withContext request<Unit, AppLinkList>(
             localVariableConfig
         )
     }
@@ -1279,7 +1281,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The instances the caller reaches; one an &#x60;anyone&#x60; grant admits is listed only to its owner.  **Who:** signed in (a session or an API key).
      * @param `package`  (optional)
      * @param bundle  (optional)
-     * @return AppList200Response
+     * @return AppList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1288,11 +1290,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appList(`package`: kotlin.String? = null, bundle: kotlin.String? = null) : AppList200Response = withContext(Dispatchers.IO) {
+    suspend fun appList(`package`: kotlin.String? = null, bundle: kotlin.String? = null) : AppList = withContext(Dispatchers.IO) {
         val localVarResponse = appListWithHttpInfo(`package` = `package`, bundle = bundle)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1312,16 +1314,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The instances the caller reaches; one an &#x60;anyone&#x60; grant admits is listed only to its owner.  **Who:** signed in (a session or an API key).
      * @param `package`  (optional)
      * @param bundle  (optional)
-     * @return ApiResponse<AppList200Response?>
+     * @return ApiResponse<AppList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appListWithHttpInfo(`package`: kotlin.String?, bundle: kotlin.String?) : ApiResponse<AppList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appListWithHttpInfo(`package`: kotlin.String?, bundle: kotlin.String?) : ApiResponse<AppList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appListRequestConfig(`package` = `package`, bundle = bundle)
 
-        return@withContext request<Unit, AppList200Response>(
+        return@withContext request<Unit, AppList>(
             localVariableConfig
         )
     }
@@ -1362,7 +1364,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s metadata
      * The owner or an organization admin; 16 KiB at most. &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @param appMetadataRequest 
+     * @param metadataBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1372,8 +1374,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appMetadata(app: kotlin.String, appMetadataRequest: AppMetadataRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = appMetadataWithHttpInfo(app = app, appMetadataRequest = appMetadataRequest)
+    suspend fun appMetadata(app: kotlin.String, metadataBody: MetadataBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = appMetadataWithHttpInfo(app = app, metadataBody = metadataBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -1395,17 +1397,17 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s metadata
      * The owner or an organization admin; 16 KiB at most. &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @param appMetadataRequest 
+     * @param metadataBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appMetadataWithHttpInfo(app: kotlin.String, appMetadataRequest: AppMetadataRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = appMetadataRequestConfig(app = app, appMetadataRequest = appMetadataRequest)
+    suspend fun appMetadataWithHttpInfo(app: kotlin.String, metadataBody: MetadataBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appMetadataRequestConfig(app = app, metadataBody = metadataBody)
 
-        return@withContext request<AppMetadataRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<MetadataBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -1414,11 +1416,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * To obtain the request config of the operation appMetadata
      *
      * @param app 
-     * @param appMetadataRequest 
+     * @param metadataBody 
      * @return RequestConfig
      */
-    fun appMetadataRequestConfig(app: kotlin.String, appMetadataRequest: AppMetadataRequest) : RequestConfig<AppMetadataRequest> {
-        val localVariableBody = appMetadataRequest
+    fun appMetadataRequestConfig(app: kotlin.String, metadataBody: MetadataBody) : RequestConfig<MetadataBody> {
+        val localVariableBody = metadataBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1441,7 +1443,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param method 
      * @param appMethodRequest 
-     * @return AppMethod200Response
+     * @return MethodResult
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1450,11 +1452,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appMethod(app: kotlin.String, method: kotlin.String, appMethodRequest: AppMethodRequest) : AppMethod200Response = withContext(Dispatchers.IO) {
+    suspend fun appMethod(app: kotlin.String, method: kotlin.String, appMethodRequest: AppMethodRequest) : MethodResult = withContext(Dispatchers.IO) {
         val localVarResponse = appMethodWithHttpInfo(app = app, method = method, appMethodRequest = appMethodRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppMethod200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as MethodResult
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1475,16 +1477,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param method 
      * @param appMethodRequest 
-     * @return ApiResponse<AppMethod200Response?>
+     * @return ApiResponse<MethodResult?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appMethodWithHttpInfo(app: kotlin.String, method: kotlin.String, appMethodRequest: AppMethodRequest) : ApiResponse<AppMethod200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appMethodWithHttpInfo(app: kotlin.String, method: kotlin.String, appMethodRequest: AppMethodRequest) : ApiResponse<MethodResult?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appMethodRequestConfig(app = app, method = method, appMethodRequest = appMethodRequest)
 
-        return@withContext request<AppMethodRequest, AppMethod200Response>(
+        return@withContext request<AppMethodRequest, MethodResult>(
             localVariableConfig
         )
     }
@@ -1520,7 +1522,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Its data where it is; its files, runs and quotas go to the target, its &#x60;org&#x60; or app-team grant becomes the target&#39;s app team of its package. &#x60;bringMembers&#x60; adds the source&#39;s members who reach it, capped at &#x60;member&#x60;. &#x60;from&#x60; is the organization it left, &#x60;null&#x60; for an app of the caller&#39;s own; &#x60;added&#x60; the accounts brought; &#x60;revokedInvites&#x60; how many invites to its old team were withdrawn.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appMoveRequest 
-     * @return AppMove200Response
+     * @return AppMoved
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1529,11 +1531,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appMove(app: kotlin.String, appMoveRequest: AppMoveRequest) : AppMove200Response = withContext(Dispatchers.IO) {
+    suspend fun appMove(app: kotlin.String, appMoveRequest: AppMoveRequest) : AppMoved = withContext(Dispatchers.IO) {
         val localVarResponse = appMoveWithHttpInfo(app = app, appMoveRequest = appMoveRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppMove200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppMoved
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1553,16 +1555,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Its data where it is; its files, runs and quotas go to the target, its &#x60;org&#x60; or app-team grant becomes the target&#39;s app team of its package. &#x60;bringMembers&#x60; adds the source&#39;s members who reach it, capped at &#x60;member&#x60;. &#x60;from&#x60; is the organization it left, &#x60;null&#x60; for an app of the caller&#39;s own; &#x60;added&#x60; the accounts brought; &#x60;revokedInvites&#x60; how many invites to its old team were withdrawn.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appMoveRequest 
-     * @return ApiResponse<AppMove200Response?>
+     * @return ApiResponse<AppMoved?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appMoveWithHttpInfo(app: kotlin.String, appMoveRequest: AppMoveRequest) : ApiResponse<AppMove200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appMoveWithHttpInfo(app: kotlin.String, appMoveRequest: AppMoveRequest) : ApiResponse<AppMoved?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appMoveRequestConfig(app = app, appMoveRequest = appMoveRequest)
 
-        return@withContext request<AppMoveRequest, AppMove200Response>(
+        return@withContext request<AppMoveRequest, AppMoved>(
             localVariableConfig
         )
     }
@@ -1596,7 +1598,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s OpenAPI document
      * Generated from the ABI of the bundle the app runs, under the access &#x60;/abi&#x60; has: one &#x60;POST /apps/{app}/methods/{method}&#x60; per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>
+     * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1605,11 +1607,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appOpenapi(app: kotlin.String) : kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?> = withContext(Dispatchers.IO) {
+    suspend fun appOpenapi(app: kotlin.String) : kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> = withContext(Dispatchers.IO) {
         val localVarResponse = appOpenapiWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>
+            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1628,16 +1630,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s OpenAPI document
      * Generated from the ABI of the bundle the app runs, under the access &#x60;/abi&#x60; has: one &#x60;POST /apps/{app}/methods/{method}&#x60; per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>?>
+     * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appOpenapiWithHttpInfo(app: kotlin.String) : ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>?> = withContext(Dispatchers.IO) {
+    suspend fun appOpenapiWithHttpInfo(app: kotlin.String) : ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appOpenapiRequestConfig(app = app)
 
-        return@withContext request<Unit, kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>>(
+        return@withContext request<Unit, kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>>(
             localVariableConfig
         )
     }
@@ -1657,6 +1659,79 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}/openapi.json".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/outbound-log
+     * An app&#39;s outbound requests
+     * The owner or an organization admin: the outbound HTTPS requests the instance&#39;s runs made, sent or refused, newest first, at most 100 (&#x60;MAX_AUDIT_ENTRIES&#x60;) and none older than 7 days (&#x60;AUDIT_RETENTION_MS&#x60;). Each replica keeps those its own runs made, in memory, until it restarts; &#x60;partial&#x60; says a replica did not answer. An entry holds no secret value, body, query string or header.  **Who:** signed in (a session or an API key).
+     * @param app 
+     * @return OutboundLog
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOutboundLog(app: kotlin.String) : OutboundLog = withContext(Dispatchers.IO) {
+        val localVarResponse = appOutboundLogWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OutboundLog
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/outbound-log
+     * An app&#39;s outbound requests
+     * The owner or an organization admin: the outbound HTTPS requests the instance&#39;s runs made, sent or refused, newest first, at most 100 (&#x60;MAX_AUDIT_ENTRIES&#x60;) and none older than 7 days (&#x60;AUDIT_RETENTION_MS&#x60;). Each replica keeps those its own runs made, in memory, until it restarts; &#x60;partial&#x60; says a replica did not answer. An entry holds no secret value, body, query string or header.  **Who:** signed in (a session or an API key).
+     * @param app 
+     * @return ApiResponse<OutboundLog?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOutboundLogWithHttpInfo(app: kotlin.String) : ApiResponse<OutboundLog?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOutboundLogRequestConfig(app = app)
+
+        return@withContext request<Unit, OutboundLog>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOutboundLog
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appOutboundLogRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/outbound-log".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
@@ -1742,7 +1817,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s own update policy
      * An owner or admin of the app&#39;s organization, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app, policy }&#x60;. &#x60;policy: null&#x60; (or left out) drops it: the app follows its organization&#39;s again. &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. A move to another organization drops it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
-     * @param appPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return PolicyView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1752,8 +1827,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appPolicySet(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : PolicyView = withContext(Dispatchers.IO) {
-        val localVarResponse = appPolicySetWithHttpInfo(app = app, appPolicySetRequest = appPolicySetRequest)
+    suspend fun appPolicySet(app: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = appPolicySetWithHttpInfo(app = app, upgradePolicyBody = upgradePolicyBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
@@ -1775,17 +1850,17 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Set an app&#39;s own update policy
      * An owner or admin of the app&#39;s organization, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app, policy }&#x60;. &#x60;policy: null&#x60; (or left out) drops it: the app follows its organization&#39;s again. &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. A move to another organization drops it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
-     * @param appPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return ApiResponse<PolicyView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appPolicySetWithHttpInfo(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = appPolicySetRequestConfig(app = app, appPolicySetRequest = appPolicySetRequest)
+    suspend fun appPolicySetWithHttpInfo(app: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appPolicySetRequestConfig(app = app, upgradePolicyBody = upgradePolicyBody)
 
-        return@withContext request<AppPolicySetRequest, PolicyView>(
+        return@withContext request<UpgradePolicyBody, PolicyView>(
             localVariableConfig
         )
     }
@@ -1794,11 +1869,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * To obtain the request config of the operation appPolicySet
      *
      * @param app 
-     * @param appPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return RequestConfig
      */
-    fun appPolicySetRequestConfig(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : RequestConfig<AppPolicySetRequest> {
-        val localVariableBody = appPolicySetRequest
+    fun appPolicySetRequestConfig(app: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : RequestConfig<UpgradePolicyBody> {
+        val localVariableBody = upgradePolicyBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1896,7 +1971,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Deprecated: always &#x60;{ logs: [] }&#x60;. A run keeps no log, as an app&#39;s log lines (stdout, stderr, &#x60;log&#x60;) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app&#39;s files. To read a compute method&#39;s log lines, run it locally (&#x60;meroctl local compute run&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
-     * @return AppRunLogs200Response
+     * @return RunLogs
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1905,11 +1980,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appRunLogs(app: kotlin.String, run: kotlin.String) : AppRunLogs200Response = withContext(Dispatchers.IO) {
+    suspend fun appRunLogs(app: kotlin.String, run: kotlin.String) : RunLogs = withContext(Dispatchers.IO) {
         val localVarResponse = appRunLogsWithHttpInfo(app = app, run = run)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppRunLogs200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RunLogs
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1929,16 +2004,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Deprecated: always &#x60;{ logs: [] }&#x60;. A run keeps no log, as an app&#39;s log lines (stdout, stderr, &#x60;log&#x60;) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app&#39;s files. To read a compute method&#39;s log lines, run it locally (&#x60;meroctl local compute run&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
-     * @return ApiResponse<AppRunLogs200Response?>
+     * @return ApiResponse<RunLogs?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appRunLogsWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<AppRunLogs200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appRunLogsWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<RunLogs?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appRunLogsRequestConfig(app = app, run = run)
 
-        return@withContext request<Unit, AppRunLogs200Response>(
+        return@withContext request<Unit, RunLogs>(
             localVariableConfig
         )
     }
@@ -1973,7 +2048,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param limit  (optional)
      * @param before  (optional)
-     * @return AppRuns200Response
+     * @return RunList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1982,11 +2057,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appRuns(app: kotlin.String, limit: kotlin.String? = null, before: kotlin.String? = null) : AppRuns200Response = withContext(Dispatchers.IO) {
+    suspend fun appRuns(app: kotlin.String, limit: kotlin.String? = null, before: kotlin.String? = null) : RunList = withContext(Dispatchers.IO) {
         val localVarResponse = appRunsWithHttpInfo(app = app, limit = limit, before = before)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppRuns200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RunList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2007,16 +2082,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param limit  (optional)
      * @param before  (optional)
-     * @return ApiResponse<AppRuns200Response?>
+     * @return ApiResponse<RunList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appRunsWithHttpInfo(app: kotlin.String, limit: kotlin.String?, before: kotlin.String?) : ApiResponse<AppRuns200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appRunsWithHttpInfo(app: kotlin.String, limit: kotlin.String?, before: kotlin.String?) : ApiResponse<RunList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appRunsRequestConfig(app = app, limit = limit, before = before)
 
-        return@withContext request<Unit, AppRuns200Response>(
+        return@withContext request<Unit, RunList>(
             localVariableConfig
         )
     }
@@ -2060,7 +2135,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param name 
      * @param confirmOnly May be absent. (optional)
-     * @return AppSecretClear200Response
+     * @return SecretCleared
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2069,11 +2144,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appSecretClear(app: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly? = null) : AppSecretClear200Response = withContext(Dispatchers.IO) {
+    suspend fun appSecretClear(app: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly? = null) : SecretCleared = withContext(Dispatchers.IO) {
         val localVarResponse = appSecretClearWithHttpInfo(app = app, name = name, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSecretClear200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SecretCleared
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2094,16 +2169,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param name 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<AppSecretClear200Response?>
+     * @return ApiResponse<SecretCleared?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appSecretClearWithHttpInfo(app: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<AppSecretClear200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appSecretClearWithHttpInfo(app: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<SecretCleared?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appSecretClearRequestConfig(app = app, name = name, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, AppSecretClear200Response>(
+        return@withContext request<ConfirmOnly, SecretCleared>(
             localVariableConfig
         )
     }
@@ -2136,11 +2211,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * PUT /apps/{app}/secrets/{name}
      * Set an app&#39;s own value of a declared secret
-     * Sent only to the secret&#39;s declared hosts, never shown again (&#x60;app_secrets&#x60; answers its fingerprint), kept in the app&#39;s log on its replicas, out of the app&#39;s own reach. The owner, or whoever manages the organization&#39;s apps, with a step-up over &#x60;{ name, fingerprint }&#x60;: the value is never in the consent. &#x60;404&#x60; for a name the release does not declare; 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); &#x60;409 CLUSTER_NOT_UPGRADED&#x60; while a node runs an earlier release.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Attached by the node only where the secret&#39;s binding says (its host, header or body field), never shown again (&#x60;app_secrets&#x60; answers its fingerprint), kept in the app&#39;s log on its replicas, out of the app&#39;s own reach. The owner, or whoever manages the organization&#39;s apps, with a step-up over &#x60;{ name, fingerprint }&#x60;: the value is never in the consent. &#x60;404&#x60; for a name the release does not declare; 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); &#x60;409 CLUSTER_NOT_UPGRADED&#x60; while a node runs an earlier release.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param name 
      * @param appSecretSetRequest 
-     * @return AppSecretSet200Response
+     * @return SecretSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2149,11 +2224,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appSecretSet(app: kotlin.String, name: kotlin.String, appSecretSetRequest: AppSecretSetRequest) : AppSecretSet200Response = withContext(Dispatchers.IO) {
+    suspend fun appSecretSet(app: kotlin.String, name: kotlin.String, appSecretSetRequest: AppSecretSetRequest) : SecretSet = withContext(Dispatchers.IO) {
         val localVarResponse = appSecretSetWithHttpInfo(app = app, name = name, appSecretSetRequest = appSecretSetRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSecretSet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SecretSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2170,20 +2245,20 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * PUT /apps/{app}/secrets/{name}
      * Set an app&#39;s own value of a declared secret
-     * Sent only to the secret&#39;s declared hosts, never shown again (&#x60;app_secrets&#x60; answers its fingerprint), kept in the app&#39;s log on its replicas, out of the app&#39;s own reach. The owner, or whoever manages the organization&#39;s apps, with a step-up over &#x60;{ name, fingerprint }&#x60;: the value is never in the consent. &#x60;404&#x60; for a name the release does not declare; 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); &#x60;409 CLUSTER_NOT_UPGRADED&#x60; while a node runs an earlier release.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Attached by the node only where the secret&#39;s binding says (its host, header or body field), never shown again (&#x60;app_secrets&#x60; answers its fingerprint), kept in the app&#39;s log on its replicas, out of the app&#39;s own reach. The owner, or whoever manages the organization&#39;s apps, with a step-up over &#x60;{ name, fingerprint }&#x60;: the value is never in the consent. &#x60;404&#x60; for a name the release does not declare; 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); &#x60;409 CLUSTER_NOT_UPGRADED&#x60; while a node runs an earlier release.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param name 
      * @param appSecretSetRequest 
-     * @return ApiResponse<AppSecretSet200Response?>
+     * @return ApiResponse<SecretSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appSecretSetWithHttpInfo(app: kotlin.String, name: kotlin.String, appSecretSetRequest: AppSecretSetRequest) : ApiResponse<AppSecretSet200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appSecretSetWithHttpInfo(app: kotlin.String, name: kotlin.String, appSecretSetRequest: AppSecretSetRequest) : ApiResponse<SecretSet?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appSecretSetRequestConfig(app = app, name = name, appSecretSetRequest = appSecretSetRequest)
 
-        return@withContext request<AppSecretSetRequest, AppSecretSet200Response>(
+        return@withContext request<AppSecretSetRequest, SecretSet>(
             localVariableConfig
         )
     }
@@ -2216,9 +2291,9 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/secrets
      * The secrets an app&#39;s release declares
-     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its hosts, description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;deployment&#x60; when the deployment it was created from holds one (&#x60;deployment_secret_set&#x60;; nothing more of it), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
+     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its binding, the one &#x60;host&#x60;, the path prefixes there it is attached under (&#x60;paths&#x60;, on whole segments; &#x60;/&#x60; for every path) and the one place the node attaches it (&#x60;header&#x60; with its &#x60;format&#x60;, or &#x60;bodyField&#x60;), with &#x60;binding&#x60; saying it in one line (\&quot;sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/\&quot;), its description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;deployment&#x60; when the deployment it was created from holds one (&#x60;deployment_secret_set&#x60;; nothing more of it), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return AppSecrets200Response
+     * @return AppSecrets
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2227,11 +2302,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appSecrets(app: kotlin.String) : AppSecrets200Response = withContext(Dispatchers.IO) {
+    suspend fun appSecrets(app: kotlin.String) : AppSecrets = withContext(Dispatchers.IO) {
         val localVarResponse = appSecretsWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSecrets200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSecrets
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2248,18 +2323,18 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/secrets
      * The secrets an app&#39;s release declares
-     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its hosts, description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;deployment&#x60; when the deployment it was created from holds one (&#x60;deployment_secret_set&#x60;; nothing more of it), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
+     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its binding, the one &#x60;host&#x60;, the path prefixes there it is attached under (&#x60;paths&#x60;, on whole segments; &#x60;/&#x60; for every path) and the one place the node attaches it (&#x60;header&#x60; with its &#x60;format&#x60;, or &#x60;bodyField&#x60;), with &#x60;binding&#x60; saying it in one line (\&quot;sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com under /v1/\&quot;), its description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;deployment&#x60; when the deployment it was created from holds one (&#x60;deployment_secret_set&#x60;; nothing more of it), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return ApiResponse<AppSecrets200Response?>
+     * @return ApiResponse<AppSecrets?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appSecretsWithHttpInfo(app: kotlin.String) : ApiResponse<AppSecrets200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appSecretsWithHttpInfo(app: kotlin.String) : ApiResponse<AppSecrets?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appSecretsRequestConfig(app = app)
 
-        return@withContext request<Unit, AppSecrets200Response>(
+        return@withContext request<Unit, AppSecrets>(
             localVariableConfig
         )
     }
@@ -2287,11 +2362,12 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     }
 
     /**
-     * GET /apps/{app}/storage
-     * What an app stores
-     * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * POST /apps/{app}/egress
+     * Turn one app&#39;s egress off or on
+     * As &#x60;POST /orgs/{org}/egress&#x60;, for this instance alone, by its organization&#39;s owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, &#x60;kind: setEgress&#x60; with &#x60;app&#x60;) lets it send only while its organization&#39;s egress is on too.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
-     * @return AppStorage200Response
+     * @param appSetEgressRequest 
+     * @return EgressSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2300,11 +2376,87 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appStorage(app: kotlin.String) : AppStorage200Response = withContext(Dispatchers.IO) {
+    suspend fun appSetEgress(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : EgressSet = withContext(Dispatchers.IO) {
+        val localVarResponse = appSetEgressWithHttpInfo(app = app, appSetEgressRequest = appSetEgressRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as EgressSet
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/egress
+     * Turn one app&#39;s egress off or on
+     * As &#x60;POST /orgs/{org}/egress&#x60;, for this instance alone, by its organization&#39;s owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, &#x60;kind: setEgress&#x60; with &#x60;app&#x60;) lets it send only while its organization&#39;s egress is on too.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appSetEgressRequest 
+     * @return ApiResponse<EgressSet?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appSetEgressWithHttpInfo(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : ApiResponse<EgressSet?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appSetEgressRequestConfig(app = app, appSetEgressRequest = appSetEgressRequest)
+
+        return@withContext request<AppSetEgressRequest, EgressSet>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appSetEgress
+     *
+     * @param app 
+     * @param appSetEgressRequest 
+     * @return RequestConfig
+     */
+    fun appSetEgressRequestConfig(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : RequestConfig<AppSetEgressRequest> {
+        val localVariableBody = appSetEgressRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/egress".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/storage
+     * What an app stores
+     * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return AppStorage
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appStorage(app: kotlin.String) : AppStorage = withContext(Dispatchers.IO) {
         val localVarResponse = appStorageWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppStorage200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppStorage
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2323,16 +2475,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * What an app stores
      * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<AppStorage200Response?>
+     * @return ApiResponse<AppStorage?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appStorageWithHttpInfo(app: kotlin.String) : ApiResponse<AppStorage200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appStorageWithHttpInfo(app: kotlin.String) : ApiResponse<AppStorage?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appStorageRequestConfig(app = app)
 
-        return@withContext request<Unit, AppStorage200Response>(
+        return@withContext request<Unit, AppStorage>(
             localVariableConfig
         )
     }
@@ -2513,10 +2665,10 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/undo
      * Undo an app&#39;s last upgrade
-     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUndoRequest 
-     * @return AppUndo200Response
+     * @return UndoDone
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2525,11 +2677,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appUndo(app: kotlin.String, appUndoRequest: AppUndoRequest) : AppUndo200Response = withContext(Dispatchers.IO) {
+    suspend fun appUndo(app: kotlin.String, appUndoRequest: AppUndoRequest) : UndoDone = withContext(Dispatchers.IO) {
         val localVarResponse = appUndoWithHttpInfo(app = app, appUndoRequest = appUndoRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUndo200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UndoDone
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2546,19 +2698,19 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/undo
      * Undo an app&#39;s last upgrade
-     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUndoRequest 
-     * @return ApiResponse<AppUndo200Response?>
+     * @return ApiResponse<UndoDone?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appUndoWithHttpInfo(app: kotlin.String, appUndoRequest: AppUndoRequest) : ApiResponse<AppUndo200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appUndoWithHttpInfo(app: kotlin.String, appUndoRequest: AppUndoRequest) : ApiResponse<UndoDone?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appUndoRequestConfig(app = app, appUndoRequest = appUndoRequest)
 
-        return@withContext request<AppUndoRequest, AppUndo200Response>(
+        return@withContext request<AppUndoRequest, UndoDone>(
             localVariableConfig
         )
     }
@@ -2592,7 +2744,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The upgrade an app may undo
      * For whoever may read the app. &#x60;available&#x60;: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point&#39;s node answering); else &#x60;reason&#x60; says why. &#x60;apps&#x60;: the app, and the members its unit&#39;s upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return AppUndoView200Response
+     * @return UndoView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2601,11 +2753,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appUndoView(app: kotlin.String) : AppUndoView200Response = withContext(Dispatchers.IO) {
+    suspend fun appUndoView(app: kotlin.String) : UndoView = withContext(Dispatchers.IO) {
         val localVarResponse = appUndoViewWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUndoView200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UndoView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2624,16 +2776,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The upgrade an app may undo
      * For whoever may read the app. &#x60;available&#x60;: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point&#39;s node answering); else &#x60;reason&#x60; says why. &#x60;apps&#x60;: the app, and the members its unit&#39;s upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<AppUndoView200Response?>
+     * @return ApiResponse<UndoView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appUndoViewWithHttpInfo(app: kotlin.String) : ApiResponse<AppUndoView200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appUndoViewWithHttpInfo(app: kotlin.String) : ApiResponse<UndoView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appUndoViewRequestConfig(app = app)
 
-        return@withContext request<Unit, AppUndoView200Response>(
+        return@withContext request<Unit, UndoView>(
             localVariableConfig
         )
     }
@@ -2743,9 +2895,9 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment&#39;s owner may use it), when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s). &#x60;deployment&#x60;: the deployment the instance comes from, which chooses its updates, else &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return AppUpdate200Response
+     * @return UpdateView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2754,11 +2906,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appUpdate(app: kotlin.String) : AppUpdate200Response = withContext(Dispatchers.IO) {
+    suspend fun appUpdate(app: kotlin.String) : UpdateView = withContext(Dispatchers.IO) {
         val localVarResponse = appUpdateWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUpdate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UpdateView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2775,18 +2927,18 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment&#39;s owner may use it), when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s). &#x60;deployment&#x60;: the deployment the instance comes from, which chooses its updates, else &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<AppUpdate200Response?>
+     * @return ApiResponse<UpdateView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appUpdateWithHttpInfo(app: kotlin.String) : ApiResponse<AppUpdate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appUpdateWithHttpInfo(app: kotlin.String) : ApiResponse<UpdateView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appUpdateRequestConfig(app = app)
 
-        return@withContext request<Unit, AppUpdate200Response>(
+        return@withContext request<Unit, UpdateView>(
             localVariableConfig
         )
     }
@@ -2819,7 +2971,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up. Where the app&#39;s policy asks for a second approver, an update the log cannot classify (a part&#39;s release no longer installed) is &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.35, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
-     * @return AppUpgrade200Response
+     * @return UpgradeApplied
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2828,11 +2980,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appUpgrade(app: kotlin.String, appUpgradeRequest: AppUpgradeRequest) : AppUpgrade200Response = withContext(Dispatchers.IO) {
+    suspend fun appUpgrade(app: kotlin.String, appUpgradeRequest: AppUpgradeRequest) : UpgradeApplied = withContext(Dispatchers.IO) {
         val localVarResponse = appUpgradeWithHttpInfo(app = app, appUpgradeRequest = appUpgradeRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUpgrade200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UpgradeApplied
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2852,16 +3004,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up. Where the app&#39;s policy asks for a second approver, an update the log cannot classify (a part&#39;s release no longer installed) is &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.35, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
-     * @return ApiResponse<AppUpgrade200Response?>
+     * @return ApiResponse<UpgradeApplied?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appUpgradeWithHttpInfo(app: kotlin.String, appUpgradeRequest: AppUpgradeRequest) : ApiResponse<AppUpgrade200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appUpgradeWithHttpInfo(app: kotlin.String, appUpgradeRequest: AppUpgradeRequest) : ApiResponse<UpgradeApplied?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appUpgradeRequestConfig(app = app, appUpgradeRequest = appUpgradeRequest)
 
-        return@withContext request<AppUpgradeRequest, AppUpgrade200Response>(
+        return@withContext request<AppUpgradeRequest, UpgradeApplied>(
             localVariableConfig
         )
     }
@@ -2893,7 +3045,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/upgrade-unit
      * Upgrade an app and the apps it created, in one consent
-     * An instance created with apps of its own (&#x60;links&#x60;): it moves to &#x60;version&#x60; of its package, and each member the target release&#39;s &#x60;uses&#x60; gives a release other than the one it runs moves to that release (its lock&#39;s, else the newest installed one inside the range), all under one step-up over &#x60;{ app, package, version, targets }&#x60;. Answers the run (&#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it); each app is upgraded on its own as an organization&#39;s run does. &#x60;400 NOT_A_UNIT&#x60; for an app with no members; &#x60;409 CONFLICT&#x60; when the target release creates a member the instance lacks.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An instance created with apps of its own (&#x60;links&#x60;): it moves to &#x60;version&#x60; of its package, and each member the target release&#39;s &#x60;uses&#x60; gives a release other than the one it runs moves to that release (its lock&#39;s, else the newest installed one inside the range), all under one step-up over &#x60;{ app, package, version, targets }&#x60;. Answers the run (&#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it); each app is upgraded on its own as an organization&#39;s run does. &#x60;400 NOT_A_UNIT&#x60; for an app with no members; &#x60;409 CONFLICT&#x60; when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as &#x60;POST /apps&#x60; installs one (&#x60;404 NOT_FOUND&#x60;, &#x60;400 NO_REGISTRY&#x60;), and for an instance from a deployment anything but its offer that still serves &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before anything of it is read.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeUnitRequest 
      * @return UpgradeRun
@@ -2926,7 +3078,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/upgrade-unit
      * Upgrade an app and the apps it created, in one consent
-     * An instance created with apps of its own (&#x60;links&#x60;): it moves to &#x60;version&#x60; of its package, and each member the target release&#39;s &#x60;uses&#x60; gives a release other than the one it runs moves to that release (its lock&#39;s, else the newest installed one inside the range), all under one step-up over &#x60;{ app, package, version, targets }&#x60;. Answers the run (&#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it); each app is upgraded on its own as an organization&#39;s run does. &#x60;400 NOT_A_UNIT&#x60; for an app with no members; &#x60;409 CONFLICT&#x60; when the target release creates a member the instance lacks.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An instance created with apps of its own (&#x60;links&#x60;): it moves to &#x60;version&#x60; of its package, and each member the target release&#39;s &#x60;uses&#x60; gives a release other than the one it runs moves to that release (its lock&#39;s, else the newest installed one inside the range), all under one step-up over &#x60;{ app, package, version, targets }&#x60;. Answers the run (&#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it); each app is upgraded on its own as an organization&#39;s run does. &#x60;400 NOT_A_UNIT&#x60; for an app with no members; &#x60;409 CONFLICT&#x60; when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as &#x60;POST /apps&#x60; installs one (&#x60;404 NOT_FOUND&#x60;, &#x60;400 NO_REGISTRY&#x60;), and for an instance from a deployment anything but its offer that still serves &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before anything of it is read.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeUnitRequest 
      * @return ApiResponse<UpgradeRun?>
@@ -2972,7 +3124,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s runs per day
      * The owner or an organization admin: &#x60;today&#x60; and the 30 &#x60;days&#x60; before it, figures as decimal strings; &#x60;wallMs&#x60; is information only.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return AppUsage200Response
+     * @return AppUsage
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2981,11 +3133,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appUsage(app: kotlin.String) : AppUsage200Response = withContext(Dispatchers.IO) {
+    suspend fun appUsage(app: kotlin.String) : AppUsage = withContext(Dispatchers.IO) {
         val localVarResponse = appUsageWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUsage200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUsage
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3004,16 +3156,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s runs per day
      * The owner or an organization admin: &#x60;today&#x60; and the 30 &#x60;days&#x60; before it, figures as decimal strings; &#x60;wallMs&#x60; is information only.  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return ApiResponse<AppUsage200Response?>
+     * @return ApiResponse<AppUsage?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appUsageWithHttpInfo(app: kotlin.String) : ApiResponse<AppUsage200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appUsageWithHttpInfo(app: kotlin.String) : ApiResponse<AppUsage?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appUsageRequestConfig(app = app)
 
-        return@withContext request<Unit, AppUsage200Response>(
+        return@withContext request<Unit, AppUsage>(
             localVariableConfig
         )
     }
@@ -3045,7 +3197,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s cross-app calls
      * The owner or an organization admin: how many calls wait in its outbox for delivery (&#x60;pending&#x60;, a count), and its dead letters, oldest first (&#x60;atMs&#x60;: the entry time it was dead-lettered at, Unix milliseconds).  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return AppXcalls200Response
+     * @return XcallsReport
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3054,11 +3206,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appXcalls(app: kotlin.String) : AppXcalls200Response = withContext(Dispatchers.IO) {
+    suspend fun appXcalls(app: kotlin.String) : XcallsReport = withContext(Dispatchers.IO) {
         val localVarResponse = appXcallsWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppXcalls200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as XcallsReport
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3077,16 +3229,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An app&#39;s cross-app calls
      * The owner or an organization admin: how many calls wait in its outbox for delivery (&#x60;pending&#x60;, a count), and its dead letters, oldest first (&#x60;atMs&#x60;: the entry time it was dead-lettered at, Unix milliseconds).  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return ApiResponse<AppXcalls200Response?>
+     * @return ApiResponse<XcallsReport?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appXcallsWithHttpInfo(app: kotlin.String) : ApiResponse<AppXcalls200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appXcallsWithHttpInfo(app: kotlin.String) : ApiResponse<XcallsReport?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appXcallsRequestConfig(app = app)
 
-        return@withContext request<Unit, AppXcalls200Response>(
+        return@withContext request<Unit, XcallsReport>(
             localVariableConfig
         )
     }
@@ -3119,7 +3271,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
-     * @return BlobDelete200Response
+     * @return Logged
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3128,11 +3280,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun blobDelete(app: kotlin.String, id: kotlin.String) : BlobDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun blobDelete(app: kotlin.String, id: kotlin.String) : Logged = withContext(Dispatchers.IO) {
         val localVarResponse = blobDeleteWithHttpInfo(app = app, id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as Logged
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3152,16 +3304,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
-     * @return ApiResponse<BlobDelete200Response?>
+     * @return ApiResponse<Logged?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun blobDeleteWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<BlobDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun blobDeleteWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<Logged?> = withContext(Dispatchers.IO) {
         val localVariableConfig = blobDeleteRequestConfig(app = app, id = id)
 
-        return@withContext request<Unit, BlobDelete200Response>(
+        return@withContext request<Unit, Logged>(
             localVariableConfig
         )
     }
@@ -3279,7 +3431,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
-     * @return BlobInfo200Response
+     * @return BlobView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3288,11 +3440,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun blobInfo(app: kotlin.String, id: kotlin.String) : BlobInfo200Response = withContext(Dispatchers.IO) {
+    suspend fun blobInfo(app: kotlin.String, id: kotlin.String) : BlobView = withContext(Dispatchers.IO) {
         val localVarResponse = blobInfoWithHttpInfo(app = app, id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobInfo200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3312,16 +3464,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
-     * @return ApiResponse<BlobInfo200Response?>
+     * @return ApiResponse<BlobView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun blobInfoWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<BlobInfo200Response?> = withContext(Dispatchers.IO) {
+    suspend fun blobInfoWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<BlobView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = blobInfoRequestConfig(app = app, id = id)
 
-        return@withContext request<Unit, BlobInfo200Response>(
+        return@withContext request<Unit, BlobView>(
             localVariableConfig
         )
     }
@@ -3354,7 +3506,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * List an app&#39;s blobs
      * Plain blobs only.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return BlobList200Response
+     * @return BlobList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3363,11 +3515,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun blobList(app: kotlin.String) : BlobList200Response = withContext(Dispatchers.IO) {
+    suspend fun blobList(app: kotlin.String) : BlobList = withContext(Dispatchers.IO) {
         val localVarResponse = blobListWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3386,16 +3538,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * List an app&#39;s blobs
      * Plain blobs only.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<BlobList200Response?>
+     * @return ApiResponse<BlobList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun blobListWithHttpInfo(app: kotlin.String) : ApiResponse<BlobList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun blobListWithHttpInfo(app: kotlin.String) : ApiResponse<BlobList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = blobListRequestConfig(app = app)
 
-        return@withContext request<Unit, BlobList200Response>(
+        return@withContext request<Unit, BlobList>(
             localVariableConfig
         )
     }
@@ -3428,7 +3580,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The grants made so far for a published blob; the owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
-     * @return BlobDelete200Response
+     * @return Logged
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3437,11 +3589,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun blobRevoke(app: kotlin.String, id: kotlin.String) : BlobDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun blobRevoke(app: kotlin.String, id: kotlin.String) : Logged = withContext(Dispatchers.IO) {
         val localVarResponse = blobRevokeWithHttpInfo(app = app, id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as Logged
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3461,16 +3613,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The grants made so far for a published blob; the owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
-     * @return ApiResponse<BlobDelete200Response?>
+     * @return ApiResponse<Logged?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun blobRevokeWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<BlobDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun blobRevokeWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<Logged?> = withContext(Dispatchers.IO) {
         val localVariableConfig = blobRevokeRequestConfig(app = app, id = id)
 
-        return@withContext request<Unit, BlobDelete200Response>(
+        return@withContext request<Unit, Logged>(
             localVariableConfig
         )
     }
@@ -3505,7 +3657,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param body the blob; its &#x60;Content-Type&#x60; is the type it is stored and served with
      * @param `sealed`  (optional)
-     * @return BlobUpload200Response
+     * @return BlobStored
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3514,11 +3666,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun blobUpload(app: kotlin.String, body: kotlin.ByteArray, `sealed`: kotlin.Boolean? = null) : BlobUpload200Response = withContext(Dispatchers.IO) {
+    suspend fun blobUpload(app: kotlin.String, body: kotlin.ByteArray, `sealed`: kotlin.Boolean? = null) : BlobStored = withContext(Dispatchers.IO) {
         val localVarResponse = blobUploadWithHttpInfo(app = app, body = body, `sealed` = `sealed`)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobUpload200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as BlobStored
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3539,16 +3691,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param body the blob; its &#x60;Content-Type&#x60; is the type it is stored and served with
      * @param `sealed`  (optional)
-     * @return ApiResponse<BlobUpload200Response?>
+     * @return ApiResponse<BlobStored?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun blobUploadWithHttpInfo(app: kotlin.String, body: kotlin.ByteArray, `sealed`: kotlin.Boolean?) : ApiResponse<BlobUpload200Response?> = withContext(Dispatchers.IO) {
+    suspend fun blobUploadWithHttpInfo(app: kotlin.String, body: kotlin.ByteArray, `sealed`: kotlin.Boolean?) : ApiResponse<BlobStored?> = withContext(Dispatchers.IO) {
         val localVariableConfig = blobUploadRequestConfig(app = app, body = body, `sealed` = `sealed`)
 
-        return@withContext request<kotlin.ByteArray, BlobUpload200Response>(
+        return@withContext request<kotlin.ByteArray, BlobStored>(
             localVariableConfig
         )
     }
@@ -3671,7 +3823,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param id 
      * @param exportsExportRequest 
-     * @return ExportsExport200Response
+     * @return FileExport
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3680,11 +3832,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun exportsExport(app: kotlin.String, id: kotlin.String, exportsExportRequest: ExportsExportRequest) : ExportsExport200Response = withContext(Dispatchers.IO) {
+    suspend fun exportsExport(app: kotlin.String, id: kotlin.String, exportsExportRequest: ExportsExportRequest) : FileExport = withContext(Dispatchers.IO) {
         val localVarResponse = exportsExportWithHttpInfo(app = app, id = id, exportsExportRequest = exportsExportRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ExportsExport200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FileExport
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3705,16 +3857,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param id 
      * @param exportsExportRequest 
-     * @return ApiResponse<ExportsExport200Response?>
+     * @return ApiResponse<FileExport?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun exportsExportWithHttpInfo(app: kotlin.String, id: kotlin.String, exportsExportRequest: ExportsExportRequest) : ApiResponse<ExportsExport200Response?> = withContext(Dispatchers.IO) {
+    suspend fun exportsExportWithHttpInfo(app: kotlin.String, id: kotlin.String, exportsExportRequest: ExportsExportRequest) : ApiResponse<FileExport?> = withContext(Dispatchers.IO) {
         val localVariableConfig = exportsExportRequestConfig(app = app, id = id, exportsExportRequest = exportsExportRequest)
 
-        return@withContext request<ExportsExportRequest, ExportsExport200Response>(
+        return@withContext request<ExportsExportRequest, FileExport>(
             localVariableConfig
         )
     }
@@ -3829,7 +3981,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Its plaintext size and SHA-256, never its key.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param id 
-     * @return FileInfo200Response
+     * @return FileView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3838,11 +3990,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun fileInfo(app: kotlin.String, id: kotlin.String) : FileInfo200Response = withContext(Dispatchers.IO) {
+    suspend fun fileInfo(app: kotlin.String, id: kotlin.String) : FileView = withContext(Dispatchers.IO) {
         val localVarResponse = fileInfoWithHttpInfo(app = app, id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as FileInfo200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FileView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3862,16 +4014,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Its plaintext size and SHA-256, never its key.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param id 
-     * @return ApiResponse<FileInfo200Response?>
+     * @return ApiResponse<FileView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun fileInfoWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<FileInfo200Response?> = withContext(Dispatchers.IO) {
+    suspend fun fileInfoWithHttpInfo(app: kotlin.String, id: kotlin.String) : ApiResponse<FileView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = fileInfoRequestConfig(app = app, id = id)
 
-        return@withContext request<Unit, FileInfo200Response>(
+        return@withContext request<Unit, FileView>(
             localVariableConfig
         )
     }
@@ -3904,7 +4056,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * List an app&#39;s sealed files
      * **Who:** signed in (a session or an API key).
      * @param app 
-     * @return FilesList200Response
+     * @return FileList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3913,11 +4065,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun filesList(app: kotlin.String) : FilesList200Response = withContext(Dispatchers.IO) {
+    suspend fun filesList(app: kotlin.String) : FileList = withContext(Dispatchers.IO) {
         val localVarResponse = filesListWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as FilesList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FileList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3936,16 +4088,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * List an app&#39;s sealed files
      * **Who:** signed in (a session or an API key).
      * @param app 
-     * @return ApiResponse<FilesList200Response?>
+     * @return ApiResponse<FileList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun filesListWithHttpInfo(app: kotlin.String) : ApiResponse<FilesList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun filesListWithHttpInfo(app: kotlin.String) : ApiResponse<FileList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = filesListRequestConfig(app = app)
 
-        return@withContext request<Unit, FilesList200Response>(
+        return@withContext request<Unit, FileList>(
             localVariableConfig
         )
     }
@@ -3978,7 +4130,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Up to 16 MiB in one request; the owner and the organization&#39;s members.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param body the file
-     * @return FilesUpload200Response
+     * @return FileStored
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3987,11 +4139,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun filesUpload(app: kotlin.String, body: kotlin.ByteArray) : FilesUpload200Response = withContext(Dispatchers.IO) {
+    suspend fun filesUpload(app: kotlin.String, body: kotlin.ByteArray) : FileStored = withContext(Dispatchers.IO) {
         val localVarResponse = filesUploadWithHttpInfo(app = app, body = body)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as FilesUpload200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FileStored
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4011,16 +4163,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Up to 16 MiB in one request; the owner and the organization&#39;s members.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param body the file
-     * @return ApiResponse<FilesUpload200Response?>
+     * @return ApiResponse<FileStored?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun filesUploadWithHttpInfo(app: kotlin.String, body: kotlin.ByteArray) : ApiResponse<FilesUpload200Response?> = withContext(Dispatchers.IO) {
+    suspend fun filesUploadWithHttpInfo(app: kotlin.String, body: kotlin.ByteArray) : ApiResponse<FileStored?> = withContext(Dispatchers.IO) {
         val localVariableConfig = filesUploadRequestConfig(app = app, body = body)
 
-        return@withContext request<kotlin.ByteArray, FilesUpload200Response>(
+        return@withContext request<kotlin.ByteArray, FileStored>(
             localVariableConfig
         )
     }
@@ -4052,10 +4204,10 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/intents
      * Call a method
-     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them. An &#x60;idempotencyKey&#x60; starting &#x60;node:apikey:&#x60; is the node&#39;s own (an API key&#39;s follow-ups): &#x60;400 RESERVED_IDEMPOTENCY_KEY&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param intentsRequest 
-     * @return Intents200Response
+     * @return IntentResult
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4064,11 +4216,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun intents(app: kotlin.String, intentsRequest: IntentsRequest) : Intents200Response = withContext(Dispatchers.IO) {
+    suspend fun intents(app: kotlin.String, intentsRequest: IntentsRequest) : IntentResult = withContext(Dispatchers.IO) {
         val localVarResponse = intentsWithHttpInfo(app = app, intentsRequest = intentsRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as Intents200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as IntentResult
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4085,19 +4237,19 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/intents
      * Call a method
-     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them. An &#x60;idempotencyKey&#x60; starting &#x60;node:apikey:&#x60; is the node&#39;s own (an API key&#39;s follow-ups): &#x60;400 RESERVED_IDEMPOTENCY_KEY&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param intentsRequest 
-     * @return ApiResponse<Intents200Response?>
+     * @return ApiResponse<IntentResult?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun intentsWithHttpInfo(app: kotlin.String, intentsRequest: IntentsRequest) : ApiResponse<Intents200Response?> = withContext(Dispatchers.IO) {
+    suspend fun intentsWithHttpInfo(app: kotlin.String, intentsRequest: IntentsRequest) : ApiResponse<IntentResult?> = withContext(Dispatchers.IO) {
         val localVariableConfig = intentsRequestConfig(app = app, intentsRequest = intentsRequest)
 
-        return@withContext request<IntentsRequest, Intents200Response>(
+        return@withContext request<IntentsRequest, IntentResult>(
             localVariableConfig
         )
     }
@@ -4209,7 +4361,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param run 
      * @param version  (optional)
-     * @return PipelineReceiptReceipt200Response
+     * @return SignedPipelineReceipt
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4218,11 +4370,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelineReceiptReceipt(app: kotlin.String, run: kotlin.String, version: kotlin.Long? = null) : PipelineReceiptReceipt200Response = withContext(Dispatchers.IO) {
+    suspend fun pipelineReceiptReceipt(app: kotlin.String, run: kotlin.String, version: kotlin.Long? = null) : SignedPipelineReceipt = withContext(Dispatchers.IO) {
         val localVarResponse = pipelineReceiptReceiptWithHttpInfo(app = app, run = run, version = version)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineReceiptReceipt200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignedPipelineReceipt
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4243,16 +4395,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param run 
      * @param version  (optional)
-     * @return ApiResponse<PipelineReceiptReceipt200Response?>
+     * @return ApiResponse<SignedPipelineReceipt?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelineReceiptReceiptWithHttpInfo(app: kotlin.String, run: kotlin.String, version: kotlin.Long?) : ApiResponse<PipelineReceiptReceipt200Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelineReceiptReceiptWithHttpInfo(app: kotlin.String, run: kotlin.String, version: kotlin.Long?) : ApiResponse<SignedPipelineReceipt?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelineReceiptReceiptRequestConfig(app = app, run = run, version = version)
 
-        return@withContext request<Unit, PipelineReceiptReceipt200Response>(
+        return@withContext request<Unit, SignedPipelineReceipt>(
             localVariableConfig
         )
     }
@@ -4292,7 +4444,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The owner and the organization&#39;s members. Its pending steps end cancelled and its running steps&#39; runs stop.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
-     * @return PipelinesCancel200Response
+     * @return PipelineCancelled
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4301,11 +4453,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesCancel(app: kotlin.String, run: kotlin.String) : PipelinesCancel200Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesCancel(app: kotlin.String, run: kotlin.String) : PipelineCancelled = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesCancelWithHttpInfo(app = app, run = run)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesCancel200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineCancelled
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4325,16 +4477,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The owner and the organization&#39;s members. Its pending steps end cancelled and its running steps&#39; runs stop.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
-     * @return ApiResponse<PipelinesCancel200Response?>
+     * @return ApiResponse<PipelineCancelled?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesCancelWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<PipelinesCancel200Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesCancelWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<PipelineCancelled?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesCancelRequestConfig(app = app, run = run)
 
-        return@withContext request<Unit, PipelinesCancel200Response>(
+        return@withContext request<Unit, PipelineCancelled>(
             localVariableConfig
         )
     }
@@ -4369,7 +4521,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param name 
      * @param pipelinesEstimateRunRequest 
-     * @return PipelinesEstimateRun200Response
+     * @return RunEstimate
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4378,11 +4530,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesEstimateRun(app: kotlin.String, name: kotlin.String, pipelinesEstimateRunRequest: PipelinesEstimateRunRequest) : PipelinesEstimateRun200Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesEstimateRun(app: kotlin.String, name: kotlin.String, pipelinesEstimateRunRequest: PipelinesEstimateRunRequest) : RunEstimate = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesEstimateRunWithHttpInfo(app = app, name = name, pipelinesEstimateRunRequest = pipelinesEstimateRunRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesEstimateRun200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RunEstimate
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4403,16 +4555,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param app 
      * @param name 
      * @param pipelinesEstimateRunRequest 
-     * @return ApiResponse<PipelinesEstimateRun200Response?>
+     * @return ApiResponse<RunEstimate?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesEstimateRunWithHttpInfo(app: kotlin.String, name: kotlin.String, pipelinesEstimateRunRequest: PipelinesEstimateRunRequest) : ApiResponse<PipelinesEstimateRun200Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesEstimateRunWithHttpInfo(app: kotlin.String, name: kotlin.String, pipelinesEstimateRunRequest: PipelinesEstimateRunRequest) : ApiResponse<RunEstimate?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesEstimateRunRequestConfig(app = app, name = name, pipelinesEstimateRunRequest = pipelinesEstimateRunRequest)
 
-        return@withContext request<PipelinesEstimateRunRequest, PipelinesEstimateRun200Response>(
+        return@withContext request<PipelinesEstimateRunRequest, RunEstimate>(
             localVariableConfig
         )
     }
@@ -4524,7 +4676,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The recent runs, newest first, as &#x60;{ runs }&#x60;; &#x60;limit&#x60; 1 to 100. Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param limit  (optional)
-     * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
+     * @return PipelineRunList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4533,11 +4685,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesList(app: kotlin.String, limit: kotlin.String? = null) : kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesList(app: kotlin.String, limit: kotlin.String? = null) : PipelineRunList = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesListWithHttpInfo(app = app, limit = limit)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineRunList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4557,16 +4709,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * The recent runs, newest first, as &#x60;{ runs }&#x60;; &#x60;limit&#x60; 1 to 100. Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param limit  (optional)
-     * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?>
+     * @return ApiResponse<PipelineRunList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesListWithHttpInfo(app: kotlin.String, limit: kotlin.String?) : ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesListWithHttpInfo(app: kotlin.String, limit: kotlin.String?) : ApiResponse<PipelineRunList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesListRequestConfig(app = app, limit = limit)
 
-        return@withContext request<Unit, kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>>(
+        return@withContext request<Unit, PipelineRunList>(
             localVariableConfig
         )
     }
@@ -4602,11 +4754,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
-     * @return PipelinesRetry200Response
+     * @return PipelineStarted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4615,11 +4767,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesRetry(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : PipelinesRetry200Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesRetry(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : PipelineStarted = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesRetryWithHttpInfo(app = app, run = run, pipelinesRetryRequest = pipelinesRetryRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesRetry200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineStarted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4636,20 +4788,20 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
-     * @return ApiResponse<PipelinesRetry200Response?>
+     * @return ApiResponse<PipelineStarted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesRetryWithHttpInfo(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : ApiResponse<PipelinesRetry200Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesRetryWithHttpInfo(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : ApiResponse<PipelineStarted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesRetryRequestConfig(app = app, run = run, pipelinesRetryRequest = pipelinesRetryRequest)
 
-        return@withContext request<PipelinesRetryRequest, PipelinesRetry200Response>(
+        return@withContext request<PipelinesRetryRequest, PipelineStarted>(
             localVariableConfig
         )
     }
@@ -4682,11 +4834,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
-     * @return PipelinesStart200Response
+     * @return PipelineStarted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4695,11 +4847,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesStart(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : PipelinesStart200Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesStart(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : PipelineStarted = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesStartWithHttpInfo(app = app, name = name, pipelinesStartRequest = pipelinesStartRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesStart200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineStarted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4716,20 +4868,20 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
-     * @return ApiResponse<PipelinesStart200Response?>
+     * @return ApiResponse<PipelineStarted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesStartWithHttpInfo(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : ApiResponse<PipelinesStart200Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesStartWithHttpInfo(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : ApiResponse<PipelineStarted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesStartRequestConfig(app = app, name = name, pipelinesStartRequest = pipelinesStartRequest)
 
-        return@withContext request<PipelinesStartRequest, PipelinesStart200Response>(
+        return@withContext request<PipelinesStartRequest, PipelineStarted>(
             localVariableConfig
         )
     }
@@ -4764,7 +4916,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Validate a pipeline
      * Every problem of &#x60;source&#x60;; with &#x60;package&#x60; and &#x60;version&#x60; (both, a release the caller sees) also against that release&#39;s methods, modules and the cluster&#39;s pools. Writes nothing.  **Who:** signed in (a session or an API key).
      * @param pipelinesValidateRequest 
-     * @return PipelinesValidate200Response
+     * @return PipelineValidation
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4773,11 +4925,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesValidate(pipelinesValidateRequest: PipelinesValidateRequest) : PipelinesValidate200Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesValidate(pipelinesValidateRequest: PipelinesValidateRequest) : PipelineValidation = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesValidateWithHttpInfo(pipelinesValidateRequest = pipelinesValidateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesValidate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineValidation
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4796,16 +4948,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Validate a pipeline
      * Every problem of &#x60;source&#x60;; with &#x60;package&#x60; and &#x60;version&#x60; (both, a release the caller sees) also against that release&#39;s methods, modules and the cluster&#39;s pools. Writes nothing.  **Who:** signed in (a session or an API key).
      * @param pipelinesValidateRequest 
-     * @return ApiResponse<PipelinesValidate200Response?>
+     * @return ApiResponse<PipelineValidation?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesValidateWithHttpInfo(pipelinesValidateRequest: PipelinesValidateRequest) : ApiResponse<PipelinesValidate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesValidateWithHttpInfo(pipelinesValidateRequest: PipelinesValidateRequest) : ApiResponse<PipelineValidation?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesValidateRequestConfig(pipelinesValidateRequest = pipelinesValidateRequest)
 
-        return@withContext request<PipelinesValidateRequest, PipelinesValidate200Response>(
+        return@withContext request<PipelinesValidateRequest, PipelineValidation>(
             localVariableConfig
         )
     }
@@ -4838,7 +4990,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Who is present
      * One entry per present device (a session&#39;s passkey, or an API key): its account, device and state (hex).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return PresenceGet200Response
+     * @return PresenceList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4847,11 +4999,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun presenceGet(app: kotlin.String) : PresenceGet200Response = withContext(Dispatchers.IO) {
+    suspend fun presenceGet(app: kotlin.String) : PresenceList = withContext(Dispatchers.IO) {
         val localVarResponse = presenceGetWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PresenceGet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PresenceList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4870,16 +5022,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Who is present
      * One entry per present device (a session&#39;s passkey, or an API key): its account, device and state (hex).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
-     * @return ApiResponse<PresenceGet200Response?>
+     * @return ApiResponse<PresenceList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun presenceGetWithHttpInfo(app: kotlin.String) : ApiResponse<PresenceGet200Response?> = withContext(Dispatchers.IO) {
+    suspend fun presenceGetWithHttpInfo(app: kotlin.String) : ApiResponse<PresenceList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = presenceGetRequestConfig(app = app)
 
-        return@withContext request<Unit, PresenceGet200Response>(
+        return@withContext request<Unit, PresenceList>(
             localVariableConfig
         )
     }
@@ -5062,7 +5214,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * A link whose token lets anyone call the instance&#39;s &#x60;#[app::public]&#x60; methods as an anonymous visitor (&#x60;Caller::Visitor { link, key }&#x60;), whatever its access: send &#x60;Authorization: Bearer vis1.&lt;token&gt;.&lt;visitor key&gt;.&lt;at&gt;.&lt;signature&gt;&#x60;, the visitor&#39;s own Ed25519 key (64 hex) signing &#x60;\&quot;calimero.visitor.v1\\0\&quot; ‖ link ‖ 0 ‖ key ‖ 0 ‖ at&#x60; (hex) with &#x60;at&#x60; within 5 minutes of the node&#39;s clock. Whoever may change the instance&#39;s access, while its organization allows public links (&#x60;409 PUBLIC_LINKS_OFF&#x60;). &#x60;ratePerMinute&#x60; (1 to 600, default 60) bounds each visitor&#39;s calls on each node; &#x60;expiresAt&#x60; (Unix seconds) is optional. The token is answered once; the log keeps only its public key (&#x60;link&#x60;). At most 16 per instance. &#x60;412&#x60; first; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.33.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param publicLinkCreateRequest 
-     * @return PublicLinkCreate200Response
+     * @return PublicLinkMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5071,11 +5223,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun publicLinkCreate(app: kotlin.String, publicLinkCreateRequest: PublicLinkCreateRequest) : PublicLinkCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun publicLinkCreate(app: kotlin.String, publicLinkCreateRequest: PublicLinkCreateRequest) : PublicLinkMade = withContext(Dispatchers.IO) {
         val localVarResponse = publicLinkCreateWithHttpInfo(app = app, publicLinkCreateRequest = publicLinkCreateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PublicLinkCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PublicLinkMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5095,16 +5247,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * A link whose token lets anyone call the instance&#39;s &#x60;#[app::public]&#x60; methods as an anonymous visitor (&#x60;Caller::Visitor { link, key }&#x60;), whatever its access: send &#x60;Authorization: Bearer vis1.&lt;token&gt;.&lt;visitor key&gt;.&lt;at&gt;.&lt;signature&gt;&#x60;, the visitor&#39;s own Ed25519 key (64 hex) signing &#x60;\&quot;calimero.visitor.v1\\0\&quot; ‖ link ‖ 0 ‖ key ‖ 0 ‖ at&#x60; (hex) with &#x60;at&#x60; within 5 minutes of the node&#39;s clock. Whoever may change the instance&#39;s access, while its organization allows public links (&#x60;409 PUBLIC_LINKS_OFF&#x60;). &#x60;ratePerMinute&#x60; (1 to 600, default 60) bounds each visitor&#39;s calls on each node; &#x60;expiresAt&#x60; (Unix seconds) is optional. The token is answered once; the log keeps only its public key (&#x60;link&#x60;). At most 16 per instance. &#x60;412&#x60; first; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.33.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param publicLinkCreateRequest 
-     * @return ApiResponse<PublicLinkCreate200Response?>
+     * @return ApiResponse<PublicLinkMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun publicLinkCreateWithHttpInfo(app: kotlin.String, publicLinkCreateRequest: PublicLinkCreateRequest) : ApiResponse<PublicLinkCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun publicLinkCreateWithHttpInfo(app: kotlin.String, publicLinkCreateRequest: PublicLinkCreateRequest) : ApiResponse<PublicLinkMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = publicLinkCreateRequestConfig(app = app, publicLinkCreateRequest = publicLinkCreateRequest)
 
-        return@withContext request<PublicLinkCreateRequest, PublicLinkCreate200Response>(
+        return@withContext request<PublicLinkCreateRequest, PublicLinkMade>(
             localVariableConfig
         )
     }
@@ -5138,7 +5290,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An instance&#39;s public links
      * For whoever may change its access: each link&#39;s key, terms and creator, never a token.  **Who:** a passkey session (an API key is refused).
      * @param app 
-     * @return PublicLinkList200Response
+     * @return PublicLinks
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5147,11 +5299,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun publicLinkList(app: kotlin.String) : PublicLinkList200Response = withContext(Dispatchers.IO) {
+    suspend fun publicLinkList(app: kotlin.String) : PublicLinks = withContext(Dispatchers.IO) {
         val localVarResponse = publicLinkListWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PublicLinkList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PublicLinks
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5170,16 +5322,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * An instance&#39;s public links
      * For whoever may change its access: each link&#39;s key, terms and creator, never a token.  **Who:** a passkey session (an API key is refused).
      * @param app 
-     * @return ApiResponse<PublicLinkList200Response?>
+     * @return ApiResponse<PublicLinks?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun publicLinkListWithHttpInfo(app: kotlin.String) : ApiResponse<PublicLinkList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun publicLinkListWithHttpInfo(app: kotlin.String) : ApiResponse<PublicLinks?> = withContext(Dispatchers.IO) {
         val localVariableConfig = publicLinkListRequestConfig(app = app)
 
-        return@withContext request<Unit, PublicLinkList200Response>(
+        return@withContext request<Unit, PublicLinks>(
             localVariableConfig
         )
     }
@@ -5368,7 +5520,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * A session for a file of &#x60;size&#x60; bytes, sent in parts of &#x60;partBytes&#x60;.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param uploadBeginRequest 
-     * @return UploadBegin200Response
+     * @return UploadView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5377,11 +5529,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun uploadBegin(app: kotlin.String, uploadBeginRequest: UploadBeginRequest) : UploadBegin200Response = withContext(Dispatchers.IO) {
+    suspend fun uploadBegin(app: kotlin.String, uploadBeginRequest: UploadBeginRequest) : UploadView = withContext(Dispatchers.IO) {
         val localVarResponse = uploadBeginWithHttpInfo(app = app, uploadBeginRequest = uploadBeginRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as UploadBegin200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UploadView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5401,16 +5553,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * A session for a file of &#x60;size&#x60; bytes, sent in parts of &#x60;partBytes&#x60;.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param uploadBeginRequest 
-     * @return ApiResponse<UploadBegin200Response?>
+     * @return ApiResponse<UploadView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun uploadBeginWithHttpInfo(app: kotlin.String, uploadBeginRequest: UploadBeginRequest) : ApiResponse<UploadBegin200Response?> = withContext(Dispatchers.IO) {
+    suspend fun uploadBeginWithHttpInfo(app: kotlin.String, uploadBeginRequest: UploadBeginRequest) : ApiResponse<UploadView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = uploadBeginRequestConfig(app = app, uploadBeginRequest = uploadBeginRequest)
 
-        return@withContext request<UploadBeginRequest, UploadBegin200Response>(
+        return@withContext request<UploadBeginRequest, UploadView>(
             localVariableConfig
         )
     }
@@ -5445,7 +5597,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Charges and commits the file; a retry answers the same file. &#x60;409 UPLOAD_INCOMPLETE&#x60; names the part still missing.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param upload 
-     * @return UploadComplete200Response
+     * @return FileStored
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5454,11 +5606,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun uploadComplete(app: kotlin.String, upload: kotlin.String) : UploadComplete200Response = withContext(Dispatchers.IO) {
+    suspend fun uploadComplete(app: kotlin.String, upload: kotlin.String) : FileStored = withContext(Dispatchers.IO) {
         val localVarResponse = uploadCompleteWithHttpInfo(app = app, upload = upload)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as UploadComplete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FileStored
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5478,16 +5630,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Charges and commits the file; a retry answers the same file. &#x60;409 UPLOAD_INCOMPLETE&#x60; names the part still missing.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param upload 
-     * @return ApiResponse<UploadComplete200Response?>
+     * @return ApiResponse<FileStored?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun uploadCompleteWithHttpInfo(app: kotlin.String, upload: kotlin.String) : ApiResponse<UploadComplete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun uploadCompleteWithHttpInfo(app: kotlin.String, upload: kotlin.String) : ApiResponse<FileStored?> = withContext(Dispatchers.IO) {
         val localVariableConfig = uploadCompleteRequestConfig(app = app, upload = upload)
 
-        return@withContext request<Unit, UploadComplete200Response>(
+        return@withContext request<Unit, FileStored>(
             localVariableConfig
         )
     }
@@ -5523,7 +5675,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param upload 
      * @param k 
      * @param body the part
-     * @return UploadPart200Response
+     * @return PartTaken
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5532,11 +5684,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun uploadPart(app: kotlin.String, upload: kotlin.String, k: kotlin.String, body: kotlin.ByteArray) : UploadPart200Response = withContext(Dispatchers.IO) {
+    suspend fun uploadPart(app: kotlin.String, upload: kotlin.String, k: kotlin.String, body: kotlin.ByteArray) : PartTaken = withContext(Dispatchers.IO) {
         val localVarResponse = uploadPartWithHttpInfo(app = app, upload = upload, k = k, body = body)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as UploadPart200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PartTaken
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5558,16 +5710,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * @param upload 
      * @param k 
      * @param body the part
-     * @return ApiResponse<UploadPart200Response?>
+     * @return ApiResponse<PartTaken?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun uploadPartWithHttpInfo(app: kotlin.String, upload: kotlin.String, k: kotlin.String, body: kotlin.ByteArray) : ApiResponse<UploadPart200Response?> = withContext(Dispatchers.IO) {
+    suspend fun uploadPartWithHttpInfo(app: kotlin.String, upload: kotlin.String, k: kotlin.String, body: kotlin.ByteArray) : ApiResponse<PartTaken?> = withContext(Dispatchers.IO) {
         val localVariableConfig = uploadPartRequestConfig(app = app, upload = upload, k = k, body = body)
 
-        return@withContext request<kotlin.ByteArray, UploadPart200Response>(
+        return@withContext request<kotlin.ByteArray, PartTaken>(
             localVariableConfig
         )
     }
@@ -5604,7 +5756,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * **Who:** signed in (a session or an API key).
      * @param app 
      * @param upload 
-     * @return UploadStatus200Response
+     * @return UploadStatus
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5613,11 +5765,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun uploadStatus(app: kotlin.String, upload: kotlin.String) : UploadStatus200Response = withContext(Dispatchers.IO) {
+    suspend fun uploadStatus(app: kotlin.String, upload: kotlin.String) : UploadStatus = withContext(Dispatchers.IO) {
         val localVarResponse = uploadStatusWithHttpInfo(app = app, upload = upload)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as UploadStatus200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as UploadStatus
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5637,16 +5789,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * **Who:** signed in (a session or an API key).
      * @param app 
      * @param upload 
-     * @return ApiResponse<UploadStatus200Response?>
+     * @return ApiResponse<UploadStatus?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun uploadStatusWithHttpInfo(app: kotlin.String, upload: kotlin.String) : ApiResponse<UploadStatus200Response?> = withContext(Dispatchers.IO) {
+    suspend fun uploadStatusWithHttpInfo(app: kotlin.String, upload: kotlin.String) : ApiResponse<UploadStatus?> = withContext(Dispatchers.IO) {
         val localVariableConfig = uploadStatusRequestConfig(app = app, upload = upload)
 
-        return@withContext request<Unit, UploadStatus200Response>(
+        return@withContext request<Unit, UploadStatus>(
             localVariableConfig
         )
     }
@@ -5680,7 +5832,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param viewsRequest 
-     * @return Views200Response
+     * @return ViewResult
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -5689,11 +5841,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun views(app: kotlin.String, viewsRequest: ViewsRequest) : Views200Response = withContext(Dispatchers.IO) {
+    suspend fun views(app: kotlin.String, viewsRequest: ViewsRequest) : ViewResult = withContext(Dispatchers.IO) {
         val localVarResponse = viewsWithHttpInfo(app = app, viewsRequest = viewsRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as Views200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ViewResult
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -5713,16 +5865,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param viewsRequest 
-     * @return ApiResponse<Views200Response?>
+     * @return ApiResponse<ViewResult?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun viewsWithHttpInfo(app: kotlin.String, viewsRequest: ViewsRequest) : ApiResponse<Views200Response?> = withContext(Dispatchers.IO) {
+    suspend fun viewsWithHttpInfo(app: kotlin.String, viewsRequest: ViewsRequest) : ApiResponse<ViewResult?> = withContext(Dispatchers.IO) {
         val localVariableConfig = viewsRequestConfig(app = app, viewsRequest = viewsRequest)
 
-        return@withContext request<ViewsRequest, Views200Response>(
+        return@withContext request<ViewsRequest, ViewResult>(
             localVariableConfig
         )
     }

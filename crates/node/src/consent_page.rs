@@ -33,7 +33,8 @@
 //!    No app code runs there. The page reads the model
 //!    (`GET /consent/{id}/model`) and renders it: what is approved, for
 //!    whom, what changes and what stays as it is until the person approves.
-//! 3. **Passkey.** On *Approve*, the page posts `POST /consent/{id}/approve`.
+//! 3. **Passkey.** The page posts `POST /consent/{id}/approve` before the
+//!    click, so *Approve* asks the authenticator inside it.
 //!    The node runs the same route code a signed-in client would
 //!    (`api::set_release_approval`, `api::upgrade_app`,
 //!    `api::set_outbound_approval`) with the arguments frozen in the
@@ -50,7 +51,7 @@
 //! # What the consent binds
 //!
 //! - **Release**: `{ version, policyDigest }`, the digest of the release's
-//!   Sigstore-verified `published-mrtds.json` ([`release_digest`]), so a
+//!   Sigstore-verified `published-mrtds.json` (`release_digest`), so a
 //!   re-published release with other measurements under the same tag is not
 //!   the one approved. A node that cannot fetch them refuses the approval
 //!   (`503`); on mock attestation, where no node checks measurements, the
@@ -94,17 +95,18 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use calimero_identity::{b64url, random, RelyingParty};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
 use crate::api::{
-    consent, create_invite, create_org, owner_holds, peer_only, person, redeem_invite,
-    set_outbound_approval, set_release_approval, signed_in, upgrade_app, ConfirmBody, InviteBody,
-    OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
+    consent, create_invite, create_org, outbound_release, owner_holds, peer_only, person,
+    redeem_invite, set_outbound_approval, set_release_approval, signed_in, upgrade_app,
+    ConfirmBody, InviteBody, OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
 };
 use crate::error::ApiError;
 use crate::node::Node;
+use crate::packages::Via;
 use crate::system::{PackageRef, PackageVersion, ReleaseScope};
 use crate::types::{now_secs, Caller, OrgRole};
 
@@ -113,9 +115,9 @@ mod orgs;
 mod updates;
 
 pub use orgs::{
-    MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject, RevokeInviteSubject,
-    SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject, SetMemberTeamsSubject,
-    MAX_SUBJECT_ID_BYTES,
+    EgressSubject, MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject,
+    RevokeInviteSubject, SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject,
+    SetMemberTeamsSubject, MAX_SUBJECT_ID_BYTES,
 };
 
 pub use diff::{capability_sheet, Side};
@@ -144,8 +146,9 @@ const MAX_INVITE_TEAMS: usize = 64;
 /// How long an invite lives when a `createInvite` request names no
 /// `ttlSecs`, as `POST /orgs/{org}/invites`.
 const DEFAULT_INVITE_TTL: u64 = 7 * 24 * 3600;
-/// The longest life a `createInvite` request may ask for.
-const MAX_INVITE_TTL: u64 = 90 * 24 * 3600;
+/// The longest life an organization invite may ask for, here and at
+/// `POST /orgs/{org}/invites`.
+pub(crate) const MAX_INVITE_TTL: u64 = 90 * 24 * 3600;
 /// The longest mero-tee version a release request may name.
 const MAX_VERSION_BYTES: usize = 64;
 /// How many releases' manifest facts a node keeps.
@@ -281,6 +284,12 @@ pub enum CreateBody {
         subject: SetAllAppsSubject,
         return_to: String,
     },
+    /// Turn an organization's egress switch, or one instance's, off or back on: on again
+    /// is made only here (`POST /orgs/{org}/egress` refuses it elsewhere).
+    SetEgress {
+        subject: EgressSubject,
+        return_to: String,
+    },
     /// Create an instance from a deployment's offer or a release: the install sheet.
     Install {
         subject: Box<InstallSubject>,
@@ -319,6 +328,7 @@ impl CreateBody {
                 (A::SetCapabilities(subject), return_to)
             }
             Self::SetAllApps { subject, return_to } => (A::SetAllApps(subject), return_to),
+            Self::SetEgress { subject, return_to } => (A::SetEgress(subject), return_to),
             other => return Err(other),
         })
     }
@@ -402,8 +412,12 @@ async fn requested_release(
                     package,
                     Some(version),
                     service,
-                    account,
-                    p.bound_app() == Some(package),
+                    (account, Some(&app.org)),
+                    if p.bound_app() == Some(package) {
+                        Via::Frontend
+                    } else {
+                        Via::Account
+                    },
                 )
                 .await?;
             Ok((version.to_owned(), bundle))
@@ -807,7 +821,7 @@ async fn release_facts(
         return Ok(f);
     }
     let mpk = node.release_mpk(package, v).await?;
-    let (bundle, wasm) = crate::packages::verify(mpk)?;
+    let (bundle, wasm) = crate::packages::verify(mpk).await?;
     Ok(remember(node, &v.mpk, &bundle, &wasm))
 }
 
@@ -1073,11 +1087,16 @@ fn local_host(u: &Url) -> bool {
 }
 
 /// `raw`, if the app may be sent back there: a package-bound session to its
-/// package's served frontend origin, or an origin its latest signed manifest
-/// names (`links.frontend`, `frontendAliases`); an unbound session to one of
+/// package's served frontend origin, or an origin the newest signed manifest `account`
+/// reads names (`links.frontend`, `frontendAliases`); an unbound session to one of
 /// the cluster's configured origins. Anything else would make the node an
 /// open redirect, a phishing aid that names a trusted page.
-async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Result<Url, ApiError> {
+async fn allowed_return_to(
+    node: &Node,
+    account: &str,
+    package: Option<&str>,
+    raw: &str,
+) -> Result<Url, ApiError> {
     let refuse =
         |why: &str| ApiError::bad_request("RETURN_TO_NOT_ALLOWED", &format!("returnTo {why}"));
     if raw.len() > MAX_RETURN_TO_BYTES {
@@ -1101,7 +1120,7 @@ async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Res
             .any(|o| o.trim_end_matches('/') == origin),
         Some(p) => {
             crate::api::app_origin(node, &origin).is_some_and(|a| a.package == p)
-                || manifest_origins(node, p).await?.contains(&origin)
+                || manifest_origins(node, account, p).await?.contains(&origin)
         }
     };
     if allowed {
@@ -1114,9 +1133,13 @@ async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Res
     }
 }
 
-/// The frontend origins `package`'s newest release signs for.
-async fn manifest_origins(node: &Node, package: &str) -> Result<BTreeSet<String>, ApiError> {
-    let Some(latest) = node.sys(|s| s.packages.get(package)?.latest().cloned()) else {
+/// The frontend origins the newest release of `package` that `account` reads signs for.
+async fn manifest_origins(
+    node: &Node,
+    account: &str,
+    package: &str,
+) -> Result<BTreeSet<String>, ApiError> {
+    let Some(latest) = node.sys(|s| s.newest_read(package, account, false).cloned()) else {
         return Ok(BTreeSet::new());
     };
     let facts = release_facts(node, package, &latest).await?;
@@ -1140,7 +1163,7 @@ pub async fn create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     if body.len() > MAX_CONSENT_BODY_BYTES {
         return Err(ApiError::new(413, "TOO_LARGE", "consent request too large"));
     }
@@ -1153,7 +1176,7 @@ pub async fn create(
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let body = match body.into_org_ask() {
         Ok((ask, return_to)) => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = orgs::request(&node, &account, ask).await?;
             return hold(&node, account, package, Action::Org(action), model, to).await;
         }
@@ -1165,23 +1188,23 @@ pub async fn create(
             subject,
             return_to,
         } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = release_request(&node, &account, &scope, subject).await?;
             (action, model, to)
         }
         CreateBody::Upgrade { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) =
                 upgrade_request(&node, &p, &account, subject, Part::Alone).await?;
             (action, model, to)
         }
         CreateBody::UpgradeUnit { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = unit_upgrade_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Delegate { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = delegate_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
@@ -1190,38 +1213,39 @@ pub async fn create(
             subject,
             return_to,
         } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) =
                 outbound_request(&node, &account, package.as_deref(), &scope, subject).await?;
             (action, model, to)
         }
         CreateBody::CreateOrg { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = create_org_request(&node, subject, package.as_deref()).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
+            let (action, model) =
+                create_org_request(&node, &account, subject, package.as_deref()).await?;
             (action, model, to)
         }
         CreateBody::CreateInvite { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = create_invite_request(&node, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::AcceptInvite { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = accept_invite_request(&node, &account, subject)?;
             (action, model, to)
         }
         CreateBody::Install { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = updates::install_request(&node, &p, &account, *subject).await?;
             (action, model, to)
         }
         CreateBody::UpdatePolicy { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = updates::policy_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Updates { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = updates::updates_request(&node, &account, subject)?;
             (action, model, to)
         }
@@ -1235,7 +1259,8 @@ pub async fn create(
         | CreateBody::RenameOrg { .. }
         | CreateBody::DeleteOrg { .. }
         | CreateBody::SetCapabilities { .. }
-        | CreateBody::SetAllApps { .. } => {
+        | CreateBody::SetAllApps { .. }
+        | CreateBody::SetEgress { .. } => {
             return Err(ApiError::internal("an organization request went astray"));
         }
     };
@@ -1250,11 +1275,11 @@ async fn hold(
     action: Action,
     model: Value,
     return_to: Url,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConsentRequestMade>, ApiError> {
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
-        Some(p) => package_names(node, p).await,
+        Some(p) => package_names(node, &account, p).await,
         None => (None, None),
     };
     let mut model = model;
@@ -1297,12 +1322,36 @@ async fn hold(
     let url = base
         .join(&format!("{at}/{id}"))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!({
-        "requestId": id,
-        "url": url.as_str(),
-        "expiresAt": expires_at,
-        "code": code,
-    })))
+    Ok(Json(ConsentRequestMade {
+        request_id: id,
+        url: url.as_str().to_owned(),
+        expires_at,
+        code,
+    }))
+}
+
+/// `POST /consent/requests`: the request, the page to send the person to, when it lapses and
+/// the code the page shows.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRequestMade {
+    request_id: String,
+    url: String,
+    expires_at: u64,
+    code: String,
+}
+
+/// `GET /consent/{request}/result`: the request's decision (`decidedAt` `null` while it is
+/// pending) and, once approved, what the approval made.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentResult {
+    request_id: String,
+    kind: Value,
+    status: String,
+    decided_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome: Option<Value>,
 }
 
 /// The confirmation code of request `request_id`: the page shows it, and so
@@ -1327,10 +1376,14 @@ pub fn confirmation_code(request_id: &str) -> String {
     out
 }
 
-/// A package's display name and author, from its newest release's signed
-/// manifest; `None` for what it does not name or cannot be read now.
-async fn package_names(node: &Node, package: &str) -> (Option<String>, Option<String>) {
-    let Some(latest) = node.sys(|s| s.packages.get(package)?.latest().cloned()) else {
+/// A package's display name and author, from the signed manifest of its newest release
+/// `account` reads; `None` for what it does not name, cannot be read now, or with none.
+async fn package_names(
+    node: &Node,
+    account: &str,
+    package: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(latest) = node.sys(|s| s.newest_read(package, account, false).cloned()) else {
         return (None, None);
     };
     match release_facts(node, package, &latest).await {
@@ -1544,12 +1597,11 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             hosts(added.iter().map(String::as_str)),
         ));
     }
-    let mut secrets = strings(&sheet["secrets"]["added"]);
-    secrets.extend(strings(&sheet["secrets"]["hostsChanged"]));
+    let secrets = strings(&sheet["secrets"]["words"]);
     if !secrets.is_empty() {
         out.push(attention(
             "secrets",
-            "Asks for a new secret, or sends one to other addresses:".to_owned(),
+            "Asks for a new secret, or has one sent elsewhere or another way:".to_owned(),
             secrets,
         ));
     }
@@ -1972,6 +2024,24 @@ enum Part {
     Member,
 }
 
+/// The sheet's fact naming the deployment an instance comes from
+/// ([`crate::system::SystemState::deployment_shown`]): its name and owner, then its id.
+fn offered_by(d: &Value) -> Value {
+    let kind = if d["owner"]["kind"] == "org" {
+        "organization"
+    } else {
+        "account"
+    };
+    let owner = d["owner"]["name"].as_str().map_or_else(
+        || format!("an {kind} no longer on this cluster"),
+        |n| format!("the {kind} {n}"),
+    );
+    json!({
+        "title": format!("Offered by {}, run by {owner}.", d["name"].as_str().unwrap_or_default()),
+        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
+    })
+}
+
 async fn upgrade_request(
     node: &Node,
     p: &Principal,
@@ -2136,13 +2206,27 @@ async fn upgrade_request(
             "Until you approve, nothing changes: it keeps running {old}."
         )),
     ];
+    let shown = app
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
         points.push(json!(destinations_point(c, !app.links.is_empty())));
         attention.extend(unit_attention(c, &sheet));
     }
-    let update = (!member_of_unit)
-        .then(|| updates::update_section(node, &app, unit.as_ref(), &step, (old, new), Vec::new()));
+    let members_move = node.sys(|s| s.members_stay(false) && s.moves_members(&app, &to_release));
+    let update = (!member_of_unit).then(|| {
+        updates::update_section(
+            node,
+            &app,
+            unit.as_ref(),
+            &step,
+            (old, new),
+            Vec::new(),
+            members_move,
+        )
+    });
     let model = json!({
         "kind": "upgrade",
         "update": update,
@@ -2158,6 +2242,8 @@ async fn upgrade_request(
         "attention": attention,
         "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
+        "deployment": shown,
+        "offeredBy": shown.as_ref().map(offered_by),
         "publisher": {
             "name": author,
             "signer": to.signer,
@@ -2316,6 +2402,7 @@ async fn unit_upgrade_request(
         &step,
         (&running.version, &version),
         moves,
+        node.sys(|s| s.members_stay(false) && s.moves_members(&plan.app, &to_release)),
     );
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {
@@ -2467,14 +2554,12 @@ async fn outbound_request(
         }
     };
     let latest = node
-        .sys(|s| {
-            let pkg = s.packages.get(&package)?;
-            let latest = pkg.latest()?;
-            (bound == Some(package.as_str()) || s.visible_versions(pkg, account).next().is_some())
-                .then(|| latest.clone())
-        })
+        .sys(|s| outbound_release(s, &package, account).cloned())
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     let (scope, scope_json) = scope_of(node, account, scope)?;
+    if let ReleaseScope::Org { org } = &scope {
+        crate::api::refuse_egress_off(node, org)?;
+    }
     let facts = release_facts(node, &package, &latest).await?;
     let declared: Vec<String> = latest.outbound.clone();
     let requested = match subject.prefixes {
@@ -2604,16 +2689,21 @@ fn team_names(node: &Node, org: &str, account: Option<&str>, teams: &[String]) -
 }
 
 /// The app team a `createOrg` asked from `package`'s frontend starts with:
-/// that package and its display name, when it is installed and every node
-/// applies `CreateOrg { app_team }` alike; `None` (a bare organization) else.
-async fn org_app_team(node: &Node, package: Option<&str>) -> Option<(String, String)> {
+/// that package and the display name of the newest release `account` may use (else its
+/// id), when it has such a release and every node applies `CreateOrg { app_team }` alike;
+/// `None` (a bare organization) else.
+async fn org_app_team(
+    node: &Node,
+    account: &str,
+    package: Option<&str>,
+) -> Option<(String, String)> {
     let package = package?;
     let name = node.sys(|s| {
-        let record = s.packages.get(package)?;
+        let newest = s.newest_used(package, account)?;
         Some(
-            record
-                .latest()
-                .and_then(|v| v.metadata.get("name"))
+            newest
+                .metadata
+                .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or(package)
                 .to_owned(),
@@ -2627,6 +2717,7 @@ async fn org_app_team(node: &Node, package: Option<&str>) -> Option<(String, Str
 
 async fn create_org_request(
     node: &Node,
+    account: &str,
     subject: CreateOrgSubject,
     package: Option<&str>,
 ) -> Result<(Action, Value), ApiError> {
@@ -2641,7 +2732,7 @@ async fn create_org_request(
         node.require_features(&[crate::system::cluster_version::Feature::OrgCapabilities])
             .await?;
     }
-    let team = org_app_team(node, package).await;
+    let team = org_app_team(node, account, package).await;
     let mut points = vec![json!(format!(
         "A new organization named {name} is created, and you are its owner."
     ))];
@@ -2913,9 +3004,7 @@ fn app_invite_model(
         )));
     }
     if !allowed {
-        return Some(Err(ApiError::new(
-            409,
-            crate::api::apps::GUESTS_NOT_ALLOWED,
+        return Some(Err(crate::node::rejected(
             crate::system::GUESTS_NOT_ALLOWED,
         )));
     }
@@ -2976,16 +3065,13 @@ fn app_invite_model(
 
 /// What `/result` answers for a request.
 fn result_json(id: &str, r: &ConsentRequest) -> Value {
-    let mut v = json!({
-        "requestId": id,
-        "kind": r.model["kind"],
-        "status": r.decision.label(),
-        "decidedAt": r.decision.at(),
-    });
-    if let (Some(Outcome(made)), Some(o)) = (&r.outcome, v.as_object_mut()) {
-        let _prev = o.insert("outcome".into(), made.clone());
-    }
-    v
+    json!(ConsentResult {
+        request_id: id.to_owned(),
+        kind: r.model["kind"].clone(),
+        status: r.decision.label().to_owned(),
+        decided_at: r.decision.at(),
+        outcome: r.outcome.as_ref().map(|Outcome(made)| made.clone()),
+    })
 }
 
 /// `GET /consent/{id}/result`: the decision, for the account that asked.
@@ -3328,12 +3414,48 @@ fn redirect(r: &ConsentRequest, id: &str, result: &str) -> String {
 struct ApproveBody {
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// The organization chosen on an install sheet that offered a choice (`chooseOrg`).
+    #[serde(default)]
+    org: Option<String>,
+}
+
+/// `req` with the organization chosen on its install sheet: one the account is a member of,
+/// asked for exactly when the sheet offered a choice, so the passkey signs it as `org`.
+fn with_chosen_org(
+    node: &Node,
+    mut req: ConsentRequest,
+    org: Option<String>,
+) -> Result<ConsentRequest, ApiError> {
+    let offered = req.model["install"]["chooseOrg"].is_array();
+    let account = req.account.clone();
+    match (&mut req.action, org) {
+        (Action::Install { install, .. }, Some(org)) if offered => {
+            if !node.sys(|s| s.member_of(&org, &account)) {
+                return Err(ApiError::not_found("no such organization"));
+            }
+            install.org = Some(org);
+        }
+        (Action::Install { .. }, None) if offered => {
+            return Err(ApiError::bad_request(
+                crate::api::apps::ORG_REQUIRED,
+                "choose the organization this is for",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                "this request has no organization to choose",
+            ));
+        }
+        _ => {}
+    }
+    Ok(req)
 }
 
 /// The facts the page showed, checked again before the passkey is asked and
 /// before the approval is written.
-fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
-    match action {
+fn still_current(node: &Node, req: &ConsentRequest) -> Result<(), ApiError> {
+    match &req.action {
         // The routes judge these on fresh state when they run.
         Action::Release { .. }
         | Action::CreateOrg { .. }
@@ -3425,7 +3547,8 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
             latest_mpk,
             ..
         } => {
-            let latest = node.sys(|s| s.packages.get(package)?.latest().map(|v| v.mpk.clone()));
+            let latest =
+                node.sys(|s| outbound_release(s, package, &req.account).map(|v| v.mpk.clone()));
             if latest.as_ref() == Some(latest_mpk) {
                 Ok(())
             } else {
@@ -3440,7 +3563,10 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
 /// approval, written as the request's account, and where to go next.
 async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiError> {
     let body: ApproveBody = if body.is_empty() {
-        ApproveBody { confirm: None }
+        ApproveBody {
+            confirm: None,
+            org: None,
+        }
     } else {
         serde_json::from_slice(body)
             .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?
@@ -3455,7 +3581,8 @@ async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiEr
         ));
     }
     let (sys_index, _caught_up) = node.sys_fresh_index().await;
-    still_current(node, &req.action)?;
+    still_current(node, &req)?;
+    let req = with_chosen_org(node, req, body.org)?;
     let confirmed = body.confirm.is_some();
     // One approval at a time: the passkey's answer is taken once.
     if confirmed {
@@ -3770,6 +3897,22 @@ fn decline(node: &Node, id: &str) -> Result<Value, ApiError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_deployment_is_named_with_its_id_and_its_owner() {
+        let shown = |owner: Value| json!({ "id": "d1", "name": "acme", "owner": owner });
+        assert_eq!(
+            offered_by(&shown(json!({ "kind": "org", "name": "Acme Labs" }))),
+            json!({
+                "title": "Offered by acme, run by the organization Acme Labs.",
+                "detail": "Deployment d1",
+            })
+        );
+        assert_eq!(
+            offered_by(&shown(json!({ "kind": "account", "name": null })))["title"],
+            "Offered by acme, run by an account no longer on this cluster."
+        );
+    }
+
     fn request(account: &str, expires_at: u64) -> ConsentRequest {
         ConsentRequest {
             account: account.to_owned(),
@@ -3795,6 +3938,33 @@ mod tests {
             "services": services, "installedBy": "alice", "installedAt": 1
         }))
         .unwrap()
+    }
+
+    fn state_of(package: &str, releases: Value) -> crate::system::SystemState {
+        let mut s = crate::system::SystemState::default();
+        let record = serde_json::from_value(json!({
+            "name": package, "signerId": "did:key:z", "owner": "alice", "versions": releases
+        }))
+        .unwrap();
+        let _prev = s.packages.insert(package.to_owned(), record);
+        s
+    }
+
+    #[test]
+    fn the_outbound_page_picks_the_release_the_approval_applies_to() {
+        // v1 is public; v2 predates `visibility` and Bob shares no organization with its installer.
+        let s = state_of(
+            "p",
+            json!({
+                "1.0.0": { "version": "1.0.0", "mpk": "a", "mpkSize": 1, "source": "registry",
+                    "services": { "": "b1" }, "installedBy": "alice", "installedAt": 1,
+                    "visibility": "public" },
+                "2.0.0": { "version": "2.0.0", "mpk": "b", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b2" }, "installedBy": "alice", "installedAt": 2 },
+            }),
+        );
+        let shown = outbound_release(&s, "p", "bob").map(|v| v.version.clone());
+        assert_eq!(shown.as_deref(), Some("1.0.0"));
     }
 
     #[test]
@@ -3873,6 +4043,8 @@ mod tests {
         assert_eq!(e.status, 429);
     }
 
+    /// The consent page's verifier link has the shape mdma's verifier reads, on a base checked by
+    /// `verifier_base`.
     #[test]
     fn the_verifier_link_is_mdmas_shape_on_a_checked_base() {
         let base = verifier_base("https://verify.calimero.network/").unwrap();

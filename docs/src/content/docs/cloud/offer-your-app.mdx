@@ -170,10 +170,10 @@ first, so the node records what it uses.
     { from: 1, to: 2, label: 'SetDeploymentSecret: managers and fingerprint judged again' },
     { from: 1, to: 0, label: '{ name, fingerprint }: the value is never answered', dashed: true },
     { type: 'divider', label: 'later: a run of an instance from the deployment, or of a unit member' },
-    { from: 4, to: 4, label: 'request with {{secret:NAME}}' },
+    { from: 4, to: 4, label: 'request to a host the release binds NAME to' },
     { from: 4, to: 5, label: 'outbound_for: this app\'s values' },
     { from: 5, to: 5, label: 'NAME declared? the instance\'s value, else the deployment\'s if it covers the package, else the operator\'s' },
-    { from: 5, to: 5, label: 'host approved and declared for NAME? else refused' },
+    { from: 5, to: 5, label: 'host approved? attach NAME in its bound header or field; the app setting it is refused' },
     { from: 5, to: 3, label: 'HTTPS with the value filled in' },
     { from: 3, to: 5, label: 'response', dashed: true },
     { from: 5, to: 4, label: 'response, each copy → [redacted]', dashed: true },
@@ -330,14 +330,14 @@ pointing at an offer that is gone. The release stays installed. A deployment
 is deleted once it offers nothing and no instance came from it, and an
 organization that owns a deployment cannot be deleted before it.
 
-## Not done yet
+## Limits
 
-- **Migration.** Releases installed before deployments existed are not moved
-  into a deployment; offer them in one yourself.
-- **Transfer.** A deployment cannot be handed to another owner yet: create a
-  new one under the new owner and offer the same releases.
-- **Lockout guard.** Nothing yet stops an organization-owned deployment from
-  being left with no manager able to sign (the design asks for at least two
-  managers). Keep more than one `MANAGE_APPLICATION` holder in the owning
-  organization, each with more than one passkey.
-- **The consent page** does not name the deployment an instance came from.
+- **Releases from before deployments** stay outside every deployment, and
+  instances created before record none: offer the releases in a deployment
+  yourself.
+- **A deployment keeps its owner.** To move it, create a new one under the
+  new owner and offer the same releases.
+- **Keep the deployment manageable.** Every change needs a manager's
+  passkey, and nothing stops an organization-owned deployment from being left
+  with no manager able to sign. Keep more than one `MANAGE_APPLICATION`
+  holder in the owning organization, each with more than one passkey.

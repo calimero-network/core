@@ -27,7 +27,8 @@ cargo run --release -p calimero-search-bench -- --sizes 10000,100000
 
 | File | What's there |
 | --- | --- |
-| `src/index.rs` | `ContextIndex`: opened over any tantivy `Directory` (merod uses one in memory), schema from a `SearchIndexSchema` (the node makes one per table: its declared fields as `Text`), idempotent delete-then-add `apply`, `commit(seq, root)` recording what it covers, `search` (words / prefix / substring on trigrams / fuzzy, keyword and range filters, relevance or a `u64` field order, a snippet from the field that matched). Limits: `MAX_LIMIT` 100 hits, `MAX_CURSOR` 10,000, `MAX_QUERY_LEN` 256 bytes |
+| `src/index.rs` | `ContextIndex`: opened over any tantivy `Directory` (merod uses one in memory), schema from a `SearchIndexSchema` (the node makes one per table: its declared fields as `Text`), idempotent delete-then-add `apply`, `commit(seq, root)` recording what it covers, `searcher` (the last commit, point in time) and `search` / `search_in` (against the last commit / a searcher; words / prefix / substring on trigrams / fuzzy, keyword and range filters, relevance or a `u64` field order, a snippet from the field that matched). Limits: `MAX_LIMIT` 100 hits, `MAX_CURSOR` 10,000, `MAX_QUERY_LEN` 256 bytes |
+| `src/records.rs` | A component app's table records as search documents, shared by the node and the SDK's test harness (the harness searches what a node would): `record_table`, `record_prefix`, `table_schema`, `doc_id`, `document` (declared text fields, a list of strings joined, cut at `MAX_FIELD_TEXT_BYTES`), and `TableSearch`, one table's in-memory index over one state (`build`, `search`, `key`), which `calimero-sdk`'s harness builds per view |
 | `src/tokenize.rs` | Words (Unicode segmentation, NFKD accent folding, lowercase, CJK bigrams) and trigrams; `TOKENIZER_VERSION` |
 
 ## How the index stays equal to state (in the node)
@@ -37,6 +38,17 @@ cargo run --release -p calimero-search-bench -- --sizes 10000,100000
   (`AppMachine::touched_after`, kept for the last `TOUCHED_RING` entries), else
   a full scan of the app's records. A document's id is the SHA-256 of the
   record's stored key.
+- A view searches the state it reads, never a later one: the
+  views of an app share its indexes, so each takes a point-in-time snapshot of them
+  (`ContextIndex::searcher`, queried with `ContextIndex::search_in`, plus the
+  document keys) once they are brought up to its state, and every search it makes
+  reads that. The views prepared on earlier states are brought up first, in order,
+  so the indexes pass through each live view's state; a view on an older state than
+  the indexes hold compares them with its own. The index is never behind a view's
+  state (each view brings it up before it searches), so nothing waits for it.
+  Tests: `calimero-node`'s `component::search::tests` (`a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes`,
+  `a_view_that_searches_after_a_later_view_did_searches_its_own_state`), `tests/writer.rs`
+  (`a_searcher_reads_the_commit_it_was_taken_at`).
 - Every document carries its digest (`doc_digest`, the `_h` fast field), and
   `ContextIndex::digests` reads them all back, so an index kept on disk is brought
   up to a state by indexing again only the documents whose digest differs.

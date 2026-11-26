@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.deployment_secret_set_body import DeploymentSecretSetBody
-from ...models.deployment_secret_set_response_200 import DeploymentSecretSetResponse200
+from ...models.deployment_secret_body import DeploymentSecretBody
+from ...models.deployment_secret_set import DeploymentSecretSet
 from ...models.error import Error
 from typing import cast
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     id: str,
     name: str,
     *,
-    body: DeploymentSecretSetBody,
+    body: DeploymentSecretBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentSecretSetResponse200, Error]]:
+) -> Optional[Union[DeploymentSecretSet, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentSecretSetResponse200.from_dict(response.json())
+        response_200 = DeploymentSecretSet.from_dict(response.json())
 
         return response_200
 
@@ -93,7 +93,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentSecretSetResponse200, Error]]:
+) -> Response[Union[DeploymentSecretSet, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -107,21 +107,21 @@ def sync_detailed(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Response[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Response[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -130,14 +130,14 @@ def sync_detailed(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentSecretSetResponse200, Error]]
+        Response[Union[DeploymentSecretSet, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -158,21 +158,21 @@ def sync(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Optional[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Optional[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -181,14 +181,14 @@ def sync(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentSecretSetResponse200, Error]
+        Union[DeploymentSecretSet, Error]
     """
 
     return sync_detailed(
@@ -204,21 +204,21 @@ async def asyncio_detailed(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Response[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Response[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -227,14 +227,14 @@ async def asyncio_detailed(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentSecretSetResponse200, Error]]
+        Response[Union[DeploymentSecretSet, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -253,21 +253,21 @@ async def asyncio(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Optional[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Optional[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -276,14 +276,14 @@ async def asyncio(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentSecretSetResponse200, Error]
+        Union[DeploymentSecretSet, Error]
     """
 
     return (

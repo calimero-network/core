@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_remove_node_response_200 import OpsRemoveNodeResponse200
+from ...models.node_removed import NodeRemoved
 from ...models.proof_only import ProofOnly
 from typing import cast
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsRemoveNodeResponse200]]:
+) -> Optional[Union[Error, NodeRemoved]]:
     if response.status_code == 200:
-        response_200 = OpsRemoveNodeResponse200.from_dict(response.json())
+        response_200 = NodeRemoved.from_dict(response.json())
 
         return response_200
 
@@ -76,7 +76,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsRemoveNodeResponse200]]:
+) -> Response[Union[Error, NodeRemoved]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -90,7 +90,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Response[Union[Error, OpsRemoveNodeResponse200]]:
+) -> Response[Union[Error, NodeRemoved]]:
     """Remove a node
 
      One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over
@@ -110,7 +110,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRemoveNodeResponse200]]
+        Response[Union[Error, NodeRemoved]]
     """
 
     kwargs = _get_kwargs(
@@ -130,7 +130,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Optional[Union[Error, OpsRemoveNodeResponse200]]:
+) -> Optional[Union[Error, NodeRemoved]]:
     """Remove a node
 
      One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over
@@ -150,7 +150,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRemoveNodeResponse200]
+        Union[Error, NodeRemoved]
     """
 
     return sync_detailed(
@@ -165,7 +165,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Response[Union[Error, OpsRemoveNodeResponse200]]:
+) -> Response[Union[Error, NodeRemoved]]:
     """Remove a node
 
      One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over
@@ -185,7 +185,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRemoveNodeResponse200]]
+        Response[Union[Error, NodeRemoved]]
     """
 
     kwargs = _get_kwargs(
@@ -203,7 +203,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ProofOnly,
-) -> Optional[Union[Error, OpsRemoveNodeResponse200]]:
+) -> Optional[Union[Error, NodeRemoved]]:
     """Remove a node
 
      One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over
@@ -223,7 +223,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRemoveNodeResponse200]
+        Union[Error, NodeRemoved]
     """
 
     return (

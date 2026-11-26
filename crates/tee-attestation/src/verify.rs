@@ -12,7 +12,10 @@ use dcap_qvl::http::{HttpClient, HttpResponse};
 use dcap_qvl::tcb_info::TcbInfo as DcapTcbInfo;
 use dcap_qvl::verify::verify;
 use dcap_qvl::QuoteCollateralV3;
+use serde::Deserialize;
 use tdx_quote::Quote as TdxQuote;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use tracing::{error, info, warn};
 
 use crate::error::AttestationError;
@@ -102,8 +105,14 @@ pub struct VerificationResult {
     ///
     /// Recorded so that divergence is visible in logs and to callers rather
     /// than inferred from a stuck node. `None` when collateral was not fetched
-    /// (mock quotes) or the TCB info could not be parsed — it is diagnostic,
-    /// never a gate.
+    /// (mock quotes) or the TCB info could not be parsed.
+    ///
+    /// It is also a gate: [`Self::policy_valid`] refuses a real quote whose
+    /// number is below [`crate::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`] (or
+    /// the policy's higher floor) or unknown, because a collateral source
+    /// serving an older, still Intel-signed baseline would otherwise make an
+    /// out-of-date platform read `UpToDate`. [`Self::is_valid`] ignores it,
+    /// like `tcb_status`.
     pub tcb_evaluation_data_number: Option<u32>,
     /// The parsed quote structure.
     ///
@@ -149,13 +158,16 @@ impl VerificationResult {
     /// allowlists, and the app-hash binding, and returns a typed
     /// [`crate::PolicyRejection`].
     ///
-    /// The existing enforcement layers below keep their own equivalent
-    /// enforcement by design (mode-specific errors `policy_valid` cannot
-    /// express), and `is_valid()` stays crypto-only for them:
-    /// - `crates/context/src/handlers/admit_tee_node.rs` — per-group
-    ///   `TeeAdmissionPolicy` (MRTD/RTMR allowlists + `tcb_status_allowed`);
-    /// - `crates/merod/src/kms/mod.rs` — `enforce_attestation_policy`
-    ///   (measurement + TCB allowlists for KMS self-attestation);
+    /// Admitting a node already goes through `policy_valid`: a peer
+    /// (`Node::identify_peer` in `crates/node/src/node.rs`) and a client are
+    /// both checked by `crates/client/src/attest.rs`.
+    ///
+    /// The enforcement layers below keep their own equivalent enforcement by
+    /// design (mode-specific errors `policy_valid` cannot express), and
+    /// `is_valid()` stays crypto-only for them:
+    /// - `calimero_kms_client::kms` — `enforce_attestation_policy`
+    ///   (measurement + TCB allowlists from the signed release policy, for
+    ///   the KMS's quote);
     /// - the mero-tee KMS `get_key.rs` `enforce_attestation_policy` on the
     ///   key-release side (external consumer of this crate).
     pub fn is_valid(&self) -> bool {
@@ -327,11 +339,11 @@ async fn fetch_collateral(
 /// the *unwrapped* `tcbInfo` object, not the signed `{tcbInfo, signature}`
 /// envelope the PCS returns, so this decodes straight into [`DcapTcbInfo`].
 ///
-/// Diagnostic only. A parse failure degrades to `None` and is logged rather
-/// than surfaced as an error: the number qualifies a verdict, it never gates
-/// one, and failing an otherwise-good attestation over an unreadable
-/// diagnostic would trade a real security check for a cosmetic one.
-fn tcb_evaluation_data_number_of(tcb_info_json: &str) -> Option<u32> {
+/// A parse failure degrades to `None` and is logged rather than surfaced as an
+/// error here; [`VerificationResult::policy_valid`] refuses a real quote whose
+/// number is `None`, and dcap-qvl fails the signature check on TCB info it
+/// cannot parse either.
+pub(crate) fn tcb_evaluation_data_number_of(tcb_info_json: &str) -> Option<u32> {
     match serde_json::from_str::<DcapTcbInfo>(tcb_info_json) {
         Ok(info) => Some(info.tcb_evaluation_data_number),
         Err(err) => {
@@ -339,6 +351,54 @@ fn tcb_evaluation_data_number_of(tcb_info_json: &str) -> Option<u32> {
             None
         }
     }
+}
+
+/// The part of a signed collateral object (TCB info, QE identity) that says
+/// until when Intel stands behind it.
+#[derive(Deserialize)]
+struct CollateralValidity {
+    #[serde(rename = "nextUpdate")]
+    next_update: String,
+}
+
+/// Refuse collateral Intel has already superseded: TCB info or QE identity
+/// whose `nextUpdate` is before `now` (seconds since the epoch), or unreadable.
+///
+/// Intel signs each baseline once and never revokes it, so the signature alone
+/// cannot tell current collateral from collateral a source has kept serving
+/// after a newer baseline replaced it; `nextUpdate` is the date past which
+/// Intel no longer vouches for it. dcap-qvl 0.5.3 also fails `verify` on an
+/// expired one, but only as an untyped signature failure: checked here, before
+/// verification, it is refused whatever the dcap-qvl version, and reported for
+/// what it is — the source's failure (`CollateralFetchFailed`: no verdict, fail
+/// closed), not the node's.
+fn refuse_expired_collateral(
+    collateral: &QuoteCollateralV3,
+    now: u64,
+    source: &str,
+) -> Result<(), AttestationError> {
+    let now = i64::try_from(now).unwrap_or(i64::MAX);
+    for (name, json) in [
+        ("TCB info", &collateral.tcb_info),
+        ("QE identity", &collateral.qe_identity),
+    ] {
+        let Some(next_update) = serde_json::from_str::<CollateralValidity>(json)
+            .ok()
+            .and_then(|validity| OffsetDateTime::parse(&validity.next_update, &Rfc3339).ok())
+        else {
+            return Err(AttestationError::CollateralFetchFailed(format!(
+                "collateral source {source:?}: {name} has no readable nextUpdate"
+            )));
+        };
+        if now > next_update.unix_timestamp() {
+            error!(source=%source, %next_update, "Collateral source served expired {name}");
+            return Err(AttestationError::CollateralFetchFailed(format!(
+                "collateral source {source:?}: {name} expired at {next_update} (nextUpdate); \
+                 the source serves superseded collateral"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `TDATTRIBUTES.DEBUG` is bit 0 of the little-endian `TDATTRIBUTES` field.
@@ -378,7 +438,9 @@ pub(crate) fn is_debug_td(tdattributes: &[u8; 8]) -> bool {
 /// A `VerificationResult` with the verification status for each check.
 ///
 /// # Errors
-/// Returns an error if the quote cannot be parsed or if collateral fetch fails.
+/// Returns an error if the quote cannot be parsed or if collateral fetch fails,
+/// which includes a source serving collateral past its `nextUpdate`
+/// (`CollateralFetchFailed`).
 pub async fn verify_attestation(
     quote_bytes: &[u8],
     nonce: &[u8; 32],
@@ -412,6 +474,8 @@ pub async fn verify_attestation(
             AttestationError::SystemTimeError(err.to_string())
         })?
         .as_secs();
+
+    refuse_expired_collateral(&collateral, now, &collateral_source)?;
 
     let tcb_evaluation_data_number = tcb_evaluation_data_number_of(&collateral.tcb_info);
 
@@ -608,8 +672,8 @@ mod tests {
     use dcap_qvl::collateral::INTEL_PCS_URL;
 
     use super::{
-        collateral_source_from, fetch_collateral, is_debug_td, tcb_evaluation_data_number_of,
-        verify_attestation,
+        collateral_source_from, fetch_collateral, is_debug_td, refuse_expired_collateral,
+        tcb_evaluation_data_number_of, verify_attestation,
     };
     use crate::AttestationError;
 
@@ -720,8 +784,8 @@ mod tests {
         assert_ne!(early, standard);
     }
 
-    /// Diagnostic, never a gate: unreadable collateral must not fail an
-    /// otherwise-good attestation.
+    /// Unreadable collateral reads as `None` here; `policy_valid` is what
+    /// refuses it.
     #[test]
     fn unparseable_collateral_degrades_to_none() {
         assert_eq!(tcb_evaluation_data_number_of("not json"), None);
@@ -737,6 +801,78 @@ mod tests {
     fn does_not_accept_the_signed_envelope() {
         let envelope = format!(r#"{{"tcbInfo": {}, "signature": "ab"}}"#, tcb_info_json(22));
         assert_eq!(tcb_evaluation_data_number_of(&envelope), None);
+    }
+
+    fn fixture_collateral() -> dcap_qvl::QuoteCollateralV3 {
+        serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/tdx_quote_collateral.json"
+        ))
+        .expect("fixture collateral parses")
+    }
+
+    fn unix(rfc3339: &str) -> u64 {
+        let at =
+            time::OffsetDateTime::parse(rfc3339, &time::format_description::well_known::Rfc3339)
+                .expect("a valid timestamp");
+        u64::try_from(at.unix_timestamp()).expect("after the epoch")
+    }
+
+    /// The fixture's TCB info says `nextUpdate` 2025-07-19T10:16:03Z: Intel no
+    /// longer vouches for it after that, so a source still serving it is refused,
+    /// as an unusable source rather than a verdict on the node.
+    #[test]
+    fn collateral_past_its_next_update_is_refused() {
+        let collateral = fixture_collateral();
+        for now in [unix("2025-07-19T10:16:04Z"), unix("2026-11-24T00:00:00Z")] {
+            let err = refuse_expired_collateral(&collateral, now, "https://pccs.test")
+                .expect_err("expired collateral");
+            assert!(
+                matches!(&err, AttestationError::CollateralFetchFailed(m) if m.contains("TCB info expired")),
+                "got {err:?}"
+            );
+        }
+    }
+
+    /// Inside both windows (the QE identity's `nextUpdate`, 10:32:27, is the
+    /// later one) the collateral is current.
+    #[test]
+    fn collateral_before_its_next_update_is_current() {
+        let collateral = fixture_collateral();
+        for now in [unix("2025-06-20T00:00:00Z"), unix("2025-07-19T10:16:03Z")] {
+            refuse_expired_collateral(&collateral, now, "https://pccs.test")
+                .expect("current collateral");
+        }
+    }
+
+    /// Each signed object has its own window: an expired QE identity is refused
+    /// even when the TCB info beside it is current.
+    #[test]
+    fn an_expired_qe_identity_is_refused_too() {
+        let mut collateral = fixture_collateral();
+        collateral.tcb_info = collateral
+            .tcb_info
+            .replace("2025-07-19T10:16:03Z", "2099-01-01T00:00:00Z");
+        let err = refuse_expired_collateral(&collateral, unix("2026-11-24T00:00:00Z"), "s")
+            .expect_err("expired QE identity");
+        assert!(
+            matches!(&err, AttestationError::CollateralFetchFailed(m) if m.contains("QE identity expired")),
+            "got {err:?}"
+        );
+    }
+
+    /// No readable `nextUpdate` is no evidence the collateral is current.
+    #[test]
+    fn collateral_without_a_readable_next_update_is_refused() {
+        let mut collateral = fixture_collateral();
+        collateral.tcb_info = collateral
+            .tcb_info
+            .replace("2025-07-19T10:16:03Z", "next month");
+        let err = refuse_expired_collateral(&collateral, unix("2025-06-20T00:00:00Z"), "s")
+            .expect_err("unreadable nextUpdate");
+        assert!(
+            matches!(&err, AttestationError::CollateralFetchFailed(m) if m.contains("no readable nextUpdate")),
+            "got {err:?}"
+        );
     }
 
     /// The PCK chain is the node's own bytes: when it is garbage the quote is

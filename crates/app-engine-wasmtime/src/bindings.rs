@@ -122,15 +122,38 @@ impl storage::Host for StoreData {
     }
 
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.host.storage_put(&key, &value).map_err(denied)
+        trapping(self.host.storage_put(&key, &value))
     }
 
     fn delete(&mut self, key: Vec<u8>) -> Result<()> {
-        self.host.storage_delete(&key).map_err(denied)
+        trapping(self.host.storage_delete(&key))
     }
 
     fn add(&mut self, key: Vec<u8>, delta: i64) -> Result<()> {
-        self.host.storage_add(&key, delta).map_err(denied)
+        trapping(self.host.storage_add(&key, delta))
+    }
+
+    fn put_checked(
+        &mut self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+        checked(self.host.storage_put(&key, &value))
+    }
+
+    fn delete_checked(
+        &mut self,
+        key: Vec<u8>,
+    ) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+        checked(self.host.storage_delete(&key))
+    }
+
+    fn add_checked(
+        &mut self,
+        key: Vec<u8>,
+        delta: i64,
+    ) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+        checked(self.host.storage_add(&key, delta))
     }
 
     fn range(
@@ -144,6 +167,32 @@ impl storage::Host for StoreData {
             .map(cursor)
             .map_err(denied)
     }
+}
+
+/// A write through the trapping `put`, `delete` and `add` (before WIT 0.5.7): a run limit
+/// traps with the details it always had.
+fn trapping(
+    out: std::result::Result<std::result::Result<(), host::RunLimit>, host::HostDenied>,
+) -> Result<()> {
+    match out.map_err(denied)? {
+        Ok(()) => Ok(()),
+        Err(limit) => Err(denied(limit.denied())),
+    }
+}
+
+/// A write through `put-checked`, `delete-checked` and `add-checked` (0.5.7): a run limit is
+/// the guest's error.
+fn checked(
+    out: std::result::Result<std::result::Result<(), host::RunLimit>, host::HostDenied>,
+) -> Result<std::result::Result<(), storage::LimitExceeded>> {
+    Ok(out.map_err(denied)?.map_err(|l| storage::LimitExceeded {
+        limit: match l.limit {
+            host::RunLimitKind::Writes => storage::RunLimit::Writes,
+            host::RunLimitKind::Bytes => storage::RunLimit::Bytes,
+        },
+        max: l.max,
+        attempted: l.attempted,
+    }))
 }
 
 impl storage::HostCursor for StoreData {
@@ -501,4 +550,192 @@ impl action::Host for StoreData {
     ) -> Result<std::result::Result<Vec<u8>, String>> {
         self.host.action_call(&method, &args).map_err(denied)
     }
+}
+
+/// Shadows every `calimero:app` function of the app world but `files` with its charged
+/// version (`fuel.rs`).
+pub(crate) fn charge_calls(linker: &mut Linker<StoreData>) -> Result<()> {
+    use crate::fuel::{calimero, charged};
+    {
+        let mut i = calimero(linker, "storage")?;
+        charged!(i, "get", |d, key: Vec<u8>| storage::Host::get(d, key));
+        charged!(i, "put", |d, key: Vec<u8>, value: Vec<u8>| -> () storage::Host::put(d, key, value));
+        charged!(i, "delete", |d, key: Vec<u8>| -> () storage::Host::delete(d, key));
+        charged!(i, "add", |d, key: Vec<u8>, delta: i64| -> () storage::Host::add(d, key, delta));
+        // A refused checked write (a run limit) still pays for what it was handed.
+        charged!(i, "put-checked", |d, key: Vec<u8>, value: Vec<u8>| {
+            storage::Host::put_checked(d, key, value)
+        });
+        charged!(i, "delete-checked", |d, key: Vec<u8>| {
+            storage::Host::delete_checked(d, key)
+        });
+        charged!(i, "add-checked", |d, key: Vec<u8>, delta: i64| {
+            storage::Host::add_checked(d, key, delta)
+        });
+        charged!(i, "range", |d,
+                              start: Vec<u8>,
+                              end: Vec<u8>,
+                              reverse: bool| {
+            storage::Host::range(d, start, end, reverse)
+        });
+        charged!(
+            i,
+            "[method]cursor.next",
+            |d, this: Resource<storage::Cursor>, max: u32| {
+                storage::HostCursor::next(d, this, max)
+            }
+        );
+    }
+    {
+        let mut i = calimero(linker, "rebuild")?;
+        charged!(i, "get", |d, key: Vec<u8>| rebuild::Host::get(d, key));
+        charged!(i, "put", |d, key: Vec<u8>, value: Vec<u8>| -> () rebuild::Host::put(d, key, value));
+        charged!(i, "delete", |d, key: Vec<u8>| -> () rebuild::Host::delete(d, key));
+        charged!(i, "add", |d, key: Vec<u8>, delta: i64| -> () rebuild::Host::add(d, key, delta));
+        charged!(i, "range", |d,
+                              start: Vec<u8>,
+                              end: Vec<u8>,
+                              reverse: bool| {
+            rebuild::Host::range(d, start, end, reverse)
+        });
+    }
+    {
+        let mut i = calimero(linker, "context")?;
+        charged!(i, "caller", |d| context::Host::caller(d));
+        charged!(i, "visitor", |d| context::Host::visitor(d));
+        charged!(i, "via", |d| context::Host::via(d));
+        charged!(i, "grant-scope", |d| context::Host::grant_scope(d));
+        charged!(i, "app-id", |d| context::Host::app_id(d));
+        charged!(i, "linked", |d, name: String| context::Host::linked(
+            d, name
+        ));
+        charged!(i, "unit-of", |d| context::Host::unit_of(d));
+        charged!(i, "app-owner", |d| context::Host::app_owner(d));
+        charged!(i, "org", |d| context::Host::org(d));
+        charged!(i, "org-role", |d, account: String| context::Host::org_role(
+            d, account
+        ));
+        charged!(i, "org-role-strict", |d, account: String| {
+            context::Host::org_role_strict(d, account)
+        });
+        charged!(i, "orgs-of", |d, account: String| context::Host::orgs_of(
+            d, account
+        ));
+        charged!(i, "in-team", |d, account: String, team: String| {
+            context::Host::in_team(d, account, team)
+        });
+        charged!(i, "applied-index", |d| context::Host::applied_index(d));
+        charged!(i, "unique-id", |d| context::Host::unique_id(d));
+        charged!(i, "start-action", |d, method: String, args: Vec<u8>| {
+            context::Host::start_action(d, method, args)
+        });
+    }
+    {
+        let mut i = calimero(linker, "events")?;
+        charged!(i, "emit", |d, e: types::Event| events::Host::emit(d, e));
+    }
+    {
+        let mut i = calimero(linker, "blobs")?;
+        charged!(i, "info", |d, id: String| blobs::Host::info(d, id));
+        charged!(i, "grant", |d, id: String, ttl: u32| blobs::Host::grant(
+            d, id, ttl
+        ));
+    }
+    {
+        let mut i = calimero(linker, "search")?;
+        charged!(i, "query", |d,
+                              table: String,
+                              text: String,
+                              mode: search::SearchMode,
+                              cursor: u32,
+                              limit: u32| {
+            search::Host::query(d, table, text, mode, cursor, limit)
+        });
+    }
+    {
+        let mut i = calimero(linker, "runs")?;
+        charged!(
+            i,
+            "start",
+            |d, method: String, args: Vec<u8>, inputs: Vec<String>| {
+                runs::Host::start(d, method, args, inputs)
+            }
+        );
+        charged!(i, "cancel", |d, run: String| runs::Host::cancel(d, run));
+        charged!(i, "uploader", |d, id: String| runs::Host::uploader(d, id));
+        charged!(i, "publish", |d, id: String| runs::Host::publish(d, id));
+    }
+    {
+        let mut i = calimero(linker, "xcall")?;
+        charged!(i, "send", |d,
+                             app: String,
+                             method: String,
+                             args: Vec<u8>| {
+            xcall::Host::send(d, app, method, args)
+        });
+        charged!(i, "call", |d,
+                             app: String,
+                             method: String,
+                             args: Vec<u8>| {
+            xcall::Host::call(d, app, method, args)
+        });
+        charged!(i, "view", |d,
+                             app: String,
+                             method: String,
+                             args: Vec<u8>| {
+            xcall::Host::view(d, app, method, args)
+        });
+        charged!(i, "batch", |d, requests: Vec<xcall::Request>| {
+            xcall::Host::batch(d, requests)
+        });
+    }
+    {
+        let mut i = calimero(linker, "action")?;
+        charged!(i, "key", |d| action::Host::key(d));
+        charged!(i, "view", |d, method: String, args: Vec<u8>| {
+            action::Host::view(d, method, args)
+        });
+        charged!(i, "call", |d, method: String, args: Vec<u8>| {
+            action::Host::call(d, method, args)
+        });
+    }
+    let mut i = linker.instance("wasi:http/outgoing-handler@0.2.12")?;
+    charged!(i, "handle", |d,
+                           request: Resource<
+        crate::http::OutgoingRequest,
+    >,
+                           options: Option<
+        Resource<crate::http::RequestOptions>,
+    >| {
+        wasi::http::outgoing_handler::Host::handle(d, request, options)
+    });
+    Ok(())
+}
+
+/// Shadows `calimero:app/files` (both worlds link it) with its charged version.
+pub(crate) fn charge_files(linker: &mut Linker<StoreData>) -> Result<()> {
+    use crate::fuel::{calimero, charged};
+    let mut i = calimero(linker, "files")?;
+    charged!(i, "create", |d| files::Host::create(d));
+    charged!(i, "open", |d, id: String| files::Host::open(d, id));
+    charged!(i, "info", |d, id: String| files::Host::info(d, id));
+    charged!(
+        i,
+        "[method]writer.write",
+        |d, this: Resource<files::Writer>, bytes: Vec<u8>| {
+            files::HostWriter::write(d, this, bytes)
+        }
+    );
+    charged!(i, "[method]writer.finish", |d,
+                                          this: Resource<
+        files::Writer,
+    >| {
+        files::HostWriter::finish(d, this)
+    });
+    charged!(
+        i,
+        "[method]reader.read",
+        |d, this: Resource<files::Reader>, max: u32| files::HostReader::read(d, this, max)
+    );
+    Ok(())
 }

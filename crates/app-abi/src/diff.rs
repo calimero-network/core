@@ -7,7 +7,7 @@
 //! cannot read, which only a state version bump (and its migration) may do.
 //!
 //! The app types those name are compared by their shapes in `types`, with the same rule in
-//! the direction each one travels ([`shapes`]).
+//! the direction each one travels (`shapes`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -563,7 +563,7 @@ mod tests {
     fn abi_with(methods: Value, errors: Value, events: Value, state: Value) -> AppAbi {
         AppAbi::from_json(&json!({
             "abiVersion": 1,
-            "world": "calimero:app@0.5.6",
+            "world": "calimero:app@0.5.7",
             "methods": methods,
             "errors": errors,
             "events": events,
@@ -644,7 +644,7 @@ mod tests {
         assert!(!widens(&t("u32"), &t("u16")));
         assert!(widens(&t("list<u16>"), &t("list<u32>")));
         assert!(widens(&t("char"), &t("string")));
-        // A JSON number and D20's decimal string are different forms.
+        // A JSON number and the SDK's decimal string are different forms.
         assert!(!widens(&t("u64"), &t("u64_number")));
         assert!(!widens(&t("u64_number"), &t("u64")));
         assert!(widens(&t("u32"), &t("u64_number")));
@@ -796,7 +796,7 @@ mod tests {
     fn world_patch_is_compatible_minor_breaks() {
         let mut a = abi(json!({}));
         let mut b = a.clone();
-        b.world = Some("calimero:app@0.5.6".into());
+        b.world = Some("calimero:app@0.5.7".into());
         assert!(!diff(&a, &b).is_breaking());
         a.world = Some("calimero:app@0.6.0".into());
         assert!(diff(&b, &a).is_breaking());

@@ -190,7 +190,7 @@ fn save(dir: &Path, storage_key: &[u8; 32], cluster_key: &[u8; 32]) -> eyre::Res
 
 /// This node's K_c and the listener it serves on: unwrapped from its data
 /// directory, minted (a founder, or a store from before K_c), or delivered by
-/// a peer (a new node, which serves [`waiting_router`] on `listener` meanwhile).
+/// a peer (a new node, which serves `waiting_router` on `listener` meanwhile).
 pub async fn resolve(
     config: &Config,
     listener: TcpListener,
@@ -456,8 +456,13 @@ async fn ask(
     let resp = peer.execute(req).await?;
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        bail!("{url} answered {status}: {body}");
+        // The peer's error code, not its message: this error is logged, and the
+        // operator's log carries no peer's words (`crate::log_safe`).
+        let code = resp
+            .json::<crate::error::ApiError>()
+            .await
+            .map_or_else(|_| "an unreadable body".to_owned(), |e| e.code);
+        bail!("{url} answered {status}: {code}");
     }
     Ok(())
 }

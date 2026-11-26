@@ -8,9 +8,11 @@
 //! or ask a question from a set, with the answer kept here and never returned.
 //!
 //! `verifyTurnstile` checks a Cloudflare Turnstile token instead, with an outbound request
-//! from the call itself (D76): the signed release declares `TURNSTILE_VERIFY_URL` under
-//! `outbound`, its owner approves it, and the node's operator holds the site's secret as
-//! `TURNSTILE_SECRET` for this package, which the node fills in and the app never sees.
+//! from the call itself: the signed release declares `TURNSTILE_VERIFY_URL` under
+//! `outbound` and binds `TURNSTILE_SECRET` to siteverify's `secret` body field (its
+//! `Cargo.toml`), its owner approves it, and the node attaches the site's secret, held by
+//! the instance's owner or the node's operator, to the form itself: the app never names,
+//! places or sees it.
 //! The exchange is recorded in this app's log entry, so a retry of the same call replays
 //! the answer and never spends the token twice.
 
@@ -50,7 +52,7 @@ pub enum Error {
 }
 
 /// What a client shows: never the answer.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct Puzzle {
     pub id: String,
     pub question: String,
@@ -108,7 +110,8 @@ impl Captcha {
     }
 
     /// Whether Cloudflare Turnstile accepts `token`: one request to its siteverify from this
-    /// call, with the site's secret filled in by the node. For apps of the organization
+    /// call. The site's secret is never named here: the release binds `TURNSTILE_SECRET` to
+    /// siteverify's `secret` body field, and the node adds that field to the form itself. For apps of the organization
     /// (`env::xcall_call`), like `verify`. A token is spent by its first check; an
     /// unreachable Turnstile is `false`, never a pass.
     #[app::allow(app = "*")]
@@ -116,10 +119,7 @@ impl Captcha {
         if !matches!(env::caller(), Caller::App(_)) {
             app::bail!(Error::AppsOnly);
         }
-        let body = format!(
-            "secret={{{{secret:TURNSTILE_SECRET}}}}&response={}",
-            form_escape(&token)
-        );
+        let body = format!("response={}", form_escape(&token));
         let request = Request::post(TURNSTILE_VERIFY_URL, body)
             .header("Content-Type", "application/x-www-form-urlencoded");
         let Ok(response) = env::fetch(&request) else {

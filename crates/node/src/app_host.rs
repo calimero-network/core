@@ -22,14 +22,16 @@
 //!   `/{version}/{path}?deployment={id}`, the release that deployment offers
 //!   for this package (the newest, if it offers several), so the page knows
 //!   which deployment to create instances from.
-//! - `GET /.well-known/calimero.json`: the package, its releases, the
-//!   deployments offering it (`id`, `name`, `app`, `version`) and the
-//!   cluster's API URLs, for the page to connect to.
+//! - `GET /.well-known/calimero.json`: the package, the node's cluster (its
+//!   `--cluster`), its releases, the deployments offering it (`id`, `name`,
+//!   `app`, `version`) and the cluster's API URLs, for the page to connect
+//!   to. Like the page, it is for finding the cluster, never for trust: the
+//!   client attests every node under its own policy.
 //! - Nothing else: only `GET` and `HEAD`, never the node's own routes.
 //!
 //! Every redirect keeps the request's query, after the `deployment` it adds
 //! (an invite link, `/?invite=...`, reaches the page with its token); a query
-//! past [`MAX_REDIRECT_QUERY_BYTES`] is refused `414`. The fragment never
+//! past `MAX_REDIRECT_QUERY_BYTES` is refused `414`. The fragment never
 //! reaches the node: the browser keeps it across the redirect itself.
 //!
 //! On a cluster, a package's frontend is also at
@@ -59,9 +61,8 @@
 //! same site there as on the package's host ([`Node::served_site`]); unlike
 //! the package's host it is a registered origin, under its own rp-id, so
 //! ceremonies, CORS and session binding go as they do for any registered
-//! origin. TLS for it ends where it does for the apps domain, inside the TD
-//! in front of merod, with a certificate mdma orders over the node's quote;
-//! design and rollout in `docs/specs/custom-domains.md`.
+//! origin. merod holds no certificate for it: TLS ends in front of merod, as it
+//! does for the apps domain ([Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains)).
 
 use core::future::Future;
 use std::collections::{BTreeMap, HashMap};
@@ -194,7 +195,7 @@ type LoadingFrontends = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
 
 /// Frontends opened from their `.mpk`, newest use last, and the releases known
 /// to ship none. One load runs per release at a time, and at most
-/// [`FRONTEND_LOADS`] across releases.
+/// `FRONTEND_LOADS` across releases.
 pub struct FrontendCache {
     open: Mutex<OpenFrontends>,
     clock: std::sync::atomic::AtomicU64,
@@ -416,7 +417,7 @@ impl Node {
         self.frontends
             .get_or_load(key, || async {
                 let mpk = self.release_mpk(package, &v).await?;
-                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk))?;
+                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk)).await?;
                 let Some(entry) = bundle.manifest().frontend.as_ref().map(|f| f.entry.clone())
                 else {
                     return Ok(None);
@@ -573,6 +574,7 @@ async fn serve(node: &Node, site: &Site, req: Request) -> Response {
         deployments.sort_by_key(|d| own.is_none_or(|own| d["id"] != own));
         let body = serde_json::json!({
             "package": package,
+            "cluster": node.config.cluster,
             "deployment": own,
             "versions": versions,
             "deployments": deployments,

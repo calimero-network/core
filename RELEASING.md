@@ -150,12 +150,14 @@ check lints them) and to what counts as breaking.
 ### How a release is cut
 
 - **Version.** The one version of every public crate, `merod` and `meroctl` is `version` under `[workspace.metadata.workspaces]` in the root
-  `Cargo.toml` (`1.0.0-rc.35` at the time of writing). Nothing else holds it.
+  `Cargo.toml` (`1.0.0-rc.37` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`,
   and the SDKs' root `VERSION` to the same (`python3 scripts/sdks.py version-sync`
   then writes it into every SDK's version files; the `SDK scope` job fails while
   they differ), and nothing else. Deciding to cut a release and merging this pull request is
-  a human's call; an agent drafts one only when asked.
+  a human's call; an agent drafts one only when asked. It runs `e2e.yml` in full
+  before it merges (any other PR runs it after, on master): the merge publishes. Cut
+  it from a green master, with no open `master is red` issue.
 - **Release notes, not a changelog file.** Core keeps no `CHANGELOG.md`: a
   hand-written one conflicted in nearly every pull request. The release's notes
   are generated when it is created (`gh release create --generate-notes`): every
@@ -238,21 +240,24 @@ opens one pull request per consumer in [`.github/fleet.json`](.github/fleet.json
 on the branch `chore/core-X`, as the organization's GitHub App, with
 [`.github/scripts/bump-fleet.sh`](.github/scripts/bump-fleet.sh) doing the edits:
 
-- `cargo` surface (apps, mero-ar, mero-tag, calimero-studio): pins
+- `cargo` surface (apps, calimero-studio): pins
   `calimero-network/core` to the tag `X` (`chore(deps): pin the Calimero SDK to X`).
   A source-level break makes that pull request red until someone writes the code.
   Where the repository pins the client generator in `scripts/install-meroctl.sh`
   (`TAG="${MEROCTL_TAG:-X}"`, the apps repository; `scripts/install-mero-app-build.sh`
   with `MERO_APP_BUILD_TAG` before it moved to meroctl), the pin moves to `X` too,
-  unless it runs ahead, and every package's `codegen` reruns with `X`'s released
-  `meroctl` (or `mero-app-build`) binary, so the committed clients arrive regenerated. When they
-  cannot be (no binary for `X`, a codegen failure), the pull request's list of pins
-  left unmoved names the command to run.
+  unless it runs ahead, and what is generated with it is regenerated with `X`'s released
+  `meroctl` (or `mero-app-build`) binary, after the lockfiles, in order: every committed
+  ABI (`apps/*/logic/res/abi.json`, rebuilt by `scripts/component-build.sh`, since the
+  SDK writes it, WIT world `calimero:app@X` included, when the app is compiled), every
+  package's `codegen` (the web clients), and `scripts/mobile-codegen.sh` (the Swift and
+  Kotlin clients). When a step cannot run (no binary for `X`, a build or codegen
+  failure), the pull request's list of pins left unmoved names the commands to run.
 - `tee` surface (mero-tee): sets `merodVersion` in `mero-tee/versions.json`,
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).
   The image itself is released by mero-tee's own workflows.
-- `mobile` surface (apps, mero-tag, mero-ar): once Maven Central serves mero-kotlin `X`, moves the
+- `mobile` surface (apps, mero-tag and mero-ar among them): once Maven Central serves mero-kotlin `X`, moves the
   core package's `exactVersion` in XcodeGen `project.yml`, `exact:` in
   `Package.swift`, the core pin in `Package.resolved` (to the commit `X` is tagged
   at), and the `libs.versions.toml` version the `network.calimero:mero-kotlin`

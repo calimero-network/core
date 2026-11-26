@@ -147,13 +147,23 @@ pub enum KeySource<'a> {
 
 /// Pick the storage key's source. A TDX node (no `--dev`) takes it from
 /// mero-kms only: a key the host could hand it (a flag, a file) would let
-/// whoever runs the host read the disks (Xil's review, issue 3).
+/// whoever runs the host read the disks.
 pub fn key_source<'a>(
     dev: bool,
     raw: Option<&'a str>,
     file: Option<&'a Path>,
     kms: Option<(&'a str, &'a Path)>,
 ) -> eyre::Result<KeySource<'a>> {
+    // A development node attests with mock quotes and admits mock peers, so it
+    // must never hold a key a real TD's mero-kms released: that key opens the
+    // node's disk and, through it, the cluster key, which a mock-attested peer
+    // could then be sent (security review: dev mode with a KMS key).
+    if dev && kms.is_some() {
+        bail!(
+            "--dev attests with mock quotes, so it never takes a key from mero-kms: \
+             drop --kms-url and --kms-identity, or run without --dev"
+        );
+    }
     if !dev && (raw.is_some() || file.is_some()) {
         bail!(
             "a TDX node takes its storage key from mero-kms only (--kms-url with \
@@ -173,8 +183,8 @@ pub fn key_source<'a>(
 mod tests {
     use super::*;
 
-    /// Xil's review, issue 3: a TDX-mode node started with `--storage-key` or
-    /// a key file (32 zero bytes included), never asking mero-kms.
+    /// A TDX-mode node started with `--storage-key` or a key file (32 zero bytes
+    /// included) is refused: it takes its key from mero-kms only.
     #[test]
     fn a_tdx_node_takes_its_key_from_the_kms_only() {
         let id = Path::new("/id");
@@ -194,6 +204,25 @@ mod tests {
             key_source(true, None, Some(file), None).unwrap(),
             KeySource::File(file)
         );
+    }
+
+    /// Security review: a `--dev` node (mock attestation, mock peers accepted)
+    /// started with `--kms-url` took the real storage key from mero-kms, and
+    /// with it the cluster key, which it could then deliver to a peer
+    /// answering with a mock quote. A development node never asks mero-kms.
+    #[test]
+    fn a_dev_node_never_takes_a_key_from_the_kms() {
+        let id = Path::new("/id");
+        let err = key_source(true, None, None, Some(("https://kms", id))).unwrap_err();
+        assert!(err.to_string().contains("--dev"), "{err}");
+        assert!(key_source(
+            true,
+            Some(&"00".repeat(32)),
+            None,
+            Some(("https://kms", id))
+        )
+        .is_err());
+        assert_eq!(key_source(true, None, None, None).unwrap(), KeySource::Dev);
     }
 
     #[test]

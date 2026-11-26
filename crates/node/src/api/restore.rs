@@ -13,7 +13,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{operator, operator_proof, ApiResult, OperatorProofBody};
@@ -96,7 +96,7 @@ pub(super) async fn recover_holder(
     Json(b): Json<RecoverHolderBody>,
 ) -> ApiResult {
     use crate::recovery_disk::{self as disk, Kind};
-    use crate::system::{import_holder_args, BackupHolder, HolderSlice, ImportedApp};
+    use crate::system::{import_holder_args, HolderSlice, ImportedApp};
     let bad = |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
     if b.apps.len() + b.code.len() > MAX_RECOVERY_CODE_FILES {
         return Err(ApiError::bad_request(
@@ -104,16 +104,7 @@ pub(super) async fn recover_holder(
             &format!("at most {MAX_RECOVERY_CODE_FILES} files"),
         ));
     }
-    let holder = match b.holder.split_once(':') {
-        Some(("org", id)) if !id.is_empty() => BackupHolder::Org(id.to_owned()),
-        Some(("account", id)) if !id.is_empty() => BackupHolder::Account(id.to_owned()),
-        _ => {
-            return Err(ApiError::bad_request(
-                "BAD_REQUEST",
-                "holder is org:<id> or account:<id>",
-            ))
-        }
-    };
+    let holder = parse_holder(&b.holder, false)?;
     let Some(dir) = node
         .config
         .recovery_dir
@@ -246,13 +237,16 @@ pub(super) async fn recover_holder(
             .and_then(|a| a.iter().find(|x| x["app"] == app_id.as_str()))
             .and_then(|x| x["group"].as_u64())
             .ok_or_else(|| ApiError::internal("the import recorded no group"))?;
-        let backup = json!({
-            "name": opened.path.file_name().map(|n| n.to_string_lossy().into_owned()),
-            "index": opened.header.index,
-            "format": opened.header.format,
-            "merod": opened.header.merod,
-            "release": opened.header.release,
-        });
+        let backup = crate::node::restore::RestoredFrom {
+            name: opened
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            index: opened.header.index,
+            format: opened.header.format,
+            merod: Some(opened.header.merod.clone()),
+            release: Some(opened.header.release.clone()),
+        };
         let index = opened.header.index;
         let done = node
             .seed_with(&app_id, group, index, backup, |g| {
@@ -269,7 +263,7 @@ pub(super) async fn recover_holder(
             .await?;
         restored.push(done);
     }
-    Ok(Json(json!({ "apps": restored })))
+    Ok(Json(json!(HolderRecovered { apps: restored })))
 }
 
 /// The most recovery files one listing answers.
@@ -293,21 +287,8 @@ pub(super) async fn ops_recovery_files(
     Query(q): Query<RecoveryFilesQuery>,
 ) -> ApiResult {
     use crate::recovery_disk as disk;
-    use crate::system::BackupHolder;
     operator(&node, &headers)?;
-    let holder = match q.holder.as_deref().unwrap_or("operator") {
-        "operator" => BackupHolder::Operator,
-        h => match h.split_once(':') {
-            Some(("org", id)) if !id.is_empty() => BackupHolder::Org(id.to_owned()),
-            Some(("account", id)) if !id.is_empty() => BackupHolder::Account(id.to_owned()),
-            _ => {
-                return Err(ApiError::bad_request(
-                    "BAD_REQUEST",
-                    "holder is operator, org:<id> or account:<id>",
-                ))
-            }
-        },
-    };
+    let holder = parse_holder(q.holder.as_deref().unwrap_or("operator"), true)?;
     let Some(dir) = node
         .config
         .recover_from
@@ -330,16 +311,19 @@ pub(super) async fn ops_recovery_files(
             let Ok(opened) = disk::read(&path) else {
                 continue;
             };
-            out.push(json!({
-                "name": path.file_name().map(|n| n.to_string_lossy().into_owned()),
-                "header": String::from_utf8_lossy(&opened.header_bytes),
-                "signature": hex::encode(opened.signature),
-            }));
+            out.push(RecoveryFile {
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                header: String::from_utf8_lossy(&opened.header_bytes).into_owned(),
+                signature: hex::encode(opened.signature),
+            });
         }
         Ok::<_, eyre::Report>(out)
     })
     .map_err(|e| ApiError::internal(&format!("{e:#}")))?;
-    Ok(Json(json!({ "holder": holder, "files": files })))
+    Ok(Json(json!(RecoveryFiles { holder, files })))
 }
 
 /// The most code files one recovery takes.
@@ -371,7 +355,7 @@ pub(super) async fn ops_recover(
     let out = node
         .recover_system((&b.system.file, &system), &code)
         .await?;
-    Ok(Json(out))
+    Ok(Json(json!(out)))
 }
 
 /// Restore `app_id` from recovery-disk file `r` (see [`ops_restore`]): the
@@ -480,13 +464,13 @@ async fn ops_restore_recovery(
     };
     let (old_key, new_key) = node.load_recovery_segments(&at, &app_id, &opened, &key)?;
     let index = h.index;
-    let backup = json!({
-        "name": r.file,
-        "index": index,
-        "format": h.format,
-        "merod": h.merod,
-        "release": h.release,
-    });
+    let backup = crate::node::restore::RestoredFrom {
+        name: Some(r.file.clone()),
+        index,
+        format: h.format,
+        merod: Some(h.merod.clone()),
+        release: Some(h.release.clone()),
+    };
     tokio::spawn(async move {
         let _moving = guard;
         let out = node
@@ -515,7 +499,7 @@ async fn ops_restore_recovery(
             })
         })
         .await
-        .map(Json)
+        .map(|r| Json(json!(r)))
     })
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -649,8 +633,91 @@ pub(super) async fn ops_restore(
         let group = out["group"]
             .as_u64()
             .ok_or_else(|| ApiError::internal("the restore recorded no group"))?;
-        node.seed_restore(&app_id, group, &found).await.map(Json)
+        node.seed_restore(&app_id, group, &found)
+            .await
+            .map(|r| Json(json!(r)))
     })
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?
+}
+
+/// What `POST /recover/holder` answers: each app restored from the holder's files.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct HolderRecovered {
+    apps: Vec<crate::node::restore::AppRestored>,
+}
+
+/// `GET /ops/recovery-files`: a holder and its recovery files, each with its signed header.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RecoveryFiles {
+    holder: crate::system::BackupHolder,
+    files: Vec<RecoveryFile>,
+}
+
+/// A recovery file: its name, its header (JSON text) and the node's signature over it (hex).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RecoveryFile {
+    name: String,
+    header: String,
+    signature: String,
+}
+
+/// A backup holder named in a request: `org:<id>`, `account:<id>`, and with
+/// `operator` the operator. The id names a directory under `--recovery-dir`
+/// ([`crate::recovery_disk::holder_dir`]), so one that could leave it (a path
+/// separator, NUL, `.` or `..`) is refused (security review: `org:../..`).
+fn parse_holder(named: &str, operator: bool) -> Result<crate::system::BackupHolder, ApiError> {
+    use crate::system::BackupHolder;
+    let fits =
+        |id: &str| !id.is_empty() && id != "." && id != ".." && !id.contains(['/', '\\', '\0']);
+    match named.split_once(':') {
+        _ if operator && named == "operator" => Ok(BackupHolder::Operator),
+        Some(("org", id)) if fits(id) => Ok(BackupHolder::Org(id.to_owned())),
+        Some(("account", id)) if fits(id) => Ok(BackupHolder::Account(id.to_owned())),
+        _ => Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            if operator {
+                "holder is operator, org:<id> or account:<id>"
+            } else {
+                "holder is org:<id> or account:<id>"
+            },
+        )),
+    }
+}
+
+#[cfg(test)]
+mod holder_tests {
+    use super::parse_holder;
+    use crate::system::BackupHolder;
+
+    /// Security review: a holder id is a directory name under
+    /// `--recovery-dir`, so one that leaves it is refused before any file is read.
+    #[test]
+    fn a_holder_id_never_leaves_the_recovery_dir() {
+        for bad in [
+            "org:../..",
+            "org:..",
+            "org:.",
+            "account:a/b",
+            "account:a\\b",
+            "org:a\0b",
+            "org:",
+            "nobody:x",
+        ] {
+            assert!(parse_holder(bad, true).is_err(), "{bad}");
+        }
+        assert!(parse_holder("operator", false).is_err());
+        assert_eq!(
+            parse_holder("org:acme", false).unwrap(),
+            BackupHolder::Org("acme".into())
+        );
+        assert_eq!(
+            parse_holder("account:a.b-c_1", false).unwrap(),
+            BackupHolder::Account("a.b-c_1".into())
+        );
+        assert_eq!(
+            parse_holder("operator", true).unwrap(),
+            BackupHolder::Operator
+        );
+    }
 }

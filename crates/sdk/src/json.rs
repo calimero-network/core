@@ -1,4 +1,5 @@
-//! serde helpers for JSON (D20): 64-bit integers are decimal strings and bytes are base64url.
+//! serde helpers for JSON: 64-bit integers are decimal strings and bytes are base64url
+//! ([Types](https://calimero-network.github.io/core/build/app-abi/#types)).
 //!
 //! Use as `#[serde(with = "u64_str")]` (and `i64_str`, `opt_u64_str`, `opt_i64_str`,
 //! `bytes_b64url`, `opt_bytes_b64url`); the `app` macros apply them to method arguments and
@@ -7,7 +8,8 @@
 //! no leading zeros, no `-0`. The `*_auto` forms are for record fields: the JSON form in
 //! human-readable formats, the native CBOR form (integer, byte string) otherwise.
 
-use core::fmt::Display;
+use core::fmt::{self, Display};
+use core::marker::PhantomData;
 use core::str::FromStr;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -35,11 +37,48 @@ where
     text.parse().map_err(E::custom)
 }
 
+/// A 64-bit integer read from its decimal string; a JSON number is refused as "expected a
+/// u64 as a decimal string", so the caller learns the wire form.
+struct Dec<T>(T);
+
+impl<'de, T: FromStr> Deserialize<'de> for Dec<T>
+where
+    T::Err: Display,
+{
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct DecVisitor<T>(PhantomData<T>);
+
+        impl<T: FromStr> Visitor<'_> for DecVisitor<T>
+        where
+            T::Err: Display,
+        {
+            type Value = T;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "a {} as a decimal string", core::any::type_name::<T>())
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<T, E> {
+                parse_decimal(v)
+            }
+        }
+
+        d.deserialize_str(DecVisitor(PhantomData)).map(Dec)
+    }
+}
+
 fn de<'de, T: FromStr, D: Deserializer<'de>>(d: D) -> Result<T, D::Error>
 where
     T::Err: Display,
 {
-    parse_decimal(&String::deserialize(d)?)
+    Dec::deserialize(d).map(|Dec(v)| v)
+}
+
+fn de_opt<'de, T: FromStr, D: Deserializer<'de>>(d: D) -> Result<Option<T>, D::Error>
+where
+    T::Err: Display,
+{
+    Ok(Option::<Dec<T>>::deserialize(d)?.map(|Dec(v)| v))
 }
 
 macro_rules! str_int {
@@ -73,9 +112,7 @@ macro_rules! str_int {
 
             /// Deserialize from a decimal string, or null.
             pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<$t>, D::Error> {
-                Option::<String>::deserialize(d)?
-                    .map(|v| parse_decimal(&v))
-                    .transpose()
+                de_opt(d)
             }
         }
     };
@@ -125,9 +162,7 @@ macro_rules! auto_int {
             /// A string or null from JSON, an integer or null from CBOR.
             pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<$t>, D::Error> {
                 if d.is_human_readable() {
-                    Option::<String>::deserialize(d)?
-                        .map(|v| parse_decimal(&v))
-                        .transpose()
+                    de_opt(d)
                 } else {
                     Option::<$t>::deserialize(d)
                 }
@@ -262,7 +297,7 @@ pub mod opt_bytes_auto {
 /// Bytes as a value in state or in a plain serde type: a CBOR byte string when stored (one
 /// byte per byte), base64url in JSON. A bare `Vec<u8>` in a `Cell`, a map value or a plain
 /// struct is stored as a CBOR list of numbers, about twice its size; records and method
-/// parameters already convert `Vec<u8>` (D20), collections and plain structs need this.
+/// parameters already convert `Vec<u8>` to base64url, collections and plain structs need this.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Bytes(pub Vec<u8>);
 

@@ -1,4 +1,4 @@
-//! Test guest: exercises the nine D44 stubs (stdin, exit, terminals, filesystem).
+//! Test guest: exercises the nine stubbed WASI interfaces (stdin, exit, terminals, filesystem).
 
 use wasi::cli::{environment, exit, stdin, terminal_stderr, terminal_stdin, terminal_stdout};
 use wasi::filesystem::preopens;
@@ -8,7 +8,7 @@ wit_bindgen::generate!({
         package test:stubs;
 
         world stubs {
-            include calimero:app/app@0.5.6;
+            include calimero:app/app@0.5.7;
             import wasi:cli/stdin@0.2.12;
             import wasi:cli/exit@0.2.12;
             import wasi:cli/terminal-stdin@0.2.12;
@@ -22,7 +22,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.6","methods":{"preopens":{"kind":"call"},"open":{"kind":"call"},"stdin":{"kind":"call"},"terminals":{"kind":"call"},"env":{"kind":"call"},"exit":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.7","methods":{"preopens":{"kind":"call"},"open":{"kind":"call"},"stdin":{"kind":"call"},"terminals":{"kind":"call"},"env":{"kind":"call"},"exit":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

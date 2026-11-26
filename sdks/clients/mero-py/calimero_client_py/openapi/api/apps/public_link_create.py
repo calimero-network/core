@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.public_link_create_body import PublicLinkCreateBody
-from ...models.public_link_create_response_200 import PublicLinkCreateResponse200
+from ...models.public_link_made import PublicLinkMade
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PublicLinkCreateResponse200]]:
+) -> Optional[Union[Error, PublicLinkMade]]:
     if response.status_code == 200:
-        response_200 = PublicLinkCreateResponse200.from_dict(response.json())
+        response_200 = PublicLinkMade.from_dict(response.json())
 
         return response_200
 
@@ -91,7 +91,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PublicLinkCreateResponse200]]:
+) -> Response[Union[Error, PublicLinkMade]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -105,7 +105,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: PublicLinkCreateBody,
-) -> Response[Union[Error, PublicLinkCreateResponse200]]:
+) -> Response[Union[Error, PublicLinkMade]]:
     r"""Make a public link of an instance
 
      A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor
@@ -131,7 +131,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PublicLinkCreateResponse200]]
+        Response[Union[Error, PublicLinkMade]]
     """
 
     kwargs = _get_kwargs(
@@ -151,7 +151,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: PublicLinkCreateBody,
-) -> Optional[Union[Error, PublicLinkCreateResponse200]]:
+) -> Optional[Union[Error, PublicLinkMade]]:
     r"""Make a public link of an instance
 
      A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor
@@ -177,7 +177,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PublicLinkCreateResponse200]
+        Union[Error, PublicLinkMade]
     """
 
     return sync_detailed(
@@ -192,7 +192,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: PublicLinkCreateBody,
-) -> Response[Union[Error, PublicLinkCreateResponse200]]:
+) -> Response[Union[Error, PublicLinkMade]]:
     r"""Make a public link of an instance
 
      A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor
@@ -218,7 +218,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PublicLinkCreateResponse200]]
+        Response[Union[Error, PublicLinkMade]]
     """
 
     kwargs = _get_kwargs(
@@ -236,7 +236,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: PublicLinkCreateBody,
-) -> Optional[Union[Error, PublicLinkCreateResponse200]]:
+) -> Optional[Union[Error, PublicLinkMade]]:
     r"""Make a public link of an instance
 
      A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor
@@ -262,7 +262,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PublicLinkCreateResponse200]
+        Union[Error, PublicLinkMade]
     """
 
     return (

@@ -14,7 +14,7 @@
 //!   anywhere, so a restart replaces it.
 //! * The node's `GET /attestation` returns its public half and commits to it in
 //!   the quote's report data
-//!   ([`calimero_tee_attestation::attest_transport_binding`]). A client that
+//!   (`calimero_tee_attestation::attest_transport_binding`). A client that
 //!   verifies the quote knows the key belongs to the attested TD.
 //! * The client opens a **session** with a Noise NK handshake to that key
 //!   ([`HANDSHAKE_PATH`]). The transport key only authenticates the node: the
@@ -113,6 +113,13 @@ pub const SEALED_PATH: &str = "/sealed";
 /// Content type of every sealed body.
 pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 
+/// The sealed session a request was opened in, set by [`intercept`] on every
+/// request it opens (last, so nothing upstream chooses it) and on no plain
+/// request. It names the client's session, not the client: anyone may open
+/// another, at the rate the handshake limit allows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SealedSession(pub [u8; 16]);
+
 const VERSION: u8 = 2;
 /// `version || transport_pk || Noise message 1`.
 const HANDSHAKE_LEN: usize = 1 + 32 + MESSAGE_1_LEN;
@@ -194,7 +201,7 @@ impl std::error::Error for LowOrder {}
 /// Keeps a derived key apart from every Noise step that uses the same key and HKDF.
 const DERIVE_LABEL: &[u8] = b"calimero.sealed.derive.v1\0";
 
-/// HKDF-SHA256 of an X25519 shared secret, `info` under [`DERIVE_LABEL`]; the
+/// HKDF-SHA256 of an X25519 shared secret, `info` under `DERIVE_LABEL`; the
 /// one derivation both ends of a wrap use. Refuses the all-zero secret of a
 /// low-order point, in constant time.
 pub fn derive_shared(
@@ -414,7 +421,7 @@ pub struct SealedMetrics {
     pub sessions: AtomicU64,
 }
 
-/// Sweep expired sessions every [`EXPIRY_SWEEP`] until `shutdown`, so a
+/// Sweep expired sessions every `EXPIRY_SWEEP` until `shutdown`, so a
 /// session's keys are dropped when it expires, not whenever it is next named.
 /// Holds the transport weakly: it ends when the server does.
 pub async fn expire_sessions(transport: Weak<SealedTransport>, shutdown: CancellationToken) {
@@ -585,6 +592,11 @@ async fn open_and_dispatch(
     *inner.extensions_mut() = outer.extensions;
     // Which node opened the session, when it identified itself; set last, so
     // nothing upstream can have chosen it.
+    // Which session it came in, set last for the same reason: the node keys
+    // per-client limits on it (anonymous passkey ceremonies).
+    let _previous = inner
+        .extensions_mut()
+        .insert(SealedSession(envelope.session_id));
     match peer {
         Some(key) => {
             let _previous = inner.extensions_mut().insert(PeerKey(key));
@@ -595,8 +607,7 @@ async fn open_and_dispatch(
     }
     // The outer hop's Host, X-Forwarded-Host and Origin are set by whoever
     // relays the envelope, which is not who sealed it: copying them in would let
-    // a relay choose what the node reads as the request's origin (Xil's review,
-    // issue 13). The inner request keeps only what the client sealed.
+    // a relay choose what the node reads as the request's origin. The inner request keeps only what the client sealed.
     let _previous = transport.metrics.requests.fetch_add(1, Ordering::Relaxed);
 
     let response = next.run(inner).await;

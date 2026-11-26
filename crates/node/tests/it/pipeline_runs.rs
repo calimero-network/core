@@ -9,13 +9,14 @@ use common::UploadBytes as _;
 use std::time::{Duration, Instant};
 
 use calimero_client::pipeline_events::PipelineEvent;
-use calimero_client::Client;
+use calimero_client::{Client, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
 use calimero_node::component::{FailedReason, FinalOutcome, RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
 use calimero_node::node::ComputeLimits;
 use calimero_node::Node;
 use common::{mpk_with_pipelines, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
+use reqwest::Method;
 use serde_json::{json, Value};
 
 const JOB_A: u64 = 4;
@@ -229,6 +230,7 @@ impl Rig {
             n.node.set_compute_limits(test_limits());
         }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
+        let _org = alice.orgs().create("alice org", None, None).await.unwrap();
         let compute = common::components("fixture-compute")
             .compute
             .expect("a compute component");
@@ -253,14 +255,17 @@ impl Rig {
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
             .packages()
-            .upload(mpk_with_pipelines(
-                "com.test.job",
-                "1.0.0",
+            .upload(
+                mpk_with_pipelines(
+                    "com.test.job",
+                    "1.0.0",
+                    None,
+                    Some(&compute),
+                    &pipelines,
+                    &key,
+                ),
                 None,
-                Some(&compute),
-                &pipelines,
-                &key,
-            ))
+            )
             .await
             .unwrap();
         let app = alice
@@ -315,12 +320,20 @@ impl Rig {
         panic!("upload kept failing");
     }
 
+    /// Sent raw so the status is checked: generated clients read only the documented `200`.
     async fn start_run(&self, pipeline: &str, inputs: Value, params: Value) -> String {
-        let started = self
-            .alice
-            .start_pipeline_run(&self.app, pipeline, inputs, params)
-            .await
-            .unwrap();
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/pipelines/{pipeline}/runs", self.app),
+        )
+        .json(json!({ "inputs": inputs, "params": params }));
+        let resp = self.alice.transport().send(req).await.unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "start answers the documented status"
+        );
+        let started: Value = resp.json().await.unwrap();
         started["run"].as_str().unwrap().to_owned()
     }
 
@@ -862,14 +875,17 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
     let _installed = rig
         .alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "2.0.0",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "2.0.0",
+                None,
+                Some(&v2),
+                &[("pipelines/chain.yaml", CHAIN)],
+                &key,
+            ),
             None,
-            Some(&v2),
-            &[("pipelines/chain.yaml", CHAIN)],
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
@@ -913,20 +929,24 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
 async fn starting_needs_every_node_on_this_release() {
     let mut c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let compute = common::components("fixture-compute")
         .compute
         .expect("a compute component");
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "1.0.0",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "1.0.0",
+                None,
+                Some(&compute),
+                &[("pipelines/chain.yaml", CHAIN)],
+                &key,
+            ),
             None,
-            Some(&compute),
-            &[("pipelines/chain.yaml", CHAIN)],
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let app = alice
@@ -1021,6 +1041,8 @@ async fn a_start_is_refused_with_a_stable_code() {
     );
 }
 
+/// A start sent while the app's leader stops still finds its uploaded input on the new leader instead
+/// of answering it expired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_start_while_the_apps_leader_changes_finds_its_uploaded_file() {
     let mut rig = Rig::start(&[]).await;
@@ -1042,6 +1064,8 @@ async fn a_start_while_the_apps_leader_changes_finds_its_uploaded_file() {
     assert!(started.is_ok(), "{started:?}");
 }
 
+/// A start while the app has no leader answers `503 UNAVAILABLE`, not `OUTPUT_EXPIRED`: an input the
+/// leader cannot be asked about is not a forgotten one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_start_while_the_app_has_no_leader_is_unavailable_not_expired() {
     let mut rig = Rig::start_with(&[], |cfg| cfg.replicas = 1).await;
@@ -1066,6 +1090,8 @@ fn cached(v: &Value, step: &str) -> bool {
     v["steps"][step]["cached"] == json!(true)
 }
 
+/// A rerun with one parameter changed runs only the steps that parameter reaches; the others are
+/// answered from the step cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn rerunning_with_one_changed_param_runs_only_the_steps_it_reaches() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1108,6 +1134,7 @@ async fn rerunning_with_one_changed_param_runs_only_the_steps_it_reaches() {
     assert_eq!(third["steps"]["c"]["result"], first["steps"]["c"]["result"]);
 }
 
+/// A step with `cache: false` runs every time, never answered from the step cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_step_with_cache_false_always_runs() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1123,6 +1150,8 @@ async fn a_step_with_cache_false_always_runs() {
     }
 }
 
+/// A `forEach` step run again over the same items answers each one from the step cache instead of
+/// starting a run for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fan_out_reuses_its_cached_items() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1147,6 +1176,7 @@ async fn a_fan_out_reuses_its_cached_items() {
     assert_eq!(rig.all_records().len(), 2, "no new run");
 }
 
+/// A start naming a file the app forgot answers `410 OUTPUT_EXPIRED` and starts nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn starting_with_an_expired_output_answers_output_expired() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1262,6 +1292,8 @@ fn runs_of(rig: &Rig, run: &str) -> Vec<(u32, RunRecord)> {
     runs
 }
 
+/// A retry with raised limits reruns only the items that failed: the done ones hit the step cache,
+/// whose key leaves the limits out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_retry_with_raised_limits_reruns_only_the_failed_items() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1316,6 +1348,8 @@ async fn a_retry_with_raised_limits_reruns_only_the_failed_items() {
     );
 }
 
+/// Running out of fuel is deterministic: the item fails after one attempt instead of being retried
+/// as a lost attempt on another job node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fuel_failure_is_not_retried_automatically() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1336,6 +1370,8 @@ async fn a_fuel_failure_is_not_retried_automatically() {
     assert_eq!(runs_of(&rig, &run).len(), 1, "and no second run");
 }
 
+/// An item whose job node goes silent is lost and runs again on another job node, as one run of the
+/// item, and is billed once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_lost_item_is_retried_and_billed_once() {
     let mut rig = Rig::start(&[JOB_A, JOB_B]).await;
@@ -1407,6 +1443,7 @@ async fn a_lost_item_is_retried_and_billed_once() {
     );
 }
 
+/// A retry of a run that has not ended is refused `409 STILL_RUNNING`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn retrying_a_running_run_is_refused() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1471,6 +1508,7 @@ async fn limits_a_retry_may_not_take_are_refused() {
     );
 }
 
+/// A retry runs the pipeline of the original run's release, not the one the app was upgraded to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_retry_keeps_the_original_release_after_an_upgrade() {
     let mut rig = Rig::start(&[JOB_A]).await;
@@ -1491,7 +1529,7 @@ async fn a_retry_keeps_the_original_release_after_an_upgrade() {
         &pipelines,
         &key,
     );
-    rig.alice.packages().upload(mpk).await.unwrap();
+    rig.alice.packages().upload(mpk, None).await.unwrap();
     rig.alice
         .apps()
         .upgrade(
@@ -1556,27 +1594,33 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
     let _module = rig
         .alice
         .packages()
-        .upload(common::mpk_parts(
-            "com.test.module",
-            "1.0.0",
+        .upload(
+            common::mpk_parts(
+                "com.test.module",
+                "1.0.0",
+                None,
+                Some(&module),
+                "0.1.0",
+                &key,
+            ),
             None,
-            Some(&module),
-            "0.1.0",
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let _user = rig
         .alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "2.0.0",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "2.0.0",
+                None,
+                Some(&rig.compute),
+                &[("pipelines/via-module.yaml", VIA_MODULE)],
+                &key,
+            ),
             None,
-            Some(&rig.compute),
-            &[("pipelines/via-module.yaml", VIA_MODULE)],
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let _up = rig
@@ -1670,6 +1714,8 @@ async fn two_pools(rig: &mut Rig, extra: &[(u64, &str, Option<&str>)]) {
     }
 }
 
+/// A step's `pool` places its runs on that pool's job nodes; a step without one keeps the pool its
+/// memory caps choose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_steps_pool_places_its_runs_on_that_pools_job_node() {
     let mut rig = Rig::start_with(&[], |cfg| cfg.release = "1.0.0".into()).await;
@@ -1689,6 +1735,8 @@ async fn a_steps_pool_places_its_runs_on_that_pools_job_node() {
     }
 }
 
+/// While a node runs an older release, which would drop the field, a step's named pool does not place
+/// its runs: they go where their memory caps put them, not to the named pool's job node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_named_pool_waits_until_every_node_runs_this_release() {
     let mut rig = Rig::start_with(&[], |cfg| cfg.release = "1.0.0".into()).await;
@@ -1894,6 +1942,7 @@ async fn a_run_assigned_while_a_replica_is_behind_has_a_receipt_that_is_refused(
     assert!(e.to_string().contains("no attestation"), "{e}");
 }
 
+/// A pipeline run that has not ended answers `RUN_NOT_ENDED` for its receipt, never a partial one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_running_run_has_no_receipt_yet() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1931,6 +1980,8 @@ async fn a_running_run_has_no_receipt_yet() {
     );
 }
 
+/// An item answered from the step cache has no step-run proof: its receipt marks it cached, with its
+/// cache key, rather than leaving it out or naming a proof that does not exist.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fan_out_with_cached_items_marks_them_cached_in_its_receipt() {
     use calimero_client::receipt::RunEntry;
@@ -2018,6 +2069,8 @@ async fn another_runs_receipt_is_refused() {
     assert!(ok.is_ok(), "{ok:?}");
 }
 
+/// A pipeline run's receipt is only for those who handle the app's files, even on an app an `anyone`
+/// grant opens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stranger_cannot_read_a_receipt() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2057,6 +2110,7 @@ async fn watch_all(c: &Client, app: &str, run: &str) -> Vec<PipelineEvent> {
         .expect("the stream closed after the run ended")
 }
 
+/// A run's event stream opens with a snapshot, shows every step's moves and ends with `end`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_subscriber_sees_every_step_move_and_the_end() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2093,6 +2147,8 @@ async fn a_subscriber_sees_every_step_move_and_the_end() {
     );
 }
 
+/// A run's events carry progress only: no step result and no input or output file id reaches a
+/// subscriber.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn events_never_carry_results_or_file_ids() {
     use futures_util::StreamExt as _;
@@ -2141,6 +2197,8 @@ async fn events_never_carry_results_or_file_ids() {
     }
 }
 
+/// A stranger cannot subscribe to a private app's run events, and is refused as the run view refuses
+/// them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stranger_cannot_subscribe_to_a_private_apps_run() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2155,6 +2213,64 @@ async fn a_stranger_cannot_subscribe_to_a_private_apps_run() {
     assert_eq!(e.code(), seen.code(), "{e} vs {seen}");
     assert!(matches!(e.code(), Some("FORBIDDEN" | "NOT_FOUND")), "{e}");
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+}
+
+/// A run's event stream judges its subscriber on every poll, not only when it is opened: a
+/// member removed from the app's organization stops seeing the run's steps move and its end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_member_stops_receiving_a_runs_events() {
+    use futures_util::StreamExt as _;
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let org = wire(rig.alice.apps().get(&rig.app).await.unwrap())["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let token = wire(
+        rig.alice
+            .orgs()
+            .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut rig.pk))
+            .await
+            .unwrap(),
+    )["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = wire(bob.auth().me().await.unwrap())["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let mut events = Box::pin(bob.pipeline_run_events(&rig.app, &run).await.unwrap());
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .unwrap(),
+        Some(PipelineEvent::Snapshot(_))
+    ));
+
+    let _r = rig
+        .alice
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut rig.pk))
+        .await
+        .unwrap();
+    let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+    let _ended = rig.ended(&run).await;
+    let seen = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut seen = Vec::new();
+        while let Some(e) = events.next().await {
+            seen.push(e);
+        }
+        seen
+    })
+    .await
+    .unwrap_or_default();
+    assert!(
+        seen.is_empty(),
+        "a removed member still received the run's events: {seen:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -2178,6 +2294,8 @@ async fn subscribers_are_bounded() {
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
 }
 
+/// A run's event stream ends when its app is deleted and gives its subscriber slot back, instead of
+/// polling a view that never answers again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stream_ends_and_frees_its_slot_when_its_app_is_deleted() {
     use futures_util::StreamExt as _;
@@ -2236,6 +2354,7 @@ fn error_keys(answer: &Value) -> Vec<(String, String)> {
     keys
 }
 
+/// Validating reports every error with its path and code at once, and logs nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn validate_reports_every_error_with_its_path_and_writes_nothing() {
     let rig = Rig::start(&[]).await;
@@ -2262,14 +2381,17 @@ async fn validate_reports_every_error_with_its_path_and_writes_nothing() {
     let refused = rig
         .alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "1.0.1",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "1.0.1",
+                None,
+                Some(&rig.compute),
+                &[("pipelines/ghostly.yaml", GHOSTLY)],
+                &key,
+            ),
             None,
-            Some(&rig.compute),
-            &[("pipelines/ghostly.yaml", GHOSTLY)],
-            &key,
-        ))
+        )
         .await
         .unwrap_err();
     let mut installed: Vec<_> = refused
@@ -2306,6 +2428,7 @@ async fn validate_reports_every_error_with_its_path_and_writes_nothing() {
     assert_eq!(system_applied(&rig), before, "validating logged something");
 }
 
+/// Validating against a release checks steps against that release's compute methods and caps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn validate_against_a_release_uses_its_methods_and_caps() {
     let rig = Rig::start(&[]).await;
@@ -2358,6 +2481,7 @@ async fn validate_against_a_release_uses_its_methods_and_caps() {
     assert_eq!(half.code(), Some("BAD_RELEASE"), "{half}");
 }
 
+/// Validating against a release the caller cannot see answers `404`, as for a missing release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn validate_a_release_the_caller_cannot_see_is_404() {
     let rig = Rig::start(&[]).await;
@@ -2386,6 +2510,8 @@ async fn validate_a_release_the_caller_cannot_see_is_404() {
     );
 }
 
+/// An estimate counts a run per batch of the inputs given, by ids or by counts alike, and states no
+/// cost while the cluster has no price table.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn estimate_follows_the_input_count() {
     let rig = Rig::start(&[]).await;
@@ -2435,6 +2561,8 @@ async fn estimate_follows_the_input_count() {
     assert_eq!(runs["runs"], json!([]), "an estimate started a run");
 }
 
+/// An `anyone` grant lets a stranger reach the app, not estimate its pipelines: estimating takes the
+/// start's gate (`403 FORBIDDEN`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stranger_cannot_estimate_on_a_public_app() {
     let rig = Rig::start(&[]).await;

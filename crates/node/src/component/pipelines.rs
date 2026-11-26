@@ -98,7 +98,7 @@ impl StepStatus {
 /// One step of a pipeline run; the default is a step that has not started.
 ///
 /// It reads either shape: this one, or the one 1.0.0-rc.19 wrote, which kept each run's outputs,
-/// results and cache keys in the record and had no `started` ([`StepStateRepr`]).
+/// results and cache keys in the record and had no `started` (`StepStateRepr`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", from = "StepStateRepr")]
 pub struct StepState {

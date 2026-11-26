@@ -23,6 +23,14 @@ Reads changed paths on stdin, one per line. Prints `<job>=true|false` for every
 job of the workflow, and the reasons on stderr. Fails closed: no input, an
 error, or a path it cannot place runs every job.
 
+For ci-checks it also prints `test_filter=<nextest filterset>`: the tests `Rust tests`
+runs, which are those of the changed workspace crates and of every crate depending
+on them (nextest's `rdeps`, dev-dependencies included). It is empty, running every
+test, whenever a change reaches beyond that graph: a file outside a workspace
+crate (apps, fixtures, scripts, the OpenAPI document), an input of every job, or a
+crate the test guests compile from (they build against it outside cargo's graph of
+the workspace). Master's push runs every test whatever the filter says.
+
 Usage: ci-scope.py [--workflow ci-checks] < changed-paths
 """
 
@@ -73,6 +81,8 @@ WORKFLOWS = {
             "scripts/check-like-ci.py",
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
+            "scripts/check-no-user-data-at-info.allow",
+            "scripts/tests/check-no-user-data-at-info-test.py",
             "scripts/check-rust-cache-groups.py",
             "scripts/check-scenario-discovery.py",
             "scripts/tests/check-like-ci.test.sh",
@@ -226,6 +236,45 @@ def decide(paths, workflow):
     return verdicts
 
 
+def workspace_members():
+    """{directory: package name} of the root workspace's members."""
+    members = manifest_toml(ROOT / "Cargo.toml").get("workspace", {}).get("members", [])
+    found = {}
+    for member in members:
+        directory = Path(member).as_posix().removeprefix("./")
+        found[directory] = manifest_toml(ROOT / directory / "Cargo.toml")["package"]["name"]
+    return found
+
+
+def manifest_toml(path):
+    with path.open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def test_filter(paths):
+    """(nextest filterset or "" for every test, reason) for `Rust tests`."""
+    read_docs = code_read_docs()
+    code = [p for p in paths if not is_inert(p, read_docs)]
+    if not code:
+        return "", "only documentation changed"
+    every = next((p for p in code if matches(p, EVERY_JOB)), None)
+    if every:
+        return "", f"{every} is an input of every job"
+    members = workspace_members()
+    guest_crates = set(path_dep_closure.closure(JOBS["standalone_apps"][0](), False))
+    packages = package_dirs()
+    names = set()
+    for path in code:
+        directory = owner(path, packages)
+        if directory in guest_crates:
+            return "", f"{path} is in a crate the test guests compile from"
+        if directory not in members:
+            return "", f"{path} is outside the workspace's crates"
+        names.add(members[directory])
+    # No spaces: the workflow and its test read `key=value` words.
+    return "|".join(f"rdeps(={name})" for name in sorted(names)), f"tests of {', '.join(sorted(names))} and their dependents"
+
+
 def main():
     args = sys.argv[1:]
     workflow = args[args.index("--workflow") + 1] if "--workflow" in args else "ci-checks"
@@ -245,6 +294,15 @@ def main():
     for job, (runs, reason) in verdicts.items():
         print(f"{job}: {'runs' if runs else 'skips'} - {reason}", file=sys.stderr)
         print(f"{job}={'true' if runs else 'false'}")
+    if workflow == "ci-checks":
+        try:
+            if not paths:
+                raise ValueError("no changed paths given")
+            selected, reason = test_filter(paths)
+        except Exception as e:  # every test, as above
+            selected, reason = "", f"failing closed: {e}"
+        print(f"test_filter: {selected or 'every test'} - {reason}", file=sys.stderr)
+        print(f"test_filter={selected}")
     return 0
 
 

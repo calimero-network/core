@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.parse
 
 import ed25519_sign
 from rv2 import b64url
-from upgrade_deep import (DeepCase, Failed, check, decision, eq, install, join, kv_wasm, new_org, people,
-                          person, same_read, snap, subset, until)
+from upgrade_deep import (DeepCase, Failed, anyone, app_label, check, decision, decisions, eq, install, join, kv_wasm, new_org, ops,
+                          people, person, refused, same_decisions, same_read, snap, subset, until)
 from upgrade_path import case
 
 
@@ -52,7 +53,9 @@ class Packages(DeepCase):
 
     def exercise(self, w, s):
         pia = person(w, "pia")
-        pia.raw("post", "packages/install", {"package": s["package"], "version": s["v2"]})
+        # Her two instances made her an organization each: an install names one.
+        org = pia.get(f"apps/{s['app']}")["org"]
+        pia.raw("post", "packages/install", {"package": s["package"], "version": s["v2"], "org": org})
         pia.raw("post", f"apps/{s['app']}/upgrade", {"version": s["v2"]})
         check(s["v2"] in json.dumps(pia.get(f"apps/{s['app']}")), f"the app runs {s['v2']} after the upgrade")
         eq(pia.result(s["app"], "get", {"key": "release"}), s["v1"], "data across an upgrade on the new release")
@@ -60,6 +63,198 @@ class Packages(DeepCase):
         eq((card["package"], card["version"]), (s["package"], s["v1"]), "the release's capability card")
         check({"get", "set"} <= set(card["abi"]["methods"]), f"the card's ABI lacks the kv methods: {card['abi']}")
         self._record(w, s)
+
+
+@case
+class ReleaseVisibility(DeepCase):
+    name = "release-visibility"
+    area = "Packages"
+    seeds = ("kv-b 1.0.0 installed from the registry by an account whose organization holds a second member, "
+             "who never installed it (a release recorded before it was public or private)")
+    verifies = ("the release from before keeps exactly its rule: the member lists it on every node and, on the "
+                "new release, creates an instance of it, and an account sharing no organization with its installer "
+                "does not list it on any node; kv-c installed on the new release, which the registry serves "
+                "to anyone, is public: an account in no organization lists it and creates an instance of it")
+
+    def populate(self, w):
+        ines, ivo = people(w, "ines", "ivo")
+        org = new_org(ines, "Ines Packages")
+        join(ines, org, ivo)
+        # A member creates apps only with CREATE_APP (bit 0), which no member holds by default.
+        ines.raw("post", f"orgs/{org}/capabilities", {"account": ivo.id, "capabilities": 1})
+        p, v = install(ines, w, "kv-b-1.0.0.mpk")
+        return {"org": org, "before": [p, v], "after": None}
+
+    def check(self, w, s):
+        ivo, isla = people(w, "ivo", "isla")
+        p, v = s["before"]
+        for n in w.members():
+            check(v in json.dumps(ivo.get(f"packages/{p}", node=n)), f"ivo lists {p}@{v} on node {n}")
+            refused(("NOT_FOUND", "404"), lambda n=n: isla.get(f"packages/{p}", node=n),
+                    f"isla, in no organization of its installer, does not list {p} on node {n}")
+        if s["after"]:
+            p, v = s["after"]
+            check(v in json.dumps(isla.get(f"packages/{p}")), f"isla lists the public {p}@{v}")
+
+    def exercise(self, w, s):
+        ines, ivo, isla = people(w, "ines", "ivo", "isla")
+        p, v = s["before"]
+        ivo.raw("post", "apps", {"name": "vis-before", "package": p, "version": v, "org": s["org"]})
+        p, v = install(ines, w, "kv-c-1.0.0.mpk")
+        isla.raw("post", "apps", {"name": "vis-after", "package": p, "version": v})
+        s["after"] = [p, v]
+
+class Services(DeepCase):
+    name = "package-services"
+    area = "Packages"
+    since = "1.0.0-rc.25"
+    seeds = "a package of two services (`alpha`, `beta`) installed; an instance of each, written to"
+    verifies = ("the package and each instance's release naming its service, each instance answering with its own "
+                "data, an instance naming no service or an unknown one refused; on the new release a new instance "
+                "of a named service, the capability card of each service, and the alpha instance upgraded to a later "
+                "release of the package keeping its service and its data")
+
+    def _create(self, p, s, service):
+        body = {"name": f"svc-{service}", "package": s["package"], "version": s["version"]}
+        return p.raw("post", "apps", {**body, "service": service} if service else body)
+
+    def _instances(self, s):
+        """`(app, service)` of every instance the case made."""
+        return [(a, sv) for sv, a in s["apps"].items()] + [(a, "beta") for a in s.get("extra", [])]
+
+    def _decisions(self, w, s):
+        mel = person(w, "mel")
+        return decisions({"no service": lambda: self._create(mel, s, None),
+                             "unknown service": lambda: self._create(mel, s, "gamma")})
+
+    def populate(self, w):
+        mel = person(w, "mel")
+        package, version = install(mel, w, "kv-svc-1.0.0.mpk")
+        s = {"package": package, "version": version, "apps": {}}
+        for service in ("alpha", "beta"):
+            s["apps"][service] = self._create(mel, s, service)["appId"]
+            mel.call(s["apps"][service], "set", {"key": "service", "value": service})
+        s["decisions"] = self._decisions(w, s)
+        check("ok" not in s["decisions"].values(), f"a missing or unknown service was accepted: {s['decisions']}")
+        self._record(w, s)
+        return s
+
+    def _record(self, w, s):
+        mel = person(w, "mel")
+        s["read"] = snap(mel, f"packages/{s['package']}")
+        s["records"] = {a: snap(mel, f"apps/{a}") for a, _ in self._instances(s)}
+        for a, service in self._instances(s):
+            check(service in json.dumps(s["records"][a]["release"]), f"{a}'s release names {service}: {s['records'][a]}")
+
+    def check(self, w, s):
+        mel = person(w, "mel")
+        same_read(mel, f"packages/{s['package']}", s["read"], "the package")
+        for a, service in self._instances(s):
+            same_read(mel, f"apps/{a}", s["records"][a], f"the {service} instance")
+            eq(mel.result(a, "get", {"key": "service"}), service, f"the {service} instance's data")
+        same_decisions(self._decisions(w, s), s["decisions"], "an instance's service")
+
+    def exercise(self, w, s):
+        mel = person(w, "mel")
+        late = self._create(mel, s, "beta")["appId"]
+        mel.call(late, "set", {"key": "service", "value": "beta"})
+        eq(mel.result(late, "get", {"key": "service"}), "beta", "a new instance of a named service")
+        for service in s["apps"]:
+            card = mel.get(f"packages/{s['package']}/{s['version']}/capabilities?service={service}")
+            eq(card["service"], service, "the capability card's service")
+        refused("NO_SUCH_SERVICE", lambda: mel.get(f"packages/{s['package']}/{s['version']}/capabilities"),
+                "the card of a release with several services, naming none")
+        s["extra"] = [late]
+        _, later = install(mel, w, "kv-svc-1.1.0.mpk")
+        alpha = s["apps"]["alpha"]
+        mel.raw("post", f"apps/{alpha}/upgrade", {"version": later})
+        check(later in json.dumps(snap(mel, f"apps/{alpha}")["release"]), f"alpha runs {later} after the upgrade")
+        eq(mel.result(alpha, "get", {"key": "service"}), "alpha", "the alpha instance's data across its upgrade")
+        self._record(w, s)
+
+
+@case
+class PackageOrigins(DeepCase):
+    name = "package-origins"
+    area = "Packages"
+    since = "1.0.0-rc.16"
+    seeds = ("two web origins registered for a package by its manager: one plain and one the cluster serves "
+             "(a custom domain)")
+    verifies = ("the manager's list as they read it; the operator's served-origins list naming the package's host "
+                "label; a stranger refused the list and the registration; on the new release one origin removed "
+                "and two registered while the other seeded served origin stays, after a restart too; on every node a "
+                "sign-in begun from a registered origin names that origin's host as its rp-id and one begun from an "
+                "unregistered or removed origin is refused `ORIGIN_NOT_REGISTERED`. The assertion itself is not signed")
+
+    def _path(self, s):
+        return f"package-origins/{s['package']}"
+
+    def _decisions(self, w, s):
+        otto = person(w, "otto")
+        return decisions({"stranger lists": lambda: otto.get(self._path(s)),
+                             "stranger registers": lambda: otto.raw("post", self._path(s),
+                                                                    {"origin": "https://otto.example.test"})})
+
+    def _served(self, w, s):
+        listed = [o["origin"] for o in ops(w, "GET", "ops/served-origins")["origins"]
+                  if o["label"] == app_label(s["package"])]
+        return sorted(listed)
+
+    def _begin(self, w, origin, node):
+        """What a sign-in begun from `origin` answers: the rp-id it would use, or the refusal's code."""
+        got = decision(lambda: anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node))
+        if got != "ok":
+            return got
+        return anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node)["options"]["rpId"]
+
+    def _ceremonies(self, w, s):
+        """On every node a registered origin begins a sign-in under its own host, any other one is refused."""
+        for node in w.members():
+            for origin in [s["plain"], *s["served"]]:
+                eq(self._begin(w, origin, node), urllib.parse.urlsplit(origin).hostname, f"{origin}'s rp-id on node {node}")
+            for origin in s["unregistered"]:
+                eq(self._begin(w, origin, node), "ORIGIN_NOT_REGISTERED", f"{origin} on node {node}")
+
+    def _read(self, w, s):
+        s["read"] = snap(person(w, "ora"), self._path(s))
+        s["origins"] = sorted(o["origin"] for o in s["read"]["origins"])
+
+    def populate(self, w):
+        ora = person(w, "ora")
+        package, _ = install(ora, w, "kv-p-1.0.0.mpk")
+        s = {"package": package, "plain": "https://plain-ora.example.test", "served": ["https://served-ora.example.test"],
+             "unregistered": ["https://never-registered.example.test"]}
+        ora.raw("post", self._path(s), {"origin": s["plain"]})
+        ora.raw("post", self._path(s), {"origin": s["served"][0], "served": True})
+        s["decisions"] = self._decisions(w, s)
+        check("ok" not in s["decisions"].values(), f"a stranger handled the origins: {s['decisions']}")
+        self._read(w, s)
+        eq(s["origins"], sorted([s["plain"], *s["served"]]), "the registered origins")
+        eq(until("the served origin is listed", lambda: self._served(w, s)), s["served"], "the operator's served list")
+        self._ceremonies(w, s)
+        return s
+
+    def check(self, w, s):
+        ora = person(w, "ora")
+        until("the origins read back", lambda: same_read(ora, self._path(s), s["read"], "the package's origins"), 15)
+        eq(until("the served origins are listed", lambda: self._served(w, s)), sorted(s["served"]),
+           "the operator's served list")
+        same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
+        self._ceremonies(w, s)
+
+    def exercise(self, w, s):
+        ora = person(w, "ora")
+        ora.raw("delete", self._path(s), {"origin": s["plain"]})
+        s["unregistered"].append(s["plain"])
+        s["plain"] = "https://plain-ora-2.example.test"
+        ora.raw("post", self._path(s), {"origin": s["plain"]})
+        # The first served origin stays: the restart check then reads a record the old release wrote.
+        newer = "https://served-ora-2.example.test"
+        ora.raw("post", self._path(s), {"origin": newer, "served": True})
+        s["served"] = [*s["served"], newer]
+        self._read(w, s)
+        eq(s["origins"], sorted([s["plain"], *s["served"]]), "the origins after the new release changed them")
+        self.check(w, s)
 
 
 def _did_key(pub: bytes) -> str:
@@ -344,7 +539,10 @@ class RestorePoints(DeepCase):
         rec = until("the undo restores the app", lambda: _undone(rex, app, s["v1"]), 90)
         check(rec.get("restorePoint") is None and (rec.get("lastUpgrade") or {}).get("undo") is True,
               f"the undone app's record: {rec}")
-        eq(rex.result(app, "get", {"id": "n"}), "before", "the undone app's note")
+        # The record moves in the system group; the app group applies the undo's restore on
+        # its own, so a read right after may still see it before (`null`): wait for it.
+        until("the undone app's note", lambda: eq(rex.result(app, "get", {"id": "n"}), "before",
+                                                   "the undone app's note"), 30)
 
     def check(self, w, s):
         rex = person(w, "rex")
@@ -469,7 +667,8 @@ class UnclassifiedUpdates(DeepCase):
         s["pending"] = []
         eq(noa.get(f"apps/{s['waiting']}/update")["pendingApprovals"], [], "the approval spent")
         # The whole move on the new release: 1.0.0 back, an app on it, 1.0.0 gone again.
-        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"]})
+        # Nia is in two organizations: an install names the one the fresh app goes to.
+        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"], "org": s["org"]})
         fresh = self._app(w, s, "fresh", s["org"])
         nia.raw("delete", f"packages/{s['package']}/{s['v1']}")
         self._offered(w, s, fresh)

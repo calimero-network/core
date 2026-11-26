@@ -1,4 +1,4 @@
-//! Full-text search for component apps (spec section 7, R2): the host keeps an index of
+//! Full-text search for component apps: the host keeps an index of
 //! each table's declared text fields, derived from the app's state, and views query it
 //! through the WIT `search` interface.
 //!
@@ -6,34 +6,39 @@
 //! `#[table(search = [..])]`). A table's records are the stored keys
 //! `generation ‖ (table, "r", key..)` in the SDK's key encoding (`crates/sdk`, encoding
 //! contract); each becomes one document, its id the SHA-256 of the stored key, its fields
-//! the declared ones that hold text (a list of strings is joined). The indexes are
+//! the declared ones that hold text (a list of strings is joined), as `calimero_search::records`
+//! makes them for the node and the SDK's test harness alike. The indexes are
 //! `calimero-search`'s `ContextIndex` in memory: a view's first query brings them up to the
 //! state it reads, from the record keys the entries since touched (`AppMachine::touched_after`,
 //! kept for `TOUCHED_RING` entries), else by a full scan of the app's records, on the view's
 //! own thread and never under the app's lock. Derived data: never in the log or a snapshot,
 //! rebuilt after a restart.
+//!
+//! A view's searches answer from the state it reads, never another. Its
+//! apps' views share one set of indexes, so a view takes a point-in-time view of them (a
+//! tantivy `Searcher` and the document keys, per table) as soon as they are brought up to its
+//! state, and every search it makes reads that, however far a later view moves the indexes
+//! meanwhile. Views queued on earlier states are brought up first, in order (`AppEntry::due`),
+//! so the indexes pass through each live view's state instead of jumping over it.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError, Weak};
 
 use calimero_app_host::{SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, GENERATION};
-use calimero_primitives::search::{
-    SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode as IndexMode,
-    SearchOrder, SearchRequest, SearchValue,
-};
+use calimero_primitives::search::{SearchDoc, SearchMode as IndexMode, SearchOrder, SearchRequest};
 use calimero_search::index::{doc_digest, ContextIndex, SchemaOptions};
+use calimero_search::records::{self, doc_id, document, table_schema, GENERATION_PREFIX};
 use ring::digest::{digest, SHA256};
+use tantivy::Searcher;
 use tracing::{debug, warn};
 
 use crate::app::AppMachine;
 use crate::component::Kv;
 use crate::types::AppId;
 
-/// Bytes of the generation prefix on a stored key (D39).
-const GENERATION_PREFIX: usize = 8;
 /// Bytes of text one document field is indexed from at most; the rest is cut.
-pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;
+pub use calimero_search::records::MAX_FIELD_TEXT_BYTES;
 /// Most tantivy writers kept open between refreshes, across every app's tables: those
 /// of the apps refreshed last. Each holds three threads (indexing, segment updater,
 /// merges) and an arena of up to `calimero_search::index::WRITER_MEMORY` while it
@@ -41,105 +46,26 @@ pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;
 /// waits for the merges its last commit started.
 pub const MAX_OPEN_WRITERS: usize = 16;
 
-/// The table a stored key is a record of: its first key part, when the second is `"r"`
-/// (`(table, "r", key..)`, the SDK's record layout). `None` for any other key.
-#[must_use]
-pub fn record_table(stored: &[u8]) -> Option<String> {
-    let key = stored.get(GENERATION_PREFIX..)?;
-    let (table, rest) = string_part(key)?;
-    let (kind, _) = string_part(rest)?;
-    (kind == "r").then_some(table)
-}
-
-/// One string part (`0x30`, bytes with `0x00` escaped as `0x00 0xFF`, then `0x00 0x00`) and
-/// what follows it.
-fn string_part(key: &[u8]) -> Option<(String, &[u8])> {
-    let mut rest = key.strip_prefix(&[0x30])?;
-    let mut out = Vec::new();
-    loop {
-        match rest {
-            [0x00, 0x00, tail @ ..] => return Some((String::from_utf8(out).ok()?, tail)),
-            [0x00, 0xFF, tail @ ..] => {
-                out.push(0x00);
-                rest = tail;
-            }
-            [b, tail @ ..] if *b != 0x00 => {
-                out.push(*b);
-                rest = tail;
-            }
-            _ => return None,
-        }
-    }
-}
-
-/// The document of a record: the declared fields that hold text.
-fn document(stored: &[u8], value: &[u8], fields: &[String]) -> Option<SearchDoc> {
-    let ciborium::Value::Map(entries) = ciborium::from_reader(value).ok()? else {
-        return None;
-    };
-    let mut doc = Vec::new();
-    for (name, v) in &entries {
-        let Some(name) = name.as_text().filter(|n| fields.iter().any(|f| f == n)) else {
-            continue;
-        };
-        let mut text = match v {
-            ciborium::Value::Text(t) => t.clone(),
-            ciborium::Value::Array(items) => items
-                .iter()
-                .filter_map(ciborium::Value::as_text)
-                .collect::<Vec<_>>()
-                .join(" "),
-            _ => continue,
-        };
-        if text.len() > MAX_FIELD_TEXT_BYTES {
-            let mut cut = MAX_FIELD_TEXT_BYTES;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            text.truncate(cut);
-        }
-        doc.push((name.to_owned(), SearchValue::Str(text)));
-    }
-    Some(SearchDoc {
-        id: doc_id(stored),
-        fields: doc,
-    })
-}
-
-fn doc_id(stored: &[u8]) -> [u8; 32] {
-    let mut out = [0; 32];
-    out.copy_from_slice(digest(&SHA256, stored).as_ref());
-    out
-}
-
+pub use calimero_search::records::record_table;
 /// Records to index: stored key, and the value (`None`: gone).
 type Records = Vec<(Vec<u8>, Option<Vec<u8>>)>;
+
+/// Document ids to the stored keys of their records: a persistent map, so a view's
+/// point-in-time copy costs nothing and later writes leave it as it was.
+type DocKeys = imbl::HashMap<[u8; 32], Vec<u8>>;
 
 /// One table's index and the stored keys of its documents.
 struct TableIndex {
     fields: Vec<String>,
-    index: ContextIndex,
-    keys: HashMap<[u8; 32], Vec<u8>>,
+    index: Arc<ContextIndex>,
+    keys: DocKeys,
 }
 
 impl TableIndex {
     /// `table`'s index: in memory, or kept in `dir`, opened as it was left there, or made
     /// anew when there is none or it was made under another schema or format.
     fn open(dir: Option<&Path>, table: &str, fields: &[String]) -> Result<Self, String> {
-        let def = SearchIndexSchema {
-            name: table.to_owned(),
-            version: 1,
-            fields: fields
-                .iter()
-                .map(|f| SearchFieldSchema {
-                    name: f.clone(),
-                    kind: SearchFieldKind::Text {
-                        weight: 100,
-                        infix: true,
-                    },
-                })
-                .collect(),
-        };
+        let def = table_schema(table, fields);
         let open = |dir: Box<dyn tantivy::Directory>| {
             ContextIndex::open(dir, &def, SchemaOptions::default())
                 .map(|(index, _state)| index)
@@ -167,8 +93,8 @@ impl TableIndex {
         };
         Ok(Self {
             fields: fields.to_vec(),
-            index,
-            keys: HashMap::new(),
+            index: Arc::new(index),
+            keys: DocKeys::new(),
         })
     }
 
@@ -259,6 +185,40 @@ struct AppIndexes {
     reindexed: u64,
 }
 
+impl AppIndexes {
+    /// The indexes as they are now, as a view's searches will read them whatever is
+    /// committed after.
+    fn snapshot(&self) -> Arc<Snapshot> {
+        Arc::new(Snapshot {
+            tables: self
+                .tables
+                .iter()
+                .map(|(table, t)| {
+                    let view = TableSnapshot {
+                        index: Arc::clone(&t.index),
+                        searcher: t.index.searcher(),
+                        keys: t.keys.clone(),
+                    };
+                    (table.clone(), view)
+                })
+                .collect(),
+        })
+    }
+}
+
+/// An app's indexes at one state: what a view searches.
+struct Snapshot {
+    tables: HashMap<String, TableSnapshot>,
+}
+
+/// One table's index at that state: the commit its searcher reads, and the stored keys of
+/// the documents in it.
+struct TableSnapshot {
+    index: Arc<ContextIndex>,
+    searcher: Searcher,
+    keys: DocKeys,
+}
+
 /// What an app's indexes were last brought up to: kept apart from the indexes, and
 /// only ever locked for a copy, so a view reads it under the app's lock while a
 /// rebuild holds the indexes.
@@ -275,9 +235,61 @@ struct AppEntry {
     indexes: Mutex<AppIndexes>,
     /// Where its indexes are kept on disk; `None`: in memory.
     dir: Option<PathBuf>,
+    /// The views prepared on its state that have not searched yet, in the order they
+    /// were prepared (so by the state they read); weak, so a view that ends without
+    /// searching leaves nothing behind.
+    waiting: Mutex<Vec<Weak<ViewSlot>>>,
 }
 
 impl AppEntry {
+    /// Queue `slot`, dropping the slots of views that ended meanwhile.
+    fn wait(&self, slot: &Arc<ViewSlot>) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        waiting.retain(|w| w.strong_count() > 0);
+        waiting.push(Arc::downgrade(slot));
+    }
+
+    /// The views still running that were prepared on a state up to `applied`, oldest
+    /// state first, out of the queue: the indexes are brought up to each in turn.
+    fn due(&self, applied: u64) -> Vec<Arc<ViewSlot>> {
+        let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut due = Vec::new();
+        waiting.retain(|w| {
+            let Some(slot) = w.upgrade() else {
+                return false;
+            };
+            if slot.applied > applied {
+                return true;
+            }
+            due.push(slot);
+            false
+        });
+        due.sort_by_key(|slot| slot.applied);
+        due
+    }
+
+    /// Bring the indexes `ix` up to `slot`'s state and give it their snapshot, unless it
+    /// has one already. Called with the indexes locked.
+    fn bring_up(&self, ix: &mut AppIndexes, slot: &ViewSlot) {
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Prepared::Pending(p) = &*state else {
+            return;
+        };
+        *state = match refresh(ix, p, self.dir.as_deref()) {
+            Ok(()) => {
+                *self.mark.lock().unwrap_or_else(PoisonError::into_inner) = Mark {
+                    built: ix.built,
+                    built_at: ix.built_at,
+                };
+                Prepared::Ready(ix.snapshot())
+            }
+            Err(e) => {
+                warn!(app = %p.app_id, error = %e, "component search not brought up to date");
+                Prepared::Failed(format!("search is unavailable: {e}"))
+            }
+        };
+    }
+
     fn mark(&self) -> Mark {
         self.mark
             .lock()
@@ -304,7 +316,7 @@ impl AppEntry {
 }
 
 /// The apps whose indexes may hold writers, least recently refreshed first, with how
-/// many tables each has. Review finding C1: every index kept its writer from its first
+/// many tables each has. Every index kept its writer from its first
 /// write until its app left the node, so 200 apps of 3 searchable tables held some 1,800
 /// OS threads. Past `MAX_OPEN_WRITERS` tables, the apps refreshed longest ago give theirs
 /// up; the app refreshed last keeps its own whatever its count.
@@ -381,12 +393,29 @@ struct Pending {
     touched: Option<Vec<String>>,
 }
 
-/// Where a view's search stands: not yet brought up to its state, or ready (or
-/// refused, with why).
+/// Where a view's search stands: not yet brought up to its state, or ready with the
+/// indexes as of that state (or refused, with why).
 enum Prepared {
     Pending(Box<Pending>),
-    Ready,
+    Ready(Arc<Snapshot>),
     Failed(String),
+}
+
+/// A view's place in its app's queue: the state it reads, and its search's.
+struct ViewSlot {
+    applied: u64,
+    state: Mutex<Prepared>,
+}
+
+impl ViewSlot {
+    /// The view's snapshot, or why it has none; `None` while it is pending.
+    fn done(&self) -> Option<Result<Arc<Snapshot>, String>> {
+        match &*self.state.lock().unwrap_or_else(PoisonError::into_inner) {
+            Prepared::Pending(_) => None,
+            Prepared::Ready(snapshot) => Some(Ok(Arc::clone(snapshot))),
+            Prepared::Failed(e) => Some(Err(e.clone())),
+        }
+    }
 }
 
 /// A view's search, bound to its app's indexes.
@@ -394,62 +423,44 @@ pub struct RunSearch {
     app_id: AppId,
     entry: Arc<AppEntry>,
     writers: Arc<Writers>,
-    state: Mutex<Prepared>,
+    slot: Arc<ViewSlot>,
 }
 
 impl RunSearch {
-    /// Bring the indexes up to the view's state, once, on the first query.
-    fn ready(&self) -> Result<(), String> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let next = match std::mem::replace(&mut *state, Prepared::Ready) {
-            Prepared::Pending(p) => {
-                let mut ix = self
-                    .entry
-                    .indexes
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                let next = match refresh(&mut ix, &p, self.entry.dir.as_deref()) {
-                    Ok(()) => {
-                        *self
-                            .entry
-                            .mark
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner) = Mark {
-                            built: ix.built,
-                            built_at: ix.built_at,
-                        };
-                        Prepared::Ready
-                    }
-                    Err(e) => {
-                        warn!(app = %p.app_id, error = %e, "component search not brought up to date");
-                        Prepared::Failed(format!("search is unavailable: {e}"))
-                    }
-                };
-                let tables = ix.tables.len();
-                drop(ix);
-                self.writers.refreshed(&self.app_id, &self.entry, tables);
-                next
-            }
-            other => other,
-        };
-        let answer = match &next {
-            Prepared::Failed(e) => Err(e.clone()),
-            Prepared::Pending(_) | Prepared::Ready => Ok(()),
-        };
-        *state = next;
-        answer
+    /// The indexes as of the view's state: brought up to it on the first query, and the
+    /// same snapshot for every query after.
+    ///
+    /// The views queued on states up to this one's are brought up first, oldest first, each
+    /// taking its own snapshot: so the indexes never move past a view that has yet to
+    /// search, and none of them has to bring them back down to its state.
+    fn ready(&self) -> Result<Arc<Snapshot>, String> {
+        if let Some(done) = self.slot.done() {
+            return done;
+        }
+        let mut ix = self
+            .entry
+            .indexes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for slot in self.entry.due(self.slot.applied) {
+            self.entry.bring_up(&mut ix, &slot);
+        }
+        // Taken out of the queue by another view that brought it up meanwhile, or by this
+        // one just now; brought up here in case neither did.
+        self.entry.bring_up(&mut ix, &self.slot);
+        let tables = ix.tables.len();
+        drop(ix);
+        self.writers.refreshed(&self.app_id, &self.entry, tables);
+        self.slot
+            .done()
+            .unwrap_or_else(|| Err("search is unavailable: not brought up".to_owned()))
     }
 }
 
 impl SearchHost for RunSearch {
     fn query(&self, q: &SearchQuery) -> Result<SearchPage, String> {
-        self.ready()?;
-        let ix = self
-            .entry
-            .indexes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let Some(table) = ix.tables.get(&q.table) else {
+        let snapshot = self.ready()?;
+        let Some(table) = snapshot.tables.get(&q.table) else {
             return Err(format!("table {:?} declares no search fields", q.table));
         };
         let request = SearchRequest {
@@ -466,7 +477,10 @@ impl SearchHost for RunSearch {
             cursor: q.cursor,
             limit: q.limit,
         };
-        let response = table.index.search(&request).map_err(|e| e.to_string())?;
+        let response = table
+            .index
+            .search_in(&table.searcher, &request)
+            .map_err(|e| e.to_string())?;
         Ok(SearchPage {
             hits: response
                 .hits
@@ -560,11 +574,16 @@ impl ComponentSearch {
             from,
             touched,
         };
+        let slot = Arc::new(ViewSlot {
+            applied,
+            state: Mutex::new(Prepared::Pending(Box::new(pending))),
+        });
+        entry.wait(&slot);
         Some(Arc::new(RunSearch {
             app_id: app_id.to_owned(),
             entry,
             writers: Arc::clone(&self.writers),
-            state: Mutex::new(Prepared::Pending(Box::new(pending))),
+            slot,
         }))
     }
 
@@ -591,19 +610,20 @@ impl ComponentSearch {
 ///
 /// Incremental where it can be: from the record keys the entries since touched, for
 /// every table whose declared fields are what its index was made with, also across an
-/// upgrade. When the keys since are unknown (the first search after a start, more than
-/// `TOUCHED_RING` entries since, or indexes another view moved meanwhile), each index is
+/// upgrade. The indexes hold exactly the state at `built_at`, so the keys the entries
+/// after the view's mark touched cover what changed from any `built_at` between that
+/// mark and the view's state. When the keys since are unknown (the first search after a
+/// start, more than `TOUCHED_RING` entries since), or the indexes are outside that span
+/// (a view on an earlier state than they hold), each index is
 /// compared with the state instead (`TableIndex::reconcile`), which indexes only the
 /// documents that differ: an index kept on disk from before a restart catches up so. A
 /// table that is new or whose fields changed starts from a new index; one no longer
 /// declared is dropped, with its files.
 fn refresh(ix: &mut AppIndexes, p: &Pending, dir: Option<&Path>) -> Result<(), String> {
-    if ix.built && ix.fields == p.fields && ix.built_at >= p.applied {
-        // Already there, or brought past it by a later view meanwhile: as before, a
-        // view's search may answer from a later state than it reads (C4).
+    if ix.built && ix.fields == p.fields && ix.built_at == p.applied {
         return Ok(());
     }
-    let delta = if !ix.built || ix.built_at != p.from.built_at {
+    let delta = if !ix.built || ix.built_at < p.from.built_at || ix.built_at > p.applied {
         None
     } else if ix.built_at == p.applied {
         Some(Vec::new())
@@ -670,13 +690,7 @@ fn refresh(ix: &mut AppIndexes, p: &Pending, dir: Option<&Path>) -> Result<(), S
 /// The stored-key prefix of `table`'s records: `generation ‖ (table, "r", ..)`.
 fn record_prefix(table: &str) -> Vec<u8> {
     let mut prefix = GENERATION.to_be_bytes().to_vec();
-    prefix.push(0x30);
-    prefix.extend(
-        table
-            .bytes()
-            .flat_map(|b| if b == 0 { vec![0x00, 0xFF] } else { vec![b] }),
-    );
-    prefix.extend_from_slice(&[0x00, 0x00, 0x30, b'r', 0x00, 0x00]);
+    prefix.extend(records::record_prefix(table));
     prefix
 }
 
@@ -786,7 +800,7 @@ mod tests {
         (!ix.tables.is_empty()).then_some(ix.built_at)
     }
 
-    /// Review finding A5: the index was refreshed, or rebuilt in full, inside
+    /// The index was refreshed, or rebuilt in full, inside
     /// `for_view`, which runs under the app's read lock on an async worker, for
     /// every view, searching or not. Preparing a view's search now indexes
     /// nothing; the view's first query does, on the view's own thread.
@@ -830,10 +844,11 @@ mod tests {
         assert_eq!(built_at(&search, "app"), Some(7));
     }
 
-    /// Indexes another view moved between this view's prepare and its query are not
-    /// patched with keys read against the old mark: the view rebuilds from its state.
+    /// A view whose indexes another view, on a later state under other fields (an
+    /// upgrade), moves before it queries searches its own state: it is brought up to it
+    /// before the later view moves them on.
     #[test]
-    fn a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state() {
+    fn a_view_whose_indexes_a_later_upgrade_moved_searches_its_own_state() {
         let search = ComponentSearch::default();
         let base = search
             .prepare("app", &fields(), state(&[("1", "hello")]), 5, |_| None)
@@ -861,7 +876,121 @@ mod tests {
             .unwrap();
         assert_eq!(find(&*other, "hello"), vec![key("9")]);
         assert_eq!(find(&*stale, "hello"), vec![key("1"), key("3")]);
-        assert_eq!(built_at(&search, "app"), Some(6));
+        assert_eq!(built_at(&search, "app"), Some(8));
+    }
+
+    fn touched(ids: &[&str]) -> Vec<String> {
+        ids.iter()
+            .map(|id| hex::encode(stored(&["notes", "r", id])))
+            .collect()
+    }
+
+    /// An app's views share its indexes, and every query read their
+    /// latest commit, so a view on the state at 5 searched whatever a later view had
+    /// brought them to: a hit for a record its state does not hold yet, and none for
+    /// one the later state deleted. A view's searches answer from the indexes as of the
+    /// state it reads, however far another view moves them between its searches.
+    #[test]
+    fn a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes() {
+        let search = ComponentSearch::default();
+        let at5 = search
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("1", "hello"), ("2", "hello two")]),
+                5,
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(find(&*at5, "hello"), vec![key("1"), key("2")]);
+        // Entry 6 deletes 2 and adds 3; a view on it searches.
+        let at6 = search
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("1", "hello"), ("3", "hello three")]),
+                6,
+                |since| {
+                    assert_eq!(since, 5);
+                    Some(touched(&["2", "3"]))
+                },
+            )
+            .unwrap();
+        assert_eq!(find(&*at6, "hello"), vec![key("1"), key("3")]);
+        // The view at 5 searches again: still the state at 5.
+        assert_eq!(find(&*at5, "hello"), vec![key("1"), key("2")]);
+    }
+
+    /// The other order: a view prepared on the state at 5 that first searches after a
+    /// view on 6 brought the indexes to 6 searches the state at 5, not 6.
+    #[test]
+    fn a_view_that_searches_after_a_later_view_did_searches_its_own_state() {
+        let search = ComponentSearch::default();
+        let base = search
+            .prepare("app", &fields(), state(&[("1", "hello")]), 4, |_| None)
+            .unwrap();
+        assert_eq!(find(&*base, "hello"), vec![key("1")]);
+        let at5 = search
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("1", "hello"), ("2", "hello two")]),
+                5,
+                |_| Some(touched(&["2"])),
+            )
+            .unwrap();
+        // Entry 6 deletes 1 and adds 3.
+        let at6 = search
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("2", "hello two"), ("3", "hello three")]),
+                6,
+                |_| Some(touched(&["2", "1", "3"])),
+            )
+            .unwrap();
+        assert_eq!(find(&*at6, "hello"), vec![key("2"), key("3")]);
+        assert_eq!(find(&*at5, "hello"), vec![key("1"), key("2")]);
+        assert_eq!(
+            scans(&search, "app"),
+            1,
+            "caught up from the keys, never scanned"
+        );
+    }
+
+    /// A view on a state older than the indexes hold (never in order, but the indexes do
+    /// not rely on it) compares them with its own state instead of patching them.
+    #[test]
+    fn a_view_on_an_older_state_than_the_indexes_compares_them_with_it() {
+        let search = ComponentSearch::default();
+        let at6 = search
+            .prepare("app", &fields(), state(&[("3", "hello three")]), 6, |_| {
+                None
+            })
+            .unwrap();
+        assert_eq!(find(&*at6, "hello"), vec![key("3")]);
+        let at5 = search
+            .prepare("app", &fields(), state(&[("1", "hello")]), 5, |_| None)
+            .unwrap();
+        assert_eq!(find(&*at5, "hello"), vec![key("1")]);
+        assert_eq!(
+            find(&*at6, "hello"),
+            vec![key("3")],
+            "its own snapshot still"
+        );
+    }
+
+    /// Views that end without searching leave nothing queued.
+    #[test]
+    fn views_that_never_search_leave_nothing_queued() {
+        let search = ComponentSearch::default();
+        for applied in 1..=100 {
+            let view = search.prepare("app", &fields(), state(&[]), applied, |_| None);
+            drop(view);
+        }
+        let entry = Arc::clone(&search.apps.lock().unwrap()["app"]);
+        assert!(entry.waiting.lock().unwrap().len() <= 1);
+        assert_eq!(built_at(&search, "app"), None, "nothing indexed for them");
     }
 
     #[test]
@@ -901,7 +1030,7 @@ mod tests {
         kv.into_iter().collect()
     }
 
-    /// Review finding A5 follow-up: an upgrade rebuilt every table from a scan of the
+    /// An upgrade rebuilt every table from a scan of the
     /// whole state, because the indexes were keyed by bundle. A table whose declared
     /// fields an upgrade keeps now catches up from the keys touched since, like any
     /// other view; only a table that is new or whose fields changed is scanned, and one
@@ -1101,7 +1230,7 @@ mod tests {
             .sum()
     }
 
-    /// Review finding C1: every index kept its tantivy writer (an indexing thread, a
+    /// Every index kept its tantivy writer (an indexing thread, a
     /// segment updater, a merge thread and an arena of up to 15 MB) from its first write
     /// until the app left the node, so 200 apps of 3 searchable tables held some 1,800 OS
     /// threads. Only the apps refreshed last keep theirs, `MAX_OPEN_WRITERS` across every

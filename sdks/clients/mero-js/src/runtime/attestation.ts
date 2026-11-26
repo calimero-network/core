@@ -12,7 +12,8 @@
  * release must be at least `minReleaseVersion`; its `published-mrtds.json` is
  * fetched and its Sigstore signature checked against the node release workflow;
  * the quote's signature chain and TCB status are checked against Intel's
- * collateral (fetched here: the node sends none, and cannot forge it); the TD
+ * collateral (fetched here: the node sends none, and cannot forge it), whose
+ * TCB evaluation data must be at least core's floor; the TD
  * must not be a debug TD; and its registers must be the release's image for the
  * trusted profile, `locked-read-only` unless a debug profile is explicitly
  * allowed. Nothing here reads the environment: mock quotes pass only with
@@ -21,8 +22,7 @@
 
 import { fromHex, hex } from '../crypto/internal.js';
 import {
-  DEFAULT_COLLATERAL_MIRROR,
-  DEFAULT_RELEASE_MIRROR,
+  cloudCollateralUrl,
   cloudNodeReleaseUrl,
   compareReleaseVersions,
   fetchGithubNodeRelease,
@@ -33,6 +33,8 @@ import {
 } from '../sealed/release.js';
 import { transportKeyBinding, type VerifyTransportQuote } from '../sealed/sealed.js';
 import { PRODUCTION_PROFILE, createQuoteVerifier, type DcapCollateral, type DcapVerify } from '../sealed/verify.js';
+
+import { CLOUD_ENVIRONMENTS, defaultCloudEnvironment } from './directory.js';
 
 /** The mock quote format development clusters use. */
 export const MOCK_QUOTE_HEADER = 'MOCK_TDX_QUOTE_V1';
@@ -45,15 +47,26 @@ export interface NodeReleasePolicy {
    * name an old release with a flaw since fixed.
    */
   minReleaseVersion: string;
-  /** The image profile trusted; defaults to `locked-read-only`. */
+  /** The image profile trusted; defaults to `locked-read-only`. Not with `profiles`. */
   profile?: string;
+  /**
+   * Trust any of these image profiles, as core's `Measurements::Release`
+   * `allowed_profiles` does: the one the node names is used when it is listed,
+   * and the quote must still be that profile's signed image, so naming another
+   * profile only gets a node refused. For a cluster whose profile the client
+   * does not know, e.g. staging's `['debug', 'debug-read-only']`. A debug
+   * profile listed here still needs `allowDebugProfile`. Not with `profile`.
+   */
+  profiles?: string[];
   /** Trust a debug profile. Its image is readable by the operator: testing only. */
   allowDebugProfile?: boolean;
   /**
    * Where the release's signed measurements come from: `'github'` (the release
    * assets, what core's Rust client reads; no CORS, so not in browsers), the
-   * base URL of a mirror (default {@link DEFAULT_RELEASE_MIRROR}), or a function.
-   * Untrusted either way: the Sigstore signature is checked here.
+   * base URL of a mirror, or a function. Default: the `cloudUrl` of the Calimero
+   * Cloud the page is on (`CLOUD_ENVIRONMENTS`, read from the page's hostname),
+   * `DEFAULT_RELEASE_MIRROR` anywhere else. Untrusted either way: the
+   * Sigstore signature is checked here.
    */
   releaseSource?: 'github' | string | ((version: string) => Promise<SignedNodeRelease>);
   /** DCAP verification; defaults to `verify` from `@phala/dcap-qvl`, loaded on first use. */
@@ -65,8 +78,9 @@ export interface NodeReleasePolicy {
   fetchCollateral?: (quote: Uint8Array) => Promise<DcapCollateral>;
   /**
    * Where the default `fetchCollateral` gets Intel's collateral: a PCCS base
-   * URL (default {@link DEFAULT_COLLATERAL_MIRROR}, the cloud's mirror, which a
-   * browser on any origin can read), or `'intel'` for Intel's PCS itself (no
+   * URL (default: the mirror of the Calimero Cloud the page is on,
+   * `{cloudUrl}/api/tee/pcs`, `DEFAULT_COLLATERAL_MIRROR` anywhere else;
+   * a browser on any origin can read it), or `'intel'` for Intel's PCS itself (no
    * CORS: not in browsers). Untrusted either way: every item is signed by
    * Intel and verified up to Intel's root CA, which `@phala/dcap-qvl` carries.
    */
@@ -79,6 +93,12 @@ export interface NodeReleasePolicy {
    * refuses every node if Intel is slow to re-sign.
    */
   maxCollateralAgeDays?: number;
+  /**
+   * Refuse collateral whose TCB info names Intel TCB evaluation data older
+   * than this. Raises `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (core's floor),
+   * never lowers it; see `QuoteVerifierOptions.minTcbEvaluationDataNumber`.
+   */
+  minTcbEvaluationDataNumber?: number;
   /** Override the release signer (defaults to the mero-tee node release workflow). */
   identity?: string;
   issuer?: string;
@@ -172,6 +192,29 @@ export function claimedRelease(doc: Pick<AttestationDoc, 'release'>, minReleaseV
   return version;
 }
 
+/**
+ * The profile a real quote is judged against: `policy.profile`, or, with
+ * `policy.profiles`, the one the node names when it is listed. Every listed
+ * debug profile needs `allowDebugProfile`, so the list never trusts one silently.
+ */
+function trustedProfile(doc: Pick<AttestationDoc, 'release'>, policy: Pick<NodeReleasePolicy, 'profile' | 'profiles' | 'allowDebugProfile'>): string {
+  if (policy.profiles === undefined) return policy.profile ?? PRODUCTION_PROFILE;
+  if (policy.profile !== undefined) throw new Error('give policy.release.profile or profiles, not both');
+  if (policy.profiles.length === 0) throw new Error('policy.release.profiles is empty, so no image would be trusted');
+  const debug = policy.profiles.filter((p) => p !== PRODUCTION_PROFILE);
+  if (debug.length > 0 && !policy.allowDebugProfile) {
+    throw new Error(
+      `policy.release.profiles lists ${debug.map((p) => JSON.stringify(p)).join(', ')}, which an operator can read: ` +
+        'pass allowDebugProfile to trust them',
+    );
+  }
+  const named = String(doc.release?.profile ?? '');
+  if (!policy.profiles.includes(named)) {
+    throw new Error(`The node runs profile ${JSON.stringify(named)}, which is not one of ${policy.profiles.join(', ')}`);
+  }
+  return named;
+}
+
 /** `host` gave no answer: its fetch rejected (`cause`) or it answered a 5xx `status`. Says nothing about the quote. */
 export class Unanswered extends Error {
   constructor(
@@ -210,12 +253,13 @@ async function releaseFor(version: string, policy: NodeReleasePolicy, fetchImpl:
   if (typeof source === 'function') return source(version);
   const fetchMirror = answered(fetchImpl, 'the release mirror');
   if (source === 'github') return fetchGithubNodeRelease(version, { fetch: fetchMirror });
-  return fetchNodeRelease(cloudNodeReleaseUrl(source ?? DEFAULT_RELEASE_MIRROR, version), { fetch: fetchMirror });
+  const mirror = source ?? CLOUD_ENVIRONMENTS[defaultCloudEnvironment()].cloudUrl;
+  return fetchNodeRelease(cloudNodeReleaseUrl(mirror, version), { fetch: fetchMirror });
 }
 
 /** The collateral fetch a policy gets unless it brings its own: `@phala/dcap-qvl` against `collateralSource`. */
 function defaultCollateral(policy: NodeReleasePolicy): (quote: Uint8Array) => Promise<DcapCollateral> {
-  const source = policy.collateralSource ?? DEFAULT_COLLATERAL_MIRROR;
+  const source = policy.collateralSource ?? cloudCollateralUrl(CLOUD_ENVIRONMENTS[defaultCloudEnvironment()].cloudUrl);
   // dcap-qvl fetches with its own `fetch`: only its call's `TypeError` is no answer, never a bad URL or bundle.
   if (source === 'intel') {
     return async (quote) => {
@@ -269,7 +313,7 @@ async function verifyRelease(
 ): Promise<Pick<NodeVerification, 'release' | 'profile'> | undefined> {
   // Refuse what no release could admit before reaching for the network.
   const version = claimedRelease(doc, policy.minReleaseVersion);
-  const profile = policy.profile ?? PRODUCTION_PROFILE;
+  const profile = trustedProfile(doc, policy);
   const release = await releaseFor(version, policy, fetchImpl);
   if (release.version !== version) {
     throw new Error(`The node names mero-tee release ${version}, but the release served is ${release.version}`);
@@ -287,6 +331,7 @@ async function verifyRelease(
     dcapVerify: policy.dcapVerify ?? (await dcap<DcapVerify>('verify')),
     fetchCollateral,
     now: policy.now,
+    minTcbEvaluationDataNumber: policy.minTcbEvaluationDataNumber,
     ...trusted,
   });
   return (await verifier(args)) ? { release: version, profile } : undefined;

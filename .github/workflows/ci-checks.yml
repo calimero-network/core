@@ -19,9 +19,11 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded PR runs; never cancel a run of master.
+# Cancel superseded PR runs. Master is never cancelled and gets a run per commit:
+# its push runs the tests the queue left out on that commit's range, so a replaced
+# pending run would leave a merged commit's remainder untested.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
@@ -38,10 +40,17 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # A queue entry reads its PR's CI runs and their `ci-passed-tree` artifacts.
+      actions: read
     outputs:
       rust: ${{ steps.decide.outputs.rust }}
       upgrade_path: ${{ steps.decide.outputs.upgrade_path }}
       standalone_apps: ${{ steps.decide.outputs.standalone_apps }}
+      # The tests a PR and its queue entry run (a nextest filterset; empty runs every test).
+      test_filter: ${{ steps.decide.outputs.test_filter }}
+      # The tests `Rust tests` runs for this event: test_filter on a PR and in the queue,
+      # what the queue left out on a push to master; empty runs every test.
+      tests: ${{ steps.decide.outputs.tests }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,6 +88,7 @@ jobs:
           # push: the pushed range; merge_group: the queue entry against its base.
           FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
           TO: ${{ github.event.merge_group.head_sha || github.sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
         run: |
           set -uo pipefail
           # Every failure below leaves `files` empty, and ci-scope.py runs every
@@ -102,7 +112,55 @@ jobs:
               ;;
           esac
           [ -n "$files" ] || echo "::notice::could not list this change's files; every job runs"
-          printf '%s\n' "$files" | python3 scripts/ci-scope.py >> "$GITHUB_OUTPUT"
+          out="$RUNNER_TEMP/scope"
+          printf '%s\n' "$files" | python3 scripts/ci-scope.py > "$out"
+
+          # A queue entry whose tree is exactly one its PR's CI passed on (master did not
+          # move since, and no other entry is ahead of it or batched with it) runs nothing
+          # again: the PR's passing `Rust` uploads the tree it tested (`ci-passed-tree`).
+          # Any lookup that fails, or finds no match, runs the entry as usual.
+          if [ "$EVENT" = merge_group ] && [[ "$HEAD_REF" =~ /pr-([0-9]+)-[0-9a-f]+$ ]]; then
+            n=${BASH_REMATCH[1]}
+            reused=""
+            if tree=$(gh api "repos/$REPO/git/commits/$TO" --jq .tree.sha) \
+              && head=$(gh api "repos/$REPO/pulls/$n" --jq .head.sha) \
+              && runs=$(gh api "repos/$REPO/actions/workflows/ci-checks.yml/runs?event=pull_request&status=success&head_sha=$head&per_page=5" --jq '.workflow_runs[].id'); then
+              for run in $runs; do
+                for artifact in $(gh api "repos/$REPO/actions/runs/$run/artifacts" \
+                    --jq '.artifacts[] | select(.name == "ci-passed-tree" and (.expired | not)) | .id'); do
+                  passed=$(gh api "repos/$REPO/actions/artifacts/$artifact/zip" \
+                    | python3 -c 'import io, sys, zipfile; print(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read("tree").decode().strip())') \
+                    || continue
+                  if [ -n "$tree" ] && [ "$passed" = "$tree" ]; then reused=$run; break 2; fi
+                done
+              done
+            fi
+            if [ -n "$reused" ]; then
+              echo "::notice::tree $tree passed CI on PR #$n (run $reused); this entry runs nothing again"
+              sed -i -E 's/^(rust|upgrade_path|standalone_apps)=true$/\1=false/' "$out"
+            else
+              echo "no passing PR run on tree ${tree:-?}; the entry runs"
+            fi
+          fi
+
+          # On a push to master the queue already ran test_filter on this very tree, so
+          # the push runs the rest: `not (...)`, or none when the queue ran every test.
+          # A push no queue merged (no pull request), or whose files could not be listed,
+          # runs every test.
+          tests=$(sed -n 's/^test_filter=//p' "$out")
+          if [ "$EVENT" = push ]; then
+            if [ -z "$files" ] \
+              || ! prs=$(gh api "repos/$REPO/commits/$TO/pulls" --jq length) || [ "$prs" = 0 ]; then
+              tests=""
+            elif [ -n "$tests" ]; then
+              tests="not ($tests)"
+            else
+              tests="none()"
+            fi
+          fi
+          echo "tests=$tests" >> "$out"
+          echo "tests: ${tests:-every test}"
+          cat "$out" >> "$GITHUB_OUTPUT"
 
   # The required status check: passes only if every Rust job below passes, or was
   # skipped because `scope` found that the change cannot reach it. A failed or
@@ -115,7 +173,7 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-quick, rust-lint, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-doc, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -124,10 +182,11 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
-          # A push to master runs only the jobs that save caches (the merge queue ran
-          # the rest on this tree), so there a gated job may be skipped.
+          # A push to master runs the tests the queue left out and the jobs that save
+          # caches (the queue ran the other jobs on this tree), so there a gated job may
+          # be skipped.
           jq -e --argjson gates "$GATES" --arg event "$EVENT" '
             .scope.outputs as $scope
             | to_entries | all(
@@ -135,6 +194,49 @@ jobs:
                 or (.value.result == "skipped" and ($gates[.key] // "") != ""
                     and ($scope[$gates[.key]] == "false" or $event == "push"))
               )' <<<"$NEEDS"
+
+      # What this PR run passed on (its merge commit's tree): a queue entry with exactly
+      # this tree reuses the result instead of running again (`scope`).
+      - name: Record the tree this run passed
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha > "$RUNNER_TEMP/tree"
+
+      - name: Upload it
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-passed-tree
+          path: ${{ runner.temp }}/tree
+          if-no-files-found: error
+          retention-days: 7
+
+  # Master's push runs what the queue does not (every test; e2e.yml): a red push opens
+  # an issue, a green one closes it (.github/actions/report-master).
+  report-master:
+    name: Report master
+    needs: [rust]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Report
+        uses: ./.github/actions/report-master
+        with:
+          needs: ${{ toJSON(needs) }}
+          workflow: CI
 
   # The checks that need no build: they fail a PR in about a minute, before the
   # jobs that compile start (they wait on this one).
@@ -163,10 +265,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./scripts/check-naming.sh
 
-      # Fleet nodes run at INFO and operators read their logs, so info! must not carry user data.
+      # Fleet nodes run at INFO and every line ships to the operator, so info!, warn!
+      # and error! must not carry user data or text from outside the node (F6).
       - name: No user data at info level
         if: ${{ !cancelled() }}
         run: python3 scripts/check-no-user-data-at-info.py
+
+      - name: Test the no-user-data check
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/check-no-user-data-at-info-test.py
 
       - name: Test check-like-ci
         if: ${{ !cancelled() }}
@@ -219,6 +326,37 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
+  # Broken intra-doc links (a renamed or removed item, a public doc naming a
+  # private one) are rustdoc warnings that no other job builds. Dependencies are
+  # checked, not documented, which is the build `Rust lint` caches, so this
+  # restores `ci-lint` without saving it. RUSTDOCFLAGS is set on the step alone:
+  # rust-cache hashes RUST* variables into the group's key.
+  rust-doc:
+    name: Rust docs
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-lint
+          save-if: false
+
+      - name: Cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
   # The workspace tests in four shards. Each compiles the tests itself: rust-cache
   # restores the dependencies and the workspace's own crates as master last built
   # them, so a shard rebuilds only what the change reaches (setup-rust-ci's
@@ -234,14 +372,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push to master runs shard 1 alone, the same quarter of the tests a PR's
-        # shard 1 runs: the merge queue already ran every test on this tree, and the
-        # push only refreshes the caches. The build it saves is the whole workspace's
-        # whatever the quarter, and the test apps it saves are those its tests build
-        # (the shared fixtures; a guest only another quarter uses is built on a miss).
-        # Running every test here took past the job's hour on four cores, so nothing
-        # was saved.
-        shard: ${{ fromJSON(github.event_name == 'push' && '[1]' || '[1, 2, 3, 4]') }}
+        # A push to master runs every shard, on the tests the queue left out (none
+        # left: shards 2-4 stop after the restore). Shard 1 alone saves; the build it saves is the
+        # whole workspace's whatever the quarter, and the test apps it saves are those
+        # its tests build (the shared fixtures; a guest only another quarter uses is
+        # built on a miss).
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -256,7 +392,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.shard == 1 }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
@@ -287,9 +423,18 @@ jobs:
       # Twice the cores: most slow tests wait on timers and the network, not the
       # CPU. The node's integration tests, which do load it, take three or four of
       # these slots each (.config/nextest.toml).
+      # A PR and its merge-queue entry run the tests of the crates the change touches
+      # and of every crate depending on them (`scope`'s test_filter: nextest `rdeps`;
+      # the queue's diff is the entry against its base, so it still catches two
+      # changes that break each other within that graph); a change reaching beyond
+      # the workspace's crate graph runs every test. A push to master runs the rest,
+      # `not (test_filter)`, on the tree the queue tested, and opens the red-master
+      # issue when one fails (`scope`'s `tests`).
       - name: Cargo test
         env:
           PARTITION: ${{ format('count:{0}/4', matrix.shard) }}
+          FILTER: ${{ needs.scope.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
           NEXTEST_TEST_THREADS: "8"
           # No test may run past 15 s: .config/nextest.toml's ci profile kills it at 30 s,
           # past its own listed limit for the tests over budget when the rule came in.
@@ -298,7 +443,14 @@ jobs:
           FIRST_HOST=$(hostname -I | awk '{print $1}')
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo "$TEST_HOSTS"
-          cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} --no-fail-fast
+          # A filtered shard may be left with no test of its own; that passes.
+          echo "filter: ${FILTER:-every test}"
+          # Nothing left for master to run: shard 1 still builds, to save the caches.
+          if [ "$FILTER" = "none()" ] && [ "$SHARD" != 1 ]; then
+            echo "the merge queue ran every test this commit reaches"
+            exit 0
+          fi
+          cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} ${FILTER:+-E "$FILTER" --no-tests=pass} --no-fail-fast
 
       # The doctests, in the shard that already built the libraries they link.
       - name: Cargo doctests
@@ -521,8 +673,8 @@ jobs:
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
           python3 scripts/check-api-compat.py ${base:+--base "$base"}
 
-  # Every app under apps/ is its own workspace, whose lockfile no other build updates:
-  # each must match its manifests, and change only when they need it to.
+  # Every app under apps/ and Rust client under sdks/clients/ is its own workspace, whose lockfile
+  # no other build updates: each must match its manifests, and change only when they need it to.
   app-lockfiles:
     name: App lockfiles
     needs: scope
@@ -542,7 +694,7 @@ jobs:
       - name: Test the check
         run: python3 scripts/tests/check-app-lockfiles-test.py
 
-      - name: Every app lockfile current, none rewritten without need
+      - name: Every app and client lockfile current, none rewritten without need
         run: |
           # In CI the checkout is the merge commit; locally, the merge base with origin/master.
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
@@ -563,7 +715,7 @@ jobs:
 
       # Pinned so an upstream release cannot break CI; cargo-deny needs >= 0.19 for CVSS 4.0 advisories.
       - name: Install cargo-deny and cargo-machete
-        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-deny@0.19.9,cargo-machete@0.9.2
 

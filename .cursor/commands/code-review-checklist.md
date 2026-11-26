@@ -13,7 +13,7 @@ Comprehensive checklist for Calimero core PR reviews. Align with AGENTS.md conve
 
 - [ ] Code is readable and well-structured
 - [ ] Imports follow StdExternalCrate pattern (std → external → crate → local)
-- [ ] No `mod.rs` – modules use named files
+- [ ] No `mod.rs` – modules use named files (except a shared `tests/common/mod.rs`)
 - [ ] Functions are small and focused
 - [ ] Variable names are descriptive
 - [ ] No code duplication
@@ -24,6 +24,7 @@ Comprehensive checklist for Calimero core PR reviews. Align with AGENTS.md conve
 - [ ] No commented-out code blocks
 - [ ] Commit format: `<type>(<scope>): <summary>` (e.g. `fix(node): bound the presence state size`)
 - [ ] Relevant documentation updated (README, AGENTS.md, crate docs)
+- [ ] Comments follow "Documentation in code": a new crate or protocol module links its docs chapter in full (`https://calimero-network.github.io/core/...`); no bare ids (`(D20)`, `review finding F6`, `Ruling 39`), no bare `#1234`, no "used to"; every path named exists (`python3 scripts/check-code-refs.py`)
 
 ## Tests
 

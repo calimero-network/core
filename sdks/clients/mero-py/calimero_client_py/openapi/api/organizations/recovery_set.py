@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.recovery_set_body import RecoverySetBody
+from ...models.recovery_key_body import RecoveryKeyBody
 from ...models.recovery_set_response_200 import RecoverySetResponse200
 from typing import cast
 
@@ -16,7 +16,7 @@ from typing import cast
 def _get_kwargs(
     org: str,
     *,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -58,6 +58,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 412:
         response_412 = Error.from_dict(response.json())
 
@@ -89,12 +94,14 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Response[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
-    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.
+    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
+    organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
+    the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -102,7 +109,7 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -128,12 +135,14 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Optional[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
-    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.
+    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
+    organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
+    the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -141,7 +150,7 @@ def sync(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -162,12 +171,14 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Response[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
-    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.
+    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
+    organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
+    the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -175,7 +186,7 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -199,12 +210,14 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: RecoverySetBody,
+    body: RecoveryKeyBody,
 ) -> Optional[Union[Error, RecoverySetResponse200]]:
     """Set the organization's recovery key
 
      Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an
-    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.
+    absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An
+    organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before
+    the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -212,7 +225,7 @@ async def asyncio(
 
     Args:
         org (str):
-        body (RecoverySetBody):
+        body (RecoveryKeyBody): The request body of `POST /orgs/{org}/recovery`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

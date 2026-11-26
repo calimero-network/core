@@ -7,16 +7,16 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_policy_set_body import AppPolicySetBody
 from ...models.error import Error
 from ...models.policy_view import PolicyView
+from ...models.upgrade_policy_body import UpgradePolicyBody
 from typing import cast
 
 
 def _get_kwargs(
     app: str,
     *,
-    body: AppPolicySetBody,
+    body: UpgradePolicyBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -99,7 +99,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppPolicySetBody,
+    body: UpgradePolicyBody,
 ) -> Response[Union[Error, PolicyView]]:
     """Set an app's own update policy
 
@@ -114,7 +114,8 @@ def sync_detailed(
 
     Args:
         app (str):
-        body (AppPolicySetBody):
+        body (UpgradePolicyBody): A policy to set at one scope; `null` drops it (an app then
+            follows its organization's, an organization the defaults).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -140,7 +141,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppPolicySetBody,
+    body: UpgradePolicyBody,
 ) -> Optional[Union[Error, PolicyView]]:
     """Set an app's own update policy
 
@@ -155,7 +156,8 @@ def sync(
 
     Args:
         app (str):
-        body (AppPolicySetBody):
+        body (UpgradePolicyBody): A policy to set at one scope; `null` drops it (an app then
+            follows its organization's, an organization the defaults).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -176,7 +178,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppPolicySetBody,
+    body: UpgradePolicyBody,
 ) -> Response[Union[Error, PolicyView]]:
     """Set an app's own update policy
 
@@ -191,7 +193,8 @@ async def asyncio_detailed(
 
     Args:
         app (str):
-        body (AppPolicySetBody):
+        body (UpgradePolicyBody): A policy to set at one scope; `null` drops it (an app then
+            follows its organization's, an organization the defaults).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -215,7 +218,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-    body: AppPolicySetBody,
+    body: UpgradePolicyBody,
 ) -> Optional[Union[Error, PolicyView]]:
     """Set an app's own update policy
 
@@ -230,7 +233,8 @@ async def asyncio(
 
     Args:
         app (str):
-        body (AppPolicySetBody):
+        body (UpgradePolicyBody): A policy to set at one scope; `null` drops it (an app then
+            follows its organization's, an organization the defaults).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -44,7 +44,7 @@ const MAX_SNIPPET_COMPLETIONS: usize = 64;
 /// Writer arena per open index: tantivy's floor.
 pub const WRITER_MEMORY: usize = 15_000_000;
 
-/// Layout of [`CommitMeta`]. An index committed under another format (or
+/// Layout of `CommitMeta`. An index committed under another format (or
 /// whose payload does not decode) opens as [`OpenState::Stale`] and is rebuilt
 /// from state, which is the whole migration story for the index: it is
 /// derived data.
@@ -671,11 +671,31 @@ impl ContextIndex {
         Ok(Some(Box::new(BooleanQuery::new(marked))))
     }
 
+    /// The last commit, as a point-in-time view: later commits leave it as it is, and the
+    /// segments it reads stay alive while it is held. [`ContextIndex::search_in`] queries it.
+    #[must_use]
+    pub fn searcher(&self) -> Searcher {
+        self.reader.searcher()
+    }
+
     /// Run `req` against the last commit.
     ///
     /// # Errors
     /// An invalid request (unknown field, oversized page) or a tantivy failure.
     pub fn search(&self, req: &SearchRequest) -> EyreResult<SearchResponse> {
+        self.search_in(&self.reader.searcher(), req)
+    }
+
+    /// Run `req` against `searcher`, a commit of this index [`ContextIndex::searcher`]
+    /// took, whatever was committed since.
+    ///
+    /// # Errors
+    /// An invalid request (unknown field, oversized page) or a tantivy failure.
+    pub fn search_in(
+        &self,
+        searcher: &Searcher,
+        req: &SearchRequest,
+    ) -> EyreResult<SearchResponse> {
         if req.query.len() > MAX_QUERY_LEN {
             bail!("query longer than {MAX_QUERY_LEN} bytes");
         }
@@ -696,7 +716,6 @@ impl ContextIndex {
             Box::new(BooleanQuery::new(clauses))
         };
 
-        let searcher = self.reader.searcher();
         let page = TopDocs::with_limit(limit).and_offset(cursor);
         let (top, total): (Vec<(Score, DocAddress)>, usize) = match &req.order {
             SearchOrder::Relevance => searcher.search(&query, &(page.order_by_score(), Count))?,
@@ -723,10 +742,10 @@ impl ContextIndex {
         let mut snippets = Vec::new();
         if let (Some(text), true) = (&text, self.opts.store_text) {
             if req.mode != SearchMode::Substring {
-                let marked = self.snippet_query(&searcher, req)?;
+                let marked = self.snippet_query(searcher, req)?;
                 let marked = marked.as_deref().unwrap_or(&**text);
                 for field in &self.fields.text {
-                    let mut g = SnippetGenerator::create(&searcher, marked, field.words)?;
+                    let mut g = SnippetGenerator::create(searcher, marked, field.words)?;
                     g.set_max_num_chars(120);
                     snippets.push(g);
                 }

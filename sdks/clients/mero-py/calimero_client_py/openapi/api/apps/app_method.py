@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_method_body import AppMethodBody
-from ...models.app_method_response_200 import AppMethodResponse200
 from ...models.error import Error
+from ...models.method_result import MethodResult
 from typing import cast
 
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppMethodResponse200, Error]]:
+) -> Optional[Union[Error, MethodResult]]:
     if response.status_code == 200:
-        response_200 = AppMethodResponse200.from_dict(response.json())
+        response_200 = MethodResult.from_dict(response.json())
 
         return response_200
 
@@ -108,7 +108,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppMethodResponse200, Error]]:
+) -> Response[Union[Error, MethodResult]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -123,7 +123,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppMethodBody,
-) -> Response[Union[AppMethodResponse200, Error]]:
+) -> Response[Union[Error, MethodResult]]:
     """Call a method by its path
 
      The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI
@@ -146,7 +146,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppMethodResponse200, Error]]
+        Response[Union[Error, MethodResult]]
     """
 
     kwargs = _get_kwargs(
@@ -168,7 +168,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppMethodBody,
-) -> Optional[Union[AppMethodResponse200, Error]]:
+) -> Optional[Union[Error, MethodResult]]:
     """Call a method by its path
 
      The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI
@@ -191,7 +191,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppMethodResponse200, Error]
+        Union[Error, MethodResult]
     """
 
     return sync_detailed(
@@ -208,7 +208,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppMethodBody,
-) -> Response[Union[AppMethodResponse200, Error]]:
+) -> Response[Union[Error, MethodResult]]:
     """Call a method by its path
 
      The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI
@@ -231,7 +231,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppMethodResponse200, Error]]
+        Response[Union[Error, MethodResult]]
     """
 
     kwargs = _get_kwargs(
@@ -251,7 +251,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppMethodBody,
-) -> Optional[Union[AppMethodResponse200, Error]]:
+) -> Optional[Union[Error, MethodResult]]:
     """Call a method by its path
 
      The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI
@@ -274,7 +274,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppMethodResponse200, Error]
+        Union[Error, MethodResult]
     """
 
     return (

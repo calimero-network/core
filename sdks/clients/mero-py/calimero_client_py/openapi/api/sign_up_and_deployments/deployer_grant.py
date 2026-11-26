@@ -7,15 +7,15 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.deployer_grant_body import DeployerGrantBody
-from ...models.deployer_grant_response_200 import DeployerGrantResponse200
+from ...models.deployer_body import DeployerBody
+from ...models.deployer_granted import DeployerGranted
 from ...models.error import Error
 from typing import cast
 
 
 def _get_kwargs(
     *,
-    body: DeployerGrantBody,
+    body: DeployerBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeployerGrantResponse200, Error]]:
+) -> Optional[Union[DeployerGranted, Error]]:
     if response.status_code == 200:
-        response_200 = DeployerGrantResponse200.from_dict(response.json())
+        response_200 = DeployerGranted.from_dict(response.json())
 
         return response_200
 
@@ -73,7 +73,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeployerGrantResponse200, Error]]:
+) -> Response[Union[DeployerGranted, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -85,8 +85,8 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-    body: DeployerGrantBody,
-) -> Response[Union[DeployerGrantResponse200, Error]]:
+    body: DeployerBody,
+) -> Response[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      The cluster's owner, with a passkey.
@@ -96,14 +96,14 @@ def sync_detailed(
     `details.challenge`.
 
     Args:
-        body (DeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeployerGrantResponse200, Error]]
+        Response[Union[DeployerGranted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -120,8 +120,8 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-    body: DeployerGrantBody,
-) -> Optional[Union[DeployerGrantResponse200, Error]]:
+    body: DeployerBody,
+) -> Optional[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      The cluster's owner, with a passkey.
@@ -131,14 +131,14 @@ def sync(
     `details.challenge`.
 
     Args:
-        body (DeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeployerGrantResponse200, Error]
+        Union[DeployerGranted, Error]
     """
 
     return sync_detailed(
@@ -150,8 +150,8 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-    body: DeployerGrantBody,
-) -> Response[Union[DeployerGrantResponse200, Error]]:
+    body: DeployerBody,
+) -> Response[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      The cluster's owner, with a passkey.
@@ -161,14 +161,14 @@ async def asyncio_detailed(
     `details.challenge`.
 
     Args:
-        body (DeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeployerGrantResponse200, Error]]
+        Response[Union[DeployerGranted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -183,8 +183,8 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-    body: DeployerGrantBody,
-) -> Optional[Union[DeployerGrantResponse200, Error]]:
+    body: DeployerBody,
+) -> Optional[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      The cluster's owner, with a passkey.
@@ -194,14 +194,14 @@ async def asyncio(
     `details.challenge`.
 
     Args:
-        body (DeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeployerGrantResponse200, Error]
+        Union[DeployerGranted, Error]
     """
 
     return (

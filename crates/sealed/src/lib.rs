@@ -20,6 +20,10 @@
 //! Nodes up to 1.0.0-rc.24 served the two at `/sealed/v2/handshake` and
 //! `/sealed/v2`; those paths are gone. The `v2` there never named the wire
 //! format, which the version byte does.
+//!
+//! Spec: [The sealed channel](https://calimero-network.github.io/core/protocol/networking/#the-sealed-channel),
+//! [Encryption in transit](https://calimero-network.github.io/core/protocol/encryption/#in-transit).
+//! Crate guide: [`crates/sealed/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/sealed/AGENTS.md).
 
 pub mod client;
 pub mod file;
@@ -30,6 +34,6 @@ pub mod wrap;
 
 pub use identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use server::{
-    derive_shared, expire_sessions, intercept, LowOrder, SealedOptions, SealedTransport,
-    HANDSHAKE_PATH, SEALED_PATH,
+    derive_shared, expire_sessions, intercept, LowOrder, SealedOptions, SealedSession,
+    SealedTransport, HANDSHAKE_PATH, SEALED_PATH,
 };

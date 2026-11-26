@@ -175,10 +175,11 @@ pub struct Governance {
     pub outbound: Authority,
     /// Who may install apps (signed packages, raw bundles). `open`: any
     /// account. `granted`: only an account holding a live deployer grant, or
-    /// a `MANAGE_APPLICATION` holder of an organization holding one; anyone
-    /// may still create instances of the releases they see. Left out of the
-    /// JSON when `open`, so a cluster with the defaults attests the bytes it
-    /// did before this field.
+    /// a `MANAGE_APPLICATION` holder of an organization holding one. Anyone
+    /// else creates instances only from a deployment's offer or of a release
+    /// the operator installed ([Deployers](https://calimero-network.github.io/core/protocol/governance/#deployers)).
+    /// Left out of the JSON when `open`, so a cluster with the defaults
+    /// attests the bytes it did before this field.
     #[serde(default, skip_serializing_if = "Deployments::is_default")]
     pub deployments: Deployments,
     /// Who grants deployers where deployments are `granted`. `operator`: the
@@ -639,6 +640,10 @@ pub fn verifier_policy(
         allowed_rtmr3: m.allowed_rtmr3.clone(),
         accept_mock: false,
         require_app_hash: true,
+        // The compiled-in floor on Intel's TCB evaluation data: peers, clients
+        // and job attestation are all judged here.
+        min_tcb_evaluation_data_number:
+            calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
     }
 }
 
@@ -1601,7 +1606,7 @@ mod tests {
         assert!(err.to_string().contains("no measurement policy"), "{err}");
     }
 
-    /// Xil's review, issue 14: with no floor named, any old release was trusted.
+    /// With no floor named, the default floor applies: an old release is not trusted.
     #[tokio::test]
     async fn the_default_floor_applies_when_none_is_named() {
         let policy = Policy {
@@ -1651,6 +1656,8 @@ mod tests {
         let mut result =
             calimero_tee_attestation::verify_mock_attestation(&quote, &[2; 32], &[0; 32]).unwrap();
         result.tcb_status = Some("UpToDate".into());
+        result.tcb_evaluation_data_number =
+            Some(calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER);
         result
     }
 
@@ -1684,6 +1691,25 @@ mod tests {
         assert!(err.to_string().contains("MeasurementMismatch"), "{err}");
         let err = judge(&result, &Policy::default(), None).await.unwrap_err();
         assert!(err.to_string().contains("no measurement policy"), "{err}");
+    }
+
+    /// Peers, clients and job attestation all reach `judge`: an `UpToDate`
+    /// computed against Intel TCB evaluation data below the floor (a
+    /// collateral source serving an older, still-signed baseline), or of
+    /// unknown age, admits nothing.
+    #[tokio::test]
+    async fn a_verdict_from_collateral_below_the_floor_is_refused() {
+        for number in [Some(17), None] {
+            let mut result = checked_quote();
+            result.tcb_evaluation_data_number = number;
+            let err = judge(&result, &pinned(&"00".repeat(48)), None)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("TcbEvaluationDataTooOld"),
+                "{number:?}: {err}"
+            );
+        }
     }
 
     fn evidence() -> calimero_tee_attestation::KmsEvidence {

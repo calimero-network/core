@@ -7,11 +7,13 @@ use calimero_app_host::{Abi, MethodKind};
 use calimero_pipeline::{
     canonical_json, check, compile, worst_case_cost, worst_case_fuel, Caps, Env, SpecError,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::{compare_versions, ModulePin, PackageVersion, PipelineRef};
+use crate::system::{ModulePin, PackageVersion, PipelineRef, Visibility};
+use crate::types::OrgId;
 
 use super::verify;
 
@@ -186,8 +188,36 @@ pub fn register(
     }
 }
 
-fn spec_json(e: &SpecError) -> Value {
-    json!({ "path": e.path, "code": e.code, "message": e.message })
+fn spec_view(e: &SpecError) -> PipelineError {
+    PipelineError {
+        path: e.path.clone(),
+        code: e.code.to_owned(),
+        message: e.message.clone(),
+    }
+}
+
+/// One error in a pipeline: where (a path into it, empty for the whole), its code and what is
+/// wrong.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PipelineError {
+    pub path: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// `POST /pipelines/validate`: whether the pipeline compiles (and, against a release, checks),
+/// every error, its canonical JSON, and its worst-case fuel and cost (decimal strings).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineValidation {
+    pub ok: bool,
+    pub errors: Vec<PipelineError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case_fuel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case_cost: Option<String>,
 }
 
 impl Node {
@@ -207,18 +237,30 @@ impl Node {
     pub async fn validate_pipeline(
         &self,
         source: &[u8],
-        release: Option<&PackageVersion>,
+        release: Option<(&str, &PackageVersion)>,
         actor: &str,
-    ) -> Result<Value, ApiError> {
-        let failed = |errs: &[SpecError]| json!({ "ok": false, "errors": errs.iter().map(spec_json).collect::<Vec<_>>() });
+    ) -> Result<PipelineValidation, ApiError> {
+        let failed = |errs: &[SpecError]| PipelineValidation {
+            ok: false,
+            errors: errs.iter().map(spec_view).collect(),
+            pipeline: None,
+            worst_case_fuel: None,
+            worst_case_cost: None,
+        };
         let (pipeline, compiled) = match Compiled::of(source) {
             Ok(ok) => ok,
             Err(errs) => return Ok(failed(&errs)),
         };
         let canonical: Value = serde_json::from_slice(&compiled.canonical)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
-        let mut answer = json!({ "ok": true, "errors": [], "pipeline": canonical });
-        let Some(release) = release else {
+        let mut answer = PipelineValidation {
+            ok: true,
+            errors: Vec::new(),
+            pipeline: Some(canonical),
+            worst_case_fuel: None,
+            worst_case_cost: None,
+        };
+        let Some((signer, release)) = release else {
             return Ok(answer);
         };
         let own = |code: &'static str, message: &str| {
@@ -239,28 +281,41 @@ impl Node {
             }
         };
         let methods = self.caps_of_component(hash).await?;
+        let private_for =
+            (release.visibility == Some(Visibility::Private)).then_some(&release.orgs);
         let available = self
-            .resolve_modules(&[(String::new(), source.to_vec())], actor)
+            .resolve_modules(
+                &[(String::new(), source.to_vec())],
+                actor,
+                signer,
+                private_for,
+                &BTreeMap::new(),
+            )
             .await;
         let env = env_for(&methods, &self.pool_ceilings(), &available);
         if let Err(errs) = check(&pipeline, &env) {
             return Ok(failed(&errs));
         }
-        answer["worstCaseFuel"] = json!(worst_case_fuel(&pipeline, &env).to_string());
+        answer.worst_case_fuel = Some(worst_case_fuel(&pipeline, &env).to_string());
         let _caught_up = self.sys_fresh().await;
         if let Some(table) = self.sys(|s| s.price_table) {
-            answer["worstCaseCost"] = json!(worst_case_cost(&pipeline, &env, &table).to_string());
+            answer.worst_case_cost = Some(worst_case_cost(&pipeline, &env, &table).to_string());
         }
         Ok(answer)
     }
 
-    /// The modules the files name that `actor` can use: a package release it sees, as written
-    /// (`package` for the newest, `package@version` for one), shipping one compute component.
-    /// A reference that resolves to none is left out, so `check` answers `UNKNOWN_MODULE`.
+    /// The modules the files name that a release signed by `signer`, private to `private_for`,
+    /// may pin for `actor` ([`crate::system::SystemState::may_pin`]): the one `pinned` names, else
+    /// as written (`package` for the newest, `package@version` for one), shipping one compute
+    /// component. A reference that resolves to none is left out, so `check` answers
+    /// `UNKNOWN_MODULE`.
     pub async fn resolve_modules(
         &self,
         files: &[(String, Vec<u8>)],
         actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+        pinned: &BTreeMap<String, ModulePin>,
     ) -> BTreeMap<String, Module> {
         let refs: BTreeSet<String> = files
             .iter()
@@ -274,25 +329,35 @@ impl Node {
             .collect();
         let mut found = BTreeMap::new();
         for reference in refs {
-            if let Some(module) = self.resolve_module(&reference, actor).await {
+            let pin = pinned.get(&reference).map(|p| p.version.as_str());
+            if let Some(module) = self
+                .resolve_module(&reference, pin, actor, signer, private_for)
+                .await
+            {
                 let _prev = found.insert(reference, module);
             }
         }
         found
     }
 
-    async fn resolve_module(&self, reference: &str, actor: &str) -> Option<Module> {
+    async fn resolve_module(
+        &self,
+        reference: &str,
+        pinned: Option<&str>,
+        actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+    ) -> Option<Module> {
         let (package, wanted) = match reference.split_once('@') {
             Some((p, v)) => (p, Some(v)),
             None => (reference, None),
         };
         let (version, compute) = self.sys(|s| {
             let record = s.packages.get(package)?;
-            let release = match wanted {
-                Some(v) => record.versions.get(v).filter(|r| s.sees_release(r, actor)),
-                None => s
-                    .visible_versions(record, actor)
-                    .max_by(|a, b| compare_versions(&a.version, &b.version)),
+            let usable = |r: &PackageVersion| s.may_pin(record, r, actor, signer, private_for);
+            let release = match pinned.or(wanted) {
+                Some(v) => record.versions.get(v).filter(|r| usable(r)),
+                None => record.latest_where(usable),
             }?;
             Some((release.version.clone(), release.compute.get("").cloned()?))
         })?;
@@ -329,7 +394,7 @@ impl Node {
             })
             .ok_or_else(|| ApiError::not_found("no release registers that pipeline"))?;
         let mpk = self.release_mpk(&release.0, &release.1).await?;
-        let (_bundle, services) = verify(mpk)?;
+        let (_bundle, services) = verify(mpk).await?;
         let found = services
             .iter()
             .flat_map(|s| &s.pipelines)
@@ -347,19 +412,40 @@ impl Node {
     pub async fn release_pipelines(
         &self,
         refs: &BTreeMap<String, PipelineRef>,
-    ) -> Result<Value, ApiError> {
-        let mut out = serde_json::Map::new();
+    ) -> Result<ReleasePipelines, ApiError> {
+        let mut out = BTreeMap::new();
         for (name, r) in refs {
             let bytes = self.pipeline_json(&r.hash).await?;
             let pipeline: Value =
                 serde_json::from_slice(&bytes).map_err(|e| ApiError::internal(&e.to_string()))?;
             let _prev = out.insert(
                 name.clone(),
-                json!({ "hash": r.hash, "worstCaseFuel": r.worst_case_fuel, "modules": r.modules, "pipeline": pipeline }),
+                ReleasePipeline {
+                    hash: r.hash.clone(),
+                    worst_case_fuel: r.worst_case_fuel.clone(),
+                    modules: r.modules.clone(),
+                    pipeline,
+                },
             );
         }
-        Ok(Value::Object(out))
+        Ok(ReleasePipelines(out))
     }
+}
+
+/// `GET /packages/{package}/{version}/pipelines`: the release's pipelines by name.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReleasePipelines(BTreeMap<String, ReleasePipeline>);
+
+/// A registered pipeline: its hash, worst-case fuel (a decimal string), the module releases it
+/// pins, and its canonical JSON.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleasePipeline {
+    hash: String,
+    worst_case_fuel: String,
+    modules: BTreeMap<String, crate::system::ModulePin>,
+    pipeline: Value,
 }
 
 #[cfg(test)]

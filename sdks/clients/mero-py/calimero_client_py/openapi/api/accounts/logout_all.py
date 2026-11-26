@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.logout_all_response_200 import LogoutAllResponse200
+from ...models.sessions_revoked import SessionsRevoked
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, LogoutAllResponse200]]:
+) -> Optional[Union[Error, SessionsRevoked]]:
     if response.status_code == 200:
-        response_200 = LogoutAllResponse200.from_dict(response.json())
+        response_200 = SessionsRevoked.from_dict(response.json())
 
         return response_200
 
@@ -53,7 +53,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, LogoutAllResponse200]]:
+) -> Response[Union[Error, SessionsRevoked]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, LogoutAllResponse200]]:
+) -> Response[Union[Error, SessionsRevoked]]:
     """End every session of the account
 
      `revoked`: how many sessions ended.
@@ -77,7 +77,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, LogoutAllResponse200]]
+        Response[Union[Error, SessionsRevoked]]
     """
 
     kwargs = _get_kwargs()
@@ -92,7 +92,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, LogoutAllResponse200]]:
+) -> Optional[Union[Error, SessionsRevoked]]:
     """End every session of the account
 
      `revoked`: how many sessions ended.
@@ -104,7 +104,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, LogoutAllResponse200]
+        Union[Error, SessionsRevoked]
     """
 
     return sync_detailed(
@@ -115,7 +115,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, LogoutAllResponse200]]:
+) -> Response[Union[Error, SessionsRevoked]]:
     """End every session of the account
 
      `revoked`: how many sessions ended.
@@ -127,7 +127,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, LogoutAllResponse200]]
+        Response[Union[Error, SessionsRevoked]]
     """
 
     kwargs = _get_kwargs()
@@ -140,7 +140,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, LogoutAllResponse200]]:
+) -> Optional[Union[Error, SessionsRevoked]]:
     """End every session of the account
 
      `revoked`: how many sessions ended.
@@ -152,7 +152,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, LogoutAllResponse200]
+        Union[Error, SessionsRevoked]
     """
 
     return (

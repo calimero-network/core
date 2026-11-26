@@ -3,7 +3,7 @@
 //!
 //! The node's own reader (`calimero_app_host::Abi`) keeps only what it enforces; this one
 //! keeps the free-form keys too (`params`, `returns`, `errors`, `events`, `types`), which
-//! describe the app to clients. Unknown keys are ignored, like the node does (Ruling 14).
+//! describe the app to clients. Unknown keys are ignored, like the node does.
 //!
 //! `types` (written by the SDK since `calimero-sdk` describes `#[derive(Record)]` and
 //! `#[derive(AbiType)]` types; see `calimero_sdk::abi`) holds each app type's shape: a

@@ -1,14 +1,20 @@
-//! The wasmtime engine for `calimero:app` components (spec sections 4-5).
+//! The wasmtime engine for `calimero:app` components.
 //!
 //! One `wasmtime::Engine` serves every app. `prepare` checks a component's imports
-//! against the world and the D44 stubs, reads its ABI and compiles it through a checked
-//! disk cache; `invoke` runs `handle` in a fresh store per call (D8) under fuel, an epoch
-//! deadline, memory, table and stack limits, and maps every failure onto one `TrapKind`.
+//! against the world and the refusing WASI stubs, reads its ABI and compiles it through a
+//! checked disk cache; `invoke` runs `handle` in a fresh store per call (so no state leaks
+//! between callers) under fuel, an epoch deadline, memory, table and stack limits, and maps
+//! every failure onto one `TrapKind`.
+//!
+//! Spec: [One run](https://calimero-network.github.io/core/protocol/execution/#one-run),
+//! [Limits](https://calimero-network.github.io/core/protocol/limits/).
+//! Crate guide: [`crates/app-engine-wasmtime/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-engine-wasmtime/AGENTS.md).
 
 use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::PoisonError;
@@ -46,12 +52,14 @@ mod bindings;
 mod cache;
 mod compute;
 mod errors;
+mod fuel;
 mod http;
 mod run;
 mod wasi;
 
 use bindings::AppPre;
 use cache::Cache;
+pub use cache::{CacheSweep, CACHE_SWEEP_GRACE};
 use compute::ComputePre;
 use errors::{classify, Cancelled, GrowFailed, GrowRefused, HostPanic, Phase};
 
@@ -59,14 +67,14 @@ pub use errors::{CANCELLED, WALL_CLOCK_EXCEEDED};
 pub use run::{ending_of, measure, ComputeRun, Ending, Measured, Reason, THREAD_CPU};
 use wasi::{LogPipe, SharedLog};
 
-/// Wasm stack per call, as in the v1 runtime (spec section 5).
+/// Wasm stack per call, as in the v1 runtime.
 pub const MAX_WASM_STACK: usize = 200 * 1024;
 /// Table elements per store.
 pub const MAX_TABLE_ELEMENTS: usize = 100_000;
 /// Core instances per store: a `wasm32-wasip2` component instantiates several core
-/// modules (Ruling 18); memory stays bounded by the page limit.
+/// modules; memory stays bounded by the page limit.
 pub const MAX_INSTANCES: usize = 20;
-/// Linear memories per store, measured (Ruling 21): a Rust `wasm32-wasip2` guest and a
+/// Linear memories per store, measured: a Rust `wasm32-wasip2` guest and a
 /// componentize-js 0.23 guest each define exactly one. Checked statically at `prepare`
 /// and again by the store's limiter.
 pub const MAX_MEMORIES: usize = 1;
@@ -84,6 +92,17 @@ const WASM_PAGE_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_BYTES: usize = DEFAULT_MEMORY_PAGES as usize * WASM_PAGE_BYTES;
 /// Largest memory a compute run may be given: 65,536 pages (4 GiB), wasm32's whole space.
 const COMPUTE_MAX_MEMORY_BYTES: usize = 65_536 * WASM_PAGE_BYTES;
+/// Address space each pool slot reserves: wasm32's whole 4 GiB, so with the guard region
+/// after it cranelift emits no bounds check on a load or store (under 4 GiB it emits one on
+/// every access). Only `MAX_MEMORY_BYTES` of it is ever made accessible; the rest stays
+/// `PROT_NONE` and uncommitted. 256 slots reserve about 1 TiB of virtual space.
+pub const SLOT_RESERVATION_BYTES: u64 = 1 << 32;
+/// Unmapped bytes after each slot: an access whose static offset is under this needs no
+/// check either (wasmtime's default, named so the pool's size is all here).
+const SLOT_GUARD_BYTES: u64 = 32 << 20;
+// No `linear_memory_keep_resident` / `table_keep_resident`: measured with
+// `benches/guest_memory.rs`, zeroing 64 KiB to 1 MiB in place on reuse made a call no
+// faster than handing the touched pages back (1 MiB: 16.6 to 38 us per empty call).
 /// Component instances alive at once across the node, and the core instances, memories
 /// and tables the pool reserves for them.
 const POOL_COMPONENT_INSTANCES: u32 = 256;
@@ -91,7 +110,7 @@ const POOL_CORE_INSTANCES_PER_INSTANCE: u32 = MAX_INSTANCES as u32;
 const POOL_MEMORIES_PER_INSTANCE: u32 = MAX_MEMORIES as u32;
 const POOL_TABLES_PER_INSTANCE: u32 = MAX_TABLES as u32;
 
-/// Proposals refused at compile time (Ruling 21). Several are compiled out with the crate
+/// Proposals refused at compile time. Several are compiled out with the crate
 /// features anyway; naming them keeps the set explicit if a feature is turned back on.
 const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::SHARED_EVERYTHING_THREADS)
@@ -113,8 +132,8 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::CM_ERROR_CONTEXT)
     .union(WasmFeatures::CM_GC);
 
-/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.6; an import of an older
-/// patch of the same minor links through semver matching (Ruling 15), so an app built before
+/// Interfaces are pinned to WASI 0.2.12 and `calimero:app` 0.5.7; an import of an older
+/// patch of the same minor links through semver matching, so an app built before
 /// a patch keeps running.
 const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
 
@@ -134,13 +153,17 @@ pub struct WasmtimeEngine {
     cache: Option<Cache>,
     /// Most linear memory one run may be given.
     max_memory_bytes: usize,
+    /// Address space each linear memory reserves (see `memory_reservation`).
+    memory_reservation: u64,
     ticker_stop: Arc<AtomicBool>,
+    /// How many components this engine compiled (a cache hit is not one).
+    compiles: AtomicU64,
 }
 
 impl WasmtimeEngine {
     /// One engine for every app, caching compiled components under `cache_dir`, with a
     /// ticker thread advancing the epoch every `EPOCH_TICK`.
-    /// `cache_key` authenticates the cached artifacts (S8): derive it from the node's
+    /// `cache_key` authenticates the cached artifacts: derive it from the node's
     /// storage key, so only this node's own compilations are ever loaded.
     pub fn new(cache_dir: PathBuf, cache_key: &[u8; 32]) -> EyreResult<Self> {
         Self::build(cache_dir, cache_key, POOL_COMPONENT_INSTANCES)
@@ -165,10 +188,52 @@ impl WasmtimeEngine {
         let mut config = Self::config();
         let _ = config.cranelift_nan_canonicalization(true);
         let engine = wasmtime::Engine::new(&config).map_err(report)?;
-        Self::finish(World::Compute, engine, None, COMPUTE_MAX_MEMORY_BYTES)
+        Self::finish(
+            World::Compute,
+            engine,
+            None,
+            COMPUTE_MAX_MEMORY_BYTES,
+            SLOT_RESERVATION_BYTES,
+        )
     }
 
     fn build(cache_dir: PathBuf, cache_key: &[u8; 32], instances: u32) -> EyreResult<Self> {
+        let (engine, reservation) = match Self::pooled(instances, SLOT_RESERVATION_BYTES) {
+            Ok(engine) => (engine, SLOT_RESERVATION_BYTES),
+            // A host that cannot reserve the address space (an `RLIMIT_AS`, a kernel with a
+            // small virtual address space) still runs apps, with a bounds check on each
+            // access, as every release before this one did.
+            Err(error) => {
+                // The operator's log gets the fallback, never the error's words;
+                // wasmtime's mmap error is only at debug.
+                tracing::warn!(
+                    instances,
+                    "cannot reserve 4 GiB per instance slot; linear memory accesses are bounds-checked"
+                );
+                tracing::debug!(%error, "the 4 GiB slot reservation failed");
+                let reservation = MAX_MEMORY_BYTES as u64;
+                (
+                    Self::pooled(instances, reservation).map_err(report)?,
+                    reservation,
+                )
+            }
+        };
+        let cache = Cache::new(cache_dir, &engine, cache_key)?;
+        // A wasmtime or config change leaves every earlier artifact unloadable: drop them.
+        // Which components are still needed only the node knows (`sweep_cache`).
+        let _swept = cache.sweep(&|_| true);
+        Self::finish(
+            World::App,
+            engine,
+            Some(cache),
+            MAX_MEMORY_BYTES,
+            reservation,
+        )
+    }
+
+    /// A replica engine whose pool reserves `reservation` bytes per memory slot. The pool's
+    /// address space is reserved here, so a host that cannot give it fails here.
+    fn pooled(instances: u32, reservation: u64) -> wasmtime::Result<wasmtime::Engine> {
         let mut pool = PoolingAllocationConfig::default();
         let _ = pool
             .total_component_instances(instances)
@@ -179,11 +244,18 @@ impl WasmtimeEngine {
             .table_elements(MAX_TABLE_ELEMENTS);
         let mut config = Self::config();
         let _ = config
-            .memory_reservation(MAX_MEMORY_BYTES as u64)
+            .memory_reservation(reservation)
+            .memory_guard_size(SLOT_GUARD_BYTES)
             .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
-        let engine = wasmtime::Engine::new(&config).map_err(report)?;
-        let cache = Cache::new(cache_dir, &engine, cache_key)?;
-        Self::finish(World::App, engine, Some(cache), MAX_MEMORY_BYTES)
+        wasmtime::Engine::new(&config)
+    }
+
+    /// Address space each linear memory reserves: `SLOT_RESERVATION_BYTES` on a replica
+    /// engine unless the host refused it (then `MAX_MEMORY_BYTES`, bounds-checked), and
+    /// wasmtime's 64-bit default of 4 GiB on a compute engine.
+    #[must_use]
+    pub const fn memory_reservation(&self) -> u64 {
+        self.memory_reservation
     }
 
     /// What every engine shares: fuel, epochs, the stack and the pinned feature set.
@@ -193,7 +265,7 @@ impl WasmtimeEngine {
             .consume_fuel(true)
             .epoch_interruption(true)
             .max_wasm_stack(MAX_WASM_STACK)
-            // The feature set is pinned (Ruling 21): what Rust wasip2 and componentize-js
+            // The feature set is pinned: what Rust wasip2 and componentize-js
             // output needs (MVP, bulk memory, reference types, multi-value, SIMD, sign
             // extension, saturating conversions, the component model), nothing else.
             .wasm_features(DISABLED_FEATURES, false)
@@ -206,6 +278,7 @@ impl WasmtimeEngine {
         engine: wasmtime::Engine,
         cache: Option<Cache>,
         max_memory_bytes: usize,
+        memory_reservation: u64,
     ) -> EyreResult<Self> {
         let mut linker = Linker::new(&engine);
         match world {
@@ -213,6 +286,11 @@ impl WasmtimeEngine {
             World::Compute => compute::add_to_linker(&mut linker).map_err(report)?,
         }
         wasi::add_to_linker(&mut linker).map_err(report)?;
+        // Every host call that does work pays its fuel where it happens (`fuel.rs`): the
+        // charged versions shadow the plain ones linked above.
+        linker.allow_shadowing(true);
+        fuel::charge_calls(&mut linker, world).map_err(report)?;
+        linker.allow_shadowing(false);
 
         let ticker_stop = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&ticker_stop);
@@ -231,7 +309,9 @@ impl WasmtimeEngine {
             linker,
             cache,
             max_memory_bytes,
+            memory_reservation,
             ticker_stop,
+            compiles: AtomicU64::new(0),
         })
     }
 }
@@ -244,6 +324,41 @@ impl Drop for WasmtimeEngine {
 
 impl Engine for WasmtimeEngine {
     fn prepare(&self, bundle_hash: &str, component: &[u8]) -> Result<Prepared, PrepareError> {
+        let abi = self.abi_of(component)?;
+        let compile_now = || {
+            let _n = self.compiles.fetch_add(1, Ordering::Relaxed);
+            Component::new(&self.engine, component)
+                .map_err(|e| PrepareError::Compile(e.to_string()))
+        };
+        let compiled: Component = match &self.cache {
+            Some(cache) => cache.load_or_compile(&self.engine, component, compile_now)?,
+            None => compile_now()?,
+        };
+        let pre = self
+            .linker
+            .instantiate_pre(&compiled)
+            .map_err(|e| PrepareError::Compile(e.to_string()))?;
+        let inner: Arc<dyn std::any::Any + Send + Sync> = match self.world {
+            World::App => Arc::new(AppPre::new(pre).map_err(compile)?),
+            World::Compute => Arc::new(ComputePre::new(pre).map_err(compile)?),
+        };
+        Ok(Prepared {
+            hash: bundle_hash.to_owned(),
+            abi,
+            inner,
+        })
+    }
+
+    fn invoke(&self, app: &Prepared, host: HostCore, budget: Budget) -> Outcome {
+        self.run(app, host, budget, None)
+    }
+}
+
+impl WasmtimeEngine {
+    /// The ABI [`Engine::prepare`] would give `component`, after every check it makes
+    /// before compiling (imports, the ABI and its world, defined memories), without
+    /// compiling it: what a node needs to read a compute component's methods and caps.
+    pub fn abi_of(&self, component: &[u8]) -> Result<Abi, PrepareError> {
         let imports = calimero_app_build::imports_of(component)
             .map_err(|e| PrepareError::Compile(e.to_string()))?;
         if let Some(forbidden) = imports.into_iter().find(|i| !import_allowed(self.world, i)) {
@@ -277,33 +392,27 @@ impl Engine for WasmtimeEngine {
                 "component defines {memories} memories; at most {MAX_MEMORIES}"
             )));
         }
-
-        let compiled: Component = match &self.cache {
-            Some(cache) => cache.load_or_compile(&self.engine, component)?,
-            None => Component::new(&self.engine, component)
-                .map_err(|e| PrepareError::Compile(e.to_string()))?,
-        };
-        let pre = self
-            .linker
-            .instantiate_pre(&compiled)
-            .map_err(|e| PrepareError::Compile(e.to_string()))?;
-        let inner: Arc<dyn std::any::Any + Send + Sync> = match self.world {
-            World::App => Arc::new(AppPre::new(pre).map_err(compile)?),
-            World::Compute => Arc::new(ComputePre::new(pre).map_err(compile)?),
-        };
-        Ok(Prepared {
-            hash: bundle_hash.to_owned(),
-            abi,
-            inner,
-        })
+        Ok(abi)
     }
 
-    fn invoke(&self, app: &Prepared, host: HostCore, budget: Budget) -> Outcome {
-        self.run(app, host, budget, None)
+    /// Deletes the cached artifacts no longer needed: those of components `live` refuses
+    /// (by their SHA-256, lowercase hex), of another wasmtime or engine config, and temp
+    /// files a crashed write left, each once unmodified for [`CACHE_SWEEP_GRACE`]. A
+    /// component deleted here that comes back is compiled again. Blocking file work. A
+    /// compute engine has no cache and deletes nothing.
+    pub fn sweep_cache(&self, live: impl Fn(&str) -> bool) -> CacheSweep {
+        self.cache
+            .as_ref()
+            .map_or_else(CacheSweep::default, |c| c.sweep(&live))
     }
-}
 
-impl WasmtimeEngine {
+    /// How many components this engine has compiled since it was made; a component
+    /// loaded from the disk cache is not counted.
+    #[must_use]
+    pub fn compiles(&self) -> u64 {
+        self.compiles.load(Ordering::Relaxed)
+    }
+
     /// Like [`Engine::invoke`], but the run also ends, detail [`CANCELLED`], at the next
     /// epoch tick after `cancel` is set from another thread.
     pub fn invoke_cancellable(
@@ -373,7 +482,7 @@ impl WasmtimeEngine {
         let started = Instant::now();
         let mut phase = Phase::Instantiate;
         let ran = store.set_fuel(budget.fuel).and_then(|()| {
-            // A host panic unwinds out of the wasm frames to here (S6). Asserting unwind
+            // A host panic unwinds out of the wasm frames to here. Asserting unwind
             // safety is sound because a panic always ends the run as `Trap(Fault)`, and
             // `HostCore::finish` drops the diff and the events of any status but `Ok`, so
             // state a panic left half-updated never reaches the log; only the app log,
@@ -392,8 +501,20 @@ impl WasmtimeEngine {
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
         });
+        // Every wrapped host call paid as it ran; what is still owed (a resource's drop, which
+        // is not wrapped) is paid now: a run that cannot pay it ran out of fuel.
+        let owed = store.data_mut().host.take_host_fuel();
+        let used = budget
+            .fuel
+            .saturating_sub(store.get_fuel().unwrap_or(0))
+            .saturating_add(owed);
+        let ran = match ran {
+            Ok(Ok(_) | Err(_)) if used > budget.fuel => Err(wasmtime::Error::new(Trap::OutOfFuel)),
+            Ok(result) => Ok(result),
+            Err(error) => Err(error),
+        };
         let usage = Usage {
-            fuel: budget.fuel.saturating_sub(store.get_fuel().unwrap_or(0)),
+            fuel: used.min(budget.fuel),
             cpu: started.elapsed(),
             writes: 0,
             peak_memory: store.data().limits.peak as u64,
@@ -444,9 +565,9 @@ fn trap(kind: TrapKind, detail: &str) -> Status {
     }
 }
 
-/// An import is allowed if the engine's world or the D44 stubs list it, or if it is a WASI or
-/// `calimero:app` interface they list at a patch of the same minor no newer than the listed
-/// one (D43, Ruling 15).
+/// An import is allowed if the engine's world or the refusing WASI stubs list it, or if it is
+/// a WASI or `calimero:app` interface they list at a patch of the same minor no newer than the
+/// listed one.
 fn import_allowed(world: World, import: &str) -> bool {
     let world_imports = match world {
         World::App => allowed_imports(),
@@ -592,7 +713,7 @@ impl ResourceLimiter for Limits {
 }
 
 /// The `args` of a timer tick, as the guest reads them: the slot and the previous applied
-/// slot, in milliseconds, as decimal strings (D20). The host core holds the tick
+/// slot, in milliseconds, as decimal strings. The host core holds the tick
 /// (`Invocation::timer`), so a timer invocation's own `args` are ignored.
 fn timer_args(tick: &TimerCtx) -> Vec<u8> {
     let previous = tick
@@ -613,36 +734,36 @@ mod tests {
     fn files_at_0_5_0_is_accepted_though_that_interface_first_shipped_at_0_5_1() {
         assert!(import_allowed(World::App, "calimero:app/files@0.5.0"));
         assert!(import_allowed(World::App, "calimero:app/files@0.5.1"));
-        assert!(import_allowed(World::App, "calimero:app/files@0.5.6"));
-        assert!(!import_allowed(World::App, "calimero:app/files@0.5.7"));
+        assert!(import_allowed(World::App, "calimero:app/files@0.5.7"));
+        assert!(!import_allowed(World::App, "calimero:app/files@0.5.8"));
     }
 
     #[test]
     fn the_compute_world_allows_job_files_and_wasi_but_no_state_or_http() {
-        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.6"));
-        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.6"));
+        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.7"));
+        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.7"));
         assert!(import_allowed(World::Compute, "wasi:random/random@0.2.12"));
         assert!(import_allowed(World::Compute, "wasi:cli/stdin@0.2.9"));
         for import in [
-            "calimero:app/storage@0.5.6",
-            "calimero:app/xcall@0.5.6",
-            "calimero:app/context@0.5.6",
-            "calimero:app/runs@0.5.6",
+            "calimero:app/storage@0.5.7",
+            "calimero:app/xcall@0.5.7",
+            "calimero:app/context@0.5.7",
+            "calimero:app/runs@0.5.7",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:http/types@0.2.12",
         ] {
             assert!(!import_allowed(World::Compute, import), "{import}");
         }
-        assert!(!import_allowed(World::App, "calimero:app/job@0.5.6"));
-        assert!(import_allowed(World::App, "calimero:app/runs@0.5.6"));
+        assert!(!import_allowed(World::App, "calimero:app/job@0.5.7"));
+        assert!(import_allowed(World::App, "calimero:app/runs@0.5.7"));
     }
 
     #[test]
     fn imports_match_the_lists_with_older_patches_only() {
-        assert!(import_allowed(World::App, "calimero:app/storage@0.5.6"));
+        assert!(import_allowed(World::App, "calimero:app/storage@0.5.7"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.1"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.0"));
-        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.7"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.8"));
         assert!(!import_allowed(World::App, "calimero:app/storage@0.6.0"));
         assert!(!import_allowed(World::App, "calimero:app/nothing@0.5.0"));
         assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.12"));

@@ -4,9 +4,15 @@
 //! executor batches, and `env::xcall` for messages). `calimero-app-build`'s `uses` writes it from the app's `calimero.lock` and
 //! vendored ABIs, for the app's `build.rs`.
 //!
-//! The JSON is the SDK's (D20): `u64`/`i64` as decimal strings and `bytes` as base64url at the
+//! The JSON is the SDK's ([App interface types](https://calimero-network.github.io/core/build/app-abi/#types)): `u64`/`i64` as decimal strings and `bytes` as base64url at the
 //! top level of an argument, a result or a field, through `calimero_sdk::json`'s `with`
 //! modules; nested inside another type they have no JSON form, and generation fails.
+//!
+//! Each declared type derives the SDK's `AbiType` too, so an app may take or answer it in its
+//! own methods (the SDK requires a shape of every such type): a `u64_number` or
+//! `i64_number` field is `#[abi(plain)]`, as the target declared it. A type that reaches one
+//! the ABI does not describe (its JSON, a `serde_json::Value`) or an integer with no JSON form
+//! (`u128`, `usize`, ..., from an ABI built before they were refused) derives only serde.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -115,6 +121,9 @@ struct Module<'a> {
     params: Vec<String>,
     /// The type being declared, whose fields box what holds it again.
     current: Option<String>,
+    /// The type being declared derives `AbiType`, so its plain-number fields are
+    /// `#[abi(plain)]`.
+    described: bool,
 }
 
 impl<'a> Module<'a> {
@@ -133,6 +142,7 @@ impl<'a> Module<'a> {
             opaque: BTreeMap::new(),
             params: Vec::new(),
             current: None,
+            described: false,
         })
     }
 
@@ -187,7 +197,7 @@ impl<'a> Module<'a> {
     // ── types ──────────────────────────────────────────────────────────────────────────────
 
     /// The Rust spelling of `ty`. `nested`: inside another type, where `u64`, `i64` and
-    /// `bytes` have no JSON form (D20).
+    /// `bytes` have no JSON form.
     fn ty(&mut self, ty: &Type, nested: bool) -> EyreResult<String> {
         Ok(match ty {
             Type::Unit => "()".to_owned(),
@@ -314,6 +324,15 @@ impl<'a> Module<'a> {
         let rust = self.names[abi_name].clone();
         self.params.clone_from(&def.params);
         self.current = Some(abi_name.to_owned());
+        let mut seen = BTreeSet::from([abi_name.to_owned()]);
+        self.described = inline_types(&def.shape)
+            .iter()
+            .all(|t| describable(self.abi, t, &def.params, &mut seen));
+        let abi_type = if self.described {
+            format!(", {SDK}::AbiType")
+        } else {
+            String::new()
+        };
         let generics = if def.params.is_empty() {
             String::new()
         } else {
@@ -323,7 +342,7 @@ impl<'a> Module<'a> {
         let _ = writeln!(
             s,
             "\n    /// `{abi_name}`, as the app's JSON carries it.\n    \
-             #[derive(Clone, Debug, PartialEq, {SERDE}::Serialize, {SERDE}::Deserialize)]"
+             #[derive(Clone, Debug, PartialEq, {SERDE}::Serialize, {SERDE}::Deserialize{abi_type})]"
         );
         match &def.shape {
             Shape::Record(fields) => {
@@ -391,15 +410,21 @@ impl<'a> Module<'a> {
         }
         self.params.clear();
         self.current = None;
+        self.described = false;
         Ok(s)
     }
 
-    /// A tuple item or newtype field: its D20 `with`, then its type.
+    /// A tuple item or newtype field: its `calimero_sdk::json` `with`, then its type.
     fn item(&mut self, ty: &Type, vis: &str) -> EyreResult<String> {
         let rust = self.field_ty(ty)?;
+        let plain = if self.described && plain_json(ty) {
+            "#[abi(plain)] "
+        } else {
+            ""
+        };
         Ok(match d20_module(ty) {
-            Some(m) => format!("#[serde(with = \"{SDK}::json::{m}\")] {vis}{rust}"),
-            None => format!("{vis}{rust}"),
+            Some(m) => format!("{plain}#[serde(with = \"{SDK}::json::{m}\")] {vis}{rust}"),
+            None => format!("{plain}{vis}{rust}"),
         })
     }
 
@@ -425,6 +450,9 @@ impl<'a> Module<'a> {
                 if f.optional {
                     attrs.push("skip_serializing_if = \"Option::is_none\"".to_owned());
                 }
+            }
+            if self.described && plain_json(&ty) {
+                let _ = writeln!(s, "{indent}#[abi(plain)]");
             }
             let _ = writeln!(
                 s,
@@ -725,12 +753,54 @@ fn inline_types(shape: &Shape) -> Vec<Type> {
     }
 }
 
-/// `u64`, `i64` or `bytes`: a decimal string or base64url in JSON (D20).
+/// Whether `#[derive(AbiType)]` can describe what `ty` holds, with `params` the generic
+/// parameters in scope: every app type it reaches has a shape in `abi`, and every integer a
+/// JSON form (`u128`, `i128`, `usize` and `isize` have none).
+fn describable(abi: &AppAbi, ty: &Type, params: &[String], seen: &mut BTreeSet<String>) -> bool {
+    match ty {
+        Type::Int(Int::U128 | Int::I128 | Int::Usize | Int::Isize) => false,
+        Type::Option(t) | Type::List(t) | Type::Set(t) | Type::Array(t, _) => {
+            describable(abi, t, params, seen)
+        }
+        Type::Tuple(ts) => ts.iter().all(|t| describable(abi, t, params, seen)),
+        Type::Map(k, v) => describable(abi, k, params, seen) && describable(abi, v, params, seen),
+        Type::Named(text) if params.iter().any(|p| p == text) => true,
+        Type::Named(_) => {
+            let Some((name, def, args)) = abi.shape_of(ty) else {
+                return false;
+            };
+            args.iter().all(|a| describable(abi, a, params, seen))
+                && (!seen.insert(name)
+                    || inline_types(&def.shape)
+                        .iter()
+                        .all(|t| describable(abi, t, &def.params, seen)))
+        }
+        _ => true,
+    }
+}
+
+/// Whether `ty` holds a `u64_number`, `i64_number` or `byte_list` at any depth: plain serde's
+/// JSON number or array of bytes, which a described field marks `#[abi(plain)]`.
+fn plain_json(ty: &Type) -> bool {
+    match ty {
+        Type::Int(int) => matches!(int, Int::U64Number | Int::I64Number),
+        Type::List(t) if **t == Type::Int(Int::U8) => true,
+        Type::Option(t) | Type::List(t) | Type::Set(t) | Type::Array(t, _) => plain_json(t),
+        Type::Tuple(ts) => ts.iter().any(plain_json),
+        Type::Map(k, v) => plain_json(k) || plain_json(v),
+        Type::Named(_) => ty
+            .named_parts()
+            .is_some_and(|(_, args)| args.iter().any(plain_json)),
+        _ => false,
+    }
+}
+
+/// `u64`, `i64` or `bytes`: a decimal string or base64url in JSON.
 fn is_d20(ty: &Type) -> bool {
     matches!(ty, Type::Int(Int::U64 | Int::I64) | Type::Bytes)
 }
 
-/// The `calimero_sdk::json` module that writes `ty` at the top level, when D20 needs one.
+/// The `calimero_sdk::json` module that writes `ty` at the top level, when the type needs one.
 fn d20_module(ty: &Type) -> Option<&'static str> {
     Some(match ty {
         Type::Int(Int::U64) => "u64_str",
@@ -919,6 +989,60 @@ mod tests {
         .unwrap();
         let err = uses_module(&[(reference(&[]), &bad)]).unwrap_err();
         assert!(err.to_string().contains("D20"), "{err}");
+    }
+
+    #[test]
+    fn described_types_derive_abi_type_so_an_app_may_answer_them() {
+        let abi = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": {
+                "get": { "kind": "view", "returns": "Stats", "allowApps": ["*"] },
+                "raw": { "kind": "view", "returns": "Wrapped", "allowApps": ["*"] },
+            },
+            "types": {
+                "Stats": { "kind": "record", "fields": [["at", "u64"], ["views", "u64_number"], ["peaks", "list<i64_number>"], ["shots", "byte_list"]] },
+                "Shot": { "kind": "tuple", "items": ["u64_number", "string"] },
+                "Wrapped": { "kind": "record", "fields": [["inner", "Opaque"]] },
+                "Wide": { "kind": "record", "fields": [["n", "usize"]] },
+                "Page": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"]] },
+            },
+        }))
+        .unwrap();
+        let code = uses_module(&[(reference(&[]), &abi)]).unwrap();
+        let decl = |name: &str| {
+            let end = code.find(&format!("pub struct {name}")).unwrap();
+            code[..end].rsplit("#[derive(").next().unwrap().to_owned()
+        };
+        assert!(decl("Stats").contains("::calimero_sdk::AbiType"), "{code}");
+        assert!(decl("Shot").contains("::calimero_sdk::AbiType"), "{code}");
+        assert!(
+            decl("Page<T>").contains("::calimero_sdk::AbiType"),
+            "{code}"
+        );
+        // A decimal-string or base64url field keeps its `with`; a plain number is marked as one.
+        assert!(
+            code.contains("#[serde(rename = \"at\", with = \"::calimero_sdk::json::u64_str\")]"),
+            "{code}"
+        );
+        assert!(
+            code.contains("#[abi(plain)]\n        #[serde(rename = \"views\")]"),
+            "{code}"
+        );
+        assert!(
+            code.contains("#[abi(plain)]\n        #[serde(rename = \"peaks\")]"),
+            "{code}"
+        );
+        assert!(
+            code.contains("#[abi(plain)]\n        #[serde(rename = \"shots\")]"),
+            "{code}"
+        );
+        assert!(
+            code.contains("pub struct Shot(#[abi(plain)] pub u64, pub String);"),
+            "{code}"
+        );
+        // What reaches an undescribed type, or an integer with no JSON form, derives serde only.
+        assert!(!decl("Wrapped").contains("AbiType"), "{code}");
+        assert!(!decl("Wide").contains("AbiType"), "{code}");
     }
 
     #[test]

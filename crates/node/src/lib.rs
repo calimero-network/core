@@ -3,7 +3,10 @@
 //! One process inside a TDX VM. It hosts the cluster's system group and the
 //! app groups placed on it, runs app calls on each group's leader, and serves
 //! clients only through the sealed channel bound into its attestation.
-//! See `docs/` (Calimero Confidential Cloud architecture) for the design.
+//!
+//! Spec: [Protocol overview](https://calimero-network.github.io/core/protocol/overview/),
+//! [Architecture](https://calimero-network.github.io/core/contribute/architecture/).
+//! Crate guide: [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +33,7 @@ pub mod job_node;
 pub mod job_wire;
 pub mod kms;
 pub mod local;
+pub mod log_safe;
 pub mod membership;
 pub mod metrics;
 pub mod node;
@@ -242,7 +246,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // Timer ticks (D34) of the component apps this node leads.
+    // Timer ticks of the component apps this node leads.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();
     drop(tokio::spawn(async move {
@@ -275,7 +279,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // What the peers' replicas used today, for the fuel cap (D76, D78), every
+    // What the peers' replicas used today, for the fuel cap, every
     // `USAGE_REFRESH` while a cap is set: the cap never asks a peer during a call.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();
@@ -346,6 +350,29 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             let Some(node) = weak.upgrade() else { return };
             if let Err(e) = tokio::task::spawn_blocking(move || node.sweep_segments()).await {
                 warn!(error = %e, "segment sweep failed");
+            }
+        }
+    }));
+
+    // Compiled components no app uses any more.
+    let (weak, stop) = (Arc::downgrade(&node), shutdown.clone());
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(crate::node::COMPONENT_CACHE_SWEEP_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || node.sweep_component_cache()).await {
+                Ok(swept) if swept.files > 0 => {
+                    info!(
+                        files = swept.files,
+                        bytes = swept.bytes,
+                        "compiled components swept"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "component cache sweep failed"),
             }
         }
     }));

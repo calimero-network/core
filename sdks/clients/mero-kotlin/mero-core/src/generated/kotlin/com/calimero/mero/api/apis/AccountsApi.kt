@@ -27,40 +27,39 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
-import com.calimero.mero.api.models.AccountApps200Response
 import com.calimero.mero.api.models.AccountProof
 import com.calimero.mero.api.models.AccountProofProveRequest
 import com.calimero.mero.api.models.AccountRecoveryBeginRequest
 import com.calimero.mero.api.models.AccountRecoveryFinishRequest
-import com.calimero.mero.api.models.AccountRecoveryStart200Response
+import com.calimero.mero.api.models.AccountRecoveryPending
 import com.calimero.mero.api.models.AccountRecoveryStartRequest
-import com.calimero.mero.api.models.AccountSetBackupKeyRequest
-import com.calimero.mero.api.models.ActivityList200Response
-import com.calimero.mero.api.models.AliasGet200Response
-import com.calimero.mero.api.models.AliasList200Response
+import com.calimero.mero.api.models.AccountUsage
+import com.calimero.mero.api.models.AccountView
+import com.calimero.mero.api.models.ActivityList
+import com.calimero.mero.api.models.AliasList
 import com.calimero.mero.api.models.AliasSetRequest
-import com.calimero.mero.api.models.ApikeyCreate200Response
+import com.calimero.mero.api.models.AliasView
+import com.calimero.mero.api.models.ApiKeyList
+import com.calimero.mero.api.models.ApiKeyMade
 import com.calimero.mero.api.models.ApikeyCreateRequest
-import com.calimero.mero.api.models.ApikeyList200Response
+import com.calimero.mero.api.models.AppsReport
 import com.calimero.mero.api.models.BackupKeyAnswer
+import com.calimero.mero.api.models.BackupKeyBody
 import com.calimero.mero.api.models.ConfirmOnly
 import com.calimero.mero.api.models.Error
-import com.calimero.mero.api.models.LoginBegin200Response
 import com.calimero.mero.api.models.LoginBeginRequest
 import com.calimero.mero.api.models.LoginFinishRequest
-import com.calimero.mero.api.models.LogoutAll200Response
-import com.calimero.mero.api.models.Me200Response
-import com.calimero.mero.api.models.PasskeyAddFinish200Response
 import com.calimero.mero.api.models.PasskeyAddFinishRequest
+import com.calimero.mero.api.models.PasskeyAdded
+import com.calimero.mero.api.models.PasskeyChallenge
 import com.calimero.mero.api.models.PasskeyLabelRequest
-import com.calimero.mero.api.models.RecoveryCreate200Response
+import com.calimero.mero.api.models.RecoveryCode
 import com.calimero.mero.api.models.RefreshRequest
-import com.calimero.mero.api.models.RegisterBegin200Response
 import com.calimero.mero.api.models.RegisterBeginRequest
 import com.calimero.mero.api.models.RegisterFinishRequest
 import com.calimero.mero.api.models.Session
-import com.calimero.mero.api.models.SessionsList200Response
-import com.calimero.mero.api.models.Usage200Response
+import com.calimero.mero.api.models.SessionList
+import com.calimero.mero.api.models.SessionsRevoked
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -96,7 +95,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its only organization&#39;s &#x60;approvedReleases&#x60; (below cluster version 1.0.0-rc.32 its personal organization&#39;s): each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
      * @param after  (optional)
      * @param limit  (optional)
-     * @return AccountApps200Response
+     * @return AppsReport
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -105,11 +104,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun accountApps(after: kotlin.String? = null, limit: kotlin.Long? = null) : AccountApps200Response = withContext(Dispatchers.IO) {
+    suspend fun accountApps(after: kotlin.String? = null, limit: kotlin.Long? = null) : AppsReport = withContext(Dispatchers.IO) {
         val localVarResponse = accountAppsWithHttpInfo(after = after, limit = limit)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AccountApps200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppsReport
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -129,16 +128,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its only organization&#39;s &#x60;approvedReleases&#x60; (below cluster version 1.0.0-rc.32 its personal organization&#39;s): each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
      * @param after  (optional)
      * @param limit  (optional)
-     * @return ApiResponse<AccountApps200Response?>
+     * @return ApiResponse<AppsReport?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun accountAppsWithHttpInfo(after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<AccountApps200Response?> = withContext(Dispatchers.IO) {
+    suspend fun accountAppsWithHttpInfo(after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<AppsReport?> = withContext(Dispatchers.IO) {
         val localVariableConfig = accountAppsRequestConfig(after = after, limit = limit)
 
-        return@withContext request<Unit, AccountApps200Response>(
+        return@withContext request<Unit, AppsReport>(
             localVariableConfig
         )
     }
@@ -323,7 +322,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Start an account recovery
      * Signed out, with the recovery code: creation options for the passkey that will replace the lost ones. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param accountRecoveryBeginRequest 
-     * @return RegisterBegin200Response
+     * @return PasskeyChallenge
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -332,11 +331,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun accountRecoveryBegin(accountRecoveryBeginRequest: AccountRecoveryBeginRequest) : RegisterBegin200Response = withContext(Dispatchers.IO) {
+    suspend fun accountRecoveryBegin(accountRecoveryBeginRequest: AccountRecoveryBeginRequest) : PasskeyChallenge = withContext(Dispatchers.IO) {
         val localVarResponse = accountRecoveryBeginWithHttpInfo(accountRecoveryBeginRequest = accountRecoveryBeginRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RegisterBegin200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PasskeyChallenge
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -355,16 +354,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Start an account recovery
      * Signed out, with the recovery code: creation options for the passkey that will replace the lost ones. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param accountRecoveryBeginRequest 
-     * @return ApiResponse<RegisterBegin200Response?>
+     * @return ApiResponse<PasskeyChallenge?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun accountRecoveryBeginWithHttpInfo(accountRecoveryBeginRequest: AccountRecoveryBeginRequest) : ApiResponse<RegisterBegin200Response?> = withContext(Dispatchers.IO) {
+    suspend fun accountRecoveryBeginWithHttpInfo(accountRecoveryBeginRequest: AccountRecoveryBeginRequest) : ApiResponse<PasskeyChallenge?> = withContext(Dispatchers.IO) {
         val localVariableConfig = accountRecoveryBeginRequestConfig(accountRecoveryBeginRequest = accountRecoveryBeginRequest)
 
-        return@withContext request<AccountRecoveryBeginRequest, RegisterBegin200Response>(
+        return@withContext request<AccountRecoveryBeginRequest, PasskeyChallenge>(
             localVariableConfig
         )
     }
@@ -545,7 +544,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Spend the recovery code
      * Logs the new passkey as pending; it may finish the recovery once &#x60;readyAt&#x60; passed (72 h). &#x60;401&#x60; for a wrong or spent code.  **Who:** anyone.
      * @param accountRecoveryStartRequest 
-     * @return AccountRecoveryStart200Response
+     * @return AccountRecoveryPending
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -554,11 +553,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun accountRecoveryStart(accountRecoveryStartRequest: AccountRecoveryStartRequest) : AccountRecoveryStart200Response = withContext(Dispatchers.IO) {
+    suspend fun accountRecoveryStart(accountRecoveryStartRequest: AccountRecoveryStartRequest) : AccountRecoveryPending = withContext(Dispatchers.IO) {
         val localVarResponse = accountRecoveryStartWithHttpInfo(accountRecoveryStartRequest = accountRecoveryStartRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AccountRecoveryStart200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AccountRecoveryPending
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -577,16 +576,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Spend the recovery code
      * Logs the new passkey as pending; it may finish the recovery once &#x60;readyAt&#x60; passed (72 h). &#x60;401&#x60; for a wrong or spent code.  **Who:** anyone.
      * @param accountRecoveryStartRequest 
-     * @return ApiResponse<AccountRecoveryStart200Response?>
+     * @return ApiResponse<AccountRecoveryPending?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun accountRecoveryStartWithHttpInfo(accountRecoveryStartRequest: AccountRecoveryStartRequest) : ApiResponse<AccountRecoveryStart200Response?> = withContext(Dispatchers.IO) {
+    suspend fun accountRecoveryStartWithHttpInfo(accountRecoveryStartRequest: AccountRecoveryStartRequest) : ApiResponse<AccountRecoveryPending?> = withContext(Dispatchers.IO) {
         val localVariableConfig = accountRecoveryStartRequestConfig(accountRecoveryStartRequest = accountRecoveryStartRequest)
 
-        return@withContext request<AccountRecoveryStartRequest, AccountRecoveryStart200Response>(
+        return@withContext request<AccountRecoveryStartRequest, AccountRecoveryPending>(
             localVariableConfig
         )
     }
@@ -618,7 +617,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * POST /auth/backup-key
      * Set the account&#39;s backup key
      * &#x60;publicKey&#x60;: 64 lowercase hex, an X25519 public key whose private half the account holder keeps (never a node), for its personal apps, where owners upgrade apps. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param accountSetBackupKeyRequest 
+     * @param backupKeyBody 
      * @return BackupKeyAnswer
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -628,8 +627,8 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun accountSetBackupKey(accountSetBackupKeyRequest: AccountSetBackupKeyRequest) : BackupKeyAnswer = withContext(Dispatchers.IO) {
-        val localVarResponse = accountSetBackupKeyWithHttpInfo(accountSetBackupKeyRequest = accountSetBackupKeyRequest)
+    suspend fun accountSetBackupKey(backupKeyBody: BackupKeyBody) : BackupKeyAnswer = withContext(Dispatchers.IO) {
+        val localVarResponse = accountSetBackupKeyWithHttpInfo(backupKeyBody = backupKeyBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as BackupKeyAnswer
@@ -650,17 +649,17 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * POST /auth/backup-key
      * Set the account&#39;s backup key
      * &#x60;publicKey&#x60;: 64 lowercase hex, an X25519 public key whose private half the account holder keeps (never a node), for its personal apps, where owners upgrade apps. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param accountSetBackupKeyRequest 
+     * @param backupKeyBody 
      * @return ApiResponse<BackupKeyAnswer?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun accountSetBackupKeyWithHttpInfo(accountSetBackupKeyRequest: AccountSetBackupKeyRequest) : ApiResponse<BackupKeyAnswer?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = accountSetBackupKeyRequestConfig(accountSetBackupKeyRequest = accountSetBackupKeyRequest)
+    suspend fun accountSetBackupKeyWithHttpInfo(backupKeyBody: BackupKeyBody) : ApiResponse<BackupKeyAnswer?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = accountSetBackupKeyRequestConfig(backupKeyBody = backupKeyBody)
 
-        return@withContext request<AccountSetBackupKeyRequest, BackupKeyAnswer>(
+        return@withContext request<BackupKeyBody, BackupKeyAnswer>(
             localVariableConfig
         )
     }
@@ -668,11 +667,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * To obtain the request config of the operation accountSetBackupKey
      *
-     * @param accountSetBackupKeyRequest 
+     * @param backupKeyBody 
      * @return RequestConfig
      */
-    fun accountSetBackupKeyRequestConfig(accountSetBackupKeyRequest: AccountSetBackupKeyRequest) : RequestConfig<AccountSetBackupKeyRequest> {
-        val localVariableBody = accountSetBackupKeyRequest
+    fun accountSetBackupKeyRequestConfig(backupKeyBody: BackupKeyBody) : RequestConfig<BackupKeyBody> {
+        val localVariableBody = backupKeyBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -693,7 +692,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * What the account&#39;s passkeys did
      * Newest first, the last 100: sign-ins (&#x60;app&#x60;, &#x60;origin&#x60;) and approvals (&#x60;method&#x60;, &#x60;subject&#x60;); &#x60;after&#x60; keeps the entries after that Unix second.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param after  (optional)
-     * @return ActivityList200Response
+     * @return ActivityList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -702,11 +701,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun activityList(after: kotlin.Long? = null) : ActivityList200Response = withContext(Dispatchers.IO) {
+    suspend fun activityList(after: kotlin.Long? = null) : ActivityList = withContext(Dispatchers.IO) {
         val localVarResponse = activityListWithHttpInfo(after = after)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ActivityList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ActivityList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -725,16 +724,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * What the account&#39;s passkeys did
      * Newest first, the last 100: sign-ins (&#x60;app&#x60;, &#x60;origin&#x60;) and approvals (&#x60;method&#x60;, &#x60;subject&#x60;); &#x60;after&#x60; keeps the entries after that Unix second.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param after  (optional)
-     * @return ApiResponse<ActivityList200Response?>
+     * @return ApiResponse<ActivityList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun activityListWithHttpInfo(after: kotlin.Long?) : ApiResponse<ActivityList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun activityListWithHttpInfo(after: kotlin.Long?) : ApiResponse<ActivityList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = activityListRequestConfig(after = after)
 
-        return@withContext request<Unit, ActivityList200Response>(
+        return@withContext request<Unit, ActivityList>(
             localVariableConfig
         )
     }
@@ -844,7 +843,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Resolve an alias
      * **Who:** signed in (a session or an API key).
      * @param alias 
-     * @return AliasGet200Response
+     * @return AliasView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -853,11 +852,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun aliasGet(alias: kotlin.String) : AliasGet200Response = withContext(Dispatchers.IO) {
+    suspend fun aliasGet(alias: kotlin.String) : AliasView = withContext(Dispatchers.IO) {
         val localVarResponse = aliasGetWithHttpInfo(alias = alias)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AliasGet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AliasView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -876,16 +875,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Resolve an alias
      * **Who:** signed in (a session or an API key).
      * @param alias 
-     * @return ApiResponse<AliasGet200Response?>
+     * @return ApiResponse<AliasView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun aliasGetWithHttpInfo(alias: kotlin.String) : ApiResponse<AliasGet200Response?> = withContext(Dispatchers.IO) {
+    suspend fun aliasGetWithHttpInfo(alias: kotlin.String) : ApiResponse<AliasView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = aliasGetRequestConfig(alias = alias)
 
-        return@withContext request<Unit, AliasGet200Response>(
+        return@withContext request<Unit, AliasView>(
             localVariableConfig
         )
     }
@@ -916,7 +915,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/aliases
      * The account&#39;s aliases
      * **Who:** signed in (a session or an API key).
-     * @return AliasList200Response
+     * @return AliasList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -925,11 +924,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun aliasList() : AliasList200Response = withContext(Dispatchers.IO) {
+    suspend fun aliasList() : AliasList = withContext(Dispatchers.IO) {
         val localVarResponse = aliasListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AliasList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AliasList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -947,16 +946,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/aliases
      * The account&#39;s aliases
      * **Who:** signed in (a session or an API key).
-     * @return ApiResponse<AliasList200Response?>
+     * @return ApiResponse<AliasList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun aliasListWithHttpInfo() : ApiResponse<AliasList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun aliasListWithHttpInfo() : ApiResponse<AliasList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = aliasListRequestConfig()
 
-        return@withContext request<Unit, AliasList200Response>(
+        return@withContext request<Unit, AliasList>(
             localVariableConfig
         )
     }
@@ -1062,9 +1061,9 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/apikeys
      * Make an API key
-     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app&#39;s organization makes one (&#x60;403 FORBIDDEN&#x60;), and its upgrades are judged by that rule again where they apply. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app&#39;s organization makes one (&#x60;403 FORBIDDEN&#x60;), and its upgrades are judged by that rule again where they apply. &#x60;then&#x60; (at most 4, 64 KiB as JSON; not with &#x60;upgrades&#x60;) names confirm call methods of the key&#39;s own &#x60;apps&#x60; that the same passkey approves, each naming the new key: every string argument exactly &#x60;key:$key&#x60; is written &#x60;key:&lt;keyId&gt;&#x60; (a follow-up without one is &#x60;400 BAD_FOLLOW_UP&#x60;), the consent and the system log state each call&#39;s arguments only by hash (&#x60;argsHash&#x60;: SHA-256 of a 16-byte salt, then the arguments as the &#x60;412&#x60; echoes them, keys sorted by UTF-8 bytes, in compact JSON), the &#x60;412&#x60; details list them so (&#x60;then&#x60;), and the retry runs them in order before making the key; the first that fails answers &#x60;422 FOLLOW_UP_FAILED&#x60; (&#x60;details: { index, app, method, error, applied }&#x60;) and no key is made. A key write that fails after follow-ups ran adds &#x60;applied&#x60; and &#x60;keyWrite&#x60; (&#x60;refused&#x60;, or &#x60;unknown&#x60; when it may still land: list the keys and revoke it if unwanted) to its error&#39;s &#x60;details&#x60;. A node before 1.0.0-rc.36 ignores &#x60;then&#x60; and makes a plain key: a client checks that the &#x60;412&#x60; lists &#x60;then&#x60; and that the answer&#39;s &#x60;then&#x60; is as long as its own. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param apikeyCreateRequest 
-     * @return ApikeyCreate200Response
+     * @return ApiKeyMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1073,11 +1072,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun apikeyCreate(apikeyCreateRequest: ApikeyCreateRequest) : ApikeyCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun apikeyCreate(apikeyCreateRequest: ApikeyCreateRequest) : ApiKeyMade = withContext(Dispatchers.IO) {
         val localVarResponse = apikeyCreateWithHttpInfo(apikeyCreateRequest = apikeyCreateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ApikeyCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ApiKeyMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1094,18 +1093,18 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/apikeys
      * Make an API key
-     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app&#39;s organization makes one (&#x60;403 FORBIDDEN&#x60;), and its upgrades are judged by that rule again where they apply. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app&#39;s organization makes one (&#x60;403 FORBIDDEN&#x60;), and its upgrades are judged by that rule again where they apply. &#x60;then&#x60; (at most 4, 64 KiB as JSON; not with &#x60;upgrades&#x60;) names confirm call methods of the key&#39;s own &#x60;apps&#x60; that the same passkey approves, each naming the new key: every string argument exactly &#x60;key:$key&#x60; is written &#x60;key:&lt;keyId&gt;&#x60; (a follow-up without one is &#x60;400 BAD_FOLLOW_UP&#x60;), the consent and the system log state each call&#39;s arguments only by hash (&#x60;argsHash&#x60;: SHA-256 of a 16-byte salt, then the arguments as the &#x60;412&#x60; echoes them, keys sorted by UTF-8 bytes, in compact JSON), the &#x60;412&#x60; details list them so (&#x60;then&#x60;), and the retry runs them in order before making the key; the first that fails answers &#x60;422 FOLLOW_UP_FAILED&#x60; (&#x60;details: { index, app, method, error, applied }&#x60;) and no key is made. A key write that fails after follow-ups ran adds &#x60;applied&#x60; and &#x60;keyWrite&#x60; (&#x60;refused&#x60;, or &#x60;unknown&#x60; when it may still land: list the keys and revoke it if unwanted) to its error&#39;s &#x60;details&#x60;. A node before 1.0.0-rc.36 ignores &#x60;then&#x60; and makes a plain key: a client checks that the &#x60;412&#x60; lists &#x60;then&#x60; and that the answer&#39;s &#x60;then&#x60; is as long as its own. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param apikeyCreateRequest 
-     * @return ApiResponse<ApikeyCreate200Response?>
+     * @return ApiResponse<ApiKeyMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun apikeyCreateWithHttpInfo(apikeyCreateRequest: ApikeyCreateRequest) : ApiResponse<ApikeyCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun apikeyCreateWithHttpInfo(apikeyCreateRequest: ApikeyCreateRequest) : ApiResponse<ApiKeyMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = apikeyCreateRequestConfig(apikeyCreateRequest = apikeyCreateRequest)
 
-        return@withContext request<ApikeyCreateRequest, ApikeyCreate200Response>(
+        return@withContext request<ApikeyCreateRequest, ApiKeyMade>(
             localVariableConfig
         )
     }
@@ -1137,7 +1136,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/apikeys
      * The account&#39;s API keys
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApikeyList200Response
+     * @return ApiKeyList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1146,11 +1145,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun apikeyList() : ApikeyList200Response = withContext(Dispatchers.IO) {
+    suspend fun apikeyList() : ApiKeyList = withContext(Dispatchers.IO) {
         val localVarResponse = apikeyListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ApikeyList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ApiKeyList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1168,16 +1167,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/apikeys
      * The account&#39;s API keys
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<ApikeyList200Response?>
+     * @return ApiResponse<ApiKeyList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun apikeyListWithHttpInfo() : ApiResponse<ApikeyList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun apikeyListWithHttpInfo() : ApiResponse<ApiKeyList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = apikeyListRequestConfig()
 
-        return@withContext request<Unit, ApikeyList200Response>(
+        return@withContext request<Unit, ApiKeyList>(
             localVariableConfig
         )
     }
@@ -1285,7 +1284,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Start a sign-in
      * A WebAuthn challenge for any passkey of the cluster. &#x60;origin&#x60; is an app frontend&#39;s registered origin, whose rp-id the ceremony then uses. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param loginBeginRequest May be absent. (optional)
-     * @return LoginBegin200Response
+     * @return PasskeyChallenge
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1294,11 +1293,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun loginBegin(loginBeginRequest: LoginBeginRequest? = null) : LoginBegin200Response = withContext(Dispatchers.IO) {
+    suspend fun loginBegin(loginBeginRequest: LoginBeginRequest? = null) : PasskeyChallenge = withContext(Dispatchers.IO) {
         val localVarResponse = loginBeginWithHttpInfo(loginBeginRequest = loginBeginRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as LoginBegin200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PasskeyChallenge
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1317,16 +1316,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Start a sign-in
      * A WebAuthn challenge for any passkey of the cluster. &#x60;origin&#x60; is an app frontend&#39;s registered origin, whose rp-id the ceremony then uses. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param loginBeginRequest May be absent. (optional)
-     * @return ApiResponse<LoginBegin200Response?>
+     * @return ApiResponse<PasskeyChallenge?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun loginBeginWithHttpInfo(loginBeginRequest: LoginBeginRequest?) : ApiResponse<LoginBegin200Response?> = withContext(Dispatchers.IO) {
+    suspend fun loginBeginWithHttpInfo(loginBeginRequest: LoginBeginRequest?) : ApiResponse<PasskeyChallenge?> = withContext(Dispatchers.IO) {
         val localVariableConfig = loginBeginRequestConfig(loginBeginRequest = loginBeginRequest)
 
-        return@withContext request<LoginBeginRequest, LoginBegin200Response>(
+        return@withContext request<LoginBeginRequest, PasskeyChallenge>(
             localVariableConfig
         )
     }
@@ -1502,7 +1501,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * POST /auth/logout-all
      * End every session of the account
      * &#x60;revoked&#x60;: how many sessions ended.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return LogoutAll200Response
+     * @return SessionsRevoked
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1511,11 +1510,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun logoutAll() : LogoutAll200Response = withContext(Dispatchers.IO) {
+    suspend fun logoutAll() : SessionsRevoked = withContext(Dispatchers.IO) {
         val localVarResponse = logoutAllWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as LogoutAll200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SessionsRevoked
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1533,16 +1532,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * POST /auth/logout-all
      * End every session of the account
      * &#x60;revoked&#x60;: how many sessions ended.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<LogoutAll200Response?>
+     * @return ApiResponse<SessionsRevoked?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun logoutAllWithHttpInfo() : ApiResponse<LogoutAll200Response?> = withContext(Dispatchers.IO) {
+    suspend fun logoutAllWithHttpInfo() : ApiResponse<SessionsRevoked?> = withContext(Dispatchers.IO) {
         val localVariableConfig = logoutAllRequestConfig()
 
-        return@withContext request<Unit, LogoutAll200Response>(
+        return@withContext request<Unit, SessionsRevoked>(
             localVariableConfig
         )
     }
@@ -1572,7 +1571,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/me
      * The caller&#39;s account
      * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
-     * @return Me200Response
+     * @return AccountView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1581,11 +1580,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun me() : Me200Response = withContext(Dispatchers.IO) {
+    suspend fun me() : AccountView = withContext(Dispatchers.IO) {
         val localVarResponse = meWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as Me200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AccountView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1603,16 +1602,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/me
      * The caller&#39;s account
      * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
-     * @return ApiResponse<Me200Response?>
+     * @return ApiResponse<AccountView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun meWithHttpInfo() : ApiResponse<Me200Response?> = withContext(Dispatchers.IO) {
+    suspend fun meWithHttpInfo() : ApiResponse<AccountView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = meRequestConfig()
 
-        return@withContext request<Unit, Me200Response>(
+        return@withContext request<Unit, AccountView>(
             localVariableConfig
         )
     }
@@ -1642,7 +1641,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * POST /auth/passkeys/add/begin
      * Start adding a passkey
      * Creation options for another passkey (a device) on the caller&#39;s account. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return RegisterBegin200Response
+     * @return PasskeyChallenge
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1651,11 +1650,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun passkeyAddBegin() : RegisterBegin200Response = withContext(Dispatchers.IO) {
+    suspend fun passkeyAddBegin() : PasskeyChallenge = withContext(Dispatchers.IO) {
         val localVarResponse = passkeyAddBeginWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RegisterBegin200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PasskeyChallenge
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1673,16 +1672,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * POST /auth/passkeys/add/begin
      * Start adding a passkey
      * Creation options for another passkey (a device) on the caller&#39;s account. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<RegisterBegin200Response?>
+     * @return ApiResponse<PasskeyChallenge?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun passkeyAddBeginWithHttpInfo() : ApiResponse<RegisterBegin200Response?> = withContext(Dispatchers.IO) {
+    suspend fun passkeyAddBeginWithHttpInfo() : ApiResponse<PasskeyChallenge?> = withContext(Dispatchers.IO) {
         val localVariableConfig = passkeyAddBeginRequestConfig()
 
-        return@withContext request<Unit, RegisterBegin200Response>(
+        return@withContext request<Unit, PasskeyChallenge>(
             localVariableConfig
         )
     }
@@ -1713,7 +1712,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Finish adding a passkey
      * Answers &#x60;412&#x60; first; sent again with &#x60;confirm&#x60; signed by a passkey the account already has.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param passkeyAddFinishRequest 
-     * @return PasskeyAddFinish200Response
+     * @return PasskeyAdded
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1722,11 +1721,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun passkeyAddFinish(passkeyAddFinishRequest: PasskeyAddFinishRequest) : PasskeyAddFinish200Response = withContext(Dispatchers.IO) {
+    suspend fun passkeyAddFinish(passkeyAddFinishRequest: PasskeyAddFinishRequest) : PasskeyAdded = withContext(Dispatchers.IO) {
         val localVarResponse = passkeyAddFinishWithHttpInfo(passkeyAddFinishRequest = passkeyAddFinishRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PasskeyAddFinish200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PasskeyAdded
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1745,16 +1744,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Finish adding a passkey
      * Answers &#x60;412&#x60; first; sent again with &#x60;confirm&#x60; signed by a passkey the account already has.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param passkeyAddFinishRequest 
-     * @return ApiResponse<PasskeyAddFinish200Response?>
+     * @return ApiResponse<PasskeyAdded?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun passkeyAddFinishWithHttpInfo(passkeyAddFinishRequest: PasskeyAddFinishRequest) : ApiResponse<PasskeyAddFinish200Response?> = withContext(Dispatchers.IO) {
+    suspend fun passkeyAddFinishWithHttpInfo(passkeyAddFinishRequest: PasskeyAddFinishRequest) : ApiResponse<PasskeyAdded?> = withContext(Dispatchers.IO) {
         val localVariableConfig = passkeyAddFinishRequestConfig(passkeyAddFinishRequest = passkeyAddFinishRequest)
 
-        return@withContext request<PasskeyAddFinishRequest, PasskeyAddFinish200Response>(
+        return@withContext request<PasskeyAddFinishRequest, PasskeyAdded>(
             localVariableConfig
         )
     }
@@ -1941,7 +1940,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Make a recovery code
      * Shown once, replacing any; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param confirmOnly May be absent. (optional)
-     * @return RecoveryCreate200Response
+     * @return RecoveryCode
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1950,11 +1949,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun recoveryCreate(confirmOnly: ConfirmOnly? = null) : RecoveryCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun recoveryCreate(confirmOnly: ConfirmOnly? = null) : RecoveryCode = withContext(Dispatchers.IO) {
         val localVarResponse = recoveryCreateWithHttpInfo(confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryCode
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1973,16 +1972,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Make a recovery code
      * Shown once, replacing any; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<RecoveryCreate200Response?>
+     * @return ApiResponse<RecoveryCode?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun recoveryCreateWithHttpInfo(confirmOnly: ConfirmOnly?) : ApiResponse<RecoveryCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun recoveryCreateWithHttpInfo(confirmOnly: ConfirmOnly?) : ApiResponse<RecoveryCode?> = withContext(Dispatchers.IO) {
         val localVariableConfig = recoveryCreateRequestConfig(confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, RecoveryCreate200Response>(
+        return@withContext request<ConfirmOnly, RecoveryCode>(
             localVariableConfig
         )
     }
@@ -2163,7 +2162,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Start a sign-up
      * Creation options for a new passkey. &#x60;invite&#x60; is an organization or cluster sign-up invite token, which the policy may require; &#x60;403 SIGN_UP_REFUSED&#x60; when the policy would refuse the sign-up. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param registerBeginRequest 
-     * @return RegisterBegin200Response
+     * @return PasskeyChallenge
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2172,11 +2171,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun registerBegin(registerBeginRequest: RegisterBeginRequest) : RegisterBegin200Response = withContext(Dispatchers.IO) {
+    suspend fun registerBegin(registerBeginRequest: RegisterBeginRequest) : PasskeyChallenge = withContext(Dispatchers.IO) {
         val localVarResponse = registerBeginWithHttpInfo(registerBeginRequest = registerBeginRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RegisterBegin200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PasskeyChallenge
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2195,16 +2194,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Start a sign-up
      * Creation options for a new passkey. &#x60;invite&#x60; is an organization or cluster sign-up invite token, which the policy may require; &#x60;403 SIGN_UP_REFUSED&#x60; when the policy would refuse the sign-up. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param registerBeginRequest 
-     * @return ApiResponse<RegisterBegin200Response?>
+     * @return ApiResponse<PasskeyChallenge?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun registerBeginWithHttpInfo(registerBeginRequest: RegisterBeginRequest) : ApiResponse<RegisterBegin200Response?> = withContext(Dispatchers.IO) {
+    suspend fun registerBeginWithHttpInfo(registerBeginRequest: RegisterBeginRequest) : ApiResponse<PasskeyChallenge?> = withContext(Dispatchers.IO) {
         val localVariableConfig = registerBeginRequestConfig(registerBeginRequest = registerBeginRequest)
 
-        return@withContext request<RegisterBeginRequest, RegisterBegin200Response>(
+        return@withContext request<RegisterBeginRequest, PasskeyChallenge>(
             localVariableConfig
         )
     }
@@ -2383,7 +2382,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/sessions
      * The account&#39;s live sessions
      * Latest active first, at most 256. &#x60;openedAt&#x60; (Unix seconds) is &#x60;null&#x60; for a session opened before the node kept it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return SessionsList200Response
+     * @return SessionList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2392,11 +2391,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun sessionsList() : SessionsList200Response = withContext(Dispatchers.IO) {
+    suspend fun sessionsList() : SessionList = withContext(Dispatchers.IO) {
         val localVarResponse = sessionsListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SessionsList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SessionList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2414,16 +2413,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/sessions
      * The account&#39;s live sessions
      * Latest active first, at most 256. &#x60;openedAt&#x60; (Unix seconds) is &#x60;null&#x60; for a session opened before the node kept it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<SessionsList200Response?>
+     * @return ApiResponse<SessionList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun sessionsListWithHttpInfo() : ApiResponse<SessionsList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun sessionsListWithHttpInfo() : ApiResponse<SessionList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = sessionsListRequestConfig()
 
-        return@withContext request<Unit, SessionsList200Response>(
+        return@withContext request<Unit, SessionList>(
             localVariableConfig
         )
     }
@@ -2453,7 +2452,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/usage
      * The account&#39;s usage against its quotas
      * The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations; the file bytes held by each payer it belongs to (each organization it is in, and &#x60;account:&lt;id&gt;&#x60; for its own apps); the cluster&#39;s quotas; and what today&#39;s runs of the apps the account develops used (decimal strings).  **Who:** signed in (a session or an API key).
-     * @return Usage200Response
+     * @return AccountUsage
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2462,11 +2461,11 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun usage() : Usage200Response = withContext(Dispatchers.IO) {
+    suspend fun usage() : AccountUsage = withContext(Dispatchers.IO) {
         val localVarResponse = usageWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as Usage200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AccountUsage
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2484,16 +2483,16 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /auth/usage
      * The account&#39;s usage against its quotas
      * The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations; the file bytes held by each payer it belongs to (each organization it is in, and &#x60;account:&lt;id&gt;&#x60; for its own apps); the cluster&#39;s quotas; and what today&#39;s runs of the apps the account develops used (decimal strings).  **Who:** signed in (a session or an API key).
-     * @return ApiResponse<Usage200Response?>
+     * @return ApiResponse<AccountUsage?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun usageWithHttpInfo() : ApiResponse<Usage200Response?> = withContext(Dispatchers.IO) {
+    suspend fun usageWithHttpInfo() : ApiResponse<AccountUsage?> = withContext(Dispatchers.IO) {
         val localVariableConfig = usageRequestConfig()
 
-        return@withContext request<Unit, Usage200Response>(
+        return@withContext request<Unit, AccountUsage>(
             localVariableConfig
         )
     }

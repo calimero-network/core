@@ -7,6 +7,7 @@
 )]
 use super::*;
 
+use crate::system::PolicyView;
 use crate::types::UpgradePolicy;
 
 /// The most apps `GET /orgs/{org}/updates` reads in one page: each is classified, which
@@ -73,14 +74,14 @@ async fn org_policy(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PolicyView>> {
     let p = person(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account)).is_some()) {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(node.sys(|s| s.policy_json(&org, None))))
+    Ok(Json(node.sys(|s| s.policy_view(&org, None))))
 }
 
 /// `POST /orgs/{org}/upgrade-policy`: set or drop the organization's update policy, for
@@ -133,10 +134,10 @@ async fn app_policy(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PolicyView>> {
     let (app, _p) = super::upgrades::readable_app(&node, &headers, &app_id).await?;
     Ok(Json(
-        node.sys(|s| s.policy_json(&app.org, Some(&app.app_id))),
+        node.sys(|s| s.policy_view(&app.org, Some(&app.app_id))),
     ))
 }
 
@@ -206,19 +207,21 @@ pub(crate) async fn approve_upgrade(
         service: running.service.clone(),
         compute: false,
     };
-    if !node.sys(|s| {
-        s.packages
-            .get(&target.package)
-            .is_some_and(|p| p.versions.contains_key(&target.version))
+    // Before the passkey: an instance from a deployment names only its offer that still
+    // serves; any other a release the approver may use, else answered as a missing one.
+    if app.deployment.is_some() {
+        if node.sys(|s| s.release_offered_to(app, &target, None).is_none()) {
+            return Err(crate::node::outside_deployment());
+        }
+    } else if node.sys(|s| {
+        s.release_used(&target.package, &target.version, &actor)
+            .is_none()
     }) {
         return Err(ApiError::new(
             409,
             "NOT_INSTALLED",
             &format!("{} {} is not installed", target.package, target.version),
         ));
-    }
-    if node.sys(|s| s.within_deployment(app, Some(&target), None).is_err()) {
-        return Err(crate::node::outside_deployment());
     }
     let targets = if unit {
         super::upgrades::unit_plan(node, &actor, &app.app_id, &target.version)
@@ -275,9 +278,9 @@ pub(crate) async fn approve_upgrade(
     // log keeps it.
     let logged: crate::types::PendingApproval = serde_json::from_value(logged)
         .map_err(|e| ApiError::internal(&format!("the approval logged unread: {e}")))?;
-    Ok(Json(json!({
-        "app": app.app_id,
-        "approval": super::upgrades::approval_json(&app.app_id, &logged),
+    Ok(Json(json!(ApprovalLogged {
+        approval: super::upgrades::approval_json(&app.app_id, &logged),
+        app: app.app_id.clone(),
     })))
 }
 
@@ -290,7 +293,7 @@ async fn org_updates(
     headers: HeaderMap,
     Path(org): Path<String>,
     Query(q): Query<UpdatesQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<OrgUpdates>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
@@ -318,12 +321,36 @@ async fn org_updates(
             updates.push(view);
         }
     }
-    Ok(Json(json!({
-        "org": org,
-        "policy": node.sys(|s| s.policy_json(&org, None))["policy"],
-        "updates": updates,
-        "next": next,
-    })))
+    // The organization's own policy, else the defaults (`SystemState::policy_json`'s).
+    let policy = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .and_then(|o| o.upgrade_policy)
+            .unwrap_or_default()
+    });
+    Ok(Json(OrgUpdates {
+        org,
+        policy,
+        updates,
+        next,
+    }))
+}
+
+/// `POST /apps/{app}/upgrade-approvals`: the first approval logged.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApprovalLogged {
+    app: String,
+    approval: super::upgrades::PendingApprovalView,
+}
+
+/// `GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each
+/// as `GET /apps/{app}/update` shows it with its `name`, and the organization's policy.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OrgUpdates {
+    org: String,
+    policy: UpgradePolicy,
+    updates: Vec<Value>,
+    next: Option<String>,
 }
 
 pub(super) fn routes() -> Router<Arc<Node>> {
@@ -338,4 +365,36 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         )
         .route("/apps/{app}/upgrade-approvals", post(app_approve_upgrade))
         .route("/orgs/{org}/updates", get(org_updates))
+}
+
+/// `OrgUpdates` writes the bytes the `json!` it replaced wrote.
+#[cfg(test)]
+mod answer_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn the_updates_page_answers_as_before() {
+        let policy = UpgradePolicy::default();
+        let updates = vec![json!({ "available": null, "name": "App One" })];
+        for next in [Some("a9".to_owned()), None] {
+            let typed = OrgUpdates {
+                org: "o1".to_owned(),
+                policy,
+                updates: updates.clone(),
+                next: next.clone(),
+            };
+            let before = json!({
+                "org": "o1",
+                "policy": json!({ "org": "o1", "policy": policy })["policy"],
+                "updates": updates,
+                "next": next,
+            });
+            assert_eq!(
+                serde_json::to_string(&typed).expect("serializes"),
+                serde_json::to_string(&before).expect("serializes")
+            );
+        }
+    }
 }

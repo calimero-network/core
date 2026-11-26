@@ -8,12 +8,15 @@
 //! - Internal (peers, cluster secret): `/internal/*`.
 //! - Ops (mdma, operator token): `/ops/*`.
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use axum::body::Bytes as Body;
 use axum::extract::{Path, Query, State};
@@ -26,6 +29,7 @@ use calimero_identity::{
     b64url, confirm_challenge, peek_session, random, sha256, verify_assertion, verify_registration,
     verify_session, Assertion, Registration, RelyingParty, SessionClaims,
 };
+use calimero_sealed::SealedSession;
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,7 +39,8 @@ use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
-use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
+use crate::node::{CallRequest, Issuer, JobAttestError, Node, ViewRequest};
+use crate::packages::Via;
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
@@ -54,7 +59,7 @@ const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 /// (`Config::refresh_rotate_after`): younger, a refresh mints a session on the
 /// system state at a read index and writes nothing to the system log; older,
 /// it is exchanged for a new token in the log (`UseRefresh`). Each active
-/// session then writes once per this, not once per [`SESSION_TTL`].
+/// session then writes once per this, not once per `SESSION_TTL`.
 pub const REFRESH_ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const CHALLENGE_TTL: u64 = 5 * 60;
 /// The code of a create or upgrade by bundle hash whose releases ship different compute components.
@@ -70,8 +75,12 @@ mod backup_keys;
 mod calls;
 mod deployments;
 mod deprecation;
+#[cfg(test)]
+mod e7_oracles;
 mod exports;
 mod files;
+#[cfg(test)]
+mod golden;
 mod internal;
 #[cfg(test)]
 mod openapi;
@@ -92,8 +101,11 @@ mod update_policies;
 pub(crate) mod upgrades;
 
 pub(crate) use approvals::{
-    set_outbound_approval, set_release_approval, OutboundApprovalBody, ReleaseApprovalBody,
+    outbound_release, refuse_egress_off, set_egress, set_outbound_approval, set_release_approval,
+    EgressBody, OutboundApprovalBody, ReleaseApprovalBody,
 };
+// `POST /apps/{app}/egress`, routed beside its `GET` in `upgrades::routes`.
+use approvals::app_set_egress;
 pub(crate) use exports::ExportLimits;
 pub(crate) use internal::peer_only;
 pub(crate) use orgs::{
@@ -132,7 +144,7 @@ use {
         ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
         TeamUpdateBody,
     },
-    packages::{InstallBody, PublisherBody},
+    packages::{AccountInstallBody, InstallBody, PublisherBody, UploadQuery},
     public_links::PublicLinkBody,
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
     sign_up::{OpsSignUpInviteBody, SignUpBody, SignUpInviteBody},
@@ -231,7 +243,7 @@ pub enum Pending {
         expires: u64,
         /// What the retry needs that is not signed and never logged (a new
         /// API key, an invite token, the registered credential), for a
-        /// step-up whose arguments the node made ([`consent_minted`]).
+        /// step-up whose arguments the node made (`consent_minted`).
         #[serde(default)]
         carry: Option<Value>,
     },
@@ -266,50 +278,220 @@ impl Pending {
     }
 }
 
-/// The most ceremonies a node holds open for callers it does not know yet
-/// (sign-in, sign-up, a recovery's finish). Each lives at most
-/// `CHALLENGE_TTL`; past this the node answers 429 instead of growing without
-/// bound (Xil's review, issue 12). Ceremonies of known accounts do not count
-/// here, so a full anonymous pool never blocks an account's step-up.
+/// The most ceremonies a node holds open for callers it does not know yet (sign-in,
+/// sign-up, a recovery's finish). Each lives at most `CHALLENGE_TTL`; past this a new one
+/// displaces the oldest of the caller holding the most (`admit_pending`), so the pool never
+/// grows without bound and a flood never locks the others out. Ceremonies of known accounts
+/// do not count here, so a full anonymous pool never blocks an account's step-up.
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
+/// The most anonymous ceremonies one sealed session holds open; its next
+/// begin displaces its own oldest. A client has a few at once (a sign-in, a
+/// sign-up, a recovery), so a session that begins more only loses its own.
+pub const MAX_CEREMONIES_PER_SESSION: usize = 16;
 /// The most ceremonies a node holds open for known accounts, all together.
 pub const MAX_ACCOUNT_CHALLENGES: usize = 10_000;
 /// The most ceremonies a node holds open for one account, so no account
 /// fills the pool the others share.
 pub const MAX_CHALLENGES_PER_ACCOUNT: usize = 64;
 
-fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
+/// A ceremony this node holds open, with the sealed session that began it
+/// (`None` on a plain request, which only a `--dev` node serves) and its place
+/// in the order ceremonies were begun, oldest first.
+#[derive(Debug)]
+struct Held {
+    pending: Pending,
+    session: Option<SealedSession>,
+    order: u64,
+}
+
+/// Where a session that holds anonymous ceremonies ranks for displacement:
+/// how many it holds, then its oldest ceremony's order, reversed, so the
+/// greatest is the biggest holder and, among equals, the one with the oldest.
+type Rank = (usize, Reverse<u64>, Option<SealedSession>);
+
+/// The ceremonies a node holds open ([`Pending`]), indexed so a begin, a take,
+/// an expiry and the displacement a full budget calls for each cost
+/// O(log n): a flood fills the pool, so nothing here scans it.
+#[derive(Debug, Default)]
+pub struct Ceremonies {
+    held: HashMap<String, Held>,
+    /// Every ceremony by expiry, then order: what [`Self::expire`] drops.
+    expiry: BTreeMap<(u64, u64), String>,
+    /// The anonymous ceremonies of each session, by order (oldest first).
+    sessions: HashMap<Option<SealedSession>, BTreeMap<u64, String>>,
+    /// Each session in `sessions`, ranked ([`Rank`]).
+    ranking: BTreeSet<Rank>,
+    anonymous: usize,
+    /// How many ceremonies each known account holds, and all of them.
+    accounts: HashMap<String, usize>,
+    account_total: usize,
+    next: u64,
+}
+
+impl Ceremonies {
+    /// The ceremony `id` names, if this node holds it.
+    pub fn get(&self, id: &str) -> Option<&Pending> {
+        self.held.get(id).map(|h| &h.pending)
+    }
+
+    fn insert(&mut self, id: String, pending: Pending, session: Option<SealedSession>) {
+        let order = self.next;
+        self.next += 1;
+        let _prev = self.expiry.insert((pending.expires(), order), id.clone());
+        match pending.account() {
+            None => {
+                self.unrank(session);
+                let _prev = self
+                    .sessions
+                    .entry(session)
+                    .or_default()
+                    .insert(order, id.clone());
+                self.anonymous += 1;
+                self.rank(session);
+            }
+            Some(account) => {
+                *self.accounts.entry(account.to_owned()).or_default() += 1;
+                self.account_total += 1;
+            }
+        }
+        let _prev = self.held.insert(
+            id,
+            Held {
+                pending,
+                session,
+                order,
+            },
+        );
+    }
+
+    /// Take the ceremony `id` names out of every index.
+    fn remove(&mut self, id: &str) -> Option<Pending> {
+        let h = self.held.remove(id)?;
+        let _expiry = self.expiry.remove(&(h.pending.expires(), h.order));
+        match h.pending.account() {
+            None => {
+                self.unrank(h.session);
+                if let Some(mine) = self.sessions.get_mut(&h.session) {
+                    let _id = mine.remove(&h.order);
+                    if mine.is_empty() {
+                        let _gone = self.sessions.remove(&h.session);
+                    }
+                }
+                self.anonymous = self.anonymous.saturating_sub(1);
+                self.rank(h.session);
+            }
+            Some(account) => {
+                if let Some(n) = self.accounts.get_mut(account) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        let _gone = self.accounts.remove(account);
+                    }
+                }
+                self.account_total = self.account_total.saturating_sub(1);
+            }
+        }
+        Some(h.pending)
+    }
+
+    fn rank_of(&self, session: Option<SealedSession>) -> Option<Rank> {
+        let mine = self.sessions.get(&session)?;
+        let (&oldest, _) = mine.first_key_value()?;
+        Some((mine.len(), Reverse(oldest), session))
+    }
+
+    fn unrank(&mut self, session: Option<SealedSession>) {
+        if let Some(rank) = self.rank_of(session) {
+            let _was = self.ranking.remove(&rank);
+        }
+    }
+
+    fn rank(&mut self, session: Option<SealedSession>) {
+        if let Some(rank) = self.rank_of(session) {
+            let _new = self.ranking.insert(rank);
+        }
+    }
+
+    /// The oldest anonymous ceremony `session` holds.
+    fn oldest_of(&self, session: Option<SealedSession>) -> Option<String> {
+        self.sessions
+            .get(&session)
+            .and_then(BTreeMap::first_key_value)
+            .map(|(_, id)| id.clone())
+    }
+
+    /// Drop the ceremonies expired at `now`.
+    fn expire(&mut self, now: u64) {
+        while let Some(id) = self
+            .expiry
+            .first_key_value()
+            .filter(|((expires, _), _)| *expires <= now)
+            .map(|(_, id)| id.clone())
+        {
+            let _expired = self.remove(&id);
+        }
+    }
+}
+
+/// Hold `pending` and answer its id. `session` is the sealed session an
+/// anonymous ceremony was begun in, which its limit is keyed on; a known
+/// account's ceremony draws on that account's budget instead, and passes `None`.
+fn put_pending(
+    node: &Node,
+    pending: Pending,
+    session: Option<SealedSession>,
+) -> Result<String, ApiError> {
     let id = format!("{}.{}", node.config.node_id, b64url(&random::<16>()));
     let mut c = node
         .challenges
         .lock()
         .map_err(|_| ApiError::internal("challenge store poisoned"))?;
-    admit_pending(&mut c, &pending, now_secs())?;
-    let _prev = c.insert(id.clone(), pending);
+    admit_pending(&mut c, &pending, session, now_secs())?;
+    c.insert(id.clone(), pending, session);
     Ok(id)
 }
 
-/// Drop expired ceremonies, then refuse `pending` when its budget is full:
-/// the anonymous pool, or its account's share of the accounts' pool.
+/// Drop expired ceremonies, then make room for `pending` in its budget.
+///
+/// An anonymous ceremony is never refused: past its session's
+/// `MAX_CEREMONIES_PER_SESSION` it displaces that session's oldest, and in a
+/// full pool the oldest of the session holding the most. A flood from one
+/// session only replaces its own; one spread over many sessions, each opened
+/// by a handshake the sealed layer rate-limits, displaces the oldest first, so
+/// another client's ceremony lives at least as long as the flood takes to
+/// begin `MAX_PENDING_CHALLENGES` after it. The peer's IP is no key: the node
+/// serves plain HTTP behind whatever TLS front the operator runs, where every
+/// client has the front's address, and `X-Forwarded-For` is written outside
+/// the TD by whoever relays the request.
+///
+/// A known account's ceremony is refused `429` when its share of the
+/// accounts' pool, or that pool, is full.
 fn admit_pending(
-    c: &mut HashMap<String, Pending>,
+    c: &mut Ceremonies,
     pending: &Pending,
+    session: Option<SealedSession>,
     now: u64,
 ) -> Result<(), ApiError> {
-    c.retain(|_, p| p.expires() > now);
-    let full = match pending.account() {
-        None => c.values().filter(|p| p.account().is_none()).count() >= MAX_PENDING_CHALLENGES,
-        Some(account) => {
-            let (mine, all) = c
-                .values()
-                .filter_map(Pending::account)
-                .fold((0, 0), |(mine, all), a| {
-                    (mine + usize::from(a == account), all + 1)
-                });
-            mine >= MAX_CHALLENGES_PER_ACCOUNT || all >= MAX_ACCOUNT_CHALLENGES
+    c.expire(now);
+    let Some(account) = pending.account() else {
+        let mine = c.sessions.get(&session).map_or(0, BTreeMap::len);
+        // A plain request's (`None`, a `--dev` node only) count together and
+        // have no share of their own.
+        let victim = if session.is_some() && mine >= MAX_CEREMONIES_PER_SESSION {
+            c.oldest_of(session)
+        } else if c.anonymous >= MAX_PENDING_CHALLENGES {
+            c.ranking
+                .last()
+                .and_then(|&(_, _, biggest)| c.oldest_of(biggest))
+        } else {
+            None
+        };
+        if let Some(id) = victim {
+            let _displaced = c.remove(&id);
         }
+        return Ok(());
     };
-    if full {
+    let mine = c.accounts.get(account).copied().unwrap_or(0);
+    if mine >= MAX_CHALLENGES_PER_ACCOUNT || c.account_total >= MAX_ACCOUNT_CHALLENGES {
         return Err(ApiError::new(
             429,
             "RATE_LIMITED",
@@ -461,8 +643,7 @@ fn rp(node: &Node) -> RelyingParty {
 }
 
 /// A confirmation (step-up) needs the user verified (PIN or biometric), not
-/// just present: a touch alone is not consent to a confirm method (Xil's
-/// review, issue 6).
+/// just present: a touch alone is not consent to a confirm method.
 pub(crate) fn rp_step_up(node: &Node) -> RelyingParty {
     RelyingParty {
         require_uv: true,
@@ -500,6 +681,44 @@ impl Principal {
             .ok_or_else(|| ApiError::unauthenticated("sign in first"))
     }
 
+    /// Whether `gate`, which admitted this principal to `app_id` with method `*`, still
+    /// would on `s`, the facts that can change since judged again: the session not ended
+    /// and its passkey, origin and issuing release still holding; the API key not revoked
+    /// or expired; the account still reaching the app. What cannot change (a signature, the
+    /// key's own scope) is not. A visitor opens no stream (`*` refuses it). A session token's
+    /// own expiry does not end a stream: it is a refresh, not a revocation. For a stream,
+    /// through [`still_admitted`].
+    fn admitted_on(&self, s: &SystemState, app_id: &str, now: u64) -> bool {
+        let Some(app) = s.apps.get(app_id) else {
+            return false;
+        };
+        let credential = match (&self.session, &self.api_key) {
+            (Some(c), _) => {
+                !s.revoked_sessions.contains(&c.session)
+                    && c.passkey
+                        .as_ref()
+                        .is_none_or(|k| s.credentials.get(k) == Some(&c.account))
+                    && c.origin.as_ref().is_none_or(|o| {
+                        s.package_origins
+                            .get(o)
+                            .is_some_and(|r| Some(r.package.as_str()) == c.app.as_deref())
+                    })
+                    && self
+                        .issuer_release
+                        .as_ref()
+                        .is_none_or(|r| s.release_may_hold(app, Some(r)))
+            }
+            (None, Some(k)) => {
+                k.expires_at > now
+                    && s.api_keys
+                        .values()
+                        .any(|r| r.key_id == k.key_id && r.account == k.account)
+            }
+            (None, None) => !matches!(self.caller, Caller::Visitor { .. }),
+        };
+        credential && s.may_reach(app, self.caller.account())
+    }
+
     /// Whether the caller is an upgrade key ([`ApiKeyRecord::upgrades`]).
     pub(crate) fn upgrade_key(&self) -> bool {
         self.api_key.as_ref().is_some_and(|k| k.upgrades.is_some())
@@ -525,7 +744,7 @@ impl Principal {
     /// Whether this principal may change `team` of `org` as `reach` says: a
     /// package-bound session only a team of its own package's, the org's
     /// app team for that package ([`crate::types::Org::package_of_team`])
-    /// or one below it, so an app's frontend runs its own channels (#5014).
+    /// or one below it, so an app's frontend runs its own channels.
     /// Who may do the change itself is judged where it applies, as for any
     /// session; this only keeps the session to its package's teams.
     pub(crate) fn within_team(
@@ -573,15 +792,25 @@ impl Principal {
     }
 
     /// Whether this principal may touch `app` at all: a package-bound
-    /// session only an app running a release of its package.
+    /// session only an app running a release of its package, and an API key
+    /// scoped to some apps only those (on every route that names an app, not
+    /// only [`gate`]'s: security review, a key's scope skipped on the record,
+    /// metadata, alias and delegation routes).
     pub(crate) fn within(
         &self,
         node: &Node,
         app: &crate::types::AppRecord,
     ) -> Result<(), ApiError> {
+        if self
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !key_scoped_to(k, &app.app_id))
+        {
+            return Err(key_not_scoped());
+        }
         // A session vouches for its account only where the node that signed
         // it may hold the data: a node on an unapproved release cannot mint
-        // its way into an app (F1).
+        // its way into an app.
         if let Some(release) = &self.issuer_release {
             if !node.sys(|s| s.release_may_hold(app, Some(release))) {
                 return Err(ApiError::unauthenticated(
@@ -601,6 +830,44 @@ impl Principal {
             Some(_) => Err(ApiError::not_found("no such app")),
         }
     }
+}
+
+impl Principal {
+    /// Refuse an API key that may not change settings: a read-only key, or one
+    /// scoped to some methods (a setting is none of them). App metadata and
+    /// aliases are settings; calls go through [`gate`].
+    pub(crate) fn settings_write(&self) -> Result<(), ApiError> {
+        match &self.api_key {
+            Some(k) if k.read_only => Err(ApiError::forbidden("read-only API key")),
+            Some(k) if k.methods.is_some() => Err(ApiError::forbidden(
+                "this API key is scoped to methods; changing settings needs an unscoped key or a passkey session",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse a scoped API key (to apps, methods or reads): what reaches past
+    /// one app, such as an organization's settings, needs an unscoped key or
+    /// a passkey session, as installing does ([`installer`]).
+    pub(crate) fn unscoped(&self) -> Result<(), ApiError> {
+        match &self.api_key {
+            Some(k) if k.read_only || k.apps.is_some() || k.methods.is_some() => {
+                Err(ApiError::forbidden(
+                    "this API key is scoped; this needs an unscoped key or a passkey session",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether `key` reaches `app`: a key scoped to no app reaches every one.
+pub(crate) fn key_scoped_to(key: &ApiKeyRecord, app: &str) -> bool {
+    key.apps.as_ref().is_none_or(|a| a.iter().any(|x| x == app))
+}
+
+fn key_not_scoped() -> ApiError {
+    ApiError::forbidden("API key not scoped to this app")
 }
 
 /// Which of its own package's teams a package-bound session may change
@@ -677,39 +944,27 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Who is calling, from the `Authorization` header, upgrade keys included.
+///
+/// A credential is judged on the cluster's latest system state (a read index,
+/// [`Node::sys_fresh_index`]): a session or key revoked through another node is
+/// refused here at once, not once this replica catches up. What needs no state
+/// is checked before that round, so a credential that cannot be valid costs the
+/// system leader nothing: an API key's shape ([`api_key_shaped`]) and the
+/// keys a fresh read found missing ([`UnknownApiKeys`]), a visitor's signature,
+/// a session token's signature under its issuer's attested key and its expiry.
 async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
     let Some(token) = bearer(headers) else {
         return Ok(None);
     };
-    // A credential is judged on the cluster's latest system state (a read
-    // index): a session or key revoked through another node is refused here
-    // at once, not once this replica catches up.
-    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     if let Some(rest) = token.strip_prefix(public_links::VISITOR_PREFIX) {
-        return public_links::visitor(node, rest, sys_index).map(Some);
+        return public_links::visitor(node, rest).await.map(Some);
     }
-    if let Some(_key) = token.strip_prefix("cal_") {
-        let hash = calimero_identity::api_key_hash(token);
-        let rec = node
-            .sys_until(|s| s.api_keys.get(&hash).cloned())
-            .await
-            .ok_or_else(|| ApiError::unauthenticated("unknown API key"))?;
-        if rec.expires_at <= now_secs() {
-            return Err(ApiError::unauthenticated("API key expired"));
-        }
-        return Ok(Some(Principal {
-            caller: Caller::ApiKey {
-                key: rec.key_id.clone(),
-                account: rec.account.clone(),
-            },
-            session: None,
-            api_key: Some(rec),
-            issuer_release: None,
-            consent_page: false,
-            sys_index,
-        }));
+    if token.starts_with("cal_") {
+        return api_key(node, token).await.map(Some);
     }
-    let (claims, issuer_release) = verify_token(node, token).await?;
+    let (claims, issuer) = signed_session(node, token).await?;
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
+    let issuer_release = session_issuer_serves(node, &claims, issuer)?;
     if node.sys(|s| s.revoked_sessions.contains(&claims.session)) {
         return Err(ApiError::unauthenticated("session revoked"));
     }
@@ -740,6 +995,104 @@ async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal
     }))
 }
 
+/// An API key's length: `cal_` and 32 random bytes in unpadded base64url
+/// (`calimero_identity::new_api_key`).
+const API_KEY_CHARS: usize = 4 + 43;
+
+/// Whether `token` has the shape of an API key this cluster makes; no other is
+/// looked up.
+fn api_key_shaped(token: &str) -> bool {
+    token.len() == API_KEY_CHARS
+        && token.strip_prefix("cal_").is_some_and(|k| {
+            k.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
+/// Most API key hashes [`UnknownApiKeys`] holds at once.
+pub(crate) const MAX_UNKNOWN_API_KEYS: usize = 4096;
+
+/// How long [`UnknownApiKeys`] remembers a missing key.
+pub(crate) const UNKNOWN_API_KEY_TTL: Duration = Duration::from_secs(60);
+
+/// The hashes of API keys a caught-up read found no key for, each kept
+/// `UNKNOWN_API_KEY_TTL`, at most `MAX_UNKNOWN_API_KEYS` (past that a
+/// missing key is not remembered, and costs a round each time). A key it holds
+/// is refused with no system read. It never refuses a key that exists: a hash is
+/// added only after a read caught up to an index past every write committed
+/// before the request, a key is shown to its maker only once its creation is
+/// committed, and a new key is 256 random bits, so none is presented before it
+/// exists; a deleted key's hash does not come back. Per node, in memory.
+#[derive(Default)]
+pub struct UnknownApiKeys(Mutex<HashMap<String, Instant>>);
+
+impl UnknownApiKeys {
+    fn holds(&self, hash: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(hash)
+            .is_some_and(|at| at.elapsed() < UNKNOWN_API_KEY_TTL)
+    }
+
+    fn add(&self, hash: String) {
+        let mut keys = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if keys.len() >= MAX_UNKNOWN_API_KEYS {
+            keys.retain(|_, at| at.elapsed() < UNKNOWN_API_KEY_TTL);
+            if keys.len() >= MAX_UNKNOWN_API_KEYS {
+                return;
+            }
+        }
+        let _prev = keys.insert(hash, Instant::now());
+    }
+}
+
+/// The caller an API key names. A token of another shape, or one a fresh read
+/// found missing lately, is refused before the read-index round; a missing key
+/// is waited for ([`Node::sys_until`]) only when the round did not catch this
+/// replica up, since a caught-up state already holds every key made before the
+/// request.
+async fn api_key(node: &Node, token: &str) -> Result<Principal, ApiError> {
+    let unknown = || ApiError::unauthenticated("unknown API key");
+    if !api_key_shaped(token) {
+        return Err(unknown());
+    }
+    let hash = calimero_identity::api_key_hash(token);
+    if node.unknown_api_keys.holds(&hash) {
+        return Err(unknown());
+    }
+    let (sys_index, caught_up) = node.sys_fresh_index().await;
+    let find = |s: &SystemState| s.api_keys.get(&hash).cloned();
+    let found = if caught_up {
+        node.sys(find)
+    } else {
+        node.sys_until(find).await
+    };
+    let Some(rec) = found else {
+        if caught_up {
+            node.unknown_api_keys.add(hash);
+        }
+        return Err(unknown());
+    };
+    if rec.expires_at <= now_secs() {
+        return Err(ApiError::unauthenticated("API key expired"));
+    }
+    Ok(Principal {
+        caller: Caller::ApiKey {
+            key: rec.key_id.clone(),
+            account: rec.account.clone(),
+        },
+        session: None,
+        api_key: Some(rec),
+        issuer_release: None,
+        consent_page: false,
+        sys_index,
+    })
+}
+
 /// Whether `origin` is still registered for `package`.
 fn origin_holds(node: &Node, package: Option<&str>, origin: &str) -> bool {
     node.sys(|s| {
@@ -755,28 +1108,19 @@ fn origin_gone() -> ApiError {
     )
 }
 
-/// Check a session token: signed by the receipt key of the node it names,
-/// which this node attests at that node's registered address, and whose
-/// attested release may serve the account
-/// (`SystemState::release_may_serve_account`). Answers the claims and the
-/// issuer's release, which each app access checks too (`Principal::within`).
-async fn verify_token(
-    node: &Node,
-    token: &str,
-) -> Result<(SessionClaims, Option<String>), ApiError> {
+/// The issuer a session token names, as this node attested it, under whose
+/// receipt key the token is signed and unexpired: what needs no fresh system
+/// state, so a token its issuer did not sign is refused before the read-index
+/// round. [`session_issuer_serves`] judges the issuer on the fresh state after.
+async fn signed_session(node: &Node, token: &str) -> Result<(SessionClaims, Issuer), ApiError> {
     let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
     let issuer_id = claims.node;
-    let unknown = || {
-        ApiError::unauthenticated(
-            "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
-        )
-    };
     // Answered from the key this node attested ahead of time: the issuer may
     // be stopped or frozen by now.
     let mut issuer = node
         .session_issuer(issuer_id, false)
         .await
-        .ok_or_else(unknown)?;
+        .ok_or_else(unknown_issuer)?;
     let named = calimero_identity::from_b64url(&claims.key).ok();
     if named.as_deref() != Some(issuer.key.as_slice()) {
         // Signed under another key than the one attested here: the issuer's
@@ -784,10 +1128,33 @@ async fn verify_token(
         issuer = node
             .session_issuer(issuer_id, true)
             .await
-            .ok_or_else(unknown)?;
+            .ok_or_else(unknown_issuer)?;
     }
     let claims = verify_session(&issuer.key, token, now_secs())
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    Ok((claims, issuer))
+}
+
+fn unknown_issuer() -> ApiError {
+    ApiError::unauthenticated(
+        "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
+    )
+}
+
+/// Judged on fresh system state, after [`signed_session`]: the token's issuer
+/// is still a node of this cluster, and its attested release may serve the
+/// account (`SystemState::release_may_serve_account`). Answers the issuer's
+/// release, which each app access checks too (`Principal::within`).
+fn session_issuer_serves(
+    node: &Node,
+    claims: &SessionClaims,
+    issuer: Issuer,
+) -> Result<Option<String>, ApiError> {
+    let issuer_id = claims.node;
+    // A node removed before the request arrived: its sessions stop verifying.
+    if issuer_id != node.config.node_id && !node.is_peer(issuer_id) {
+        return Err(unknown_issuer());
+    }
     let release = issuer
         .release
         .ok_or_else(|| ApiError::unauthenticated("the token's issuing node names no release"))?;
@@ -799,7 +1166,7 @@ async fn verify_token(
             "this session was signed by a node whose release the account's owners have not approved; sign in again",
         ));
     }
-    Ok((claims, Some(release)))
+    Ok(Some(release))
 }
 
 /// This node's release is not one the account's approvers approved: it
@@ -840,8 +1207,7 @@ pub(crate) async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Princi
 
 /// Who may install code or create apps: a passkey session, or an API key
 /// scoped to no app and no method and not read-only. A key handed to one app
-/// (or read-only) must not install bundles or start new apps (Xil's review,
-/// issue 7).
+/// (or read-only) must not install bundles or start new apps.
 async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = signed_in(node, headers).await?;
     p.unbound()?;
@@ -945,35 +1311,64 @@ fn session_token_for(
     Ok((token, expires_at))
 }
 
+/// A session as the API answers it (`#Session`): a sign-up's, a sign-in's, a recovery's and a
+/// refresh's.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SessionAnswer {
+    account_id: String,
+    session_token: String,
+    expires_at: u64,
+    refresh_token: String,
+}
+
 fn session_answer(
     account: &str,
     (token, expires_at): &(String, u64),
     new: &NewSession,
-) -> Json<Value> {
-    Json(json!({
-        "accountId": account,
-        "sessionToken": token,
-        "expiresAt": expires_at,
-        "refreshToken": new.refresh,
-    }))
+) -> Json<SessionAnswer> {
+    Json(SessionAnswer {
+        account_id: account.to_owned(),
+        session_token: token.clone(),
+        expires_at: *expires_at,
+        refresh_token: new.refresh.clone(),
+    })
 }
 
 // ---------------------------------------------------------------- public
 
-async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
+async fn health(State(node): State<Arc<Node>>) -> Json<Health> {
     let s = node.system.status();
-    Json(json!({
-        "ok": true,
-        "node": node.config.node_id,
-        "systemLeader": s.leader,
-        "release": node.config.release,
+    Json(Health {
+        ok: true,
+        node: node.config.node_id,
+        system_leader: s.leader,
+        release: node.config.release.clone(),
         // The newest cluster version this build supports: what the system
         // leader raises the cluster version by (`system::cluster_version`).
-        "clusterVersion": node.advertises(),
+        cluster_version: node.advertises(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
-        "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
-    }))
+        rollback_epoch: node
+            .checkpoints
+            .as_ref()
+            .and_then(|c| c.status())
+            .map(|s| s.epoch),
+    })
+}
+
+/// `GET /health`, in the clear: the node, the system group's leader (`null`: none known), its
+/// release, the newest cluster version it supports and the cluster's rollback epoch (`null`: a
+/// node without a rollback counter).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Health {
+    ok: bool,
+    node: u64,
+    system_leader: Option<u64>,
+    release: String,
+    cluster_version: String,
+    rollback_epoch: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1000,7 +1395,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     let app_hash: [u8; 32] = match (&q.app, &q.app_hash) {
         (Some(app), _) => {
             // In the clear and without a credential, so judged as an anonymous
-            // `GET /apps/{app}` is (#4723): on the cluster's latest system state,
+            // `GET /apps/{app}` is: on the cluster's latest system state,
             // and an app nobody anonymous may reach answers as one that does not
             // exist, so the bound hash never says that a private app exists or
             // which release it runs. Read at once after the round: an unknown id
@@ -1190,7 +1585,7 @@ fn utc_day(secs: u64) -> Option<String> {
 
 // ---------------------------------------------------------------- account recovery
 
-// `docs/specs/account-recovery.md`: a code made with a passkey; signed out,
+// [Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery): a code made with a passkey; signed out,
 // the code and a new passkey start a recovery; within `RECOVERY_DELAY_SECS`
 // (72 h, as an organization's) a passkey the account has cancels it; after,
 // the new passkey finishes it and signs in.
@@ -1199,15 +1594,15 @@ fn utc_day(secs: u64) -> Option<String> {
 
 /// The bundle a create or upgrade names, with the compute component of the release it
 /// comes from: a bundle hash (a raw upload, no compute), or a package release (installed
-/// from the registry first if the fleet lacks it).
+/// from the registry first, for `org`, if the fleet lacks it).
 async fn bundle_named(
     node: &Node,
     bundle: Option<String>,
     package: Option<&str>,
     version: Option<&str>,
     service: Option<&str>,
-    actor: &str,
-    frontend: bool,
+    (actor, org): (&str, Option<&str>),
+    via: Via,
 ) -> Result<(String, Option<String>, Option<PackageRef>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release;
@@ -1221,7 +1616,7 @@ async fn bundle_named(
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
             let (bundle, compute, release) = node
-                .resolve_release_parts(p, version, service, actor, frontend)
+                .resolve_release_parts(p, version, service, (actor, org), via)
                 .await?;
             Ok((bundle, compute, Some(release)))
         }
@@ -1240,10 +1635,11 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
     }
 }
 
-/// The caller, if they may reach `app` with this request kind.
 /// Whether `account` holds a read-only row in the team `app` belongs to
 /// (checked again against the latest system state before saying yes: at or
 /// past `sys_index`, the index the request's round named, else a round's).
+/// The record is read again from that state (`fresh_record`): the one in hand
+/// can predate a change of its access or owner.
 pub async fn read_only_in(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -1253,13 +1649,16 @@ pub async fn read_only_in(
     let Some(a) = account else {
         return false;
     };
-    // Only through teams: a name, or the whole organization, writes.
-    let teams = app.access.teams();
-    if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
-        return false;
-    }
     let check = || {
         node.sys(|s| {
+            let Some(app) = fresh_record(s, app) else {
+                return false;
+            };
+            // Only through teams: a name, or the whole organization, writes.
+            let teams = app.access.teams();
+            if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
+                return false;
+            }
             s.orgs
                 .get(&app.org)
                 .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
@@ -1271,16 +1670,24 @@ pub async fn read_only_in(
     }
 }
 
+/// `app`'s record as `s` holds it. A handler reads the record (`Node::app`) before
+/// `gate` makes the request's read-index round, so on a follower behind, the one in
+/// hand can predate an owner, organization or access change committed through another
+/// node; every check made after `gate` reads it again here. `None`: deleted since.
+/// Regression: `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
+fn fresh_record<'s>(
+    s: &'s SystemState,
+    app: &crate::types::AppRecord,
+) -> Option<&'s crate::types::AppRecord> {
+    s.apps.get(&app.app_id)
+}
+
 /// Whether `account` may reach `app`, judged on the app's record as applied
 /// now. Handlers read the record before `principal` makes its fresh system
 /// read, so the record in hand can predate a grant or revocation committed
 /// through another node; this reads it again.
 fn reaches(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    node.sys(|s| {
-        s.apps
-            .get(&app.app_id)
-            .is_some_and(|now| s.may_reach(now, account))
-    })
+    node.sys(|s| fresh_record(s, app).is_some_and(|now| s.may_reach(now, account)))
 }
 
 async fn gate(
@@ -1309,8 +1716,8 @@ async fn gate(
     let account = p.as_ref().and_then(|p| p.caller.account());
     // Access is judged on the cluster's latest system state (a read index): a
     // removal or revocation committed through another node holds before the
-    // next request, read or write, and a grant is seen at once (Xil's review:
-    // access judged on lagging local state). `principal` already read fresh
+    // next request, read or write, and a grant is seen at once, never judged
+    // on lagging local state. `principal` already read fresh
     // for a request that carries a credential.
     let sys_index = match &p {
         Some(p) => p.sys_index,
@@ -1332,8 +1739,8 @@ async fn gate(
         if write && k.read_only {
             return Err(ApiError::forbidden("read-only API key"));
         }
-        if k.apps.as_ref().is_some_and(|a| !a.contains(&app.app_id)) {
-            return Err(ApiError::forbidden("API key not scoped to this app"));
+        if !key_scoped_to(k, &app.app_id) {
+            return Err(key_not_scoped());
         }
         if k.methods
             .as_ref()
@@ -1354,8 +1761,10 @@ async fn gate(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = Confirm))]
 pub(crate) struct ConfirmBody {
     challenge_id: String,
+    #[cfg_attr(test, schema(value_type = openapi::generated::Assertion))]
     assertion: Assertion,
 }
 
@@ -1457,6 +1866,7 @@ async fn step_up(
                 expires: now_secs() + CHALLENGE_TTL,
                 carry,
             },
+            None,
         )?;
         let creds: Vec<String> = node.sys(|s| {
             s.accounts
@@ -1541,12 +1951,27 @@ async fn step_up(
     })
 }
 
+/// For a stream `gate` let open: whether `p` would still be admitted to `app_id`
+/// (`Principal::admitted_on`), judged on fresh system state: a read-index round begun
+/// now, applied here ([`Node::sys_caught_up`]), so it holds every system write committed
+/// before what the stream is about to send, a removal or revocation committed through
+/// another node included. False ends the stream, as does a replica that cannot catch up in
+/// `Config::read_wait`; the subscriber opens it again through `gate`. Every stream judges
+/// each batch it sends with it (`local_events` with the same round, the presence stream,
+/// a pipeline run's events, an event stream proxied from another replica), never only
+/// when it opened. Regressions: `a_removed_member_stops_receiving_presence`,
+/// `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+/// `a_removed_member_stops_receiving_a_runs_events`.
+pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> bool {
+    node.sys_caught_up().await && node.sys(|s| p.admitted_on(s, app_id, now_secs()))
+}
+
 /// How many events that reached this replica together one freshness round
-/// ([`Node::sys_caught_up`]) in [`local_events`] covers.
+/// ([`Node::sys_caught_up`]) in `local_events` covers.
 pub const MAX_EVENT_BATCH: usize = 256;
 
 /// The app's events from `from`, then live. A component's event carries its
-/// audience (R9) and goes to `subscriber` (`None`: anonymous) only if the system
+/// audience and goes to `subscriber` (`None`: anonymous) only if the system
 /// state says it still reaches the app and is in the audience, so a member removed
 /// from the org or the team stops receiving at once. That state is fresh for each
 /// event: a read-index round begun after the event reached this replica, applied
@@ -1556,14 +1981,18 @@ pub const MAX_EVENT_BATCH: usize = 256;
 /// covers the backlog, and one each batch of live events that arrived together (at
 /// most [`MAX_EVENT_BATCH`]). When this replica cannot catch up in
 /// `Config::read_wait`, the stream ends: the subscriber resumes from the last id it
-/// got, judged afresh. An event of an app on wasmer has no audience and goes out as
-/// before. Regression:
-/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`.
+/// got, judged afresh. With `principal` (a stream opened here, not one a peer asks for:
+/// that peer judges its own), the same state judges the credential that opened it
+/// ([`still_admitted`]), so a revoked API key or an ended session ends it. An event of an
+/// app on wasmer has no audience and goes out as before. Regressions:
+/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`,
+/// `a_revoked_key_or_session_stops_its_event_and_presence_streams`.
 fn local_events(
     node: &Arc<Node>,
     app_id: &str,
     from: u64,
     subscriber: Option<String>,
+    principal: Option<Principal>,
 ) -> Option<impl Stream<Item = Result<Event, Infallible>>> {
     let g = node.hosted(app_id)?;
     let (backlog, rx) = g.read_local(|m, _| {
@@ -1582,8 +2011,9 @@ fn local_events(
     let (node, app) = (Arc::clone(node), app_id.to_owned());
     let judged = batches.then(move |batch| {
         let (node, app, subscriber) = (Arc::clone(&node), app.clone(), subscriber.clone());
+        let principal = principal.clone();
         async move {
-            if batch.iter().all(|e| e.audience.is_none()) {
+            if principal.is_none() && batch.iter().all(|e| e.audience.is_none()) {
                 return Some(batch);
             }
             // Every event of the batch is here already: a round begun now names an
@@ -1591,17 +2021,25 @@ fn local_events(
             if !node.sys_caught_up().await {
                 return None;
             }
-            Some(node.sys(|s| {
-                batch
-                    .into_iter()
-                    .filter(|e| match &e.audience {
-                        None => true,
-                        Some(audience) => s.apps.get(&app).is_some_and(|a| {
-                            s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
-                        }),
-                    })
-                    .collect::<Vec<_>>()
-            }))
+            node.sys(|s| {
+                if principal
+                    .as_ref()
+                    .is_some_and(|p| !p.admitted_on(s, &app, now_secs()))
+                {
+                    return None;
+                }
+                Some(
+                    batch
+                        .into_iter()
+                        .filter(|e| match &e.audience {
+                            None => true,
+                            Some(audience) => s.apps.get(&app).is_some_and(|a| {
+                                s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
+                            }),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
         }
     });
     let stream = judged
@@ -1634,8 +2072,10 @@ struct MetadataBody {
 
 /// A body that carries only a passkey confirmation (after a `412`).
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(utoipa::ToSchema), schema(as = ConfirmOnly))]
 struct ConfirmOnlyBody {
     #[serde(default)]
+    #[cfg_attr(test, schema(nullable = false))]
     confirm: Option<ConfirmBody>,
 }
 
@@ -1705,12 +2145,16 @@ fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
 
 /// Whether `account` may upload and list the files of `app`: its owner and the members of its
 /// organization (not guests), even where the app is public; an organization's app's owner only
-/// while a member ([`crate::system::SystemState::owner_acts`]).
+/// while a member ([`crate::system::SystemState::owner_acts`]). Judged on the record as `s`
+/// holds it ([`fresh_record`]), not the one in hand.
 fn may_handle_files(
     s: &crate::system::SystemState,
     app: &crate::types::AppRecord,
     account: Option<&str>,
 ) -> bool {
+    let Some(app) = fresh_record(s, app) else {
+        return false;
+    };
     account.is_some_and(|a| {
         s.owner_acts(app, a)
             || s.orgs
@@ -1721,9 +2165,12 @@ fn may_handle_files(
 
 /// Whether `account` may manage `app`'s data (its owner, of an organization's
 /// app while a member of it, or an admin of its organization): delete its
-/// blobs ([`crate::system::SystemState::manages_app`]).
+/// blobs ([`crate::system::SystemState::manages_app`]). Judged on the record as applied
+/// now ([`fresh_record`]), not the one in hand.
 fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    account.is_some_and(|a| node.sys(|s| s.manages_app(app, a)))
+    account.is_some_and(|a| {
+        node.sys(|s| fresh_record(s, app).is_some_and(|app| s.manages_app(app, a)))
+    })
 }
 
 // ---------------------------------------------------------------- ops (mdma)
@@ -1994,7 +2441,7 @@ async fn scope_report(
     org: Option<&str>,
     q: &PageQuery,
     limit: usize,
-) -> Value {
+) -> AppsReport {
     // A peer is attested once and its release kept (`Node::release_of_node`),
     // so this contacts a node only the first time, at most
     // `PLACEMENT_RELEASE_WAIT` each.
@@ -2017,9 +2464,7 @@ async fn scope_report(
             in_scope
                 && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account, owner_approves))
                 && bound.is_none_or(|pkg| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
+                    report::release_of_app(s, a, Reader::Account(account))
                         .is_some_and(|r| r.package == pkg)
                 })
                 && key_apps.is_none_or(|apps| apps.contains(&a.app_id))
@@ -2043,25 +2488,55 @@ async fn scope_report(
                 .and_then(|o| s.approved_for(o)),
         };
         let scope = match org {
-            Some(o) if s.orgs.get(o).is_some_and(|o| s.acts_personal(o)) => {
-                json!({ "kind": "org", "org": o, "personal": true })
-            }
-            Some(o) => json!({ "kind": "org", "org": o }),
-            None => json!({ "kind": "account" }),
+            Some(o) => AppScope::Org {
+                org: o.to_owned(),
+                personal: s
+                    .orgs
+                    .get(o)
+                    .is_some_and(|o| s.acts_personal(o))
+                    .then_some(true),
+            },
+            None => AppScope::Account,
         };
-        json!({
-            "scope": scope,
-            "governance": s.governance(),
-            "approvedReleases": report::approved_releases(approved),
-            "clusterReleases": report::cluster_releases(&releases, approved),
-            "apps": apps,
-            "next": next,
-        })
+        AppsReport {
+            scope,
+            governance: s.governance(),
+            approved_releases: report::approved_releases(approved),
+            cluster_releases: report::cluster_releases(&releases, approved),
+            apps,
+            next,
+        }
     });
-    if let Some(apps) = out["apps"].as_array_mut() {
-        with_last_writes(node, apps).await;
-    }
+    with_last_writes(node, &mut out.apps).await;
     out
+}
+
+/// `GET /orgs/{org}/apps` and `GET /auth/apps`: a page of one approval scope's apps, with the
+/// scope's approved releases and the releases the cluster's nodes run.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppsReport {
+    scope: AppScope,
+    governance: crate::system::Governance,
+    approved_releases: Option<Vec<String>>,
+    cluster_releases: Vec<report::ClusterRelease>,
+    apps: Vec<Value>,
+    next: Option<String>,
+}
+
+/// The scope whose approvals cover an app: an organization (`personal: true` for its owner's
+/// personal one), or the account's own apps.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum AppScope {
+    /// An organization's apps.
+    Org {
+        org: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personal: Option<bool>,
+    },
+    /// The account's own apps, wherever they are.
+    Account,
 }
 
 /// `409`: a write that only this release, or a newer one, understands, refused while
@@ -2316,11 +2791,47 @@ fn typed_id<const N: usize>() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use calimero_sealed::SealedSession;
 
     use super::{
-        admit_pending, typed_id, Pending, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
+        admit_pending, api_key_shaped, typed_id, Ceremonies, Pending, UnknownApiKeys,
+        MAX_CEREMONIES_PER_SESSION, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
+        MAX_UNKNOWN_API_KEYS,
     };
+
+    /// Every key the node makes passes the shape check that refuses a token
+    /// before its system read; nothing else of the `cal_` prefix does.
+    #[test]
+    fn every_made_api_key_is_shaped_and_junk_is_not() {
+        for _ in 0..1000 {
+            let (key, _hash) = calimero_identity::new_api_key();
+            assert!(api_key_shaped(&key), "{key}");
+        }
+        let made = calimero_identity::new_api_key().0;
+        for junk in [
+            "cal_",
+            "cal_short",
+            &made[..made.len() - 1],
+            &format!("{made}A"),
+            &format!("cal_{}", "!".repeat(43)),
+            &format!("cax_{}", &made[4..]),
+        ] {
+            assert!(!api_key_shaped(junk), "{junk}");
+        }
+    }
+
+    /// The missing-key memory holds what it was given and stops growing at
+    /// its bound rather than evicting a fresh entry.
+    #[test]
+    fn unknown_api_keys_are_bounded() {
+        let keys = UnknownApiKeys::default();
+        assert!(!keys.holds("h0"));
+        for i in 0..MAX_UNKNOWN_API_KEYS + 10 {
+            keys.add(format!("h{i}"));
+        }
+        assert!(keys.holds("h0"));
+        assert!(!keys.holds(&format!("h{MAX_UNKNOWN_API_KEYS}")));
+    }
 
     fn sign_up(expires: u64) -> Pending {
         Pending::Register {
@@ -2343,38 +2854,116 @@ mod tests {
         }
     }
 
-    fn put(c: &mut HashMap<String, Pending>, p: Pending, now: u64) -> Result<(), u16> {
-        admit_pending(c, &p, now).map_err(|e| e.status)?;
-        let _prev = c.insert(format!("1.{}", c.len()), p);
-        Ok(())
+    /// The sealed session numbered `n`.
+    fn session(n: u64) -> Option<SealedSession> {
+        let mut id = [0; 16];
+        id[..8].copy_from_slice(&n.to_be_bytes());
+        Some(SealedSession(id))
     }
 
-    /// Anonymous ceremonies have their own pool: filling it refuses the next
-    /// sign-in, but an account's step-up and passkey add still begin.
+    /// Hold `p`, begun in `from`, under the id it answers.
+    fn put(
+        c: &mut Ceremonies,
+        p: Pending,
+        from: Option<SealedSession>,
+        now: u64,
+    ) -> Result<String, u16> {
+        admit_pending(c, &p, from, now).map_err(|e| e.status)?;
+        let id = format!("1.{}", c.next);
+        c.insert(id.clone(), p, from);
+        Ok(id)
+    }
+
+    fn anonymous(c: &Ceremonies) -> usize {
+        let held = c
+            .held
+            .values()
+            .filter(|h| h.pending.account().is_none())
+            .count();
+        assert_eq!(held, c.anonymous, "the anonymous count is the store's");
+        held
+    }
+
+    fn contains(c: &Ceremonies, id: &str) -> bool {
+        c.get(id).is_some()
+    }
+
+    /// Anonymous ceremonies have their own pool: filling it never blocks an
+    /// account's step-up or passkey add, and expired ones free it.
     #[test]
     fn a_full_anonymous_pool_does_not_block_an_accounts_step_up() {
-        let mut c = HashMap::new();
-        for _ in 0..MAX_PENDING_CHALLENGES {
-            assert_eq!(put(&mut c, sign_up(100), 0), Ok(()));
+        let mut c = Ceremonies::default();
+        for n in 0..MAX_PENDING_CHALLENGES as u64 {
+            assert!(put(&mut c, sign_up(100), session(n), 0).is_ok());
         }
-        assert_eq!(put(&mut c, sign_up(100), 0), Err(429));
-        assert_eq!(put(&mut c, step_up("alice", 100), 0), Ok(()));
+        assert!(put(&mut c, step_up("alice", 100), None, 0).is_ok());
         // Expired ones free the pool.
-        assert_eq!(put(&mut c, sign_up(200), 100), Ok(()));
+        assert!(put(&mut c, sign_up(200), session(0), 100).is_ok());
+        assert_eq!(anonymous(&c), 1);
+    }
+
+    /// One session's begins past its share displace its own oldest, never
+    /// another session's ceremony.
+    #[test]
+    fn one_session_only_displaces_its_own_ceremonies() {
+        let mut c = Ceremonies::default();
+        let alice = put(&mut c, sign_up(100), session(1), 0).unwrap();
+        let flood: Vec<String> = (0..MAX_PENDING_CHALLENGES)
+            .map(|_| put(&mut c, sign_up(100), session(2), 0).unwrap())
+            .collect();
+        assert!(contains(&c, &alice), "alice's sign-in is still open");
+        assert_eq!(anonymous(&c), 1 + MAX_CEREMONIES_PER_SESSION);
+        // The flood keeps its newest.
+        let kept = &flood[flood.len() - MAX_CEREMONIES_PER_SESSION..];
+        assert!(kept.iter().all(|id| contains(&c, id)));
+        assert!(!contains(&c, &flood[0]));
+    }
+
+    /// A flood spread over many sessions fills the pool, and then each new
+    /// begin displaces the oldest of the session holding the most, oldest
+    /// first among equals: a ceremony begun after the flood filled the pool
+    /// outlives the flood's next `MAX_PENDING_CHALLENGES - 1` begins.
+    #[test]
+    fn a_full_pool_displaces_the_biggest_holder_then_the_oldest() {
+        let mut c = Ceremonies::default();
+        // Two ceremonies per flooding session fill the pool.
+        let per = 2;
+        let sessions = (MAX_PENDING_CHALLENGES / per) as u64;
+        for n in 0..sessions {
+            for _ in 0..per {
+                assert!(put(&mut c, sign_up(100), session(100 + n), 0).is_ok());
+            }
+        }
+        assert_eq!(anonymous(&c), MAX_PENDING_CHALLENGES);
+        // Alice holds one: a flooding session holding two loses its oldest.
+        let alice = put(&mut c, sign_up(100), session(1), 0).unwrap();
+        assert_eq!(anonymous(&c), MAX_PENDING_CHALLENGES);
+        assert!(contains(&c, &alice));
+        // Then a fresh session per begin, as the handshake limit allows:
+        // the oldest ceremonies go first, never alice's while older ones remain.
+        for n in 0..MAX_PENDING_CHALLENGES as u64 - 1 {
+            assert!(put(&mut c, sign_up(100), session(1_000_000 + n), 0).is_ok());
+            assert!(contains(&c, &alice), "after {n} more begins");
+        }
+        assert_eq!(anonymous(&c), MAX_PENDING_CHALLENGES);
+        // Now the oldest, hers goes next.
+        assert!(put(&mut c, sign_up(100), session(2_000_000), 0).is_ok());
+        assert!(!contains(&c, &alice));
     }
 
     /// One account's step-ups are capped, and the cap is its own.
     #[test]
     fn one_account_cannot_fill_the_accounts_pool() {
-        let mut c = HashMap::new();
+        let mut c = Ceremonies::default();
         for _ in 0..MAX_CHALLENGES_PER_ACCOUNT {
-            assert_eq!(put(&mut c, step_up("mallory", 100), 0), Ok(()));
+            assert!(put(&mut c, step_up("mallory", 100), None, 0).is_ok());
         }
-        assert_eq!(put(&mut c, step_up("mallory", 100), 0), Err(429));
-        assert_eq!(put(&mut c, step_up("alice", 100), 0), Ok(()));
-        assert_eq!(put(&mut c, sign_up(100), 0), Ok(()));
+        assert_eq!(put(&mut c, step_up("mallory", 100), None, 0), Err(429));
+        assert!(put(&mut c, step_up("alice", 100), None, 0).is_ok());
+        assert!(put(&mut c, sign_up(100), session(1), 0).is_ok());
     }
 
+    /// An id people type never starts with `-`, which `meroctl` would read as a flag.
     #[test]
     fn a_typed_id_never_starts_with_a_dash() {
         for _ in 0..10_000 {

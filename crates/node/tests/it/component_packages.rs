@@ -10,14 +10,15 @@
 use crate::common;
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use calimero_client::types::ViewsRequestConsistency;
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::{Components, Executor};
 use common::{
-    mpk_named_service, mpk_needing, mpk_parts, mpk_with, mpk_with_pipelines, signed_up, typed,
-    wire, Cluster, PUBLISHER,
+    home_org, mpk_named_service, mpk_needing, mpk_parts, mpk_with, mpk_with_pipelines, signed_up,
+    typed, wire, Cluster, PUBLISHER,
 };
 use serde_json::{json, Value};
 
@@ -148,7 +149,10 @@ async fn rooms_installs_and_runs_as_an_uploaded_signed_package() {
     assert!(e.to_string().starts_with("403"), "{e}");
     let installed = owner
         .packages()
-        .upload(mpk("com.test.rooms", "1.0.0", &rooms, &publisher))
+        .upload(
+            mpk("com.test.rooms", "1.0.0", &rooms, &publisher),
+            Some(&home_org(&owner).await),
+        )
         .await
         .map(wire)
         .unwrap();
@@ -173,7 +177,7 @@ async fn rooms_installs_and_runs_from_the_registry() {
     let (owner, _pk) = signed_up(&c, 0, "owner").await;
     let installed = owner
         .packages()
-        .install("com.test.rooms", "1.0.0")
+        .install("com.test.rooms", "1.0.0", None)
         .await
         .map(wire)
         .unwrap();
@@ -209,7 +213,10 @@ async fn install(owner: &Client, version: &str, wasm: &[u8], compute: Option<&[u
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
         .packages()
-        .upload(mpk_with("com.test.compute", version, wasm, compute, &key))
+        .upload(
+            mpk_with("com.test.compute", version, wasm, compute, &key),
+            Some(&home_org(owner).await),
+        )
         .await
         .map(wire)
         .unwrap()
@@ -219,13 +226,10 @@ async fn refused(owner: &Client, wasm: &[u8], compute: &[u8]) -> calimero_client
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
         .packages()
-        .upload(mpk_with(
-            "com.test.compute",
-            "1.0.0",
-            wasm,
-            Some(compute),
-            &key,
-        ))
+        .upload(
+            mpk_with("com.test.compute", "1.0.0", wasm, Some(compute), &key),
+            Some(&home_org(owner).await),
+        )
         .await
         .unwrap_err()
 }
@@ -277,6 +281,54 @@ async fn a_release_with_both_components_records_both_and_its_app_runs_calls() {
         .await
         .unwrap();
     assert_eq!(done.result, json!("0"));
+}
+
+/// Sets `path`'s modification time two hours back, past the component cache's sweep grace.
+fn age(path: &std::path::Path) {
+    let then = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(then)
+        .unwrap();
+}
+
+/// A node's component cache keeps what its apps run and deletes the artifacts of components
+/// no app uses any more, so an upgrade or a deleted app leaves no compiled code behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_component_cache_keeps_only_what_apps_run() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let both = common::components("fixture-compute");
+    install(&owner, "1.0.0", &both.app, None).await;
+    let _app = create(&owner, "1.0.0").await;
+
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let dir = node.config.data_dir.join("components");
+    let main_hash = sha256_hex(&both.app);
+    let names = || -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let kept = names();
+    assert_eq!(kept.len(), 2, "the app's artifact and its .mac: {kept:?}");
+    assert!(kept.iter().all(|n| n.starts_with(&main_hash)), "{kept:?}");
+    // A component no app runs any more, compiled by this wasmtime and config.
+    let gone = "ab".repeat(32);
+    for name in &kept {
+        std::fs::write(dir.join(name.replace(&main_hash, &gone)), b"old").unwrap();
+    }
+    for name in names() {
+        age(&dir.join(name));
+    }
+
+    let swept = node.sweep_component_cache();
+    assert_eq!(swept.files, 2, "{swept:?}");
+    assert_eq!(names(), kept);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -354,7 +406,10 @@ async fn a_compute_component_cannot_be_a_services_main_component() {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let e = owner
         .packages()
-        .upload(mpk("com.test.compute", "1.0.0", &job, &key))
+        .upload(
+            mpk("com.test.compute", "1.0.0", &job, &key),
+            Some(&home_org(&owner).await),
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_BUNDLE"), "{e}");
@@ -524,29 +579,17 @@ async fn install_compute_only(
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
         .packages()
-        .upload(mpk_parts(
-            "com.test.job",
-            version,
-            None,
-            Some(compute),
-            "0.1.0",
-            &key,
-        ))
+        .upload(
+            mpk_parts("com.test.job", version, None, Some(compute), "0.1.0", &key),
+            Some(&home_org(owner).await),
+        )
         .await
         .map(wire)
         .map_err(Box::new)
 }
 
 async fn create_compute_only(owner: &Client, version: &str) -> String {
-    let org = owner
-        .orgs()
-        .create("Acme", None, None)
-        .await
-        .map(wire)
-        .unwrap()["orgId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let org = home_org(owner).await;
     let created = owner
         .apps()
         .create(typed(
@@ -626,14 +669,10 @@ async fn a_cards_service_is_the_sole_one_or_the_one_named() {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _ = owner
         .packages()
-        .upload(mpk_named_service(
-            "com.test.named",
-            "1.0.0",
-            &both.app,
-            &job,
-            &[],
-            &key,
-        ))
+        .upload(
+            mpk_named_service("com.test.named", "1.0.0", &both.app, &job, &[], &key),
+            Some(&home_org(&owner).await),
+        )
         .await
         .unwrap();
 
@@ -785,15 +824,12 @@ async fn switching_components_on_upgrade_is_refused() {
     let job = both.compute.clone().unwrap();
     let job2 = patched(&job, |a| a["build"] = json!(2));
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let org = home_org(&owner).await;
     let publish = |version: &str, wasm: Option<&[u8]>, compute: &[u8]| {
-        owner.packages().upload(mpk_parts(
-            "com.test.job",
-            version,
-            wasm,
-            Some(compute),
-            "0.1.0",
-            &key,
-        ))
+        owner.packages().upload(
+            mpk_parts("com.test.job", version, wasm, Some(compute), "0.1.0", &key),
+            Some(&org),
+        )
     };
     let _ = publish("1.0.0", None, &job).await.unwrap();
     let _ = publish("1.1.0", None, &job2).await.unwrap();
@@ -867,14 +903,10 @@ async fn install_with_pipelines(
         .unwrap();
     owner
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "1.0.0",
-            None,
-            Some(&job),
-            pipelines,
-            &key,
-        ))
+        .upload(
+            mpk_with_pipelines("com.test.job", "1.0.0", None, Some(&job), pipelines, &key),
+            Some(&home_org(owner).await),
+        )
         .await
         .map(wire)
         .map_err(Box::new)
@@ -923,6 +955,58 @@ async fn a_compute_only_package_with_a_pipeline_installs_and_lists_it() {
         .await
         .map(wire);
     assert_eq!(none.unwrap_err().code(), Some("NOT_FOUND"));
+}
+
+/// A compute component's methods and caps are read from its ABI, never by compiling it: a
+/// release with pipelines compiles its compute component once, at install, on the node that
+/// verified it, and checking a pipeline against it on any node (as a start, a module lookup
+/// or the run driver does) compiles nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn reading_a_compute_components_caps_compiles_nothing() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let compiles = || -> Vec<u64> {
+        c.nodes
+            .iter()
+            .flatten()
+            .map(|n| n.node.compute_engine().compiles())
+            .collect()
+    };
+    install_with_pipelines(&owner, &[("pipelines/p1.yaml", PIPELINE)])
+        .await
+        .unwrap();
+    assert_eq!(compiles(), [1, 0, 0], "the install's verification");
+    for n in c.nodes.iter().flatten() {
+        let started = Instant::now();
+        let release = loop {
+            let found = n.node.sys(|s| {
+                s.packages
+                    .get("com.test.job")
+                    .and_then(|p| p.versions.get("1.0.0"))
+                    .cloned()
+            });
+            if let Some(release) = found {
+                break release;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "release not replicated"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let checked = n
+            .node
+            .validate_pipeline(
+                PIPELINE.as_bytes(),
+                Some(("com.test.job", &release)),
+                "owner",
+            )
+            .await
+            .unwrap();
+        let checked = serde_json::to_value(checked).unwrap();
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["worstCaseFuel"], "20001000000", "{checked}");
+    }
+    assert_eq!(compiles(), [1, 0, 0], "no compile to read the caps");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -986,14 +1070,17 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_one_compute_
     let both = common::components("fixture-compute");
     let e = owner
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "1.0.0",
-            Some(&both.app),
-            None,
-            &[("pipelines/p1.yaml", PIPELINE)],
-            &key,
-        ))
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "1.0.0",
+                Some(&both.app),
+                None,
+                &[("pipelines/p1.yaml", PIPELINE)],
+                &key,
+            ),
+            Some(&home_org(&owner).await),
+        )
         .await
         .unwrap_err();
     assert_eq!(bad_pipeline(&e)[0]["code"], "NO_COMPUTE");
@@ -1006,7 +1093,11 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_one_compute_
         &[("pipelines/p1.yaml", PIPELINE)],
         &key,
     );
-    let e = owner.packages().upload(named).await.unwrap_err();
+    let e = owner
+        .packages()
+        .upload(named, Some(&home_org(&owner).await))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("PIPELINES_NEED_ONE_SERVICE"), "{e}");
 }
 
@@ -1033,14 +1124,17 @@ async fn a_package_with_pipelines_waits_until_every_node_runs_this_release() {
     };
     let e = owner
         .packages()
-        .upload(with_app(&[("pipelines/p1.yaml", PIPELINE)]))
+        .upload(
+            with_app(&[("pipelines/p1.yaml", PIPELINE)]),
+            Some(&home_org(&owner).await),
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CLUSTER_NOT_UPGRADED"), "{e}");
     // A release without pipelines installs as before.
     owner
         .packages()
-        .upload(with_app(&[]))
+        .upload(with_app(&[]), Some(&home_org(&owner).await))
         .await
         .map(wire)
         .unwrap();
@@ -1067,14 +1161,17 @@ async fn install_module(owner: &Client, version: &str, build: u64) -> Value {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
         .packages()
-        .upload(mpk_parts(
-            MODULE_PACKAGE,
-            version,
-            None,
-            Some(&module_component(build)),
-            "0.1.0",
-            &key,
-        ))
+        .upload(
+            mpk_parts(
+                MODULE_PACKAGE,
+                version,
+                None,
+                Some(&module_component(build)),
+                "0.1.0",
+                &key,
+            ),
+            Some(&home_org(owner).await),
+        )
         .await
         .map(wire)
         .unwrap()
@@ -1100,14 +1197,17 @@ async fn install_user(
         .unwrap();
     owner
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            version,
-            None,
-            Some(&job),
-            &[("pipelines/p1.yaml", source)],
-            &key,
-        ))
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                version,
+                None,
+                Some(&job),
+                &[("pipelines/p1.yaml", source)],
+                &key,
+            ),
+            Some(&home_org(owner).await),
+        )
         .await
         .map(wire)
         .map_err(Box::new)
@@ -1179,13 +1279,10 @@ async fn a_module_the_installer_cannot_see_is_unknown() {
     let app = common::components("fixture-compute");
     let _installed = owner
         .packages()
-        .upload(mpk_with(
-            "com.test.noncompute",
-            "1.0.0",
-            &app.app,
-            None,
-            &key,
-        ))
+        .upload(
+            mpk_with("com.test.noncompute", "1.0.0", &app.app, None, &key),
+            Some(&home_org(&owner).await),
+        )
         .await
         .unwrap();
     let e = install_user(
@@ -1196,6 +1293,81 @@ async fn a_module_the_installer_cannot_see_is_unknown() {
     .await
     .unwrap_err();
     unknown(&e);
+}
+
+/// A pipeline of another signer's package pins a private module only into a release private
+/// to the module's own organizations: Mia, a member of the victim's organization V and of
+/// Acme, installs the attacker's package naming V's private module for Acme, and it is
+/// answered as a module that is not installed; installed for V it pins the module, and a
+/// later install of that release for Acme is refused the same way, leaving it V's alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_private_module_is_pinned_only_into_a_release_private_to_its_organizations() {
+    let (c, vic, mut vic_pk) = compute_cluster().await;
+    let (mia, _m) = signed_up(&c, 1, "mia").await;
+    let (acme_owner, mut acme_pk) = signed_up(&c, 2, "acme").await;
+    let victim = home_org(&vic).await;
+    let acme = home_org(&acme_owner).await;
+    let mia_id = wire(mia.auth().me().await.unwrap())["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (by, pk, org) in [
+        (&vic, &mut vic_pk, &victim),
+        (&acme_owner, &mut acme_pk, &acme),
+    ] {
+        let _ = by
+            .orgs()
+            .set_member(
+                org,
+                &mia_id,
+                calimero_client::types::OrgRole::Member,
+                Some(pk),
+            )
+            .await
+            .unwrap();
+    }
+    install_module(&vic, "1.0.0", 1).await;
+    let attacker = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
+    let reference = format!("{MODULE_PACKAGE}@1.0.0");
+    let q = mpk_with_pipelines(
+        "com.test.job",
+        "1.0.0",
+        None,
+        Some(&job),
+        &[("pipelines/p1.yaml", &module_pipeline(&reference, ""))],
+        &attacker,
+    );
+    let unknown = |e: &calimero_client::Error| {
+        let details = bad_pipeline(e);
+        assert_eq!(details.len(), 1, "{details:?}");
+        assert_eq!(details[0]["path"], "steps.first.module");
+        assert_eq!(details[0]["code"], "UNKNOWN_MODULE");
+    };
+
+    let e = mia
+        .packages()
+        .upload(q.clone(), Some(&acme))
+        .await
+        .unwrap_err();
+    unknown(&e);
+    let _ok = mia
+        .packages()
+        .upload(q.clone(), Some(&victim))
+        .await
+        .unwrap();
+    assert_eq!(
+        pins(&mia, "1.0.0").await[&reference]["package"],
+        json!(MODULE_PACKAGE)
+    );
+    let e = mia.packages().upload(q, Some(&acme)).await.unwrap_err();
+    unknown(&e);
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let orgs = node.sys(|s| s.packages["com.test.job"].versions["1.0.0"].orgs.clone());
+    assert_eq!(orgs, std::collections::BTreeSet::from([victim]));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1307,14 +1479,10 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
     ] {
         let _installed = owner
             .packages()
-            .upload(mpk_needing(
-                "com.test.runtime",
-                version,
-                &wasm,
-                None,
-                needs,
-                &key,
-            ))
+            .upload(
+                mpk_needing("com.test.runtime", version, &wasm, None, needs, &key),
+                Some(&home_org(&owner).await),
+            )
             .await
             .unwrap();
     }

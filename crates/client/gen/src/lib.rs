@@ -1,14 +1,14 @@
 //! Generates `calimero-client`'s route layer (`crates/client/src/generated/`)
 //! from the node's OpenAPI document (`docs/public/openapi.json`), the way
-//! mero-js (`scripts/gen-methods.mjs`), calimero-client-py
-//! (`scripts/generate_openapi_client.py`) and the Kotlin SDK
-//! (`codegen/facade.py`) generate theirs: one method per operation, grouped by
+//! mero-js (`sdks/clients/mero-js/scripts/gen-methods.mjs`), calimero-client-py
+//! (`sdks/clients/mero-py/scripts/generate_openapi_client.py`) and the Kotlin
+//! SDK (`sdks/clients/mero-kotlin/codegen/facade.py`) generate theirs: one method per operation, grouped by
 //! `x-calimero-group`, with the same names in snake case.
 //!
 //! - `types.rs`: the components and the operations' inline bodies and answers
-//!   as Rust types ([`types`]);
+//!   as Rust types (`types`);
 //! - `routes.rs`: one async method per operation on its group's accessor
-//!   (`client.orgs()`), sending through the client's `Transport` ([`routes`]).
+//!   (`client.orgs()`), sending through the client's `Transport` (`routes`).
 //!
 //! The output is formatted with `rustfmt` (the repository's `rustfmt.toml`)
 //! and checked in, so building the client needs no generator. Its test
@@ -16,6 +16,8 @@
 //! differs: a change to a route regenerates the document
 //! (`UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi`) and then this
 //! (`cargo run -p calimero-client-gen`), in the same change.
+//!
+//! Spec: [Node API reference (OpenAPI)](https://calimero-network.github.io/core/operate/api-reference/).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

@@ -195,9 +195,10 @@ final class TeeNodeReleaseTests: XCTestCase {
                 release: {
                     asked.increment()
                     return signed
-                }, profile: "locked-read-only", minReleaseVersion: "2.3.86", now: { TeeFixture.at }))
+                }, profile: "locked-read-only", minReleaseVersion: "2.3.86", dcapVerify: TeeFixture.genuine,
+                now: { TeeFixture.at }))
         XCTAssertTrue(verifier.includeCollateral)
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let refusal = await teeAsyncThrownMessage { _ = try await verifier.verify(args) }
         assertTeeRefusal(refusal, "are not an image this verifier trusts")
         XCTAssertEqual(asked.count, 1)

@@ -29,7 +29,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
+ * An app as `GET /apps` lists it: `package` and `version` name the release it runs where the caller may read it (`null` otherwise, and for a raw upload); `?package=` keeps the instances whose row names that package, `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
  *
  * @param appId 
  * @param name 
@@ -54,7 +54,7 @@ data class AppEntry (
     val owner: kotlin.String,
 
     @SerialName(value = "org")
-    val org: kotlin.String?,
+    val org: kotlin.String,
 
     @SerialName(value = "bundle")
     val bundle: kotlin.String,
@@ -66,7 +66,7 @@ data class AppEntry (
     val version: kotlin.String?,
 
     @SerialName(value = "deployment")
-    val deployment: kotlin.String? = null
+    val deployment: kotlin.String?
 
 ) {
 

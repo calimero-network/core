@@ -1,6 +1,5 @@
-//! The consent page's install and update pages (C10 of the "Apps, private services and
-//! owner-approved updates" design): what an update is in plain words, the install sheet,
-//! a change of update policy, and the node's updates page.
+//! The consent page's install and update pages: what an update is in plain words, the
+//! install sheet, a change of update policy, and the node's updates page.
 //!
 //! - **Words** ([`reason_words`], [`update_summary`], [`policy_words`]): the classifier's
 //!   verdict (`calimero_bundle::update`) and an update policy as a person reads them. The
@@ -40,7 +39,7 @@ use super::{hosts, phrase, release_facts, Action, UpgradeSubject};
 use crate::api::Principal;
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::PackageRef;
+use crate::system::{PackageRef, PackageVersion, Visibility};
 use crate::types::{now_secs, AppRecord, AutoApply, UpgradePolicy};
 
 /// The most apps the updates page reads across the person's organizations: each one with
@@ -101,6 +100,15 @@ pub fn reason_words(r: &Reason) -> String {
             of(member),
             methods.join(", ")
         ),
+        Reason::SecretBindingChanged {
+            member,
+            before,
+            after,
+            ..
+        } => match before {
+            None => format!("{}Newly {after}.", of(member)),
+            Some(before) => format!("{}Now {after}; it {before}.", of(member)),
+        },
         Reason::Unclassified {
             member,
             package,
@@ -138,8 +146,9 @@ pub fn policy_words(policy: &UpgradePolicy, source: &str) -> Vec<String> {
     let mut out = vec![match policy.auto_apply {
         AutoApply::Never => "You approve each update. Nothing changes until you do.".to_owned(),
         AutoApply::NoDestinations => format!(
-            "A green update that keeps all data in Calimero and removes no method applies on \
-             its own after a {} h hold; every other update waits for an approval.",
+            "A green update that keeps all data in Calimero, removes no method and moves none \
+             of the apps it created applies on its own after a {} h hold; every other update \
+             waits for an approval.",
             policy.hold_hours
         ),
     }];
@@ -223,8 +232,13 @@ pub(super) fn approval_step(
 }
 
 /// The sheet's `hold`: said only of an update the automatic policy would apply on its own.
-fn hold_words(policy: &UpgradePolicy, c: Option<&Classification>) -> Option<String> {
+fn hold_words(
+    policy: &UpgradePolicy,
+    c: Option<&Classification>,
+    members_move: bool,
+) -> Option<String> {
     let on_its_own = policy.auto_apply == AutoApply::NoDestinations
+        && !members_move
         && c.is_some_and(|c| {
             crate::egress::moves_on_its_own(c)
                 && c.egress.before.is_empty()
@@ -245,6 +259,7 @@ const UNREAD: &str = "this update could not be checked against the version runni
 /// after, the state version, the policy and where the approval stands, and which button
 /// leads (`keepByDefault`: an update that adds a destination keeps the current version
 /// unless the person chooses otherwise). `members`: a line per member that moves.
+/// `members_move`: the release would move the unit's members, which no update on its own does.
 pub(super) fn update_section(
     node: &Node,
     app: &AppRecord,
@@ -252,6 +267,7 @@ pub(super) fn update_section(
     step: &ApprovalStep,
     (from, to): (&str, &str),
     members: Vec<String>,
+    members_move: bool,
 ) -> Value {
     let (policy, source) = node.sys(|s| s.upgrade_policy_of(app));
     // Not classified (a part's release unreadable, or no verdict at all): every fact
@@ -355,7 +371,7 @@ pub(super) fn update_section(
         "keepWords": format!(
             "Keeping {from} is safe: it goes on working and your data stays where it is."
         ),
-        "hold": hold_words(&policy, c),
+        "hold": hold_words(&policy, c, members_move),
         "to": to,
     })
 }
@@ -396,7 +412,7 @@ pub(super) async fn install_request(
     node: &Node,
     p: &Principal,
     account: &str,
-    subject: InstallSubject,
+    mut subject: InstallSubject,
 ) -> Result<(Action, Value), ApiError> {
     let package = subject.package;
     let frontend = p.bound_app() == Some(package.as_str());
@@ -420,11 +436,8 @@ pub(super) async fn install_request(
         None => {
             let version = node
                 .sys(|s| {
-                    let p = s.packages.get(&package)?;
-                    p.versions
-                        .values()
+                    s.releases_used(&package, account, frontend)
                         .filter(|v| subject.version.as_ref().is_none_or(|w| &v.version == w))
-                        .filter(|v| frontend || s.sees_release(v, account))
                         .max_by(|a, b| crate::system::compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })
@@ -456,6 +469,28 @@ pub(super) async fn install_request(
         })
         .ok_or_else(|| ApiError::not_found("no such release"))?;
     let facts = release_facts(node, &package, &target).await?;
+    let named = subject.org.is_some() || subject.new_org.is_some();
+    let (filled, choose_org) = org_choices(node, account, named, &release, &target).await?;
+    if filled.is_some() {
+        subject.org = filled;
+    }
+    let private_to = node.sys(|s| {
+        (target.visibility_shown() == Some(crate::system::Visibility::Private)).then(|| {
+            let mut names: Vec<String> = s
+                .release_orgs_of(&target, account)
+                .map(|o| o.name.clone())
+                .collect();
+            names.sort();
+            format!(
+                "Private to {}",
+                if names.is_empty() {
+                    "you".to_owned()
+                } else {
+                    phrase(&names)
+                }
+            )
+        })
+    });
     let app_name = facts
         .manifest
         .metadata
@@ -466,7 +501,9 @@ pub(super) async fn install_request(
         .metadata
         .as_ref()
         .and_then(|m| m.author.clone());
-    let unit = crate::egress::release_unit(node, &release).await?;
+    let unit =
+        crate::egress::release_unit(node, &release, (account, subject.deployment.as_deref()))
+            .await?;
     let mut creates = vec![json!({
         "name": app_name, "what": "the app", "package": package, "version": release.version,
     })];
@@ -501,6 +538,11 @@ pub(super) async fn install_request(
         }));
     }
     let destinations: Vec<String> = unit.egress().into_iter().collect();
+    // The credentials the node attaches for it, each where its signed binding says.
+    let credentials: Vec<String> = std::iter::once(&unit.app)
+        .chain(unit.members.values())
+        .flat_map(|r| r.secrets.iter().map(|(name, b)| b.describe(name)))
+        .collect();
     let members = !unit.members.is_empty();
     let where_words = if destinations.is_empty() {
         "Your data stays in Calimero.".to_owned()
@@ -533,32 +575,39 @@ pub(super) async fn install_request(
         update_words.push(format!(
             "Because {app_name} sends no data out of Calimero, you can later add a policy under \
              which its green updates apply on their own after a 24 h hold, as long as they keep \
-             it that way and remove no method."
+             it that way, remove no method and move none of the apps it created."
         ));
     }
-    let payer = subject.deployment.as_ref().and_then(|d| {
-        node.sys(|s| {
-            let d = s.deployments.get(d)?;
-            Some(match &d.owner {
-                crate::system::Deployer::Account(a) => s.accounts.get(a).map(|a| a.name.clone()),
-                crate::system::Deployer::Org(o) => s.orgs.get(o).map(|o| o.name.clone()),
+    let shown = subject
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
+    let payer = shown
+        .as_ref()
+        .and_then(|d| d["owner"]["name"].as_str().map(str::to_owned));
+    let created = |org: Option<&str>| {
+        format!(
+            "{} is created for you{}: {app_name} {}{}.",
+            subject.name,
+            org.map_or_else(String::new, |o| format!(" in {o}")),
+            release.version,
+            if members {
+                " and the apps it creates with it"
+            } else {
+                ""
+            }
+        )
+    };
+    // Each choice carries its own first point, which the page shows once it is chosen.
+    let choose_org = choose_org.map(|orgs| {
+        orgs.into_iter()
+            .map(|mut o| {
+                o["point"] = json!(created(o["name"].as_str()));
+                o
             })
-        })
-        .flatten()
+            .collect::<Vec<_>>()
     });
-    let mut points = vec![json!(format!(
-        "{} is created for you{}: {app_name} {}{}.",
-        subject.name,
-        org_name
-            .as_ref()
-            .map_or_else(String::new, |o| format!(" in {o}")),
-        release.version,
-        if members {
-            " and the apps it creates with it"
-        } else {
-            ""
-        }
-    ))];
+    let mut points = vec![json!(created(org_name.as_deref()))];
     points.push(json!(if members {
         format!("{where_words} That includes the apps it creates.")
     } else {
@@ -579,6 +628,8 @@ pub(super) async fn install_request(
         "attention": [],
         "app": { "name": app_name, "package": package },
         "publisher": { "name": author, "signer": facts.signer },
+        "deployment": shown,
+        "offeredBy": shown.as_ref().map(super::offered_by),
         "install": {
             "name": subject.name,
             "package": package,
@@ -589,10 +640,13 @@ pub(super) async fn install_request(
             "newOrg": subject.new_org.as_ref().map(|o| o.name.clone()),
             "creates": creates,
             "destinations": hosts(destinations.iter().map(String::as_str)),
+            "credentials": credentials,
             "where": where_words,
             "updates": update_words,
             "policy": policy_view(&policy, source),
             "payer": payer,
+            "chooseOrg": choose_org,
+            "privateTo": private_to,
         },
         "before": "Until you approve, nothing is created.",
         "after": format!(
@@ -617,6 +671,59 @@ pub(super) async fn install_request(
         },
         model,
     ))
+}
+
+/// Where the instance goes when the subject names no organization (`named`) and the release
+/// makes none of its own: of a private release's organizations the person is in, the only one
+/// (filled in) or those to choose from; else (none) all of theirs, to choose when several.
+async fn org_choices(
+    node: &Node,
+    account: &str,
+    named: bool,
+    release: &PackageRef,
+    target: &PackageVersion,
+) -> Result<(Option<String>, Option<Vec<Value>>), ApiError> {
+    use crate::system::cluster_version::Feature;
+    if named
+        || node
+            .require_features(&[Feature::OrdinaryOrgs])
+            .await
+            .is_err()
+        || crate::api::apps::instance_org_of(node, Some(release)).await?
+            == calimero_bundle::InstanceOrg::Standalone
+    {
+        return Ok((None, None));
+    }
+    let (mut orgs, private): (Vec<(String, String)>, bool) = node.sys(|s| {
+        let named = |o: &crate::types::Org| (o.name.clone(), o.org_id.clone());
+        let private: Vec<_> = if target.visibility_shown() == Some(Visibility::Private) {
+            s.release_orgs_of(target, account).map(named).collect()
+        } else {
+            Vec::new()
+        };
+        if private.is_empty() {
+            let all = s
+                .orgs_of(account)
+                .into_iter()
+                .filter_map(|id| s.orgs.get(id));
+            (all.map(named).collect(), false)
+        } else {
+            (private, true)
+        }
+    });
+    orgs.sort();
+    Ok(match orgs.as_slice() {
+        [(_, only)] if private => (Some(only.clone()), None),
+        [_, _, ..] => (
+            None,
+            Some(
+                orgs.into_iter()
+                    .map(|(name, org)| json!({ "orgId": org, "name": name }))
+                    .collect(),
+            ),
+        ),
+        _ => (None, None),
+    })
 }
 
 // ---------------------------------------------------------------- update policy
@@ -905,7 +1012,7 @@ pub(super) async fn open(
         OpenBody::UpdatePolicy { subject } => policy_request(node, &p, account, subject).await?,
     };
     let axum::Json(v) = super::hold(node, account.to_owned(), None, action, model, back).await?;
-    Ok(v)
+    Ok(serde_json::json!(v))
 }
 
 #[cfg(test)]
@@ -932,13 +1039,22 @@ mod tests {
             auto_apply: AutoApply::NoDestinations,
             ..UpgradePolicy::default()
         };
-        assert!(hold_words(&auto, Some(&green(&[]))).is_some());
-        assert_eq!(hold_words(&auto, Some(&green(&["whoView"]))), None);
+        assert!(hold_words(&auto, Some(&green(&[])), false).is_some());
+        assert_eq!(hold_words(&auto, Some(&green(&["whoView"])), false), None);
         assert_eq!(
-            hold_words(&UpgradePolicy::default(), Some(&green(&[]))),
+            hold_words(&UpgradePolicy::default(), Some(&green(&[])), false),
             None
         );
-        assert_eq!(hold_words(&auto, None), None);
+        assert_eq!(hold_words(&auto, None, false), None);
+    }
+
+    #[test]
+    fn the_sheet_never_says_an_update_that_moves_the_members_applies_on_its_own() {
+        let auto = UpgradePolicy {
+            auto_apply: AutoApply::NoDestinations,
+            ..UpgradePolicy::default()
+        };
+        assert_eq!(hold_words(&auto, Some(&green(&[])), true), None);
     }
 
     #[test]
@@ -949,5 +1065,9 @@ mod tests {
         };
         let words = policy_words(&auto, "org");
         assert!(words[0].contains("removes no method"), "{words:?}");
+        assert!(
+            words[0].contains("moves none of the apps it created"),
+            "{words:?}"
+        );
     }
 }

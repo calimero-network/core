@@ -1,4 +1,5 @@
-//! System commands for release approvals, release deadlines and outbound approvals.
+//! System commands for release approvals, release deadlines, outbound approvals and the
+//! egress switch.
 //!
 //! [`authorize`] judges the proof each carries and [`apply`] applies it;
 //! `system.rs` sends a command here by its [`super::Area`].
@@ -9,11 +10,50 @@
 )]
 use super::*;
 
+/// What `SetEgress` answers: the switch as set, the organization's own, and the instance when
+/// one was named.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EgressSet {
+    pub org: OrgId,
+    pub egress: bool,
+    pub org_egress_off: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+}
+
+/// What a release approval answers (`#ApprovedReleases`): the releases the scope approves now.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovedReleases {
+    pub approved_releases: BTreeSet<String>,
+}
+
+/// What `SetReleaseDeadline` answers (`#Deadlines`): every deadline after the change.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Deadlines {
+    pub deadlines: Vec<VersionDeadline>,
+}
+
+/// One release deadline: `after` RFC 3339, `afterSecs` Unix seconds.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionDeadline {
+    pub version: String,
+    pub after: String,
+    pub after_secs: u64,
+}
+
+/// What an outbound approval answers (`#OutboundApproved`): the approval the scope holds now
+/// for the package's publisher.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutboundApproved {
+    pub signer: String,
+    pub approval: crate::types::OutboundApproval,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
         SystemCmd::SetReleaseApproval {
             scope,
@@ -72,6 +112,19 @@ pub(super) fn authorize(
             )?;
             Ok(Some(used))
         }
+        SystemCmd::SetEgress {
+            org,
+            app,
+            egress,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            proofs.states(&st, &format!("org:{org}"), "__set_egress", &|a| {
+                *a == egress_args(app.as_deref(), *egress)
+            })?;
+            Ok(Some(used))
+        }
         SystemCmd::SetReleaseDeadline {
             version,
             after,
@@ -90,7 +143,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::SetOperatorRelease {
@@ -99,18 +152,20 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             proof: _,
         } => {
             if s.governance().releases != Authority::Operator {
-                return Err("this cluster's releases are approved by each app's owner");
+                return Err("this cluster's releases are approved by each app's owner".into());
             }
             let set = &mut s.operator_releases;
             if approved {
                 let _new = set.insert(version);
             } else {
                 if set.len() == 1 && set.contains(&version) {
-                    return Err("the last approved release cannot be withdrawn");
+                    return Err("the last approved release cannot be withdrawn".into());
                 }
                 let _gone = set.remove(&version);
             }
-            Ok(json!({ "approvedReleases": set }))
+            Ok(json!(ApprovedReleases {
+                approved_releases: set.clone()
+            }))
         }
         SystemCmd::SetReleaseDeadline { version, after, .. } => {
             // Closed input: a semver release, so it orders against the
@@ -118,14 +173,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if version.len() > MAX_RELEASE_VERSION_BYTES
                 || semver::Version::parse(&version).is_err()
             {
-                return Err("a deadline names a semver release of at most 64 bytes");
+                return Err("a deadline names a semver release of at most 64 bytes".into());
             }
             match after {
                 Some(t) => {
                     if !s.release_deadlines.contains_key(&version)
                         && s.release_deadlines.len() >= MAX_RELEASE_DEADLINES
                     {
-                        return Err("too many release deadlines; lift an old one first");
+                        return Err("too many release deadlines; lift an old one first".into());
                     }
                     let _prev = s.release_deadlines.insert(version, t);
                 }
@@ -133,7 +188,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     let _gone = s.release_deadlines.remove(&version);
                 }
             }
-            Ok(json!({ "deadlines": s.deadlines_json() }))
+            Ok(json!(Deadlines {
+                deadlines: s.deadlines_json()
+            }))
         }
         SystemCmd::SetReleaseApproval {
             scope,
@@ -143,14 +200,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             consent: _,
         } => {
             if s.governance().releases == Authority::Operator {
-                return Err("this cluster's releases are approved by its operator");
+                return Err("this cluster's releases are approved by its operator".into());
             }
             let set = match &scope {
-                ReleaseScope::Cluster => return Err("the operator uses SetOperatorRelease"),
+                ReleaseScope::Cluster => return Err("the operator uses SetOperatorRelease".into()),
                 ReleaseScope::Org { org } => {
                     if !s.approves_releases(org, &actor) {
                         return Err(
-                            "approving releases needs APPROVE_RELEASES in the organization",
+                            "approving releases needs APPROVE_RELEASES in the organization".into(),
                         );
                     }
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
@@ -162,11 +219,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             } else {
                 // An empty set would leave the apps unrestricted.
                 if set.len() == 1 && set.contains(&version) {
-                    return Err("the last approved release cannot be withdrawn");
+                    return Err("the last approved release cannot be withdrawn".into());
                 }
                 let _gone = set.remove(&version);
             }
-            Ok(json!({ "approvedReleases": set }))
+            Ok(json!(ApprovedReleases {
+                approved_releases: set.clone()
+            }))
         }
         SystemCmd::SetOutboundApproval {
             scope,
@@ -178,26 +237,35 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let record = s.packages.get(&package).ok_or("no such package")?;
             let signer = record.signer_id.clone();
-            let declared = record
-                .latest()
-                .map(|v| v.outbound.clone())
-                .unwrap_or_default();
+            // The newest release the actor reads (the operator, holding the cluster's
+            // approvals, the newest of all); entries logged below private releases as they did.
+            let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases)
+                && scope != ReleaseScope::Cluster;
+            let newest = record.latest_where(|v| !gated || s.reads_release(&package, v, &actor));
+            if gated && newest.is_none() {
+                return Err("no such package".into());
+            }
+            let declared = newest.map(|v| v.outbound.clone()).unwrap_or_default();
             let operator = s.governance().outbound == Authority::Operator;
             if operator != (scope == ReleaseScope::Cluster) {
                 return Err(if operator {
-                    "this cluster's outbound hosts are approved by its operator"
+                    "this cluster's outbound hosts are approved by its operator".into()
                 } else {
-                    "this cluster's outbound hosts are approved by each app's owner"
+                    "this cluster's outbound hosts are approved by each app's owner".into()
                 });
             }
             let approvals = match &scope {
                 ReleaseScope::Cluster => &mut s.operator_outbound,
+                ReleaseScope::Org { org } if s.orgs.get(org).is_some_and(|o| o.egress_off) => {
+                    return Err(EGRESS_OFF);
+                }
                 ReleaseScope::Org { org } => {
                     // One approval covers every app of the organization,
                     // so only an org-wide grant reaches it.
                     if !s.manages_apps(org, &actor, None) {
                         return Err(
-                            "approving outbound hosts needs MANAGE_APPLICATION in the organization",
+                            "approving outbound hosts needs MANAGE_APPLICATION in the organization"
+                                .into(),
                         );
                     }
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
@@ -220,10 +288,51 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 reviewed: merged.reviewed,
             };
             let _prev = approvals.insert(signer.clone(), approval.clone());
-            Ok(json!({ "signer": signer, "approval": approval }))
+            Ok(json!(OutboundApproved { signer, approval }))
+        }
+        SystemCmd::SetEgress {
+            org,
+            app,
+            egress,
+            actor,
+            consent: _,
+        } => {
+            if !s.is_org_admin(&org, &actor) {
+                return Err(
+                    "only the organization's owner or an admin turns its egress off or on".into(),
+                );
+            }
+            match &app {
+                None => {
+                    let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                    o.egress_off = !egress;
+                }
+                Some(id) => {
+                    let a = s
+                        .apps
+                        .get_mut(id)
+                        .filter(|a| a.org == org)
+                        .ok_or("no such app in the organization")?;
+                    a.egress_off = !egress;
+                }
+            }
+            let org_off = s.orgs.get(&org).is_some_and(|o| o.egress_off);
+            Ok(json!(EgressSet {
+                org,
+                egress,
+                org_egress_off: org_off,
+                app,
+            }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached approvals::apply"),
     }
+}
+
+/// What a `SetEgress` consent states (`org:<org> / __set_egress`): the instance, or `null`
+/// for the whole organization, and the switch.
+#[must_use]
+pub fn egress_args(app: Option<&str>, egress: bool) -> Value {
+    json!({ "app": app, "egress": egress })
 }

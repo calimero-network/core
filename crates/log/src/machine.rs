@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, TryLockError};
 
 use openraft::storage::RaftStateMachine;
 use openraft::{
@@ -30,7 +30,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::digest::{DigestAt, StateDigest, DIGEST_EVERY, DIGEST_KEPT};
-use crate::store::{load_generation, off_workers, Db, GroupState, StateTx, Transaction};
+use crate::store::{
+    load_generation, off_workers, wait_off_workers, Db, GroupState, StateTx, Transaction,
+};
 use crate::types::{
     Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
 };
@@ -92,6 +94,24 @@ impl<M> Applied<M> {
 
 pub type Shared<M> = Arc<RwLock<Applied<M>>>;
 
+/// Read a group's applied state from async code, without holding an async worker
+/// while it waits. An apply holds the write lock while its batch commits, so no
+/// reader sees a state the disk does not hold, and that commit queues behind any
+/// other write's fsync (RocksDB writes in groups): a reader that waited for the
+/// lock on a worker stopped the worker, every group's heartbeats with it, for as
+/// long as the disk took. A free lock is taken at once; a held one is waited for
+/// through [`wait_off_workers`]. Regression:
+/// `a_state_read_waiting_for_an_apply_behind_the_disk_leaves_the_worker_free`.
+pub(crate) fn read_applied<M>(
+    shared: &RwLock<Applied<M>>,
+) -> LockResult<RwLockReadGuard<'_, Applied<M>>> {
+    match shared.try_read() {
+        Ok(st) => Ok(st),
+        Err(TryLockError::Poisoned(p)) => Err(p),
+        Err(TryLockError::WouldBlock) => wait_off_workers(|| shared.read()),
+    }
+}
+
 /// Where a group stands, committed with the state it describes.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct AppliedMeta {
@@ -136,9 +156,9 @@ pub const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 /// The newest snapshot file format this release reads, and the one it writes when a row spans
 /// frames: the number in the file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 (every
 /// release since the store, backups included) holds each row in one frame, so a row past
-/// [`MAX_FRAME_BYTES`] (an in-memory machine's checkpoint: the whole system state) could not be
-/// read back. Format 2 lets a row span frames ([`PIECE`]). A file with no such row is written
-/// as format 1 ([`WHOLE_ROWS_FORMAT`]), which the release before reads: a rollout never sends
+/// `MAX_FRAME_BYTES` (an in-memory machine's checkpoint: the whole system state) could not be
+/// read back. Format 2 lets a row span frames (`PIECE`). A file with no such row is written
+/// as format 1 (`WHOLE_ROWS_FORMAT`), which the release before reads: a rollout never sends
 /// a node a format it cannot read that it read before. A change to the framing, or to the rows
 /// a snapshot carries (`format::STORE_FORMAT`), raises it.
 pub const SNAPSHOT_FORMAT: u32 = 2;
@@ -477,7 +497,7 @@ pub struct StateMachine<M: Machine> {
 
 impl<M: Machine> Clone for StateMachine<M> {
     /// Another handle on the same group state, to run disk work on tokio's
-    /// blocking pool ([`crate::store::off_workers`]).
+    /// blocking pool (`crate::store::off_workers`).
     fn clone(&self) -> Self {
         Self {
             group: self.group,
@@ -1046,16 +1066,22 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
 
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<tokio::fs::File>, StorageError> {
         let path = self.snapshot_path(&format!("g{}-recv-{}.snap", self.group, hex_id()));
-        if let Some(old) = self.receiving.replace(path.clone()) {
-            let _removed = std::fs::remove_file(old);
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(io)?;
+        let old = self.receiving.replace(path.clone());
+        // An unlink and a create wait on the file system's journal, which a
+        // slow disk holds like an fsync: on the blocking pool.
+        let file = off_workers(move || {
+            if let Some(old) = old {
+                let _removed = std::fs::remove_file(old);
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(io)
+        })
+        .await?;
         Ok(Box::new(tokio::fs::File::from_std(file)))
     }
 
@@ -1467,7 +1493,7 @@ mod snapshot_errors {
         }
     }
 
-    /// Review finding A6: the system group's snapshot fell back to empty bytes when its
+    /// The system group's snapshot fell back to empty bytes when its
     /// state did not serialize, so the group checkpointed and served an empty state, which
     /// failed to restore on the node that received it, far from the cause. The build now
     /// fails where it happens, and the checkpoint keeps the last good state.
@@ -1562,7 +1588,7 @@ mod large_rows {
         Ok((format, held))
     }
 
-    /// Review finding B1: an in-memory machine's state is one row, and its snapshot wrote
+    /// An in-memory machine's state is one row, and its snapshot wrote
     /// that row into one frame, which every reader refuses past `MAX_FRAME_BYTES`: once the
     /// system state grew past it, no new or lagging node could install the system snapshot,
     /// and no system backup could be restored. Such a row now spans frames.

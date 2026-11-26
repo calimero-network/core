@@ -11,8 +11,8 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::{debug, info};
 
 use super::{consent, holder, operator, ApiResult, ConfirmBody};
@@ -63,14 +63,10 @@ fn taken(why: &str) -> ApiError {
 async fn managed(node: &Node, account: &str, package: &str) -> Result<(), ApiError> {
     let _caught_up = node.sys_fresh().await;
     node.sys(|s| {
-        let p = s
-            .packages
-            .get(package)
-            .ok_or_else(|| ApiError::not_found("no such package"))?;
         if s.manages_package(package, account) {
             return Ok(());
         }
-        if p.versions.values().any(|v| s.sees_release(v, account)) {
+        if s.package_used(package, account, false).is_some() {
             return Err(ApiError::forbidden(
                 "only the package's manager handles its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first",
             ));
@@ -87,12 +83,19 @@ pub(super) async fn list(
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
     managed(&node, &account, &package).await?;
-    let origins: Vec<Value> = node.sys(|s| {
+    let origins: Vec<crate::origins::OriginView> = node.sys(|s| {
         s.origins_of(&package)
             .map(|(origin, o)| origin_json(origin, o))
             .collect()
     });
-    Ok(Json(json!({ "package": package, "origins": origins })))
+    Ok(Json(json!(OriginList { package, origins })))
+}
+
+/// `GET /package-origins/{package}`: the origins registered for a package.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OriginList {
+    package: String,
+    origins: Vec<crate::origins::OriginView>,
 }
 
 /// Register an origin for `package`, with the manager's passkey assertion
@@ -257,24 +260,30 @@ fn served_fits(node: &Node, origin: &str) -> Result<(), ApiError> {
 /// routes its name here, but only for what the log holds. As the rest of the
 /// Ops API, no package name and no account: the package's [`label`], which
 /// mdma already routes by, ties a domain to its package.
-pub(super) async fn ops_served(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+pub(super) async fn ops_served(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<ServedOrigins>> {
     operator(&node, &headers)?;
     let fresh = node.sys_fresh().await;
-    let served: Vec<Value> = node.sys(|s| {
+    let served: Vec<ServedOrigin> = node.sys(|s| {
         s.package_origins
             .iter()
             .filter(|(_, o)| o.served)
             .filter_map(|(origin, o)| {
-                Some(json!({
-                    "origin": origin,
-                    "host": served_host(origin).ok()?,
-                    "label": label(&o.package),
-                    "addedAt": crate::system::rfc3339(o.added_at),
-                }))
+                Some(ServedOrigin {
+                    origin: origin.clone(),
+                    host: served_host(origin).ok()?,
+                    label: label(&o.package),
+                    added_at: crate::system::rfc3339(o.added_at),
+                })
             })
             .collect()
     });
-    Ok(Json(json!({ "fresh": fresh, "origins": served })))
+    Ok(Json(ServedOrigins {
+        fresh,
+        origins: served,
+    }))
 }
 
 /// Remove an origin of `package`, with the manager's passkey assertion over
@@ -320,4 +329,22 @@ pub(super) async fn remove(
     info!(%package, %origin, "removed an origin of a package");
     debug!(%package, %origin, %account, "the origin's remover");
     Ok(Json(out))
+}
+
+/// `GET /ops/served-origins`: the origins the operator serves frontends on, each with its host,
+/// its package's label and when it was added (RFC 3339).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ServedOrigins {
+    fresh: bool,
+    origins: Vec<ServedOrigin>,
+}
+
+/// An origin the operator serves a package's frontend on.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ServedOrigin {
+    origin: String,
+    host: String,
+    label: String,
+    added_at: String,
 }

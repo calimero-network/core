@@ -426,7 +426,9 @@ final class CalimeroClientTests: XCTestCase {
     }
 
     func testMembershipsCredentialsAndInvitesAreApprovedWithAPasskey() async throws {
-        let node = Self.stepUpNode(["token": "inv_1", "credentialId": "cred2", "keyId": "k1", "key": "cal_x"])
+        let node = Self.stepUpNode([
+            "token": "inv_1", "credentialId": "cred2", "keyId": "k1", "key": "cal_x", "then": [],
+        ])
         node.install()
         let cloud = client()
         let passkey = SoftPasskey()

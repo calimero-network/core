@@ -27,7 +27,7 @@ pub enum MethodKind {
     View,
     /// `#[app::every(..)]`.
     Timer,
-    /// `#[app::action]`: runs outside the log (D12), started, never called.
+    /// `#[app::action]`: runs outside the log, started, never called.
     Action,
     /// `#[app::compute(..)]`: runs on a job node as an action with a compute run.
     Compute,
@@ -55,7 +55,7 @@ pub enum Kind {
     Call,
     /// A read on any node.
     View,
-    /// An action (D12) or a compute run: outside the log.
+    /// An action or a compute run: outside the log.
     Action,
     /// A timer tick; `args` carry the tick.
     Timer,
@@ -89,7 +89,7 @@ fn bad_args(message: impl Display) -> AppError {
     AppError::with_fields("BadArgs", json!({ "message": message.to_string() }))
 }
 
-/// The generated `handle`: find the method, check the invocation kind and the caller (D13),
+/// The generated `handle`: find the method, check the invocation kind and the caller,
 /// then run it.
 ///
 /// A view may be invoked as a call; a call, timer or init method invoked as a view is
@@ -139,7 +139,8 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
     D::run(index, args)
 }
 
-/// Decode a JSON object of arguments; empty `args` is `{}`. Anything else is `BadArgs`.
+/// Decode a JSON object of arguments; empty `args` is `{}`. Anything else is `BadArgs`,
+/// whose `param` names the failing parameter (dotted into records) when there is one.
 pub fn decode_args<T: DeserializeOwned>(args: &[u8]) -> Result<T> {
     let value: Value = if args.is_empty() {
         Value::Object(serde_json::Map::new())
@@ -149,7 +150,16 @@ pub fn decode_args<T: DeserializeOwned>(args: &[u8]) -> Result<T> {
     if !value.is_object() {
         return Err(bad_args("arguments are a JSON object"));
     }
-    serde_json::from_value(value).map_err(bad_args)
+    serde_path_to_error::deserialize(value).map_err(|e| {
+        if e.path().iter().next().is_none() {
+            return bad_args(e.inner());
+        }
+        let param = e.path().to_string();
+        AppError::with_fields(
+            "BadArgs",
+            json!({ "message": format!("{param}: {}", e.inner()), "param": param }),
+        )
+    })
 }
 
 /// Encode a result as JSON.
@@ -173,7 +183,7 @@ pub fn payload<T>(
     Ok((name, Value::Object(fields)))
 }
 
-/// A 64-bit integer written as a decimal string (D20).
+/// A 64-bit integer written as a decimal string, exact in JSON above 2^53.
 pub struct Decimal<T>(pub T);
 
 impl<T: Display> Serialize for Decimal<T> {
@@ -182,7 +192,7 @@ impl<T: Display> Serialize for Decimal<T> {
     }
 }
 
-/// Bytes written as base64url without padding (D20).
+/// Bytes written as base64url without padding.
 pub struct Base64Url<T>(pub T);
 
 impl<T: AsRef<[u8]>> Serialize for Base64Url<T> {
@@ -214,29 +224,10 @@ pub mod abi_defaults {
     /// No declared events.
     pub const __CALIMERO_ABI_EVENTS: &str = "{}";
     /// No types from declared errors.
-    pub const __CALIMERO_ABI_ERROR_TYPES: &[Option<&crate::abi::TypeDef>] = &[];
+    pub const __CALIMERO_ABI_ERROR_TYPES: &[&crate::abi::TypeDef] = &[];
     /// No types from declared events.
-    pub const __CALIMERO_ABI_EVENT_TYPES: &[Option<&crate::abi::TypeDef>] = &[];
+    pub const __CALIMERO_ABI_EVENT_TYPES: &[&crate::abi::TypeDef] = &[];
 }
-
-/// A type's entry for the ABI's `types`: `Probe::<T>::DEF` is `Some` when `T` implements
-/// [`AbiType`](crate::abi::AbiType), else (with [`NoShape`] in scope) `None`. The inherent
-/// constant wins whenever its bound holds, so the generated code names any type, described
-/// or not, without a trait bound the app's own types might not meet.
-pub struct Probe<T: ?Sized>(core::marker::PhantomData<T>);
-
-impl<T: ?Sized + crate::abi::AbiType> Probe<T> {
-    /// The type's entry.
-    pub const DEF: Option<&'static crate::abi::TypeDef> = Some(T::DEF);
-}
-
-/// The fallback of [`Probe`]: a type without a shape.
-pub trait NoShape {
-    /// No entry.
-    const DEF: Option<&'static crate::abi::TypeDef> = None;
-}
-
-impl<T: ?Sized> NoShape for Probe<T> {}
 
 pub use crate::abi::{types_json, TypeDef, TypesJson};
 
@@ -308,5 +299,89 @@ impl<D: Dispatch> bindings::Guest for Export<D> {
             message: error_message(&e),
             code: e.code,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Window {
+        #[serde(with = "crate::json::u64_auto")]
+        after: u64,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Args {
+        #[serde(with = "crate::json::u64_str")]
+        expected_version: u64,
+        #[serde(default, with = "crate::json::opt_u64_str")]
+        ttl_ms: Option<u64>,
+        window: Option<Window>,
+    }
+
+    fn bad(args: &str) -> Value {
+        let error = decode_args::<Args>(args.as_bytes()).unwrap_err();
+        assert_eq!(error.code, "BadArgs");
+        error.fields
+    }
+
+    #[test]
+    fn bad_args_name_the_parameter_and_hint_the_decimal_string() {
+        assert_eq!(
+            bad(r#"{"expectedVersion": 4}"#),
+            json!({
+                "message": "expectedVersion: invalid type: integer `4`, expected a u64 as a decimal string",
+                "param": "expectedVersion",
+            })
+        );
+        assert_eq!(
+            bad(r#"{"expectedVersion": "4", "ttlMs": 5}"#)["param"],
+            "ttlMs"
+        );
+    }
+
+    #[test]
+    fn bad_args_name_the_record_field() {
+        assert_eq!(
+            bad(r#"{"expectedVersion": "4", "window": {"after": 9}}"#),
+            json!({
+                "message": "window.after: invalid type: integer `9`, expected a u64 as a decimal string",
+                "param": "window.after",
+            })
+        );
+    }
+
+    #[test]
+    fn good_args_decode() {
+        let args =
+            decode_args::<Args>(br#"{"expectedVersion": "4", "window": {"after": "9"}}"#).unwrap();
+        assert_eq!(
+            (
+                args.expected_version,
+                args.ttl_ms,
+                args.window.map(|w| w.after)
+            ),
+            (4, None, Some(9))
+        );
+    }
+
+    #[test]
+    fn bad_args_name_an_unknown_key_and_not_a_missing_one() {
+        assert_eq!(
+            bad(r#"{"expectedVersion": "4", "other": 1}"#)["param"],
+            "other"
+        );
+        assert_eq!(
+            bad("{}"),
+            json!({ "message": "missing field `expectedVersion`" })
+        );
+        assert_eq!(
+            bad("[1]"),
+            json!({ "message": "arguments are a JSON object" })
+        );
     }
 }

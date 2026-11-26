@@ -115,6 +115,7 @@ export default defineConfig({
                 'build/guides/blobs',
                 'build/guides/search',
                 'build/guides/outbound',
+                'build/guides/connectors',
                 'build/guides/timers-and-actions',
                 'build/guides/compute-actions',
                 'build/guides/files-and-pipelines',
@@ -251,6 +252,7 @@ export default defineConfig({
                 'protocol/encryption',
                 'protocol/key-rotation',
                 'protocol/security-model',
+                'protocol/secrets',
               ],
             },
             {
@@ -298,7 +300,7 @@ export default defineConfig({
             },
             {
               label: 'Working on core',
-              items: ['contribute/development', 'contribute/testing', 'contribute/docs'],
+              items: ['contribute/development', 'contribute/testing', 'contribute/docs', 'contribute/openapi'],
             },
           ],
         },

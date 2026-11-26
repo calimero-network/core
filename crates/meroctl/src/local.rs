@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::env::{write_private, Env, Home, SavedNode, Trust};
+use crate::registry::DEFAULT_REGISTRY;
 
 /// The node name `up` saves the cluster as.
 pub const NODE: &str = "local";
@@ -721,7 +722,7 @@ impl Deploy {
             Ok(std::fs::write(&w, built.app.component)?)
         })
         .await??;
-        let answer = crate::app::install_file(env, &self.wasm).await?;
+        let answer = crate::app::install_file(env, &self.wasm, None).await?;
         let bundle = answer["bundle"].as_str().unwrap_or_default().to_owned();
         eprintln!("• uploaded bundle {bundle}");
         if let Some(f) = &self.frontend {
@@ -737,9 +738,6 @@ impl Deploy {
         Ok(bundle)
     }
 }
-
-/// The public app registry, which `app publish` publishes to.
-const DEFAULT_REGISTRY: &str = "https://apps.calimero.network";
 
 /// `merod local`'s arguments for `up`, before where it keeps its state and
 /// what it binds (those differ between the image and a binary).

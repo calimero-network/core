@@ -1,5 +1,5 @@
 /**
- * Account recovery (core #4844, `docs/specs/account-recovery.md`): each method
+ * Account recovery ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): each method
  * sends the route and body core's `crates/node/src/api.rs` takes, through the
  * real sealed channel to a stand-in node. Synthetic data only.
  */
