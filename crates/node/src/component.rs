@@ -2225,6 +2225,7 @@ mod tests {
                 writes: 2,
                 peak_memory: 0,
             },
+            read_set: None,
         };
         let failed = |status| host::Outcome {
             status,
@@ -2449,6 +2450,7 @@ mod tests {
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             usage: host::Usage::default(),
+            read_set: None,
         });
         let entry: Outcome = serde_json::from_slice(&serde_json::to_vec(&out).unwrap()).unwrap();
         assert_eq!(entry.http.len(), 1);
@@ -2487,6 +2489,7 @@ mod tests {
                 }],
             }],
             usage: host::Usage::default(),
+            read_set: None,
         };
         let ok = Outcome::from_host(run(host::Status::Ok));
         assert_eq!(ok.files, [mark(1)]);
@@ -2519,6 +2522,7 @@ mod tests {
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             usage: host::Usage::default(),
+            read_set: None,
         };
         let statuses = [
             host::Status::Ok,

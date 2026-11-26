@@ -1892,6 +1892,7 @@ mod tests {
             allow_apps: Vec::new(),
             action_only: false,
             compute_result: false,
+            subscribable: false,
         }
     }
 

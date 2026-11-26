@@ -16,6 +16,7 @@ mod entry;
 mod files;
 mod fuel;
 mod overlay;
+mod read_set;
 mod runs;
 mod search;
 mod state;
@@ -60,6 +61,7 @@ pub use fuel::{
     FUEL_PER_SEARCH_HIT, FUEL_PER_SEARCH_MATCH, FUEL_SEARCH_QUERY, FUEL_STATE_ACCESS,
     MAX_SEARCHES_PER_RUN, SEARCH_TOO_MANY,
 };
+pub use read_set::{ReadSet, MAX_READ_SET_BYTES, MAX_READ_SET_KEYS, MAX_READ_SET_RANGES};
 pub use runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_PIPELINE_RUN_INPUTS, MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN,

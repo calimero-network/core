@@ -60,6 +60,8 @@ pub struct MethodAbi {
     pub action_only: bool,
     /// Receives a compute run's outcome; only the node invokes it.
     pub compute_result: bool,
+    /// A view clients may watch for its answer to change; views only.
+    pub subscribable: bool,
 }
 
 impl MethodAbi {
@@ -145,6 +147,10 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         )));
     }
     let compute_result = flag(fields, "computeResult", name)?;
+    let subscribable = flag(fields, "subscribable", name)?;
+    if subscribable && kind != MethodKind::View {
+        return Err(bad(format!("{name}: `subscribable` is only for views")));
+    }
     if compute_result && kind != MethodKind::Call {
         return Err(bad(format!(
             "{name}: `computeResult` is only for call methods"
@@ -176,6 +182,7 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
             Some(other) => return Err(bad(format!("{name}: allowApps is not a list: {other}"))),
         },
         compute_result,
+        subscribable,
     })
 }
 

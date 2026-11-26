@@ -73,6 +73,8 @@ pub struct Method {
     pub allow_action: bool,
     /// Receives a compute run's outcome; only the node calls it.
     pub compute_result: bool,
+    /// A view clients may watch for its answer to change.
+    pub subscribable: bool,
     /// A public method's rate limit (`"<n>/s"`, `"<n>/min"`, `"<n>/h"`).
     pub rate: Option<String>,
     /// A timer's interval.
@@ -346,6 +348,7 @@ fn method(name: &str, json: &Value) -> EyreResult<Method> {
             .unwrap_or_default(),
         allow_action: flag(fields, "allowAction", name)?,
         compute_result: flag(fields, "computeResult", name)?,
+        subscribable: flag(fields, "subscribable", name)?,
         rate: text("rate"),
         every: text("every"),
         doc: text("doc"),
