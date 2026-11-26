@@ -281,6 +281,8 @@ pub struct Changed {
     /// The entry (`AppState::last_index` once it applied).
     pub index: u64,
     pub keys: Option<Vec<Vec<u8>>>,
+    /// The entry changed what `blobs_info` answers for one of the app's blobs.
+    pub blobs: bool,
 }
 
 pub struct AppMachine {
@@ -549,11 +551,22 @@ impl Machine for AppMachine {
             Some(Kind::Wasmer) => false,
             None => crate::component::ComponentCmd::is_component(command),
         };
+        let blobs_before = self.state.component.blobs.visible_changes;
         let out = if component {
             self.apply_component(tx, index, command)
         } else {
             Self::unsupported(index)
         };
+        if self.state.component.blobs.visible_changes != blobs_before
+            && self.changes_tx.receiver_count() > 0
+            && !tx.failed()
+        {
+            let _receivers = self.changes_tx.send(Arc::new(Changed {
+                index,
+                keys: Some(Vec::new()),
+                blobs: true,
+            }));
+        }
         if tx.failed() {
             // The group stops on this entry (`StateTx::fail`): it never applied.
             return out;
@@ -593,6 +606,7 @@ impl Machine for AppMachine {
             let _receivers = self.changes_tx.send(Arc::new(Changed {
                 index: self.state.last_index,
                 keys: None,
+                blobs: true,
             }));
         }
         Ok(())

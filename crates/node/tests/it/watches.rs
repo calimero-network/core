@@ -532,3 +532,144 @@ async fn the_app_sets_the_watch_rate_and_a_client_can_only_slow_it() {
         "get {fast} vs entries {slow} frames in {spent:?}"
     );
 }
+
+/// Every node's count of one [`calimero_node::watch::RunStats`] field.
+fn runs(c: &Cluster, f: fn(&calimero_node::watch::RunStats) -> u64) -> u64 {
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| f(&r.node.watches.runs.stats))
+        .sum()
+}
+
+fn reruns(s: &calimero_node::watch::RunStats) -> u64 {
+    s.reruns.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Alice's org with Bob and Carol in it as members, and a kv app in it.
+async fn org_with_members(
+    c: &Cluster,
+) -> (Client, SoftAuthenticator, Client, Client, String, String) {
+    let (alice, mut a) = signed_up(c, 0, "alice").await;
+    let (bob, _b) = signed_up(c, 1, "bob").await;
+    let (carol, _c) = signed_up(c, 2, "carol").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    for who in [&bob, &carol] {
+        let token = s(
+            alice
+                .orgs()
+                .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+                .await
+                .map(wire)
+                .unwrap(),
+            "token",
+        );
+        let _r = who.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let app = kv_app(&alice, json!({ "org": org })).await;
+    (alice, a, bob, carol, org, app)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_in_re_runs_no_view_and_a_promotion_only_the_promoted_ones() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a, bob, carol, org, app) = org_with_members(&c).await;
+    let mut bs = bob.watch_stream(&app, None).await.unwrap();
+    let mut cs = carol.watch_stream(&app, None).await.unwrap();
+    let wb = bob
+        .add_watch(&app, &bs.id, "myRole", json!({}), None)
+        .await
+        .unwrap();
+    let _wc = carol
+        .add_watch(&app, &cs.id, "myRole", json!({}), None)
+        .await
+        .unwrap();
+    assert!(frames_for(&mut bs, 1).await.is_empty());
+    let before = runs(&c, reruns);
+    // Another session of Alice's: sessions and tokens change no fact a view reads.
+    let _laptop = signed_in(&c, 2, &mut a).await;
+    assert!(frames_for(&mut bs, 2).await.is_empty());
+    assert_eq!(runs(&c, reruns), before);
+    // Bob promoted: Bob's view runs again, Carol's does not.
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .orgs()
+        .set_member(&org, &bob_id, typed(json!("admin")), Some(&mut a))
+        .await
+        .unwrap();
+    let (id, kind, data) = frame(&mut bs, 5).await.expect("Bob's new role");
+    assert_eq!(result_of(&kind, &id, &data, &wb.sub).1, json!("admin"));
+    assert!(frames_for(&mut cs, 2).await.is_empty());
+    assert_eq!(runs(&c, reruns), before + 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn fifty_watches_of_one_view_share_one_run_per_change() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let mut stream = alice.watch_stream(&app, None).await.unwrap();
+    let mut subs = Vec::new();
+    for _ in 0..50 {
+        let w = alice
+            .add_watch(&app, &stream.id, "get", json!({ "key": "a" }), None)
+            .await
+            .unwrap();
+        subs.push(w.sub);
+    }
+    let before = runs(&c, reruns);
+    let _i = set(&alice, &app, "a", "1").await;
+    let got = frames_for(&mut stream, 3).await;
+    assert_eq!(got.len(), 50, "{got:?}");
+    assert!(got.iter().all(|(_, _, d)| d["answer"] == json!("1")));
+    assert_eq!(runs(&c, reruns) - before, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn over_the_run_budget_frames_come_later_and_none_is_lost() {
+    let c = Cluster::start(3).await;
+    for r in c.nodes.iter().flatten() {
+        r.node.watches.runs.set_per_sec(1);
+    }
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let app = kv_app(&alice, json!({})).await;
+    let mut stream = alice.watch_stream(&app, None).await.unwrap();
+    let mut subs = Vec::new();
+    for k in ["a", "b", "c", "d"] {
+        let w = alice
+            .add_watch(&app, &stream.id, "get", json!({ "key": k }), None)
+            .await
+            .unwrap();
+        subs.push((w.sub, k));
+    }
+    for k in ["a", "b", "c", "d"] {
+        let _i = set(&alice, &app, k, &format!("{k}1")).await;
+    }
+    let got = frames_for(&mut stream, 12).await;
+    for (sub, k) in &subs {
+        let last = got
+            .iter()
+            .rev()
+            .find(|(_, _, d)| d["sub"] == json!(sub))
+            .unwrap_or_else(|| panic!("no frame for {k}: {got:?}"));
+        assert_eq!(last.2["answer"], json!(format!("{k}1")));
+    }
+    assert!(
+        runs(&c, |s| s
+            .deferred
+            .load(std::sync::atomic::Ordering::Relaxed))
+            > 0
+    );
+}

@@ -25,6 +25,7 @@ use calimero_app_host::{
 };
 use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
+use calimero_app_host::{SystemRead, MAX_SYSTEM_READS};
 use calimero_app_host::{MAX_XCALLS, XCALL_BAD_TARGET, XCALL_TOO_MANY};
 use serde_json::json;
 
@@ -677,42 +678,65 @@ fn a_view_records_what_it_read() {
     assert!(out.read_set.is_none());
 }
 
-/// Reading the directory or the clock marks the read set as depending on the system log;
-/// state reads alone do not.
+/// A view's read set names each system fact it read (and only those), the clock, blobs and
+/// the caller apart: state reads alone name none of them.
 #[test]
-fn a_view_that_reads_the_directory_reads_the_system() {
+fn a_view_records_which_system_facts_it_read() {
     let state = base(&[(b"a", b"1")]);
+    let finish = |host: HostCore| {
+        host.finish(Status::Ok, Vec::new(), Usage::default())
+            .read_set
+            .unwrap()
+    };
     let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
     let _ = host.storage_get(b"a");
-    let set = host
-        .finish(Status::Ok, Vec::new(), Usage::default())
-        .read_set
-        .unwrap();
+    let set = finish(host);
     assert!(!set.reads_system());
+    assert!(!set.reads_clock() && !set.reads_blobs() && !set.reads_caller());
 
-    let reads: [fn(&HostCore); 4] = [
-        |h| {
-            let _ = h.org();
-        },
-        |h| {
-            let _ = h.org_role("ada");
-        },
-        |h| {
-            let _ = h.in_team("ada", "t");
-        },
-        |h| {
-            let _ = h.wall_ms();
-        },
-    ];
-    for read in reads {
-        let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
-        read(&host);
-        let set = host
-            .finish(Status::Ok, Vec::new(), Usage::default())
-            .read_set
-            .unwrap();
-        assert!(set.reads_system());
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.org();
+    let _ = host.org_role("ada");
+    let _ = host.in_team("bob", "t");
+    let _ = host.orgs_of("cy");
+    let set = finish(host);
+    let reads: Vec<_> = set.system_reads().unwrap().iter().cloned().collect();
+    assert_eq!(
+        reads,
+        vec![
+            SystemRead::App,
+            SystemRead::Role("ada".into()),
+            SystemRead::OrgsOf("cy".into()),
+            SystemRead::Team {
+                account: "bob".into(),
+                team: "t".into()
+            },
+        ]
+    );
+    assert!(!set.reads_caller());
+
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.grant_scope();
+    let _ = host.wall_ms();
+    let set = finish(host);
+    assert!(set.reads_caller() && set.reads_clock());
+    assert_eq!(
+        set.system_reads()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![SystemRead::Grant("ada".into())]
+    );
+
+    // Past the cap the set reads "anything in the system", not a cut-down list.
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    for i in 0..=MAX_SYSTEM_READS {
+        let _ = host.org_role(&i.to_string());
     }
+    let set = finish(host);
+    assert!(set.reads_system());
+    assert!(set.system_reads().is_none());
 }
 
 /// A cursor read to its end covers its whole range, even when the view never closed it.

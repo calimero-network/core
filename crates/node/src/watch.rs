@@ -4,24 +4,32 @@
 //! A watch belongs to a watch stream (`GET /apps/{app}/events?watch=true`), held by the
 //! node that serves that stream: a replica of the app, since every replica applies every
 //! entry's diff ([`crate::app::Changed`]). The stream's task (`api::watches`) marks the
-//! watches a change touches (and, for a view that read the directory or the clock, every
-//! system change), runs each marked view again as its caller, at once for the first change
-//! and then at most once per the watch's interval, and pushes the new answer
+//! watches a change touches (a key or range it read; for a view that read the clock, any of
+//! the app's entries; for one that read a blob's metadata, an entry that changed it; for one
+//! that read the system log, a system entry that may change the very facts it read,
+//! [`crate::system::effects`]), runs each marked view again as its caller, at once for the
+//! first change and then at most once per the watch's interval, and pushes the new answer
 //! (`view-result`) unless it is the one last sent; an answer over
-//! [`MAX_PUSHED_ANSWER_BYTES`] goes as a bare `view-changed` the client re-reads. Nothing
-//! here keeps a view's answer: only its hash, to skip a frame that would repeat it.
+//! [`MAX_PUSHED_ANSWER_BYTES`] goes as a bare `view-changed` the client re-reads.
+//!
+//! What protects the node's CPU ([`Runs`]): watches of the same view, arguments and caller
+//! (any caller, when the view did not read who called it) share one run per state; at most
+//! [`MAX_CONCURRENT_RERUNS`] runs at once and [`MAX_RERUNS_PER_SEC`] a second over every
+//! stream, past which a watch waits a longer interval (its changes coalesce) instead of
+//! queueing. A shared run keeps its answer only until the state moves on.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use calimero_app_host::ReadSet;
+use calimero_app_host::{ReadSet, SystemRead};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 
 use crate::app::Changed;
+use crate::system::effects::{SysEffect, SysTouch};
 use crate::types::Caller;
 
 /// Watches one stream holds at most.
@@ -44,6 +52,23 @@ pub const EXPIRY_CHECK: Duration = Duration::from_secs(1);
 pub const RESUME_GRACE: Duration = Duration::from_secs(30);
 /// Frames a stream's connection buffers before notices wait for the next interval.
 pub const STREAM_BUFFER: usize = 256;
+/// View runs for watches this node makes at once at most, over every stream (each holds a
+/// blocking thread); fewer on a machine with fewer cores ([`concurrent_reruns`]).
+pub const MAX_CONCURRENT_RERUNS: usize = 16;
+/// View runs for watches this node starts in a second at most, over every stream. Past it
+/// a due watch waits another, longer interval (its changes coalesce) rather than queue: a
+/// burst stretches how often watches update, never how much the node runs.
+pub const MAX_RERUNS_PER_SEC: u32 = 2_000;
+/// Shared runs (one per view, arguments and caller watched) this node keeps at most.
+pub const MAX_SHARED_RUNS: usize = MAX_WATCHES_PER_NODE;
+
+/// The view runs this machine makes at once: its cores, at most [`MAX_CONCURRENT_RERUNS`].
+#[must_use]
+pub fn concurrent_reruns() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .clamp(1, MAX_CONCURRENT_RERUNS)
+}
 
 /// Who opened a stream, with the credential they opened it with: judged again, as
 /// `/events` judges its streams (`api::still_admitted`), before every notice.
@@ -153,6 +178,8 @@ pub struct Watch {
     /// The hash of the answer the client holds (the last one sent, or the one `POST
     /// /watches` answered); `None`: the next answer is sent whatever it is.
     last_hash: Option<[u8; 32]>,
+    /// Runs the node's budget put off in a row: each one waits one more interval.
+    deferred: u32,
 }
 
 impl Watch {
@@ -177,14 +204,86 @@ impl Watch {
             interval,
             last_run: None,
             last_hash: Some(answer_hash(answer)),
+            deferred: 0,
         }
+    }
+
+    /// The wait between two runs: the interval, one more for each run the node's budget put
+    /// off in a row, at most [`MAX_WATCH_INTERVAL`] (or the interval, if longer).
+    fn wait(&self) -> Duration {
+        let stretched = self
+            .interval
+            .saturating_mul(self.deferred.saturating_add(1));
+        stretched.min(MAX_WATCH_INTERVAL.max(self.interval))
     }
 
     /// When its next run may start (`now` if it may start now), if it is marked.
     fn ready_at(&self, now: Instant) -> Option<Instant> {
         self.dirty?;
-        Some(self.last_run.map_or(now, |t| (t + self.interval).max(now)))
+        Some(self.last_run.map_or(now, |t| (t + self.wait()).max(now)))
     }
+
+    /// Whether a write to the stored key `key`, by an entry that changed the app's blobs
+    /// when `blobs`, may change the view's answer. Every entry moves the clock a view sees.
+    fn touched_by(&self, keys: Option<&[Vec<u8>]>, blobs: bool) -> bool {
+        let rs = &self.read_set;
+        match keys {
+            None => true,
+            Some(keys) => {
+                rs.reads_clock()
+                    || (blobs && rs.reads_blobs())
+                    || keys.iter().any(|k| rs.touches_key(k))
+            }
+        }
+    }
+}
+
+/// Whether a system entry of `effect` may change what a view that read `rs` answers, in an
+/// app of `org`.
+#[must_use]
+pub fn system_touches(rs: &ReadSet, effect: &SysEffect, org: Option<&str>) -> bool {
+    match effect {
+        SysEffect::Quiet | SysEffect::Access => false,
+        SysEffect::All => rs.reads_system(),
+        SysEffect::Touches(touches) => match rs.system_reads() {
+            None => true,
+            Some(reads) => touches.iter().any(|t| fact_touched(reads, t, org)),
+        },
+    }
+}
+
+/// Whether `touch` may change one of `reads`, the facts a view of an app in `org` read.
+fn fact_touched(reads: &BTreeSet<SystemRead>, touch: &SysTouch, org: Option<&str>) -> bool {
+    // A fact of the app's org: an entry of another org (named) cannot change it.
+    let ours = |o: &Option<String>| o.as_deref().is_none_or(|o| Some(o) == org);
+    let same = |a: &Option<String>, b: &str| a.as_deref().is_none_or(|a| a == b);
+    reads.iter().any(|read| match (read, touch) {
+        (SystemRead::App, _) => false,
+        (SystemRead::Role(a), SysTouch::Member { org: o, account }) => ours(o) && a == account,
+        (SystemRead::OrgsOf(a), SysTouch::Member { account, .. }) => a == account,
+        (SystemRead::Team { account, .. }, SysTouch::Member { org: o, account: b }) => {
+            ours(o) && account == b
+        }
+        (
+            SystemRead::Team { account, team },
+            SysTouch::Team {
+                org: o,
+                team: t,
+                account: b,
+            },
+        ) => ours(o) && same(t, team) && same(b, account),
+        (SystemRead::Grant(a), SysTouch::Member { org: o, account }) => ours(o) && a == account,
+        (
+            SystemRead::Grant(a),
+            SysTouch::Team {
+                org: o, account, ..
+            },
+        )
+        | (SystemRead::Grant(a), SysTouch::Grant { org: o, account }) => {
+            ours(o) && same(account, a)
+        }
+        _ => false,
+    })
 }
 
 /// A watch that is due a notice.
@@ -293,27 +392,42 @@ impl WatchStream {
             if change.index <= w.since {
                 continue;
             }
-            let hit = match &change.keys {
-                None => true,
-                Some(keys) => keys.iter().any(|k| w.read_set.touches_key(k)),
-            };
-            if hit {
+            if w.touched_by(change.keys.as_deref(), change.blobs) {
                 w.dirty = Some(w.dirty.map_or(change.index, |d| d.max(change.index)));
                 w.touched = w.touched.max(change.index);
             }
         }
     }
 
-    /// Marks every watch whose view read the directory, a blob's metadata or the clock: a
-    /// system change may have changed its answer. `index` is the app's last entry.
-    pub fn mark_system(&self, index: u64) {
+    /// Marks every watch whose view read a system fact `effect` may change; `org` is the
+    /// app's org, `index` the app's last entry. Answers how many it marked.
+    pub fn mark_system(&self, effect: &SysEffect, org: Option<&str>, index: u64) -> usize {
         let mut st = self.lock();
+        let mut marked = 0;
         for w in st.watches.values_mut() {
-            if w.read_set.reads_system() {
+            if system_touches(&w.read_set, effect, org) {
+                marked += 1;
                 let at = index.max(w.since);
                 w.dirty = Some(w.dirty.map_or(at, |d| d.max(at)));
                 w.touched = w.touched.max(at);
             }
+        }
+        marked
+    }
+
+    /// Puts a run the node's budget refused back, one interval later than the last wait.
+    pub fn defer(&self, sub: &str, index: u64) {
+        if let Some(w) = self.lock().watches.get_mut(sub) {
+            w.dirty = Some(w.dirty.map_or(index, |d| d.max(index)));
+            w.deferred = w.deferred.saturating_add(1);
+            w.last_run = Some(Instant::now());
+        }
+    }
+
+    /// A run went ahead: the watch is back to its own interval.
+    pub fn ran(&self, sub: &str) {
+        if let Some(w) = self.lock().watches.get_mut(sub) {
+            w.deferred = 0;
         }
     }
 
@@ -447,6 +561,123 @@ pub struct Watches {
     /// Watch id to its stream.
     subs: Mutex<HashMap<String, String>>,
     total: AtomicUsize,
+    /// The node's view runs for watches: shared, bounded and budgeted.
+    pub runs: Runs,
+}
+
+/// One view's answer as a watch run made it, shared by every watch of the same view,
+/// arguments and caller (any caller, if `caller_free`) while the state it read is current.
+#[derive(Debug)]
+pub struct SharedRun {
+    /// `(the app's last entry, the system's applied index)` before the run started.
+    pub version: (u64, u64),
+    pub answer: Result<Value, Value>,
+    pub read_set: ReadSet,
+    /// The app's last entry in the state the view read.
+    pub last_entry: u64,
+}
+
+/// `(app, view, arguments as JSON)` and the caller (`None`: a view that did not read it).
+type SharedKey = (String, String, String, Option<String>);
+
+/// A slot one run fills and the watches of the same key wait on (single flight).
+pub type SharedSlot = Arc<tokio::sync::Mutex<Option<Arc<SharedRun>>>>;
+
+/// Counts of what [`Runs`] did, for the metrics and tests.
+#[derive(Debug, Default)]
+pub struct RunStats {
+    /// Views run for watches.
+    pub reruns: AtomicU64,
+    /// Watches answered from another watch's run.
+    pub shared: AtomicU64,
+    /// Answers that were not sent: the client holds them already.
+    pub unchanged: AtomicU64,
+    /// Runs the per-second budget put off.
+    pub deferred: AtomicU64,
+}
+
+/// The node's view runs for watches.
+pub struct Runs {
+    /// At most [`concurrent_reruns`] at once.
+    pub permits: tokio::sync::Semaphore,
+    /// Runs a second at most ([`MAX_RERUNS_PER_SEC`]; tests lower it).
+    per_sec: AtomicU32,
+    /// `(when this second's window started, runs in it)`.
+    window: Mutex<(Instant, u32)>,
+    slots: Mutex<HashMap<SharedKey, SharedSlot>>,
+    pub stats: RunStats,
+}
+
+impl Default for Runs {
+    fn default() -> Self {
+        Self {
+            permits: tokio::sync::Semaphore::new(concurrent_reruns()),
+            per_sec: AtomicU32::new(MAX_RERUNS_PER_SEC),
+            window: Mutex::new((Instant::now(), 0)),
+            slots: Mutex::new(HashMap::new()),
+            stats: RunStats::default(),
+        }
+    }
+}
+
+impl Runs {
+    /// Sets the per-second budget (tests).
+    pub fn set_per_sec(&self, n: u32) {
+        self.per_sec.store(n, Ordering::Relaxed);
+    }
+
+    /// Takes one run from this second's budget; `false` when it is spent.
+    pub fn take(&self) -> bool {
+        let mut w = self
+            .window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if w.0.elapsed() >= Duration::from_secs(1) {
+            *w = (Instant::now(), 0);
+        }
+        if w.1 >= self.per_sec.load(Ordering::Relaxed) {
+            return false;
+        }
+        w.1 += 1;
+        true
+    }
+
+    /// The slot of `key`, made if new. Past [`MAX_SHARED_RUNS`] the slots nobody waits on
+    /// are dropped first (their answers are of states gone by).
+    #[must_use]
+    pub fn slot(&self, key: (String, String, String, Option<String>)) -> SharedSlot {
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !slots.contains_key(&key) && slots.len() >= MAX_SHARED_RUNS {
+            slots.retain(|_, s| Arc::strong_count(s) > 1);
+            if slots.len() >= MAX_SHARED_RUNS {
+                slots.clear();
+            }
+        }
+        Arc::clone(slots.entry(key).or_default())
+    }
+
+    /// The caller-free run of `(app, view, args)` at `version`, if one is kept.
+    #[must_use]
+    pub fn caller_free(
+        &self,
+        app: &str,
+        view: &str,
+        args: &str,
+        version: (u64, u64),
+    ) -> Option<Arc<SharedRun>> {
+        let key = (app.to_owned(), view.to_owned(), args.to_owned(), None);
+        let slot = self
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned()?;
+        let held = slot.try_lock().ok()?;
+        held.as_ref().filter(|r| r.version == version).cloned()
+    }
 }
 
 impl Watches {
@@ -560,11 +791,18 @@ mod tests {
         })
     }
 
-    /// A set taken from a view that read the org.
-    fn system_read_set() -> ReadSet {
+    /// A set taken from a view that read `account`'s role in the app's org.
+    fn role_read_set(account: &str) -> ReadSet {
         recorded(&[], |h| {
-            let _ = h.org();
+            let _ = h.org_role(account);
         })
+    }
+
+    fn member(org: &str, account: &str) -> SysEffect {
+        SysEffect::Touches(vec![SysTouch::Member {
+            org: Some(org.into()),
+            account: account.into(),
+        }])
     }
 
     fn recorded(
@@ -626,6 +864,7 @@ mod tests {
         Changed {
             index,
             keys: Some(vec![stored(key)]),
+            blobs: false,
         }
     }
 
@@ -721,22 +960,118 @@ mod tests {
     }
 
     #[test]
-    fn system_changes_mark_only_views_that_read_the_system() {
+    fn system_entries_mark_only_views_that_read_a_fact_they_change() {
         let watches = Watches::default();
         let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
-        let mut rs = read_set_of(&[], b"a");
+        let plain = read_set_of(&[], b"a");
+        for (sub, rs) in [
+            ("plain", plain),
+            ("ada", role_read_set("ada")),
+            ("bob", role_read_set("bob")),
+        ] {
+            watches
+                .add(&stream, sub.into(), watch(rs, 4), || 4)
+                .unwrap();
+        }
+        let subs = |stream: &WatchStream| -> Vec<String> {
+            due_now(stream).into_iter().map(|d| d.sub).collect()
+        };
+        // A refreshed token or a revoked session changes no fact a view reads.
+        assert_eq!(stream.mark_system(&SysEffect::Quiet, Some("o"), 4), 0);
+        assert_eq!(stream.mark_system(&SysEffect::Access, Some("o"), 4), 0);
+        // Ada promoted in another org: not this app's role.
+        assert_eq!(stream.mark_system(&member("other", "ada"), Some("o"), 4), 0);
+        // Ada promoted in the app's org: only Ada's view.
+        assert_eq!(stream.mark_system(&member("o", "ada"), Some("o"), 4), 1);
+        assert_eq!(subs(&stream), vec!["ada".to_owned()]);
+        // An entry nobody classified: every view that read the system.
+        assert_eq!(stream.mark_system(&SysEffect::All, Some("o"), 4), 2);
+    }
+
+    #[test]
+    fn a_clock_reader_follows_every_entry_and_a_blob_reader_blob_changes() {
+        let watches = Watches::default();
+        let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
+        let clock = recorded(&[], |h| {
+            let _ = h.wall_ms();
+        });
+        let blobs = recorded(&[], |h| {
+            let _ = h.blobs_info(&"0".repeat(64));
+        });
         watches
-            .add(&stream, "plain".into(), watch(rs.clone(), 4), || 4)
+            .add(&stream, "clock".into(), watch(clock, 1), || 1)
             .unwrap();
-        rs = system_read_set();
         watches
-            .add(&stream, "dir".into(), watch(rs, 4), || 4)
+            .add(&stream, "blobs".into(), watch(blobs, 1), || 1)
             .unwrap();
-        stream.mark_system(4);
-        let due = due_now(&stream);
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].sub, "dir");
-        assert_eq!(due[0].index, 4);
+        stream.mark(&change(2, b"z"));
+        assert_eq!(due_now(&stream)[0].sub, "clock");
+        stream.mark(&Changed {
+            index: 3,
+            keys: Some(Vec::new()),
+            blobs: true,
+        });
+        let due: Vec<String> = stream
+            .take_due(Instant::now() + MAX_WATCH_INTERVAL)
+            .0
+            .into_iter()
+            .map(|d| d.sub)
+            .collect();
+        assert_eq!(due, vec!["blobs".to_owned(), "clock".to_owned()]);
+    }
+
+    #[test]
+    fn a_deferred_watch_waits_a_longer_interval_and_keeps_its_mark() {
+        let watches = Watches::default();
+        let stream = watches.open("s".into(), "app".into(), holder()).unwrap();
+        watches
+            .add(&stream, "w".into(), watch(read_set_of(&[], b"a"), 1), || 1)
+            .unwrap();
+        stream.mark(&change(2, b"a"));
+        assert_eq!(due_now(&stream).len(), 1);
+        stream.defer("w", 2);
+        stream.defer("w", 2);
+        let now = Instant::now();
+        // Two deferrals in a row: three intervals before it may run again.
+        assert!(stream
+            .take_due(now + DEFAULT_WATCH_INTERVAL * 2)
+            .0
+            .is_empty());
+        let due = stream.take_due(now + DEFAULT_WATCH_INTERVAL * 3).0;
+        assert_eq!(due[0].index, 2);
+        stream.ran("w");
+        stream.mark(&change(3, b"a"));
+        let at = Instant::now() + DEFAULT_WATCH_INTERVAL * 4;
+        assert_eq!(stream.take_due(at).0.len(), 1);
+    }
+
+    #[test]
+    fn the_run_budget_is_per_second_and_slots_are_shared_by_key() {
+        let runs = Runs::default();
+        runs.set_per_sec(2);
+        assert!(runs.take() && runs.take());
+        assert!(!runs.take());
+        let key = |caller: Option<&str>| {
+            (
+                "app".to_owned(),
+                "v".to_owned(),
+                "{}".to_owned(),
+                caller.map(str::to_owned),
+            )
+        };
+        let a = runs.slot(key(Some("ada")));
+        assert!(Arc::ptr_eq(&a, &runs.slot(key(Some("ada")))));
+        assert!(!Arc::ptr_eq(&a, &runs.slot(key(Some("bob")))));
+        let free = runs.slot(key(None));
+        *free.try_lock().unwrap() = Some(Arc::new(SharedRun {
+            version: (5, 9),
+            answer: Ok(Value::Null),
+            read_set: ReadSet::default(),
+            last_entry: 5,
+        }));
+        assert!(runs.caller_free("app", "v", "{}", (5, 9)).is_some());
+        // A state moved on: the kept answer is of a state gone by.
+        assert!(runs.caller_free("app", "v", "{}", (6, 9)).is_none());
     }
 
     #[test]

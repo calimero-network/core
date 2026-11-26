@@ -1303,6 +1303,7 @@ impl AppMachine {
                     let _receivers = self.changes_tx.send(Arc::new(crate::app::Changed {
                         index,
                         keys: Some(keys),
+                        blobs: false,
                     }));
                 }
             }

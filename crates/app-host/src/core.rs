@@ -25,7 +25,7 @@ use crate::fuel::{
     SEARCH_TOO_MANY,
 };
 use crate::overlay::{Cursor, Overlay};
-use crate::read_set::{table_records, CursorRead, ReadSet};
+use crate::read_set::{table_records, CursorRead, ReadSet, SystemRead};
 use crate::runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN, NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN,
@@ -335,11 +335,12 @@ impl HostCore {
         self
     }
 
-    /// Notes, while recording, that the run read the directory, a blob's metadata or the
-    /// clock ([`ReadSet::reads_system`]).
-    fn read_system(&self) {
+    /// Notes, while recording, what the run read besides its own state
+    /// ([`ReadSet::system_reads`], [`ReadSet::reads_blobs`], [`ReadSet::reads_clock`],
+    /// [`ReadSet::reads_caller`]).
+    fn note(&self, f: impl FnOnce(&mut ReadSet)) {
         if let Some(set) = self.read_set.borrow_mut().as_mut() {
-            set.system();
+            f(set);
         }
     }
 
@@ -723,6 +724,7 @@ impl HostCore {
 
     #[must_use]
     pub fn caller(&self) -> &Caller {
+        self.note(ReadSet::caller);
         &self.inv.caller
     }
 
@@ -731,6 +733,7 @@ impl HostCore {
     /// person); none otherwise.
     #[must_use]
     pub fn via(&self) -> Option<&str> {
+        self.note(ReadSet::caller);
         self.via.as_deref()
     }
 
@@ -765,7 +768,7 @@ impl HostCore {
 
     #[must_use]
     pub fn app_owner(&self) -> String {
-        self.read_system();
+        self.note(|s| s.system(SystemRead::App));
         match &self.inv.compute {
             Some(run) => run.owner.clone(),
             None => self.dir.app_owner(),
@@ -775,7 +778,7 @@ impl HostCore {
     /// The app linked under `name` (`context.linked`); none in a compute run.
     #[must_use]
     pub fn linked(&self, name: &str) -> Option<String> {
-        self.read_system();
+        self.note(|s| s.system(SystemRead::App));
         if self.is_compute() {
             return None;
         }
@@ -785,7 +788,7 @@ impl HostCore {
     /// The app whose unit this one is a member of (`context.unit-of`); none in a compute run.
     #[must_use]
     pub fn unit_of(&self) -> Option<String> {
-        self.read_system();
+        self.note(|s| s.system(SystemRead::App));
         if self.is_compute() {
             return None;
         }
@@ -797,12 +800,13 @@ impl HostCore {
     /// a compute run.
     #[must_use]
     pub fn grant_scope(&self) -> Option<String> {
-        self.read_system();
+        self.note(ReadSet::caller);
         if self.is_compute() {
             return None;
         }
         match &self.inv.caller {
             Caller::Account(account) | Caller::ApiKey { account, .. } => {
+                self.note(|s| s.system(SystemRead::Grant(account.clone())));
                 self.dir.grant_scope(account)
             }
             _ => None,
@@ -811,7 +815,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org(&self) -> Option<String> {
-        self.read_system();
+        self.note(|s| s.system(SystemRead::App));
         if self.is_compute() {
             return None;
         }
@@ -820,7 +824,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org_role(&self, account: &str) -> Option<OrgRole> {
-        self.read_system();
+        self.note(|s| s.system(SystemRead::Role(account.to_owned())));
         if self.is_compute() {
             return None;
         }
@@ -838,7 +842,7 @@ impl HostCore {
 
     #[must_use]
     pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
-        self.read_system();
+        self.note(|s| s.system(SystemRead::OrgsOf(account.to_owned())));
         if self.is_compute() {
             return Vec::new();
         }
@@ -847,7 +851,12 @@ impl HostCore {
 
     #[must_use]
     pub fn in_team(&self, account: &str, team: &str) -> bool {
-        self.read_system();
+        self.note(|s| {
+            s.system(SystemRead::Team {
+                account: account.to_owned(),
+                team: team.to_owned(),
+            });
+        });
         !self.is_compute() && self.dir.in_team(account, team)
     }
 
@@ -1357,7 +1366,7 @@ impl HostCore {
     /// A blob's metadata, if it is one of the app's blobs; `None` for any other id.
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
-        self.read_system();
+        self.note(ReadSet::blobs);
         self.burn_bytes(id.len());
         self.may_use_blobs("blobs.info")?;
         let blob = parse_blob_id(id).and_then(|id| self.blobs.info(&id));
@@ -1596,13 +1605,13 @@ impl HostCore {
 
     #[must_use]
     pub fn wall_ms(&self) -> u64 {
-        self.read_system();
+        self.note(ReadSet::clock);
         time::wall_ms(&self.inv)
     }
 
     #[must_use]
     pub fn monotonic_ns(&self) -> u64 {
-        self.read_system();
+        self.note(ReadSet::clock);
         time::monotonic_ns(&self.inv)
     }
 

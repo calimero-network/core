@@ -101,8 +101,8 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
   `error.rs`, `metrics.rs`, `consent_page.rs` and `consent_page/`, `app_host.rs` (frontends),
   `origins.rs`, `presence.rs`, `watch.rs` with `api/watches.rs` (live views: watch streams
   on `/apps/{app}/events?watch=true`, each watch's read set checked against every applied
-  diff through `AppMachine::changes_tx`, and a view that read the directory or the clock
-  re-run on every applied system entry; the holder is judged on each system entry and
+  diff through `AppMachine::changes_tx`, and a view that read the directory
+  re-run only on an applied system entry that may change a fact it read (`system/effects.rs` classifies each command; an unclassified one touches every such view), a clock reader on every app entry and a blob reader on a blob change; watches of the same view, arguments and caller share one run per state, at most `MAX_CONCURRENT_RERUNS` at once and `MAX_RERUNS_PER_SEC` a second, past which a watch waits a longer interval; the holder is judged on each system entry that is not a token refresh and
   before each frame; the new answer is pushed as `view-result` (first change at once, then
   at most once per the watch's interval (the view's `watchIntervalMs`, default 1 s; a
   client's `intervalMs` can only lengthen it, `watch::interval_of`), skipped when its hash

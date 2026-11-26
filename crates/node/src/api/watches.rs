@@ -27,16 +27,19 @@
 )]
 use super::*;
 
+use std::sync::atomic::Ordering;
+
 use calimero_identity::{b64url, from_b64url, random};
 use tokio::sync::{broadcast, mpsc};
 
 use super::calls::not_reserved;
 use super::internal::{caller_may_hold_app, peer};
 use crate::app::Changed;
+use crate::system::effects::SysEffect;
 use crate::watch::{
-    interval_of, Due, EndReason, Full, Holder, Notice, Watch, WatchStream, EXPIRY_CHECK,
-    MAX_PUSHED_ANSWER_BYTES, MAX_WATCHES_PER_NODE, MAX_WATCHES_PER_STREAM, MAX_WATCH_ARGS_BYTES,
-    STREAM_BUFFER,
+    concurrent_reruns, interval_of, Due, EndReason, Full, Holder, Notice, SharedRun, Watch,
+    WatchStream, EXPIRY_CHECK, MAX_PUSHED_ANSWER_BYTES, MAX_WATCHES_PER_NODE,
+    MAX_WATCHES_PER_STREAM, MAX_WATCH_ARGS_BYTES, STREAM_BUFFER,
 };
 
 /// Who holds a request's credential, for the stream and its watches.
@@ -127,7 +130,7 @@ pub(super) fn local_stream(
                     )
                 })?;
             let changes = g.read_local(|m, _| m.changes_tx.subscribe());
-            let system = node.system.subscribe_applied();
+            let system = node.system.read_local(|m, _| m.effects.subscribe());
             let _task = tokio::spawn(drive(
                 Arc::clone(node),
                 Arc::clone(&stream),
@@ -202,7 +205,7 @@ async fn drive(
     node: Arc<Node>,
     stream: Arc<WatchStream>,
     mut changes: broadcast::Receiver<Arc<Changed>>,
-    mut system: tokio::sync::watch::Receiver<u64>,
+    mut system: broadcast::Receiver<Arc<(u64, SysEffect)>>,
 ) {
     let mut next = None;
     loop {
@@ -217,15 +220,18 @@ async fn drive(
                 Err(broadcast::error::RecvError::Lagged(_)) => stream.mark(&Changed {
                     index: last_entry(&node, &stream.app),
                     keys: None,
+                    blobs: true,
                 }),
                 Err(broadcast::error::RecvError::Closed) => break,
             },
-            changed = system.changed() => {
-                if changed.is_err() {
-                    break;
+            effect = system.recv() => match effect {
+                Ok(effect) => system_changed(&node, &stream, &effect.1),
+                // Fallen behind: anything may have changed.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    system_changed(&node, &stream, &SysEffect::All);
                 }
-                system_changed(&node, &stream);
-            }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
             () = tokio::time::sleep_until(wake_at) => {
                 if stream.expired() {
                     break;
@@ -238,10 +244,14 @@ async fn drive(
     node.watches.close(&stream.id);
 }
 
-/// An applied system entry: a holder this replica's system state no longer admits loses
-/// every watch at once (the next frame would judge it on fresh state anyway); the views that
-/// read the directory, a blob's metadata or the clock are run again.
-fn system_changed(node: &Node, stream: &WatchStream) {
+/// An applied system entry: unless it is [`SysEffect::Quiet`] (a token refreshed, a sign
+/// count), a holder this replica's system state no longer admits loses every watch at once
+/// (the next frame would judge it on fresh state anyway); the views that read a system fact
+/// it may change run again ([`crate::watch::system_touches`]).
+fn system_changed(node: &Node, stream: &WatchStream, effect: &SysEffect) {
+    if *effect == SysEffect::Quiet {
+        return;
+    }
     let principal = principal_of(&stream.holder);
     if !node.sys(|s| principal.admitted_on(s, &stream.app, now_secs())) {
         if let Some(out) = stream.out() {
@@ -251,7 +261,11 @@ fn system_changed(node: &Node, stream: &WatchStream) {
         }
         return;
     }
-    stream.mark_system(last_entry(node, &stream.app));
+    if *effect == SysEffect::Access {
+        return;
+    }
+    let org = node.sys(|s| s.apps.get(&stream.app).map(|a| a.org.clone()));
+    let _marked = stream.mark_system(effect, org.as_deref(), last_entry(node, &stream.app));
 }
 
 /// The app's last applied entry on this replica (0 if it is not hosted here).
@@ -266,13 +280,41 @@ async fn flush(node: &Arc<Node>, stream: &Arc<WatchStream>) -> Option<std::time:
     // Without a client the marks wait for one: a resumed stream sends them at once.
     let out = stream.out()?;
     let (due, _) = stream.take_due(std::time::Instant::now());
-    for d in due {
-        match access(node, stream, &d.view).await {
-            Access::Unknown => stream.remark(&d.sub, d.index, false),
-            Access::Lost => end(node, stream, &out, d.sub, EndReason::AccessLost),
-            Access::Granted => refresh(node, stream, &out, d).await,
-        }
+    if due.is_empty() {
+        return stream.next_due();
     }
+    // The holder is judged once per flush; each view's gate once per view.
+    let app = match holder_access(node, stream).await {
+        Ok(app) => app,
+        Err(Access::Lost) => {
+            for d in due {
+                end(node, stream, &out, d.sub, EndReason::AccessLost);
+            }
+            return stream.next_due();
+        }
+        Err(_) => {
+            for d in &due {
+                stream.remark(&d.sub, d.index, false);
+            }
+            return stream.next_due();
+        }
+    };
+    let views: BTreeSet<&str> = due.iter().map(|d| d.view.as_str()).collect();
+    let mut gates = HashMap::new();
+    for view in views {
+        let _prev = gates.insert(view.to_owned(), view_access(node, stream, &app, view).await);
+    }
+    let out = &out;
+    let gates = &gates;
+    futures_util::stream::iter(due)
+        .for_each_concurrent(concurrent_reruns(), |d| async move {
+            match gates.get(&d.view) {
+                Some(Access::Granted) => refresh(node, stream, out, d).await,
+                Some(Access::Lost) => end(node, stream, out, d.sub, EndReason::AccessLost),
+                _ => stream.remark(&d.sub, d.index, false),
+            }
+        })
+        .await;
     stream.next_due()
 }
 
@@ -283,18 +325,32 @@ enum Access {
     Unknown,
 }
 
-/// Whether the stream's holder may still call `view`: their credential still admits them
-/// to the app on the cluster's latest system state (as `/events` judges its streams: an
-/// ended session, a removed passkey, a revoked or expired API key, a session bound to
-/// another package), and the ABI still lets them call it.
-async fn access(node: &Node, stream: &WatchStream, view: &str) -> Access {
+/// Whether the stream's holder is still admitted to the app on the cluster's latest system
+/// state (as `/events` judges its streams: an ended session, a removed passkey, a revoked or
+/// expired API key, a session bound to another package): the app's record if so.
+async fn holder_access(
+    node: &Node,
+    stream: &WatchStream,
+) -> Result<crate::types::AppRecord, Access> {
     let principal = principal_of(&stream.holder);
     if !node.sys_caught_up().await {
-        return Access::Unknown;
+        return Err(Access::Unknown);
     }
     if !node.sys(|s| principal.admitted_on(s, &stream.app, now_secs())) {
-        return Access::Lost;
+        return Err(Access::Lost);
     }
+    node.sys(|s| s.apps.get(&stream.app).cloned())
+        .ok_or(Access::Lost)
+}
+
+/// Whether the admitted holder may still call `view`: their API key's methods name it and
+/// the ABI still lets them call it.
+async fn view_access(
+    node: &Node,
+    stream: &WatchStream,
+    app: &crate::types::AppRecord,
+    view: &str,
+) -> Access {
     if let Some(key) = &stream.holder.api_key {
         let scoped = key
             .methods
@@ -304,11 +360,8 @@ async fn access(node: &Node, stream: &WatchStream, view: &str) -> Access {
             return Access::Lost;
         }
     }
-    let Some(app) = node.sys(|s| s.apps.get(&stream.app).cloned()) else {
-        return Access::Lost;
-    };
     match node
-        .abi_gate(&app, view, &stream.holder.caller, true, false)
+        .abi_gate(app, view, &stream.holder.caller, true, false)
         .await
     {
         Ok(()) => Access::Granted,
@@ -322,47 +375,72 @@ fn refuses(e: &ApiError) -> bool {
     matches!(e.status, 401 | 403 | 404)
 }
 
-/// Runs the watch's view again as the holder, keeps what it read, and sends its answer if
-/// it differs from the one the client holds. A view that can no longer be watched (refused,
-/// or reading past the read-set caps) ends the watch; a trap or timeout tries again after
-/// the interval.
+/// Runs the watch's view again as the holder (or takes the answer another watch of the same
+/// view, arguments and caller got from the same state), keeps what it read, and sends its
+/// answer if it differs from the one the client holds. A view that can no longer be watched
+/// (refused, or reading past the read-set caps) ends the watch; a trap or timeout tries
+/// again after the interval; a run the node's budget refuses waits a longer one.
 async fn refresh(node: &Arc<Node>, stream: &WatchStream, out: &mpsc::Sender<Notice>, d: Due) {
     let Some(g) = node.hosted(&stream.app) else {
         return;
     };
-    let req = ViewRequest {
-        app_id: stream.app.clone(),
-        method: d.view,
-        args: d.args,
-        caller: stream.holder.caller.clone(),
-        strong: false,
-        min_index: 0,
-        via: None,
+    let runs = &node.watches.runs;
+    let version = (
+        g.read_local(|m, _| m.state.last_index),
+        node.system.read_local(|_, applied| applied),
+    );
+    let args = d.args.to_string();
+    let shared = runs.caller_free(&stream.app, &d.view, &args, version);
+    let run = if let Some(run) = shared {
+        let _ = runs.stats.shared.fetch_add(1, Ordering::Relaxed);
+        crate::metrics::live_view(crate::metrics::LiveView::Shared);
+        run
+    } else {
+        let caller = serde_json::to_string(&stream.holder.caller).unwrap_or_default();
+        let slot = runs.slot((
+            stream.app.clone(),
+            d.view.clone(),
+            args.clone(),
+            Some(caller),
+        ));
+        let mut held = slot.lock().await;
+        match held.as_ref().filter(|r| r.version == version) {
+            Some(run) => {
+                let _ = runs.stats.shared.fetch_add(1, Ordering::Relaxed);
+                crate::metrics::live_view(crate::metrics::LiveView::Shared);
+                Arc::clone(run)
+            }
+            None => {
+                if !runs.take() {
+                    let _ = runs.stats.deferred.fetch_add(1, Ordering::Relaxed);
+                    crate::metrics::live_view(crate::metrics::LiveView::Deferred);
+                    return stream.defer(&d.sub, d.index);
+                }
+                let Some(run) = run_view(node, &g, stream, out, &d, version).await else {
+                    return;
+                };
+                if !run.read_set.reads_caller() {
+                    let free = runs.slot((stream.app.clone(), d.view.clone(), args, None));
+                    if let Ok(mut kept) = free.try_lock() {
+                        *kept = Some(Arc::clone(&run));
+                    };
+                }
+                *held = Some(Arc::clone(&run));
+                run
+            }
+        }
     };
-    let run = match node.view_component(&g, &req, None, true).await {
-        Ok(run) => run,
-        Err(e) if refuses(&e) => return end(node, stream, out, d.sub, EndReason::ViewRefused),
-        Err(_) => return stream.remark(&d.sub, d.index, false),
-    };
-    let answer = match run.answer.status {
-        Status::Ok => Ok(run.answer.result),
-        Status::AppError => Err(run.answer.error),
-        _ => return stream.remark(&d.sub, d.index, false),
-    };
-    let Some(set) = run.read_set else {
-        return stream.remark(&d.sub, d.index, false);
-    };
-    if set.unbounded().is_some() {
-        return end(node, stream, out, d.sub, EndReason::ReadSetUnbounded);
-    }
-    stream.refresh(&d.sub, set, run.last_entry, || {
+    stream.ran(&d.sub);
+    stream.refresh(&d.sub, run.read_set.clone(), run.last_entry, || {
         g.read_local(|m, _| m.state.last_index)
     });
-    if !stream.answer_changed(&d.sub, &answer) {
+    if !stream.answer_changed(&d.sub, &run.answer) {
+        let _ = runs.stats.unchanged.fetch_add(1, Ordering::Relaxed);
+        crate::metrics::live_view(crate::metrics::LiveView::Unchanged);
         return;
     }
     let (index, seq) = (run.last_entry.max(d.index), stream.next_seq());
-    let bytes = match &answer {
+    let bytes = match &run.answer {
         Ok(v) | Err(v) => serde_json::to_vec(v).map_or(usize::MAX, |b| b.len()),
     };
     let notice = if bytes > MAX_PUSHED_ANSWER_BYTES {
@@ -376,12 +454,83 @@ async fn refresh(node: &Arc<Node>, stream: &WatchStream, out: &mpsc::Sender<Noti
             sub: d.sub.clone(),
             index,
             seq,
-            answer,
+            answer: run.answer.clone(),
         }
     };
     if out.try_send(notice).is_err() {
         stream.remark(&d.sub, index, true);
     }
+}
+
+/// Runs the view for watch `d` within the node's concurrent runs; `None` once it has dealt
+/// with an outcome no other watch may share (the watch ended or was marked again).
+async fn run_view(
+    node: &Arc<Node>,
+    g: &calimero_log::Group<AppMachine>,
+    stream: &WatchStream,
+    out: &mpsc::Sender<Notice>,
+    d: &Due,
+    version: (u64, u64),
+) -> Option<Arc<SharedRun>> {
+    let req = ViewRequest {
+        app_id: stream.app.clone(),
+        method: d.view.clone(),
+        args: d.args.clone(),
+        caller: stream.holder.caller.clone(),
+        strong: false,
+        min_index: 0,
+        via: None,
+    };
+    let run = {
+        let _permit = node.watches.runs.permits.acquire().await.ok()?;
+        let _ = node
+            .watches
+            .runs
+            .stats
+            .reruns
+            .fetch_add(1, Ordering::Relaxed);
+        crate::metrics::live_view(crate::metrics::LiveView::Rerun);
+        node.view_component(g, &req, None, true).await
+    };
+    let run = match run {
+        Ok(run) => run,
+        Err(e) if refuses(&e) => {
+            end(node, stream, out, d.sub.clone(), EndReason::ViewRefused);
+            return None;
+        }
+        Err(_) => {
+            stream.remark(&d.sub, d.index, false);
+            return None;
+        }
+    };
+    let answer = match run.answer.status {
+        Status::Ok => Ok(run.answer.result),
+        Status::AppError => Err(run.answer.error),
+        _ => {
+            stream.remark(&d.sub, d.index, false);
+            return None;
+        }
+    };
+    let Some(read_set) = run.read_set else {
+        stream.remark(&d.sub, d.index, false);
+        return None;
+    };
+    if read_set.unbounded().is_some() {
+        end(
+            node,
+            stream,
+            out,
+            d.sub.clone(),
+            EndReason::ReadSetUnbounded,
+        );
+        return None;
+    }
+    Some(Arc::new(SharedRun {
+        version,
+        answer,
+        read_set,
+        last_entry: run.last_entry,
+    }))
 }
 
 /// Forgets a watch and tells the client (if it is still there to hear it).
