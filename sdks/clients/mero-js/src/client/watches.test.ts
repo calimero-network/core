@@ -205,6 +205,47 @@ describe('ViewWatches', () => {
     expect(host.added.map((x) => x.stream)).toEqual(['s1', 's2', 's3']);
   });
 
+  it('keeps a watch that replaces the last one in the same tick, as new arguments do', async () => {
+    const host = new StandIn();
+    const watches = new ViewWatches(host, noSleep);
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    const first = watches.watch('app', 'get', { key: 'a' }, { onAnswer: (x) => a.push(x) });
+    await settle();
+    host.conn.push('stream', { stream: 's1' });
+    await settle();
+    first.close();
+    watches.watch('app', 'get', { key: 'b' }, { onAnswer: (x) => b.push(x) });
+    await settle();
+    expect(host.removed).toEqual(['w1']);
+    expect(host.added.map((x) => x.args)).toEqual([{ key: 'a' }, { key: 'b' }]);
+    // The stream comes back as itself: the new watch is not added twice.
+    host.conn.push('stream', { stream: 's1' });
+    host.conn.push('view-result', { sub: 'w1', index: 7, answer: 'old' }, '7:1');
+    host.conn.push('view-result', { sub: 'w2', index: 8, answer: 'b8' }, '8:2');
+    await settle();
+    expect(host.added).toHaveLength(2);
+    expect(a).toEqual(['get@1']);
+    expect(b).toEqual(['get@1', 'b8']);
+  });
+
+  it('adds a watch made while the stream connects once it names itself', async () => {
+    const host = new StandIn();
+    const watches = new ViewWatches(host, noSleep);
+    const seen: unknown[] = [];
+    watches.watch('app', 'get', {}, { onAnswer: (x) => seen.push(x) });
+    watches.watch('app', 'entries', {}, { onAnswer: (x) => seen.push(x) });
+    await settle();
+    expect(host.added).toHaveLength(0);
+    host.conn.push('stream', { stream: 's1' });
+    await settle();
+    expect(host.added.map((x) => [x.stream, x.view])).toEqual([
+      ['s1', 'get'],
+      ['s1', 'entries'],
+    ]);
+    expect(seen).toEqual(['get@1', 'entries@1']);
+  });
+
   it('removes a closed watch on the node and reports the connection state', async () => {
     const host = new StandIn();
     const watches = new ViewWatches(host, noSleep);
