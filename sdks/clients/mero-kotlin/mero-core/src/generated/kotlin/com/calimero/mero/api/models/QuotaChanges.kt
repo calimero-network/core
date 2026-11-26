@@ -43,9 +43,9 @@ import kotlinx.serialization.Contextual
  * @param maxFileBytesPerOrg 
  * @param maxConcurrentRunsPerOrg 
  * @param computeFuelPerOrg 
- * @param maxFuelPerDeveloperPerDay an unsigned 64-bit integer as a decimal string (D20)
+ * @param maxFuelPerDeveloperPerDay an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param maxConcurrentRuns 
- * @param computeFuel an unsigned 64-bit integer as a decimal string (D20)
+ * @param computeFuel an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param maxFileBytes 
  */
 @Serializable
@@ -86,14 +86,14 @@ data class QuotaChanges (
     @SerialName(value = "computeFuelPerOrg")
     val computeFuelPerOrg: kotlin.Long? = null,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "maxFuelPerDeveloperPerDay")
     val maxFuelPerDeveloperPerDay: kotlin.String? = null,
 
     @SerialName(value = "maxConcurrentRuns")
     val maxConcurrentRuns: kotlin.Long? = null,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "computeFuel")
     val computeFuel: kotlin.String? = null,
 

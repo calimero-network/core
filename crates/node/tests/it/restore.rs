@@ -90,24 +90,22 @@ async fn ops_at(c: &Cluster, i: usize) -> Client {
 /// restore commits it on the system log, which a follower applies on its own time.
 async fn restore_finished_on(c: &Cluster, i: usize, app: &str, group: u64) {
     let node = &c.nodes[i].as_ref().unwrap().node;
-    for _ in 0..200 {
-        if node.sys(|s| s.apps[app].restore.is_none() && s.apps[app].group == group) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("node {i} never applied the end of {app}'s restore");
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        &format!("node {i} applied the end of {app}'s restore"),
+        || node.sys(|s| s.apps[app].restore.is_none() && s.apps[app].group == group),
+    )
+    .await;
 }
 
 /// The node of `c` leading `app`, once one does.
 async fn leader_of(c: &Cluster, app: &str) -> usize {
-    for _ in 0..200 {
-        if let Some(i) = c.app_leader(app) {
-            return i;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("{app} has no leader");
+    crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        &format!("{app} has a leader"),
+        || c.app_leader(app),
+    )
+    .await
 }
 
 /// Back `app` up on its leader; answers that node and the backup's file name.
@@ -224,17 +222,17 @@ async fn an_app_is_restored_from_its_backup_on_every_replica_and_takes_writes() 
         );
     }
     // The old group is gone from every node.
-    for _ in 0..100 {
-        let gone = c
-            .nodes
-            .iter()
-            .flatten()
-            .all(|r| r.node.hosted(&kv).is_some_and(|g| g.id() == group));
-        if gone {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the old group is gone from every node",
+        || {
+            c.nodes
+                .iter()
+                .flatten()
+                .all(|r| r.node.hosted(&kv).is_some_and(|g| g.id() == group))
+        },
+    )
+    .await;
     for r in c.nodes.iter().flatten() {
         assert_eq!(r.node.hosted(&kv).unwrap().id(), group);
     }

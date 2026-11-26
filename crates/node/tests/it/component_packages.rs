@@ -10,7 +10,7 @@
 use crate::common;
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use calimero_client::types::ViewsRequestConsistency;
 use calimero_client::Client;
@@ -127,17 +127,16 @@ async fn run_rooms_from(c: &Cluster, owner: &Client, package: &str, version: &st
     // Every replica runs it on its component executor.
     for i in 0..3 {
         let node = &c.nodes[i].as_ref().unwrap().node;
-        let mut executor = None;
-        for _ in 0..100 {
-            executor = node
-                .hosted(&app)
-                .and_then(|g| g.read_local(|m, _| m.state.executor()));
-            if executor.is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert_eq!(executor, Some(Executor::Component), "node {i}");
+        let executor = crate::harness::poll::found(
+            crate::harness::poll::EVENTUALLY,
+            &format!("node {i} hosts the app"),
+            || {
+                node.hosted(&app)
+                    .and_then(|g| g.read_local(|m, _| m.state.executor()))
+            },
+        )
+        .await;
+        assert_eq!(executor, Executor::Component, "node {i}");
     }
 }
 
@@ -984,23 +983,16 @@ async fn reading_a_compute_components_caps_compiles_nothing() {
         .unwrap();
     assert_eq!(compiles(), [1, 0, 0], "the install's verification");
     for n in c.nodes.iter().flatten() {
-        let started = Instant::now();
-        let release = loop {
-            let found = n.node.sys(|s| {
-                s.packages
-                    .get("com.test.job")
-                    .and_then(|p| p.versions.get("1.0.0"))
-                    .cloned()
-            });
-            if let Some(release) = found {
-                break release;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(30),
-                "release not replicated"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+        let release =
+            crate::harness::poll::found(Duration::from_secs(30), "the release replicated", || {
+                n.node.sys(|s| {
+                    s.packages
+                        .get("com.test.job")
+                        .and_then(|p| p.versions.get("1.0.0"))
+                        .cloned()
+                })
+            })
+            .await;
         let checked = n
             .node
             .validate_pipeline(

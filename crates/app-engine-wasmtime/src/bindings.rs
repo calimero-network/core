@@ -36,7 +36,7 @@ wasmtime::component::bindgen!({
 });
 
 use self::calimero::app::{
-    action, blobs, context, events, files, rebuild, runs, search, storage, types, xcall,
+    action, blobs, connector, context, events, files, rebuild, runs, search, storage, types, xcall,
 };
 
 /// Links the `calimero:app` interfaces of the app world and `wasi:http` onto `StoreData`.
@@ -53,6 +53,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     runs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    connector::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     let options = wasi::http::types::LinkOptions::default();
     wasi::http::types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, &options, |d| d)?;
     wasi::http::outgoing_handler::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -530,6 +531,19 @@ impl xcall::Host for StoreData {
     }
 }
 
+impl connector::Host for StoreData {
+    fn call(
+        &mut self,
+        connector: String,
+        operation: String,
+        input: Vec<u8>,
+    ) -> Result<std::result::Result<Vec<u8>, String>> {
+        self.host
+            .connector_call(&connector, &operation, &input)
+            .map_err(denied)
+    }
+}
+
 impl action::Host for StoreData {
     fn key(&mut self) -> Result<String> {
         self.host.action_key().map_err(denied)
@@ -697,6 +711,15 @@ pub(crate) fn charge_calls(linker: &mut Linker<StoreData>) -> Result<()> {
         });
         charged!(i, "call", |d, method: String, args: Vec<u8>| {
             action::Host::call(d, method, args)
+        });
+    }
+    {
+        let mut i = calimero(linker, "connector")?;
+        charged!(i, "call", |d,
+                             connector: String,
+                             operation: String,
+                             input: Vec<u8>| {
+            connector::Host::call(d, connector, operation, input)
         });
     }
     let mut i = linker.instance("wasi:http/outgoing-handler@0.2.12")?;

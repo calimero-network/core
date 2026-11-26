@@ -266,7 +266,7 @@ interface Transport {
   events(path: string, options?: { query?; signal? }): AsyncGenerator<NodeEvent>;
 }
 // RequestOptions: { query?, body? (JSON) | bytes? + contentType?, passkey? (answers a 412),
-//                   userVerification?, retry?: true | 'once' (D70), signal?, promptSignal? }
+//                   userVerification?, retry?: true | 'once', signal?, promptSignal? }
 ```
 
 `NodeTransport` implements it, and `exchange(method, path, options)` answers a

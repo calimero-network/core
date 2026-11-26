@@ -72,8 +72,11 @@ the connector's host, the operation's declared path, never the input's ids; the
 connector's binding name once attached), and a raw request refused as `ConnectorHost` as
 `refused` (`connector_calls_are_in_the_audit_with_the_declared_path_and_binding_name`). `STRIPE`
 (PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
-`CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
-the guest's `connector.call` ([#5349](https://github.com/calimero-network/core/issues/5349)); the node still calls `for_run_counted`.
+`CONNECTORS`. A release declares them in its signed manifest (`calimero_bundle::BundleConnector`;
+`ConnectorGrant::declared`), the node checks the declaration at install (`check_grant`:
+`BAD_CONNECTORS`) and builds each run's clients with `for_run_with_connectors`, and the
+guest calls through WIT `connector.call` (0.5.8). `[outbound.testing] connectors` answers
+the connectors' hosts in-process (`testing.rs`, `Connectors`) for cluster tests.
 
 What it logs (every line reaches the operator): a refusal as `refusal_kind`
 (`NotApproved`, `AwaitingApproval`, `Invalid`; `ConnectorHost` for

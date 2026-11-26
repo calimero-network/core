@@ -214,13 +214,7 @@ impl Fixture {
 
     /// Waits until `holds` is true, or fails after a few seconds.
     async fn until(&self, what: &str, holds: impl Fn() -> bool) {
-        for _ in 0..200 {
-            if holds() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("{what}");
+        crate::harness::poll::until(crate::harness::poll::EVENTUALLY, what, holds).await;
     }
 
     /// Runs the segment sweep on every node now.
@@ -241,17 +235,20 @@ impl Fixture {
     }
 
     async fn wait_gone(&self, id: &str) {
-        for _ in 0..100 {
-            self.sweep_past_grace();
-            if self.holders_of_any(id).is_empty() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "the bytes of {id} are still on {:?}",
-            self.holders_of_any(id)
-        );
+        crate::harness::poll::eventually(
+            crate::harness::poll::EVENTUALLY,
+            &format!("the bytes of {id} are gone from every node"),
+            || {
+                self.sweep_past_grace();
+                let holders = self.holders_of_any(id);
+                std::future::ready(if holders.is_empty() {
+                    Ok(())
+                } else {
+                    Err(holders)
+                })
+            },
+        )
+        .await;
     }
 }
 
@@ -1521,13 +1518,19 @@ impl Fixture {
 
     /// Waits for the quota's count of alice's file bytes to reach `bytes`.
     async fn until_charged(&self, bytes: u64) {
-        for _ in 0..200 {
-            if self.charged().await == bytes {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("charged {} instead of {bytes}", self.charged().await);
+        crate::harness::poll::eventually(
+            crate::harness::poll::EVENTUALLY,
+            &format!("charged {bytes}"),
+            || async {
+                let charged = self.charged().await;
+                if charged == bytes {
+                    Ok(())
+                } else {
+                    Err(charged)
+                }
+            },
+        )
+        .await;
     }
 }
 
@@ -2052,9 +2055,7 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
     let file = owner.upload_bytes(&f.app, stream(4_000, 9)).await.unwrap();
     let (plain, file) = (plain["id"].as_str().unwrap(), file["id"].as_str().unwrap());
     f.c.restart(follower, |_| {}).await;
-    while f.node(follower).hosted(&f.app).is_none() {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    hosted_after_restart(&f, follower).await;
 
     let app = f.node(follower).sys(|s| s.apps[&f.app].clone());
     let (plain, file) = (hex_id(plain), hex_id(file));
@@ -2076,9 +2077,12 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
 
 /// Waits until node `i` hosts the app, then answers its group.
 async fn hosted_after_restart(f: &Fixture, i: usize) {
-    while f.node(i).hosted(&f.app).is_none() {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        &format!("node {i} hosts the app after its restart"),
+        || f.node(i).hosted(&f.app).is_some(),
+    )
+    .await;
 }
 
 fn slow_raft(cfg: &mut calimero_node::Config) {
@@ -2306,13 +2310,10 @@ impl Fixture {
     }
 
     async fn until_leader_is_not(&self, old: usize) -> usize {
-        for _ in 0..200 {
-            if let Some(i) = self.c.app_leader(&self.app).filter(|i| *i != old) {
-                return i;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("no new leader");
+        crate::harness::poll::found(crate::harness::poll::EVENTUALLY, "a new leader", || {
+            self.c.app_leader(&self.app).filter(|i| *i != old)
+        })
+        .await
     }
 }
 
@@ -2530,18 +2531,19 @@ async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
     let _new = f.until_leader_is_not(leader).await;
     assert_eq!(f.complete(via, &upload).await.unwrap(), done);
     let payer = f.payer().await;
-    let mut charged = 0;
-    for _ in 0..100 {
-        charged = used(
+    let want = plain.len() as u64;
+    crate::harness::poll::eventually(crate::harness::poll::EVENTUALLY, "charged once", || async {
+        let charged = used(
             &f.clients[via].auth().usage().await.map(wire).unwrap(),
             &payer,
         );
-        if charged == plain.len() as u64 {
-            break;
+        if charged == want {
+            Ok(())
+        } else {
+            Err(charged)
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(charged, plain.len() as u64, "charged once");
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

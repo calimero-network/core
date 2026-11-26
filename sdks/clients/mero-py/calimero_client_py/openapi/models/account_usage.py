@@ -23,15 +23,15 @@ class AccountUsage:
 
         Attributes:
             apps (int):
-            bundle_bytes (str): an unsigned 64-bit integer as a decimal string (D20)
+            bundle_bytes (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
             api_keys (int):
             orgs_owned (int):
             file_bytes (AccountUsageFileBytes):
             quotas (Quotas): The per-account limits, and the compute and file limits of each organization (or personal
                 account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are
                 JSON numbers.
-            developer_fuel_today (str): an unsigned 64-bit integer as a decimal string (D20)
-            developer_writes_today (str): an unsigned 64-bit integer as a decimal string (D20)
+            developer_fuel_today (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            developer_writes_today (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
     """
 
     apps: int

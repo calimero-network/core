@@ -9,7 +9,7 @@ help: the trait `calimero_sdk::AbiType` is not implemented for `Totals`
    |
  5 | pub struct Totals {
    | ^^^^^^^^^^^^^^^^^
-   = note: every type in an app method's parameters or result, an error's or event's fields, or a field of one of those, is described in the ABI (D20)
+   = note: every type in an app method's parameters or result, an error's or event's fields, or a field of one of those, is described in the ABI, so clients know its JSON
    = note: a bare u64/i64 field would reach JavaScript as a number exact only up to 2^53: `#[derive(AbiType)]` refuses it and names it; write it `#[serde(with = "calimero_sdk::json::u64_str")]` (`i64_str`, `opt_u64_str`, ...), a decimal string; u128, i128, usize and isize have no JSON form: use u32 or u64
    = note: a type alias of u64 or i64 is not converted: use the integer type itself, with its `with`
    = help: the following other types implement trait `calimero_sdk::AbiType`:

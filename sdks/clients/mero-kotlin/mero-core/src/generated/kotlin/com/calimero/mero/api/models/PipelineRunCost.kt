@@ -32,16 +32,16 @@ import kotlinx.serialization.Contextual
 /**
  * The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings.
  *
- * @param maxCost an unsigned 64-bit integer as a decimal string (D20)
+ * @param maxCost an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param priceVersion 
  * @param table 
- * @param worstCase an unsigned 64-bit integer as a decimal string (D20)
+ * @param worstCase an unsigned 64-bit integer as a decimal string, exact past 2^53
  */
 @Serializable
 
 data class PipelineRunCost (
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "maxCost")
     val maxCost: kotlin.String,
 
@@ -51,7 +51,7 @@ data class PipelineRunCost (
     @SerialName(value = "table")
     val table: PipelineRunCostTable,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "worstCase")
     val worstCase: kotlin.String
 

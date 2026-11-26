@@ -71,6 +71,8 @@ calimero-app-build.workspace = true
 calimero-node = { workspace = true, features = ["testing"] }
 calimero-client = { workspace = true, features = ["testing"] }
 flate2.workspace = true
+# Random system logs applied with and without a snapshot (`system/prop_tests.rs`).
+proptest.workspace = true
 sha2.workspace = true
 tar.workspace = true
 calimero-identity = { workspace = true, features = ["testing"] }

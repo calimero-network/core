@@ -55,7 +55,7 @@ import kotlinx.serialization.Contextual
  * @param modules 
  * @param inputFiles 
  * @param cost 
- * @param costSoFar an unsigned 64-bit integer as a decimal string (D20)
+ * @param costSoFar an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param retryOf 
  * @param limits 
  */
@@ -124,7 +124,7 @@ data class PipelineRunView (
     @SerialName(value = "cost")
     val cost: PipelineRunCost? = null,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "costSoFar")
     val costSoFar: kotlin.String? = null,
 

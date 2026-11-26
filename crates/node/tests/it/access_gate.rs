@@ -421,16 +421,18 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
         .unwrap();
     // Bob reaches the app through the follower once it holds the grant.
     let follower_node = &c.nodes[follower].node;
-    for _ in 0..100 {
-        if follower_node.sys(|s| {
-            s.apps
-                .get(&app)
-                .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
-        }) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the follower holds Bob's grant",
+        || {
+            follower_node.sys(|s| {
+                s.apps
+                    .get(&app)
+                    .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
+            })
+        },
+    )
+    .await;
     let read = bob
         .apps()
         .view(
@@ -621,20 +623,19 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
         .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
-    let mut leader = None;
-    for _ in 0..200 {
-        leader = (0..3).find(|i| {
-            c.nodes[*i]
-                .node
-                .hosted(&app)
-                .is_some_and(|g| g.status().is_leader)
-        });
-        if leader.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let leader = leader.expect("the app's group elects a leader");
+    let leader = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the app's group elects a leader",
+        || {
+            (0..3).find(|i| {
+                c.nodes[*i]
+                    .node
+                    .hosted(&app)
+                    .is_some_and(|g| g.status().is_leader)
+            })
+        },
+    )
+    .await;
     let follower = (0..3).find(|i| *i != leader).unwrap();
 
     let blob = alice
@@ -647,12 +648,12 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     let raw: [u8; 32] = hex::decode(&id).unwrap().try_into().unwrap();
     // The follower holds the mark and the bytes before its appends are held.
     let follower_group = c.nodes[follower].node.hosted(&app).unwrap();
-    for _ in 0..100 {
-        if follower_group.read_local(|m, _| m.holds_blob(&raw)) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the follower holds the blob's mark",
+        || follower_group.read_local(|m, _| m.holds_blob(&raw)),
+    )
+    .await;
     // Alice through the follower, and through the app's leader.
     let at_follower = c.client(follower);
     let _s = at_follower.sign_in(&mut alice_pk).await.unwrap();
@@ -677,16 +678,12 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
         async move { deleter.apps().blob_delete(&app, &id).await.map(wire) }
     });
     let leader_group = c.nodes[leader].node.hosted(&app).unwrap();
-    for _ in 0..200 {
-        if !leader_group.read_local(|m, _| m.holds_blob(&raw)) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        !leader_group.read_local(|m, _| m.holds_blob(&raw)),
-        "the delete committed on the leader"
-    );
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the delete committed on the leader",
+        || !leader_group.read_local(|m, _| m.holds_blob(&raw)),
+    )
+    .await;
     assert!(
         follower_group.read_local(|m, _| m.holds_blob(&raw)),
         "the follower must still hold the mark"
@@ -725,20 +722,19 @@ async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader(
         .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
-    let mut leader = None;
-    for _ in 0..200 {
-        leader = (0..3).find(|i| {
-            c.nodes[*i]
-                .node
-                .hosted(&app)
-                .is_some_and(|g| g.status().is_leader)
-        });
-        if leader.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let leader = leader.expect("the app's group elects a leader");
+    let leader = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the app's group elects a leader",
+        || {
+            (0..3).find(|i| {
+                c.nodes[*i]
+                    .node
+                    .hosted(&app)
+                    .is_some_and(|g| g.status().is_leader)
+            })
+        },
+    )
+    .await;
     let follower = (0..3).find(|i| *i != leader).unwrap();
 
     let blob = alice
@@ -758,12 +754,12 @@ async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader(
             .unwrap()
             .is_some()
     };
-    for _ in 0..100 {
-        if follower_group.read_local(|m, _| m.holds_blob(&raw)) && follower_has_bytes() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the follower holds the blob's mark and bytes",
+        || follower_group.read_local(|m, _| m.holds_blob(&raw)) && follower_has_bytes(),
+    )
+    .await;
     assert!(follower_has_bytes(), "the follower holds the bytes first");
     let deleter = c.client(leader);
     let _s = deleter.sign_in(&mut alice_pk).await.unwrap();
@@ -837,12 +833,12 @@ async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() 
     let id = created["id"].as_str().unwrap().to_owned();
     let follower_node = &c.nodes[follower].node;
     let here = || follower_node.sys(|s| s.deployments.contains_key(&id));
-    for _ in 0..100 {
-        if here() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the follower holds the deployment",
+        &here,
+    )
+    .await;
     let anonymous = c.client(follower);
     let shown = anonymous.deployments().get(&id).await.map(wire);
     assert!(shown.is_ok(), "{:?}", shown.err());
@@ -989,20 +985,19 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
             .await
             .map(|a| a.app_id)
             .unwrap();
-        let mut leader = None;
-        for _ in 0..100 {
-            leader = (0..3).find(|i| {
-                c.nodes[*i]
-                    .node
-                    .hosted(&app)
-                    .is_some_and(|g| g.status().is_leader)
-            });
-            if leader.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let leader = leader.expect("the app has a leader");
+        let leader = crate::harness::poll::found(
+            crate::harness::poll::EVENTUALLY,
+            "the app has a leader",
+            || {
+                (0..3).find(|i| {
+                    c.nodes[*i]
+                        .node
+                        .hosted(&app)
+                        .is_some_and(|g| g.status().is_leader)
+                })
+            },
+        )
+        .await;
         if leader != sys_leader {
             placed = Some((app, leader));
             break;
@@ -1025,13 +1020,12 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
                 .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
         })
     };
-    for _ in 0..100 {
-        if reaches() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(reaches(), "the app's leader must hold the grant");
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the app's leader must hold the grant",
+        &reaches,
+    )
+    .await;
     let bob_call = |value: &str| {
         CallRequest::new(
             app.clone(),
@@ -1112,6 +1106,7 @@ fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
         services: None,
         pipelines: Vec::new(),
         signature: None,
+        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
@@ -1171,20 +1166,19 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
         .as_str()
         .unwrap()
         .to_owned();
-    let mut leader = None;
-    for _ in 0..200 {
-        leader = (0..3).find(|i| {
-            c.nodes[*i]
-                .node
-                .hosted(&app)
-                .is_some_and(|g| g.status().is_leader)
-        });
-        if leader.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let leader = leader.expect("the app's group elects a leader");
+    let leader = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the app's group elects a leader",
+        || {
+            (0..3).find(|i| {
+                c.nodes[*i]
+                    .node
+                    .hosted(&app)
+                    .is_some_and(|g| g.status().is_leader)
+            })
+        },
+    )
+    .await;
     let holder = (0..3).find(|i| *i != leader).unwrap();
 
     // Upgraded through a follower, which takes the restore point itself.
@@ -1198,20 +1192,19 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
         .await
         .unwrap();
     let holder_node = &c.nodes[holder].node;
-    let mut point = None;
-    for _ in 0..200 {
-        point = holder_node.sys(|s| {
-            s.apps
-                .get(&app)
-                .and_then(|a| a.restore_point.clone())
-                .and_then(|p| p.file)
-        });
-        if point.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let point = point.expect("the upgrade logged a restore point");
+    let point = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the upgrade logged a restore point",
+        || {
+            holder_node.sys(|s| {
+                s.apps
+                    .get(&app)
+                    .and_then(|a| a.restore_point.clone())
+                    .and_then(|p| p.file)
+            })
+        },
+    )
+    .await;
     assert_eq!(point.node, holder as u64 + 1, "taken on the holder");
     // The holder applied the upgrade, and the system log has settled, before it is held.
     let holder_group = holder_node.hosted(&app).unwrap();

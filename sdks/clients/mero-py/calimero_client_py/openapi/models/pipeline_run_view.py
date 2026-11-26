@@ -60,7 +60,7 @@ class PipelineRunView:
             input_files (Union[Unset, PipelineRunViewInputFiles]):
             cost (Union[Unset, PipelineRunCost]): The cost cap of a pipeline run and the price table it was admitted under;
                 the figures that can pass 2^53 are decimal strings.
-            cost_so_far (Union[Unset, str]): an unsigned 64-bit integer as a decimal string (D20)
+            cost_so_far (Union[Unset, str]): an unsigned 64-bit integer as a decimal string, exact past 2^53
             retry_of (Union[Unset, str]):
             limits (Union[Unset, PipelineRunViewLimits]):
     """

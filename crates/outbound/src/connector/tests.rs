@@ -784,3 +784,44 @@ fn connector_calls_are_in_the_audit_with_the_declared_path_and_binding_name() {
         "{json}"
     );
 }
+
+#[test]
+fn a_declaration_names_only_this_nodes_connectors_operations_and_limits() {
+    assert!(super::check_grant(&stripe_grant()).is_ok());
+    assert!(
+        super::check_grant(&grant("openai", &["chatCompletion"], &[("model", &["m"])])).is_ok()
+    );
+    let refused = |g: ConnectorGrant| super::check_grant(&g).unwrap_err().to_string();
+    assert_eq!(
+        refused(grant("github", &["createIssue"], &[])),
+        "github is not a connector of this node (it has stripe, openai)"
+    );
+    assert_eq!(
+        refused(grant("stripe", &["createRefund"], &[])),
+        "createRefund is not an operation of the stripe connector"
+    );
+    // A limit only an undeclared operation takes is no limit of this declaration.
+    assert_eq!(
+        refused(grant(
+            "stripe",
+            &["retrievePaymentIntent"],
+            &[("metadata", &["k"])]
+        )),
+        "no operation of the stripe connector this release declares takes a metadata"
+    );
+    let many: Vec<String> = (0..=super::MAX_LIMIT_VALUES)
+        .map(|i| format!("k{i}"))
+        .collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    assert_eq!(
+        refused(grant(
+            "stripe",
+            &["createPaymentIntent"],
+            &[("metadata", &many)]
+        )),
+        format!(
+            "stripe metadata holds more than {} values",
+            super::MAX_LIMIT_VALUES
+        )
+    );
+}

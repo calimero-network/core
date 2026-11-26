@@ -44,7 +44,7 @@ import kotlinx.serialization.Contextual
  * @param runs 
  * @param cachedCount 
  * @param cachedKeys 
- * @param cost an unsigned 64-bit integer as a decimal string (D20)
+ * @param cost an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param capped 
  * @param legacyItems 
  * @param outputs 
@@ -88,7 +88,7 @@ data class PipelineRunStep (
     @SerialName(value = "cachedKeys")
     val cachedKeys: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "cost")
     val cost: kotlin.String? = null,
 

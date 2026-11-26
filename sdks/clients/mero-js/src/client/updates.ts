@@ -1,6 +1,6 @@
 /**
  * App updates as the node judges them, for an app that shows its users an update and
- * sends them to approve it (core's C10: "Show updates in your app").
+ * sends them to approve it (core's docs: build "Show updates in your app").
  *
  * The node classifies every update of an instance over its whole unit (the app and the
  * apps it created): **green** when nothing changes where data goes (same signer, no new

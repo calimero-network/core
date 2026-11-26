@@ -1,0 +1,5 @@
+{"op":"requireCurrentRules"}
+{"op":"expireProofs"}
+{"op":"attributeByRelease"}
+{"op":"revokeAllSessions","actor":"alice","now":5}
+{"op":"requireCurrentRules"}

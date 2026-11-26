@@ -417,7 +417,7 @@ fn method(
     if retry {
         let _ = write!(
             doc,
-            "\n\nRetried while the node answers `503` or cannot be reached (D70){}.",
+            "\n\nRetried while the node answers `503` or cannot be reached{}.",
             retry_key
                 .map(|k| format!(", with its `{k}` (one is made when none is given)"))
                 .unwrap_or_default()

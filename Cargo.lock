@@ -929,6 +929,7 @@ dependencies = [
  "hex",
  "imbl",
  "libc",
+ "proptest",
  "rand_chacha 0.10.0",
  "rcgen",
  "reqwest 0.12.28",

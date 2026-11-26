@@ -108,6 +108,37 @@ impl HttpHost for NoHttp {
     }
 }
 
+/// Bytes of a connector's or an operation's name a run may hand `connector.call`; a longer
+/// one is refused before the node sees it, so an entry never records more.
+pub const MAX_CONNECTOR_NAME_BYTES: usize = 64;
+
+/// What a logged run's entry records a connector call under ([`HttpExchange`]): method
+/// [`CONNECTOR_METHOD`], URL `connector:<connector>/<operation>`, the guest's JSON input as
+/// the request body and the node's answer (the operation's declared fields) as a `200`
+/// response, or the refusal as the exchange's error. The entry keeps the shape it has for a
+/// raw request, so a node reads it as one.
+pub const CONNECTOR_METHOD: &str = "CONNECTOR";
+
+/// The node's first-party connectors for a run (`connector.call`, WIT 0.5.8): it builds the
+/// request from an operation the signed release declares, attaches the credential and
+/// answers only the operation's declared fields.
+pub trait ConnectorHost: Send + Sync {
+    /// Call `operation` of `connector` with the JSON `input`; the JSON answer, or why not.
+    fn call(&self, connector: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String>;
+}
+
+/// A run with no connectors: every call is refused.
+pub struct NoConnectors;
+
+/// [`NoConnectors`]' refusal.
+pub const NO_CONNECTORS: &str = "this app declares no connectors in a signed release";
+
+impl ConnectorHost for NoConnectors {
+    fn call(&self, _connector: &str, _operation: &str, _input: &[u8]) -> Result<Vec<u8>, String> {
+        Err(NO_CONNECTORS.to_owned())
+    }
+}
+
 /// An action that `start_action` queued; the executor logs it as `ActionStarted`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionStart {

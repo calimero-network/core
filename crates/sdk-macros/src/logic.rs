@@ -19,9 +19,9 @@ use crate::types::{
 };
 
 /// The world the app component's ABI names.
-const WORLD: &str = "calimero:app@0.5.7";
+const WORLD: &str = "calimero:app@0.5.8";
 /// The world the compute component's ABI names.
-const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.7";
+const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.8";
 /// The ABI version this SDK writes; a field nodes must enforce raises it.
 const ABI_VERSION: u64 = 1;
 
@@ -367,7 +367,9 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
             return fail("an app method takes `&self` or `&mut self`")
         }
         Kind::Action if receiver_mut.is_some() => {
-            return fail("an action has no state access (D12): it takes no `self`")
+            return fail(
+                "an action has no state access (it runs outside the log): it takes no `self`",
+            )
         }
         Kind::Action if attrs.confirm || attrs.public || attrs.action_only => {
             return fail("an action takes no `confirm`, `public` or `allow(action)`")
@@ -930,23 +932,23 @@ mod tests {
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, xs: Vec<u64>) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self) -> Result<Option<Vec<i64>>> { Ok(None) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, p: (u32, u64)) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, p: [u64; 2]) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
         let msg = refused(parse_quote! {
             impl S { pub fn m(&self, p: Vec<Vec<u8>>) -> Result<()> { Ok(()) } }
         });
-        assert!(msg.contains("D20"), "{msg}");
+        assert!(msg.contains("JSON"), "{msg}");
     }
 
     #[test]
@@ -999,12 +1001,12 @@ mod tests {
         assert!(out.contains(&compute_methods), "{out}");
         assert!(
             out.contains(
-                r#",\"world\":\"calimero:app/compute@0.5.7\"}"#.replace(r#"\""#, "\"").as_str()
+                r#",\"world\":\"calimero:app/compute@0.5.8\"}"#.replace(r#"\""#, "\"").as_str()
             ),
             "{out}"
         );
         assert!(
-            out.contains(r#",\"world\":\"calimero:app@0.5.7\"}"#.replace(r#"\""#, "\"").as_str()),
+            out.contains(r#",\"world\":\"calimero:app@0.5.8\"}"#.replace(r#"\""#, "\"").as_str()),
             "{out}"
         );
     }

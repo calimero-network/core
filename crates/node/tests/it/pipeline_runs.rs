@@ -343,18 +343,15 @@ impl Rig {
 
     /// The pipeline run once it is no longer running.
     async fn ended(&self, run: &str) -> Value {
-        let started = Instant::now();
-        loop {
+        crate::harness::poll::eventually(WAIT, &format!("pipeline run {run} ended"), || async {
             let v = self.run(run).await;
-            if v["state"] != "running" {
-                return v;
+            if v["state"] == "running" {
+                Err(v)
+            } else {
+                Ok(v)
             }
-            assert!(
-                started.elapsed() < WAIT,
-                "pipeline run {run} did not end: {v}"
-            );
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        })
+        .await
     }
 
     async fn until(&self, what: &str, mut ready: impl AsyncFnMut() -> bool) {
@@ -824,12 +821,19 @@ async fn only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline()
     let seen = bob.pipeline_run(&public, &run).await.unwrap();
     assert!(seen["steps"]["c"]["result"].is_null(), "{seen}");
     let _c = rig.alice.cancel_pipeline_run(&public, &run).await.unwrap();
-    let mut waited = 0;
-    while bob.pipeline_run(&public, &run).await.unwrap()["state"] == "running" {
-        waited += 1;
-        assert!(waited < 300, "the cancelled run never ended");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    crate::harness::poll::eventually(
+        Duration::from_secs(30),
+        "the cancelled run ended",
+        || async {
+            let shown = bob.pipeline_run(&public, &run).await.unwrap();
+            if shown["state"] == "running" {
+                Err(shown)
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await;
     let e = bob
         .retry_pipeline_run(&public, &run, json!({}))
         .await
@@ -2314,8 +2318,12 @@ async fn a_stream_ends_and_frees_its_slot_when_its_app_is_deleted() {
     })
     .await;
     assert!(ended.is_ok(), "the stream ends");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(node.pipeline_subscribers.lock().unwrap().is_empty());
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the node drops the ended stream's subscriber",
+        || node.pipeline_subscribers.lock().unwrap().is_empty(),
+    )
+    .await;
 }
 
 const GHOSTLY: &str = "apiVersion: compute.calimero.network/v1

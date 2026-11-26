@@ -7986,7 +7986,7 @@ public enum Components {
         ///
         /// - Remark: Generated from `#/components/schemas/PipelineRunCost`.
         public struct PipelineRunCost: Codable, Hashable, Sendable {
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunCost/maxCost`.
             public var maxCost: Swift.String
@@ -8047,17 +8047,17 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table`.
             public var table: Components.Schemas.PipelineRunCost.TablePayload
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunCost/worstCase`.
             public var worstCase: Swift.String
             /// Creates a new `PipelineRunCost`.
             ///
             /// - Parameters:
-            ///   - maxCost: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - maxCost: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - priceVersion:
             ///   - table:
-            ///   - worstCase: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - worstCase: an unsigned 64-bit integer as a decimal string, exact past 2^53
             public init(
                 maxCost: Swift.String,
                 priceVersion: Swift.Int64,
@@ -8194,7 +8194,7 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cachedKeys`.
             public var cachedKeys: Components.Schemas.PipelineRunStep.CachedKeysPayload?
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cost`.
             public var cost: Swift.String?
@@ -8225,7 +8225,7 @@ public enum Components {
             ///   - cachedCount:
             ///   - cachedItems:
             ///   - cachedKeys:
-            ///   - cost: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - cost: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - capped:
             ///   - legacyItems:
             ///   - cached:
@@ -8460,7 +8460,7 @@ public enum Components {
             public var endTsMs: Swift.Int64?
             /// - Remark: Generated from `#/components/schemas/PipelineRunView/cost`.
             public var cost: Components.Schemas.PipelineRunCost?
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/PipelineRunView/costSoFar`.
             public var costSoFar: Swift.String?
@@ -8538,7 +8538,7 @@ public enum Components {
             ///   - steps:
             ///   - endTsMs:
             ///   - cost:
-            ///   - costSoFar: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - costSoFar: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - retryOf:
             ///   - limits:
             public init(
@@ -10744,7 +10744,7 @@ public enum Components {
         public struct AccountUsage: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/AccountUsage/apps`.
             public var apps: Swift.Int64
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/AccountUsage/bundleBytes`.
             public var bundleBytes: Swift.String
@@ -10774,11 +10774,11 @@ public enum Components {
             public var fileBytes: Components.Schemas.AccountUsage.FileBytesPayload
             /// - Remark: Generated from `#/components/schemas/AccountUsage/quotas`.
             public var quotas: Components.Schemas.Quotas
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/AccountUsage/developerFuelToday`.
             public var developerFuelToday: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/AccountUsage/developerWritesToday`.
             public var developerWritesToday: Swift.String
@@ -10786,13 +10786,13 @@ public enum Components {
             ///
             /// - Parameters:
             ///   - apps:
-            ///   - bundleBytes: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - bundleBytes: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - apiKeys:
             ///   - orgsOwned:
             ///   - fileBytes:
             ///   - quotas:
-            ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string, exact past 2^53
             public init(
                 apps: Swift.Int64,
                 bundleBytes: Swift.String,
@@ -12139,11 +12139,11 @@ public enum Components {
         public struct OrgUsage: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/OrgUsage/apps`.
             public var apps: Swift.Int64
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/OrgUsage/developerFuelToday`.
             public var developerFuelToday: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/OrgUsage/developerWritesToday`.
             public var developerWritesToday: Swift.String
@@ -12153,8 +12153,8 @@ public enum Components {
             ///
             /// - Parameters:
             ///   - apps:
-            ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - quotas:
             public init(
                 apps: Swift.Int64,
@@ -13770,7 +13770,7 @@ public enum Components {
             public var maxConcurrentRunsPerOrg: Swift.Int64
             /// - Remark: Generated from `#/components/schemas/Quotas/computeFuelPerOrg`.
             public var computeFuelPerOrg: Swift.Int64
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/Quotas/maxFuelPerDeveloperPerDay`.
             public var maxFuelPerDeveloperPerDay: Swift.String
@@ -13785,7 +13785,7 @@ public enum Components {
             ///   - maxFileBytesPerOrg:
             ///   - maxConcurrentRunsPerOrg:
             ///   - computeFuelPerOrg:
-            ///   - maxFuelPerDeveloperPerDay: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - maxFuelPerDeveloperPerDay: an unsigned 64-bit integer as a decimal string, exact past 2^53
             public init(
                 maxAppsPerAccount: Swift.Int64,
                 maxBundleBytesPerAccount: Swift.Int64,
@@ -14874,27 +14874,27 @@ public enum Components {
         public struct UsageDay: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/UsageDay/date`.
             public var date: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/UsageDay/runs`.
             public var runs: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/UsageDay/fuel`.
             public var fuel: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/UsageDay/wallMs`.
             public var wallMs: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/UsageDay/writes`.
             public var writes: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/UsageDay/bytesWritten`.
             public var bytesWritten: Swift.String
-            /// an unsigned 64-bit integer as a decimal string (D20)
+            /// an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///
             /// - Remark: Generated from `#/components/schemas/UsageDay/events`.
             public var events: Swift.String
@@ -14902,12 +14902,12 @@ public enum Components {
             ///
             /// - Parameters:
             ///   - date:
-            ///   - runs: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - fuel: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - wallMs: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - writes: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - bytesWritten: an unsigned 64-bit integer as a decimal string (D20)
-            ///   - events: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - runs: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - fuel: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - wallMs: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - writes: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - bytesWritten: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - events: an unsigned 64-bit integer as a decimal string, exact past 2^53
             public init(
                 date: Swift.String,
                 runs: Swift.String,

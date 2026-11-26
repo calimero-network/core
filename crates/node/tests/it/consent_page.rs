@@ -98,6 +98,7 @@ fn release_of(
         services: None,
         pipelines: Vec::new(),
         signature: None,
+        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
@@ -580,6 +581,9 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "minRuntimeVersion": { "from": "0.1.0", "to": "0.1.0" },
         },
     });
+    // Neither release declares a connector (kept out of the literal: `json!`'s recursion limit).
+    let mut expected = expected;
+    expected["upgrade"]["connectors"] = json!({ "added": [], "removed": [], "kept": [] });
     assert_eq!(
         snapshot,
         expected,
@@ -3181,12 +3185,12 @@ async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind(
     let (alice, alice_key) = signed_up(&c, leader, "alice").await;
     let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let behind_node = &c.nodes[behind].as_ref().unwrap().node;
-    for _ in 0..100 {
-        if behind_node.sys(|s| !s.accounts.is_empty()) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the node behind applied the sign-up",
+        || behind_node.sys(|s| !s.accounts.is_empty()),
+    )
+    .await;
 
     // The node commits the install with the others but applies nothing yet.
     let dir = c._dirs[behind].path().to_owned();

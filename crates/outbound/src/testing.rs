@@ -9,12 +9,16 @@
 //!   are filled in, so a scenario sees exactly what left the node, and the echo
 //!   goes back through redaction like any answer. Any other host still goes out
 //!   over the real transport.
+//! - `connectors`: the first-party connectors' hosts are answered in-process as their
+//!   services answer the connectors' operations ([`Connectors`]), so a cluster test calls
+//!   a connector end to end without the service.
 //! - `secrets`: literal values, scoped by package, signer and host as
 //!   `env_secrets` are, because a test node's environment cannot carry them.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use calimero_primitives::outbound::OutboundMethod;
 use eyre::{bail, Result as EyreResult};
 use serde_json::json;
 use tracing::warn;
@@ -71,9 +75,15 @@ pub(super) fn apply(
             spent: Mutex::default(),
         });
     }
+    if testing.connectors {
+        *transport = Arc::new(Connectors {
+            inner: Arc::clone(transport),
+        });
+    }
     warn!(
         echo = testing.echo,
         turnstile = testing.turnstile,
+        connectors = testing.connectors,
         secrets = testing.secrets.len(),
         "[outbound.testing] is on: a test build; .test hosts are answered in-process"
     );
@@ -162,6 +172,109 @@ impl Transport for Turnstile {
     }
 }
 
+/// Answers the first-party connectors' hosts as their services answer the connectors'
+/// operations, and hands every other request on. Each answer needs the bound key
+/// (`authorization: Bearer …`; `401` without one) and carries fields no operation declares
+/// (`latest_charge`, `system_fingerprint`), so a test sees the node cut them. A Stripe
+/// amount of `402` is declined (`402`, `card_declined`, with a message that quotes the
+/// request), and an unknown path is `404`.
+#[derive(Debug)]
+struct Connectors {
+    inner: Arc<dyn Transport>,
+}
+
+impl Transport for Connectors {
+    fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
+        let stripe = request.host == crate::connector::STRIPE.host;
+        let openai = request.host == crate::connector::OPENAI.host;
+        if !stripe && !openai {
+            return self.inner.send(request);
+        }
+        let keyed = request.headers.iter().any(|(n, v)| {
+            n.eq_ignore_ascii_case("authorization")
+                && v.strip_prefix("Bearer ").is_some_and(|k| !k.is_empty())
+        });
+        if !keyed {
+            let answer =
+                json!({ "error": { "type": "invalid_request_error", "code": "api_key_missing" } });
+            return Ok((401, serde_json::to_vec(&answer)?));
+        }
+        let path = request.url.path();
+        let answer = if stripe {
+            let form: BTreeMap<String, String> = url::form_urlencoded::parse(&request.body)
+                .into_owned()
+                .collect();
+            let intent = |id: &str, amount: u64, currency: &str, status: &str| {
+                let metadata: serde_json::Map<String, serde_json::Value> = form
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        let key = k.strip_prefix("metadata[")?.strip_suffix(']')?;
+                        Some((key.to_owned(), json!(v)))
+                    })
+                    .collect();
+                json!({
+                    "id": id,
+                    "object": "payment_intent",
+                    "status": status,
+                    "amount": amount,
+                    "currency": currency,
+                    "customer": form.get("customer"),
+                    "client_secret": format!("{id}_secret_test"),
+                    "metadata": metadata,
+                    "latest_charge": "ch_test_undeclared",
+                    "livemode": false,
+                })
+            };
+            match (&request.method, path) {
+                (OutboundMethod::Post, "/v1/payment_intents") => {
+                    let amount: u64 = form
+                        .get("amount")
+                        .and_then(|a| a.parse().ok())
+                        .unwrap_or_default();
+                    if amount == 402 {
+                        let declined = json!({ "error": {
+                            "code": "card_declined",
+                            "message": format!("Your card was declined for {amount}."),
+                        } });
+                        return Ok((402, serde_json::to_vec(&declined)?));
+                    }
+                    let currency = form.get("currency").cloned().unwrap_or_default();
+                    intent("pi_test_1", amount, &currency, "requires_payment_method")
+                }
+                (OutboundMethod::Get, p) if p.starts_with("/v1/payment_intents/") => {
+                    let id = p.trim_start_matches("/v1/payment_intents/");
+                    intent(id, 2000, "usd", "succeeded")
+                }
+                _ => {
+                    let missing = json!({ "error": { "code": "resource_missing" } });
+                    return Ok((404, serde_json::to_vec(&missing)?));
+                }
+            }
+        } else {
+            if path != "/v1/chat/completions" {
+                let missing = json!({ "error": { "code": "unknown_url" } });
+                return Ok((404, serde_json::to_vec(&missing)?));
+            }
+            let body: serde_json::Value = serde_json::from_slice(&request.body)?;
+            let last = body["messages"]
+                .as_array()
+                .and_then(|m| m.last())
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or_default()
+                .to_owned();
+            json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": body["model"],
+                "system_fingerprint": "fp_undeclared",
+                "choices": [{ "index": 0, "message": { "role": "assistant", "content": format!("echo: {last}") } }],
+                "usage": { "prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11 },
+            })
+        };
+        Ok((200, serde_json::to_vec(&answer)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_primitives::outbound::{OutboundMethod, OutboundRequest, OutboundResponse};
@@ -179,6 +292,7 @@ mod tests {
             testing: Some(OutboundTestSettings {
                 echo: true,
                 turnstile: false,
+                connectors: false,
                 secrets: if secrets {
                     [(
                         "ECHO_KEY".to_owned(),
@@ -275,6 +389,7 @@ mod tests {
             hosts: vec!["challenges.cloudflare.com".to_owned()],
             testing: Some(OutboundTestSettings {
                 turnstile: true,
+                connectors: false,
                 secrets: [(
                     "TURNSTILE_SECRET".to_owned(),
                     TestSecretSettings {

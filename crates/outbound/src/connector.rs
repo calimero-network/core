@@ -181,6 +181,64 @@ pub struct ConnectorGrant {
     pub limits: BTreeMap<String, BTreeSet<String>>,
 }
 
+impl ConnectorGrant {
+    /// What a release's signed manifest declares for connector `name`
+    /// (`BundleManifest::connectors`).
+    #[must_use]
+    pub fn declared(name: &str, declared: &calimero_bundle::BundleConnector) -> Self {
+        Self {
+            name: name.to_owned(),
+            operations: declared.operations.clone(),
+            limits: declared.limits.clone(),
+        }
+    }
+}
+
+/// Checks a release's declaration of a connector against this node's connectors: the
+/// connector is one of [`CONNECTORS`], each operation one of its own, and each limit one
+/// that a declared operation takes, with at most [`MAX_LIMIT_VALUES`] values.
+///
+/// # Errors
+/// What the node refuses the release for, naming the connector, operation or limit.
+pub fn check_grant(grant: &ConnectorGrant) -> EyreResult<()> {
+    let Some(c) = connector(&grant.name) else {
+        let known: Vec<&str> = CONNECTORS.iter().map(|c| c.name).collect();
+        bail!(
+            "{} is not a connector of this node (it has {})",
+            grant.name,
+            known.join(", ")
+        );
+    };
+    if let Some(op) = grant.operations.iter().find(|o| c.operation(o).is_none()) {
+        bail!("{op} is not an operation of the {} connector", c.name);
+    }
+    let limits: BTreeSet<&str> = c
+        .operations
+        .iter()
+        .filter(|o| grant.operations.contains(o.name))
+        .flat_map(|o| o.fields.iter())
+        .filter_map(|f| match f.kind {
+            Kind::Choice { limit } | Kind::Map { limit, .. } => Some(limit),
+            _ => None,
+        })
+        .collect();
+    for (limit, values) in &grant.limits {
+        if !limits.contains(limit.as_str()) {
+            bail!(
+                "no operation of the {} connector this release declares takes a {limit}",
+                c.name
+            );
+        }
+        if values.len() > MAX_LIMIT_VALUES {
+            bail!(
+                "{} {limit} holds more than {MAX_LIMIT_VALUES} values",
+                c.name
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Connector {
     /// The credential binding a call attaches: [`Credential`]'s header on the
     /// connector's host, every path (the operation fixes the path), required, so
