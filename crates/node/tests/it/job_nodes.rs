@@ -41,11 +41,15 @@ async fn create(alice: &Client, name: &str) -> String {
 }
 
 fn replicas(c: &Cluster, app: &str) -> Vec<u64> {
-    c.nodes[0]
+    // Sorted: these checks are about which nodes hold the app, not the order,
+    // which `placement::order_for_leader` rotates to spread initial leadership.
+    let mut r = c.nodes[0]
         .as_ref()
         .unwrap()
         .node
-        .sys(|s| s.apps[app].replicas.clone())
+        .sys(|s| s.apps[app].replicas.clone());
+    r.sort_unstable();
+    r
 }
 
 /// The job node's registration changes nothing about where the cluster's data
