@@ -769,6 +769,68 @@ fn an_exhausted_cursor_covers_its_range() {
     assert!(!set.touches_key(&stored_key(GENERATION, b"d")));
 }
 
+/// A reverse cursor closed early covers from the last key it returned to its end; an
+/// empty range read to its end covers the whole range, so the first key written into it
+/// touches the view; a range's end is never in it.
+#[test]
+fn reverse_and_empty_scans_cover_what_the_view_saw() {
+    let state = base(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3")]);
+    let touched =
+        |set: &calimero_app_host::ReadSet, k: &[u8]| set.touches_key(&stored_key(GENERATION, k));
+
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"a", b"d", true).unwrap();
+    let batch = host.range_next(cursor, 2).unwrap();
+    assert_eq!(batch[1].0, b"b".to_vec());
+    host.range_close(cursor);
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(touched(&set, b"b") && touched(&set, b"bz") && touched(&set, b"cz"));
+    assert!(!touched(&set, b"a") && !touched(&set, b"az") && !touched(&set, b"d"));
+
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"m", b"p", false).unwrap();
+    assert!(host.range_next(cursor, 10).unwrap().is_empty());
+    host.range_close(cursor);
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(touched(&set, b"m") && touched(&set, b"o"));
+    assert!(!touched(&set, b"l") && !touched(&set, b"p"));
+
+    // A cursor opened and dropped without a batch read nothing.
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"a", b"d", false).unwrap();
+    assert!(host.range_next(cursor, 0).unwrap().is_empty());
+    host.range_close(cursor);
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.ranges().is_empty());
+}
+
+/// Past a cap mid-run the set gives up for good: later reads do not make it bounded again,
+/// and reading another app's view gives up too.
+#[test]
+fn a_read_set_that_gives_up_stays_unbounded() {
+    let state = base(&[(b"a", b"1")]);
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    for i in 0..=calimero_app_host::MAX_READ_SET_KEYS as u32 {
+        let _ = host.storage_get(&i.to_be_bytes());
+    }
+    let _ = host.storage_get(b"a");
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.unbounded().is_some());
+    assert!(set.keys().is_empty());
+}
+
 #[test]
 fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
     let abi = Abi::from_json(&json!({

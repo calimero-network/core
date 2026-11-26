@@ -397,4 +397,22 @@ mod tests {
         index.extend_from_slice(&[b'i', 0x00, 0x00]);
         assert!(!set.touches_key(&index));
     }
+
+    #[test]
+    fn a_table_name_with_a_nul_is_escaped_as_the_sdk_encodes_it() {
+        let (start, end) = table_records(1, "a\0b");
+        let mut want = 1u64.to_be_bytes().to_vec();
+        want.extend_from_slice(&[
+            0x30, b'a', 0x00, 0xFF, b'b', 0x00, 0x00, 0x30, b'r', 0x00, 0x00,
+        ]);
+        assert_eq!(start, want);
+        let mut set = ReadSet::default();
+        set.range(start.clone(), end);
+        let mut record = start;
+        record.extend_from_slice(&[0x30, b'k', 0x00, 0x00]);
+        assert!(set.touches_key(&record));
+        // Table "a"'s records end its name where "a\0b" escapes the nul.
+        let (a, _) = table_records(1, "a");
+        assert!(!set.touches_key(&a));
+    }
 }
