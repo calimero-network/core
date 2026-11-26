@@ -211,6 +211,11 @@ case(
     1,
 )
 case(
+    "the release's lines under another version are not the release's WIT",
+    len(c.compare(tree(wit=WIT_UNRELEASED), tree(), released=tree(wit=WIT_A.replace("0.5.1", "0.5.0")))),
+    1,
+)
+case(
     "without the release to compare, going back still fails",
     len(c.compare(tree(wit=WIT_UNRELEASED), tree())),
     1,

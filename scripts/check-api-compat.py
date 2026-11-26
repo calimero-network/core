@@ -416,7 +416,9 @@ def release_tree(version: str) -> Tree | None:
         return subprocess.run(verify, cwd=ROOT, capture_output=True).returncode == 0
 
     if not present():
-        subprocess.run(["git", "fetch", "--quiet", "--no-tags", "--depth=1", "origin", f"{tag}:{tag}"], cwd=ROOT, capture_output=True)
+        # A depth on a full clone would truncate its history, so only a shallow checkout gets one.
+        depth = ["--depth=1"] if git("rev-parse", "--is-shallow-repository").strip() == "true" else []
+        subprocess.run(["git", "fetch", "--quiet", "--no-tags", *depth, "origin", f"{tag}:{tag}"], cwd=ROOT, capture_output=True)
     return Tree(tag) if present() else None
 
 
@@ -436,7 +438,9 @@ def main() -> int:
         print(f"abi supported {sorted(supported)} sdk {sdk_abi}")
         return 0
     base = Tree(args.base or default_base())
-    problems = compare(base, head, release_tree(workspace_version(head)))
+    # The base names the release: a head that lowers its own version cannot choose an older one.
+    released = release_tree(workspace_version(base)) if base.read(WIT) != head.read(WIT) else None
+    problems = compare(base, head, released)
     for p in problems:
         print(f"::error::{p}" if "GITHUB_ACTIONS" in os.environ else p, file=sys.stderr)
     if not problems:
