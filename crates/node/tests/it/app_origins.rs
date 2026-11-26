@@ -386,3 +386,60 @@ async fn a_sessions_registration_ends_with_it_though_the_origin_returns() {
     let e = carol.refresh().await.unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
 }
+
+/// A package's manager takes back its site from someone else's instance of
+/// the package: the instance loses it, and the sessions opened there end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_packages_manager_takes_back_an_origin_an_instance_holds() {
+    const OWN: &str = "com.test.own";
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let org = crate::common::home_org(&alice).await;
+    let _ok = alice
+        .packages()
+        .upload(release(OWN, "1.0.0"), Some(&org))
+        .await
+        .unwrap();
+    into_catalog(&c, release(OWN, "1.0.0")).await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let bobs = crate::common::home_org(&bob).await;
+    let store = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "squat", "package": OWN, "org": bobs }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+    let _ok = bob
+        .apps()
+        .origin_add(&store, SITE, None, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let carol = c.client(2);
+    let mut carol_pk = SoftAuthenticator::new(SITE_RP, SITE);
+    let _s = carol
+        .sign_up_at(&mut carol_pk, "carol", Some(SITE))
+        .await
+        .unwrap();
+    let _me = carol.auth().me().await.unwrap();
+
+    let added = wire(
+        alice
+            .packages()
+            .origins_add(OWN, SITE, None, None, Some(&mut alice_pk))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        (&added["package"], &added["app"]),
+        (&json!(OWN), &json!(null)),
+        "{added}"
+    );
+    assert!(wire(bob.apps().origins(&store).await.unwrap())["origins"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let e = carol.auth().me().await.unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
+}

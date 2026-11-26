@@ -41,8 +41,11 @@ pub const MAX_ORIGINS_PER_PACKAGE: usize = 8;
 /// How many origins one app instance registers.
 pub const MAX_ORIGINS_PER_APP: usize = 4;
 
-/// How many origins a cluster keeps.
+/// How many packages' origins a cluster keeps.
 pub const MAX_PACKAGE_ORIGINS: usize = 4096;
+
+/// How many instances' origins a cluster keeps, apart from packages' own.
+pub const MAX_APP_ORIGINS: usize = 4096;
 
 /// The longest origin, in bytes (`scheme://host:port`).
 pub const MAX_ORIGIN_BYTES: usize = 255;
@@ -262,6 +265,20 @@ impl SystemState {
             .filter(move |(_, o)| o.package == package && o.app.is_none())
     }
 
+    /// Whether the cluster holds as many instances' (`instance`) or packages' origins as it takes.
+    pub(crate) fn origins_full(&self, instance: bool) -> bool {
+        let cap = if instance {
+            MAX_APP_ORIGINS
+        } else {
+            MAX_PACKAGE_ORIGINS
+        };
+        self.package_origins
+            .values()
+            .filter(|o| o.app.is_some() == instance)
+            .count()
+            >= cap
+    }
+
     /// The origins registered for app instance `app`, by origin.
     pub fn origins_of_app<'a>(
         &'a self,
@@ -300,8 +317,13 @@ impl SystemState {
         if served {
             let _host = served_host(&origin).map_err(Refusal::message)?;
         }
-        if let Some(held) = self.package_origins.get(&origin) {
-            if held.package != package || held.app.is_some() {
+        // One an instance of the package holds, its manager takes back.
+        if let Some(held) = self
+            .package_origins
+            .get(&origin)
+            .filter(|o| o.package != package || o.app.is_none())
+        {
+            if held.package != package {
                 return Err("another package registered that origin".into());
             }
             if held.rp_id != resolved {
@@ -328,7 +350,7 @@ impl SystemState {
         {
             return Err(Rejection::quota("served origins"));
         }
-        if self.package_origins.len() >= MAX_PACKAGE_ORIGINS {
+        if self.origins_full(false) {
             return Err(Rejection::quota("origins"));
         }
         let record = PackageOrigin {
@@ -410,7 +432,7 @@ impl SystemState {
         if self.origins_of_app(&app).count() >= MAX_ORIGINS_PER_APP {
             return Err(Rejection::quota("origins per app"));
         }
-        if self.package_origins.len() >= MAX_PACKAGE_ORIGINS {
+        if self.origins_full(true) {
             return Err(Rejection::quota("origins"));
         }
         let record = PackageOrigin {

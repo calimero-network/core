@@ -2413,7 +2413,7 @@ async fn app_origin_add(
                 ),
             ));
         }
-        if s.package_origins.len() >= crate::origins::MAX_PACKAGE_ORIGINS {
+        if s.origins_full(true) {
             return Err(ApiError::new(
                 429,
                 "QUOTA_EXCEEDED",

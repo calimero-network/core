@@ -17503,3 +17503,63 @@ fn an_app_origin_needs_its_instances_release_installed() {
         "{refused}"
     );
 }
+
+/// The package's manager takes back an origin an instance of the package
+/// holds, under a new registration; an instance of another package keeps it.
+#[test]
+fn a_packages_manager_takes_back_its_instances_origin() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let refused = m
+        .run_unproven(add_origin(
+            "alice",
+            "p",
+            NOTES,
+            "notes.example.com",
+            Value::Null,
+        ))
+        .unwrap_err();
+    assert!(refused.message().contains("another"), "{refused}");
+    let mut reclaim = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    if let SystemCmd::AddPackageOrigin { registration, .. } = &mut reclaim {
+        *registration = "r2".into();
+    }
+    let _ok = m.run_unproven(reclaim).unwrap();
+    let held = &m.state.package_origins[NOTES];
+    assert_eq!(
+        (held.app.as_deref(), held.registration.as_str()),
+        (None, "r2")
+    );
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+}
+
+/// Instances' origins have a cluster-wide budget of their own: filled, it
+/// leaves packages' origins room.
+#[test]
+fn instance_origins_filling_their_cap_leave_packages_room() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let held = m.state.package_origins[NOTES].clone();
+    for i in 0..crate::origins::MAX_APP_ORIGINS {
+        let site = crate::origins::PackageOrigin {
+            app: Some(format!("app{i}")),
+            ..held.clone()
+        };
+        let _prev = m
+            .state
+            .package_origins
+            .insert(format!("https://s{i}.example.com"), site);
+    }
+    let _ok = m
+        .run_unproven(add_origin(
+            "alice",
+            "q",
+            "https://q.example.com",
+            "q.example.com",
+            Value::Null,
+        ))
+        .unwrap();
+    let _gone = m.state.package_origins.remove(NOTES);
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(refused.is_quota(), "{refused}");
+}

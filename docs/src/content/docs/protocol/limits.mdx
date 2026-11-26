@@ -100,7 +100,7 @@ the same way. Compute runs on job nodes have their own caps
 | Plain blobs one component app holds | 100 000 blobs, 10 GiB; `429 QUOTA_EXCEEDED` past either | `MAX_COMPONENT_BLOBS`, `MAX_APP_BLOB_BYTES` |
 | Metadata (organization, member, team, app) | 16 KiB of JSON | `MAX_METADATA_BYTES` |
 | Passkeys per account | 10 | `AddPasskey` |
-| Registered web origins | 8 per package, 4 per instance, 4096 per cluster, 255 bytes each | `MAX_ORIGINS_PER_PACKAGE`, `MAX_ORIGINS_PER_APP`, `MAX_PACKAGE_ORIGINS`, `MAX_ORIGIN_BYTES` |
+| Registered web origins | 8 per package, 4 per instance, 4096 packages' and 4096 instances' per cluster, 255 bytes each | `MAX_ORIGINS_PER_PACKAGE`, `MAX_ORIGINS_PER_APP`, `MAX_PACKAGE_ORIGINS`, `MAX_APP_ORIGINS`, `MAX_ORIGIN_BYTES` |
 | Aliases per account | 1000, each 1–64 characters | `MAX_ALIASES` |
 | Passkey label | 64 characters | `MAX_LABEL_CHARS` |
 | Upgrade runs kept per organization | 20 | `UPGRADE_RUNS_KEPT` |

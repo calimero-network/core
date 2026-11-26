@@ -21,7 +21,7 @@ use crate::error::ApiError;
 use crate::node::Node;
 use crate::origins::{
     add_args, covers_cluster, new_registration, origin_host, origin_json, resolve_rp_id,
-    served_host, within, MAX_ORIGINS_PER_PACKAGE, MAX_PACKAGE_ORIGINS, MAX_SERVED_ORIGINS,
+    served_host, within, MAX_ORIGINS_PER_PACKAGE, MAX_SERVED_ORIGINS,
     MAX_SERVED_ORIGINS_PER_PACKAGE,
 };
 use crate::system::cluster_version::Feature;
@@ -119,9 +119,11 @@ pub(super) async fn add(
     let served = body.served;
     node.sys(|s| {
         match s.package_origins.get(&origin) {
-            Some(o) if o.package != package || o.app.is_some() => {
+            Some(o) if o.package != package => {
                 return Err(taken("another package or app registered that origin"))
             }
+            // An instance of the package holds it: its manager takes it back.
+            Some(o) if o.app.is_some() => {}
             Some(o) if o.served != served => {
                 return Err(taken(
                     "that origin is registered with the other `served`; remove it first",
@@ -156,7 +158,7 @@ pub(super) async fn add(
                 "this cluster serves as many custom domains as it takes",
             ));
         }
-        if s.package_origins.len() >= MAX_PACKAGE_ORIGINS {
+        if s.origins_full(false) {
             return Err(ApiError::new(
                 429,
                 "QUOTA_EXCEEDED",
