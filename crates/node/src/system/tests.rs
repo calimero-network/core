@@ -17563,3 +17563,26 @@ fn instance_origins_filling_their_cap_leave_packages_room() {
     let refused = m.run_unproven(add_app_origin()).unwrap_err();
     assert!(refused.is_quota(), "{refused}");
 }
+
+/// A registration a session names is never empty, where it applies: an
+/// instance's always, and a package's once the cluster brings instances' origins.
+#[test]
+fn an_origin_without_a_registration_is_refused_once_registrations_exist() {
+    let mut m = instance_of_a_shared_bundle();
+    let mut unnamed = add_app_origin();
+    if let SystemCmd::AddAppOrigin { registration, .. } = &mut unnamed {
+        registration.clear();
+    }
+    let refused = m.run_unproven(unnamed).unwrap_err();
+    assert!(refused.message().contains("registration"), "{refused}");
+    let package = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    let _ok = m.run_unproven(package.clone()).unwrap();
+    let _gone = m.state.package_origins.remove(NOTES);
+    m.state.cluster_version = Some(
+        super::cluster_version::Feature::AppOrigins
+            .since()
+            .to_owned(),
+    );
+    let refused = m.run_unproven(package).unwrap_err();
+    assert!(refused.message().contains("registration"), "{refused}");
+}

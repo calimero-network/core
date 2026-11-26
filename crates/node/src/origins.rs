@@ -32,6 +32,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::system::cluster_version::Feature;
 use crate::system::{Rejection, SystemState, OPERATOR};
 use crate::types::{AccountId, AppId};
 
@@ -46,6 +47,9 @@ pub const MAX_PACKAGE_ORIGINS: usize = 4096;
 
 /// How many instances' origins a cluster keeps, apart from packages' own.
 pub const MAX_APP_ORIGINS: usize = 4096;
+
+/// Refuses an entry naming no [`PackageOrigin::registration`], which no re-registration would change.
+const NO_REGISTRATION: &str = "an origin's registration is empty";
 
 /// The longest origin, in bytes (`scheme://host:port`).
 pub const MAX_ORIGIN_BYTES: usize = 255;
@@ -313,6 +317,9 @@ impl SystemState {
         if !self.manages_package(&package, &actor) {
             return Err("only the package's manager registers its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first".into());
         }
+        if registration.is_empty() && self.cluster_brings(Feature::AppOrigins) {
+            return Err(NO_REGISTRATION.into());
+        }
         let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;
         if served {
             let _host = served_host(&origin).map_err(Refusal::message)?;
@@ -407,6 +414,9 @@ impl SystemState {
         let record = self.apps.get(&app).ok_or("no such app")?;
         if !self.manages_app(record, &actor) {
             return Err("only whoever manages the instance registers its origins".into());
+        }
+        if registration.is_empty() {
+            return Err(NO_REGISTRATION.into());
         }
         // The release the instance runs, as `Principal::within` judges it: a
         // shared component bundle's record names only its first package.
