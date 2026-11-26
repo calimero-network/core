@@ -469,6 +469,7 @@
     if (!attn.length && (m.kind === "upgrade" || m.kind === "upgradeUnit")) fact("ok", "shield", "No new permissions", "It reaches what the version you run now reaches.");
     if (signed) fact("ok", "key", signed[0], signed[1]);
     // Who chooses this app's updates: a deployment's name is not unique, so its line names the owner too.
+    if (m.takenOver) fact("warn", "warn", m.takenOver.title, m.takenOver.detail);
     if (m.offeredBy) fact("", "info", m.offeredBy.title, m.offeredBy.detail);
     var points = (m.points || []).filter(Boolean);
     if (points.length) fact("", "info", points[0], points[1]).id = "created";

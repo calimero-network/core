@@ -1523,7 +1523,7 @@ extension CalimeroClient {
 
         /// Deployments: `GET /deployments` (`deployment_list`).
         ///
-        /// The deployments the caller manages.
+        /// The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -1594,6 +1594,45 @@ extension CalimeroClient {
             let input = Operations.DeploymentSecrets.Input(path: .init(id: id))
             return try await client.perform { api in
                 try await api.deploymentSecrets(input).ok.body.json
+            }
+        }
+
+        /// Accept a deployment offered to an owner: `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`).
+        ///
+        /// A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func transferAccept(id: Swift.String, to: Components.Schemas.Deployer, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.DeploymentAccepted {
+            let input = Operations.DeploymentTransferAccept.Input(path: .init(id: id), body: .json(.init(to: to)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.deploymentTransferAccept(input).ok.body.json
+            }
+        }
+
+        /// Cancel the offer of a deployment: `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`).
+        ///
+        /// A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func transferCancel(id: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.DeploymentTransferCancelled {
+            let input = Operations.DeploymentTransferCancel.Input(path: .init(id: id))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.deploymentTransferCancel(input).ok.body.json
+            }
+        }
+
+        /// Offer a deployment to another owner: `POST /deployments/{id}/transfer` (`deployment_transfer_offer`).
+        ///
+        /// The deployment's owner account, or an owner or admin of its organization (managing it, `MANAGE_APPLICATION`, is not enough: `403`), offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func transferOffer(id: Swift.String, to: Components.Schemas.Deployer, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.DeploymentOffered {
+            let input = Operations.DeploymentTransferOffer.Input(path: .init(id: id), body: .json(.init(to: to)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.deploymentTransferOffer(input).ok.body.json
             }
         }
 

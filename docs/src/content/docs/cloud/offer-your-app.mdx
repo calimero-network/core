@@ -104,6 +104,13 @@ meroctl deployment create Chat --owner org:<org-id> --dev-passkey ./dev-passkey.
 customers see. The id comes from your passkey consent, and `host` is the
 deployment's own frontend host. An owner has at most 16 deployments.
 
+An organization owns a deployment only while it holds a
+[recovery key](/protocol/organizations/#recovery), so losing every passkey never
+locks the deployment and its customers: set one first (`POST /orgs/{org}/recovery
+{ publicKey }`, or `recoveryKey` when creating the organization) and keep its seed
+offline, else creating the deployment is `409 RECOVERY_KEY_REQUIRED`. While the
+organization owns a deployment, the key can be rotated but not removed.
+
 ## 3. Offer a release
 
 ```bash
@@ -330,13 +337,33 @@ pointing at an offer that is gone. The release stays installed. A deployment
 is deleted once it offers nothing and no instance came from it, and an
 organization that owns a deployment cannot be deleted before it.
 
+## Handing a deployment over
+
+A deployment moves to another owner (an organization or an account) in two
+steps, each with that side's passkey. For an organization's deployment, its owner
+or an admin offers it:
+
+```bash
+meroctl deployment transfer Chat --to org:<their-org-id> --dev-passkey ./dev-passkey.json
+# on their side, within 7 days:
+meroctl deployment list                       # the offer is under "offered"
+meroctl deployment accept <deployment-id> --to org:<their-org-id> --dev-passkey ./their-passkey.json
+```
+
+The receiver needs a deployer grant of its own, as an organization a recovery
+key, and the use of every release you offer: a private release must be
+installed for it too (`409 OFFERS_NOT_USABLE` otherwise). Its offers and the customers' instances go with it; your secret
+values do not (the new owner sets its own). Either side can cancel a waiting
+offer (`deployment cancel-transfer`), and it lapses after 7 days or once you no
+longer manage the deployment. Customers are not asked, but every instance's
+update sheet says who now runs the deployment until its owner approves an update,
+and until then no update applies on its own.
+
 ## Limits
 
 - **Releases from before deployments** stay outside every deployment, and
   instances created before record none: offer the releases in a deployment
   yourself.
-- **A deployment keeps its owner.** To move it, create a new one under the
-  new owner and offer the same releases.
 - **Keep the deployment manageable.** Every change needs a manager's
   passkey, and nothing stops an organization-owned deployment from being left
   with no manager able to sign. Keep more than one `MANAGE_APPLICATION`

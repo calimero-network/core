@@ -51,6 +51,7 @@ import kotlinx.serialization.Contextual
  * @param computeBundle 
  * @param components 
  * @param lastUpgrade 
+ * @param ownerSeenAt 
  * @param deployment 
  * @param release 
  * @param restore 
@@ -112,6 +113,9 @@ data class App (
 
     @SerialName(value = "lastUpgrade")
     val lastUpgrade: Upgrade? = null,
+
+    @SerialName(value = "ownerSeenAt")
+    val ownerSeenAt: kotlin.Long? = null,
 
     @SerialName(value = "deployment")
     val deployment: kotlin.String? = null,

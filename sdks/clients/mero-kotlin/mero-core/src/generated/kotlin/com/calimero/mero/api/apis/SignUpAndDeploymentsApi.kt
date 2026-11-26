@@ -34,15 +34,20 @@ import com.calimero.mero.api.models.DeployerBody
 import com.calimero.mero.api.models.DeployerGranted
 import com.calimero.mero.api.models.DeployerList
 import com.calimero.mero.api.models.DeployerRevoked
+import com.calimero.mero.api.models.DeploymentAccepted
 import com.calimero.mero.api.models.DeploymentBody
 import com.calimero.mero.api.models.DeploymentCreated
 import com.calimero.mero.api.models.DeploymentDeleted
 import com.calimero.mero.api.models.DeploymentList
+import com.calimero.mero.api.models.DeploymentOffered
 import com.calimero.mero.api.models.DeploymentOrgs
 import com.calimero.mero.api.models.DeploymentSecretBody
 import com.calimero.mero.api.models.DeploymentSecretCleared
 import com.calimero.mero.api.models.DeploymentSecretSet
 import com.calimero.mero.api.models.DeploymentSecrets
+import com.calimero.mero.api.models.DeploymentTransferAcceptRequest
+import com.calimero.mero.api.models.DeploymentTransferCancelled
+import com.calimero.mero.api.models.DeploymentTransferOfferRequest
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
 import com.calimero.mero.api.models.OfferBody
@@ -530,7 +535,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * GET /deployments
      * Deployments
-     * The deployments the caller manages.  **Who:** signed in (a session or an API key).
+     * The deployments the caller manages, and in &#x60;offered&#x60; those offered to an owner it acts for, waiting for its acceptance (&#x60;POST /deployments/{id}/transfer/accept&#x60;).  **Who:** signed in (a session or an API key).
      * @return DeploymentList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -561,7 +566,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * GET /deployments
      * Deployments
-     * The deployments the caller manages.  **Who:** signed in (a session or an API key).
+     * The deployments the caller manages, and in &#x60;offered&#x60; those offered to an owner it acts for, waiting for its acceptance (&#x60;POST /deployments/{id}/transfer/accept&#x60;).  **Who:** signed in (a session or an API key).
      * @return ApiResponse<DeploymentList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -973,6 +978,237 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/deployments/{id}/secrets".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /deployments/{id}/transfer/accept
+     * Accept a deployment offered to an owner
+     * A manager of &#x60;to&#x60; (the account itself, or &#x60;MANAGE_APPLICATION&#x60; org-wide in the organization) accepts the offer to &#x60;to&#x60;, with a step-up over &#x60;deployment:{id} / __accept_deployment / { to, offeredAt }&#x60; (the offer it accepts): &#x60;to&#x60; becomes the owner, and the deployment&#39;s offers and customers&#39; instances stay with it. The previous owner&#39;s secret values are dropped (&#x60;secretsDropped&#x60; names them): the new owner sets its own. Until a person approves an update of a customer&#39;s instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: &#x60;404 NO_TRANSFER&#x60; when it is not offered to &#x60;to&#x60;, &#x60;409 TRANSFER_STALE&#x60; once whoever offered it may no longer hand it over, &#x60;409 TRANSFER_LAPSED&#x60; 7 days after the offer, &#x60;403 DEPLOY_NOT_GRANTED&#x60; where deployments are granted and &#x60;to&#x60; holds no live deployer grant of its own, &#x60;409 RECOVERY_KEY_REQUIRED&#x60; for an organization without a recovery key, &#x60;429&#x60; past the receiver&#39;s 16 deployments. Each customer&#39;s next update sheet names the new owner.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param deploymentTransferAcceptRequest 
+     * @return DeploymentAccepted
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentTransferAccept(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : DeploymentAccepted = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentTransferAcceptWithHttpInfo(id = id, deploymentTransferAcceptRequest = deploymentTransferAcceptRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentAccepted
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /deployments/{id}/transfer/accept
+     * Accept a deployment offered to an owner
+     * A manager of &#x60;to&#x60; (the account itself, or &#x60;MANAGE_APPLICATION&#x60; org-wide in the organization) accepts the offer to &#x60;to&#x60;, with a step-up over &#x60;deployment:{id} / __accept_deployment / { to, offeredAt }&#x60; (the offer it accepts): &#x60;to&#x60; becomes the owner, and the deployment&#39;s offers and customers&#39; instances stay with it. The previous owner&#39;s secret values are dropped (&#x60;secretsDropped&#x60; names them): the new owner sets its own. Until a person approves an update of a customer&#39;s instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: &#x60;404 NO_TRANSFER&#x60; when it is not offered to &#x60;to&#x60;, &#x60;409 TRANSFER_STALE&#x60; once whoever offered it may no longer hand it over, &#x60;409 TRANSFER_LAPSED&#x60; 7 days after the offer, &#x60;403 DEPLOY_NOT_GRANTED&#x60; where deployments are granted and &#x60;to&#x60; holds no live deployer grant of its own, &#x60;409 RECOVERY_KEY_REQUIRED&#x60; for an organization without a recovery key, &#x60;429&#x60; past the receiver&#39;s 16 deployments. Each customer&#39;s next update sheet names the new owner.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param deploymentTransferAcceptRequest 
+     * @return ApiResponse<DeploymentAccepted?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentTransferAcceptWithHttpInfo(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : ApiResponse<DeploymentAccepted?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentTransferAcceptRequestConfig(id = id, deploymentTransferAcceptRequest = deploymentTransferAcceptRequest)
+
+        return@withContext request<DeploymentTransferAcceptRequest, DeploymentAccepted>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentTransferAccept
+     *
+     * @param id 
+     * @param deploymentTransferAcceptRequest 
+     * @return RequestConfig
+     */
+    fun deploymentTransferAcceptRequestConfig(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : RequestConfig<DeploymentTransferAcceptRequest> {
+        val localVariableBody = deploymentTransferAcceptRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/deployments/{id}/transfer/accept".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /deployments/{id}/transfer
+     * Cancel the offer of a deployment
+     * A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over &#x60;deployment:{id} / __cancel_deployment_transfer / {}&#x60;. &#x60;404 NO_TRANSFER&#x60; when none waits.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param confirmOnly May be absent. (optional)
+     * @return DeploymentTransferCancelled
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentTransferCancel(id: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentTransferCancelled = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentTransferCancelWithHttpInfo(id = id, confirmOnly = confirmOnly)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentTransferCancelled
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /deployments/{id}/transfer
+     * Cancel the offer of a deployment
+     * A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over &#x60;deployment:{id} / __cancel_deployment_transfer / {}&#x60;. &#x60;404 NO_TRANSFER&#x60; when none waits.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param confirmOnly May be absent. (optional)
+     * @return ApiResponse<DeploymentTransferCancelled?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentTransferCancelWithHttpInfo(id: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentTransferCancelled?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentTransferCancelRequestConfig(id = id, confirmOnly = confirmOnly)
+
+        return@withContext request<ConfirmOnly, DeploymentTransferCancelled>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentTransferCancel
+     *
+     * @param id 
+     * @param confirmOnly May be absent. (optional)
+     * @return RequestConfig
+     */
+    fun deploymentTransferCancelRequestConfig(id: kotlin.String, confirmOnly: ConfirmOnly?) : RequestConfig<ConfirmOnly> {
+        val localVariableBody = confirmOnly
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/deployments/{id}/transfer".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /deployments/{id}/transfer
+     * Offer a deployment to another owner
+     * The deployment&#39;s owner account, or an owner or admin of its organization (managing it, &#x60;MANAGE_APPLICATION&#x60;, is not enough: &#x60;403&#x60;), offers it to &#x60;to&#x60;, another account or organization, with a step-up over &#x60;deployment:{id} / __offer_deployment / { to }&#x60;. It changes hands only when a manager of &#x60;to&#x60; accepts within 7 days. One offer waits at a time: &#x60;409 TRANSFER_PENDING&#x60; until it is cancelled or lapses. &#x60;400 SAME_OWNER&#x60; for its own owner, &#x60;404&#x60; for an unknown receiver. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param deploymentTransferOfferRequest 
+     * @return DeploymentOffered
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentTransferOffer(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : DeploymentOffered = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentTransferOfferWithHttpInfo(id = id, deploymentTransferOfferRequest = deploymentTransferOfferRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOffered
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /deployments/{id}/transfer
+     * Offer a deployment to another owner
+     * The deployment&#39;s owner account, or an owner or admin of its organization (managing it, &#x60;MANAGE_APPLICATION&#x60;, is not enough: &#x60;403&#x60;), offers it to &#x60;to&#x60;, another account or organization, with a step-up over &#x60;deployment:{id} / __offer_deployment / { to }&#x60;. It changes hands only when a manager of &#x60;to&#x60; accepts within 7 days. One offer waits at a time: &#x60;409 TRANSFER_PENDING&#x60; until it is cancelled or lapses. &#x60;400 SAME_OWNER&#x60; for its own owner, &#x60;404&#x60; for an unknown receiver. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param deploymentTransferOfferRequest 
+     * @return ApiResponse<DeploymentOffered?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentTransferOfferWithHttpInfo(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : ApiResponse<DeploymentOffered?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentTransferOfferRequestConfig(id = id, deploymentTransferOfferRequest = deploymentTransferOfferRequest)
+
+        return@withContext request<DeploymentTransferOfferRequest, DeploymentOffered>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentTransferOffer
+     *
+     * @param id 
+     * @param deploymentTransferOfferRequest 
+     * @return RequestConfig
+     */
+    fun deploymentTransferOfferRequestConfig(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : RequestConfig<DeploymentTransferOfferRequest> {
+        val localVariableBody = deploymentTransferOfferRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/deployments/{id}/transfer".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

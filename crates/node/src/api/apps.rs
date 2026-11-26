@@ -753,6 +753,7 @@ async fn create_instance(
                 init_args,
                 metadata: body.metadata,
                 last_upgrade: None,
+                owner_seen_at: None,
                 deployment: body.deployment,
                 compute_bundle,
                 components,

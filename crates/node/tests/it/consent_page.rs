@@ -3559,6 +3559,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     let (carol, mut carol_key) = signed_up(&c, 1, "carol").await;
     let (bob, bob_key) = signed_up(&c, 2, "bob").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let mut mpks = Vec::new();
     for (version, tag) in [("1.0.0", "v1"), ("1.5.0", "v15"), ("2.0.0", "v2")] {
         let (mpk, _) = release_of(
             PACKAGE,
@@ -3567,7 +3568,8 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
             &publisher,
             &Declares::default(),
         );
-        let _ = dev.packages().upload(mpk, None).await.unwrap();
+        let _ = dev.packages().upload(mpk.clone(), None).await.unwrap();
+        mpks.push(mpk);
     }
     let dev_id = account_of(&dev).await;
     let d = dev
@@ -3599,6 +3601,13 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
         .as_str()
         .unwrap()
         .to_owned();
+    // Globex may own a deployment: it holds a recovery key.
+    let key = calimero_identity::recovery::recovery_public(&[8; 32]);
+    let _ok = carol
+        .orgs()
+        .recovery_set(&globex, Some(Some(&key)), Some(&mut carol_key))
+        .await
+        .unwrap();
     let token = carol
         .orgs()
         .invite_create(
@@ -3639,6 +3648,34 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
         .await
         .unwrap();
 
+    // The developer hands the deployment to Globex, the customer's own organization: the
+    // update sheet tells its owner who now chooses its updates, and whom it came from.
+    let to_globex = || typed(json!({ "org": globex }));
+    let _ok = dev
+        .deployments()
+        .transfer_offer(&d, to_globex(), Some(&mut dev_pk))
+        .await
+        .unwrap();
+    // The developer's releases are private to it: Globex accepts only once it may use what
+    // the deployment offers, else the offer would stop serving its customers.
+    let unusable = carol
+        .deployments()
+        .transfer_accept(&d, to_globex(), Some(&mut carol_key))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&unusable, calimero_client::Error::Api { status: 409, code, .. } if code == "OFFERS_NOT_USABLE"),
+        "{unusable:?}"
+    );
+    for mpk in mpks {
+        let _ = carol.packages().upload(mpk, Some(&globex)).await.unwrap();
+    }
+    let _ok = carol
+        .deployments()
+        .transfer_accept(&d, to_globex(), Some(&mut carol_key))
+        .await
+        .unwrap();
+
     // In the app: each person signs in on the package's frontend.
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
     let app_origin = format!(
@@ -3662,9 +3699,23 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(u["available"]["version"], "2.0.0", "{u}");
     assert_eq!(u["available"]["source"], "deployment", "{u}");
     assert_eq!(u["mayApprove"], json!(true), "{u}");
-    // Names are not unique: the deployment comes with its id and its owner.
-    let named = json!({ "id": d, "name": "acme", "owner": { "kind": "account", "name": "dev" } });
-    assert_eq!(u["deployment"], named, "{u}");
+    // Names are not unique: the deployment comes with its id and its owner, and whom it
+    // came from.
+    let named = u["deployment"].clone();
+    assert_eq!(
+        (&named["id"], &named["name"], &named["owner"]),
+        (
+            &json!(d),
+            &json!("acme"),
+            &json!({ "kind": "org", "name": "Globex" })
+        ),
+        "{u}"
+    );
+    assert_eq!(
+        named["transferred"]["from"],
+        json!({ "kind": "account", "name": "dev" }),
+        "{u}"
+    );
 
     // A second instance from the offer: the install sheet names the deployment the same way.
     let made = ask(
@@ -3679,7 +3730,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(model["kind"], "install", "{model}");
     assert_eq!(model["deployment"], named, "{model}");
     let offered_by = json!({
-        "title": "Offered by acme, run by the account dev.",
+        "title": "Offered by acme, run by the organization Globex.",
         "detail": format!("Deployment {d}"),
     });
     assert_eq!(model["offeredBy"], offered_by, "{model}");
@@ -3724,8 +3775,18 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     let model = page.model().await;
     assert_eq!(model["kind"], "upgrade", "{model}");
     assert_eq!(model["upgrade"]["to"]["version"], "2.0.0", "{model}");
-    assert_eq!(model["deployment"], named, "{model}");
+    assert_eq!(
+        model["deployment"]["owner"],
+        json!({ "kind": "org", "name": "Globex" }),
+        "{model}"
+    );
     assert_eq!(model["offeredBy"], offered_by, "{model}");
+    assert_eq!(
+        model["takenOver"]["title"], "acme has a new owner",
+        "{model}"
+    );
+    let taken = "Now run by the organization Globex, who took it over from the account dev. They choose this app's updates from now on.";
+    assert_eq!(model["takenOver"]["detail"], taken, "{model}");
     let mut carol_page = SoftAuthenticator::with_key(&carol_in_app, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut carol_page).await;
     assert_eq!(code, 200, "{done}");

@@ -254,12 +254,18 @@ from .deployer_revoked import DeployerRevoked
 from .deployer_type_0 import DeployerType0
 from .deployer_type_1 import DeployerType1
 from .deployment import Deployment
+from .deployment_accepted import DeploymentAccepted
 from .deployment_body import DeploymentBody
 from .deployment_created import DeploymentCreated
 from .deployment_customer import DeploymentCustomer
 from .deployment_deleted import DeploymentDeleted
 from .deployment_list import DeploymentList
+from .deployment_list_offered_item import DeploymentListOfferedItem
+from .deployment_list_offered_item_apps_item import DeploymentListOfferedItemAppsItem
+from .deployment_list_offered_item_owner import DeploymentListOfferedItemOwner
 from .deployment_offer import DeploymentOffer
+from .deployment_offered import DeploymentOffered
+from .deployment_offered_transfer import DeploymentOfferedTransfer
 from .deployment_orgs import DeploymentOrgs
 from .deployment_owner import DeploymentOwner
 from .deployment_owner_kind import DeploymentOwnerKind
@@ -268,6 +274,8 @@ from .deployment_record_apps import DeploymentRecordApps
 from .deployment_record_apps_additional_property import (
     DeploymentRecordAppsAdditionalProperty,
 )
+from .deployment_record_transfer import DeploymentRecordTransfer
+from .deployment_record_transferred import DeploymentRecordTransferred
 from .deployment_secret_body import DeploymentSecretBody
 from .deployment_secret_cleared import DeploymentSecretCleared
 from .deployment_secret_set import DeploymentSecretSet
@@ -277,6 +285,14 @@ from .deployment_secrets_secrets import DeploymentSecretsSecrets
 from .deployment_shown import DeploymentShown
 from .deployment_shown_owner import DeploymentShownOwner
 from .deployment_shown_owner_kind import DeploymentShownOwnerKind
+from .deployment_shown_transferred import DeploymentShownTransferred
+from .deployment_shown_transferred_from import DeploymentShownTransferredFrom
+from .deployment_shown_transferred_from_kind import DeploymentShownTransferredFromKind
+from .deployment_transfer_accept_body import DeploymentTransferAcceptBody
+from .deployment_transfer_cancelled import DeploymentTransferCancelled
+from .deployment_transfer_offer_body import DeploymentTransferOfferBody
+from .deployment_transfer_type_0 import DeploymentTransferType0
+from .deployment_transferred_type_0 import DeploymentTransferredType0
 from .egress_set import EgressSet
 from .egress_view import EgressView
 from .egress_view_egress import EgressViewEgress
@@ -955,18 +971,26 @@ __all__ = (
     "DeployerType0",
     "DeployerType1",
     "Deployment",
+    "DeploymentAccepted",
     "DeploymentBody",
     "DeploymentCreated",
     "DeploymentCustomer",
     "DeploymentDeleted",
     "DeploymentList",
+    "DeploymentListOfferedItem",
+    "DeploymentListOfferedItemAppsItem",
+    "DeploymentListOfferedItemOwner",
     "DeploymentOffer",
+    "DeploymentOffered",
+    "DeploymentOfferedTransfer",
     "DeploymentOrgs",
     "DeploymentOwner",
     "DeploymentOwnerKind",
     "DeploymentRecord",
     "DeploymentRecordApps",
     "DeploymentRecordAppsAdditionalProperty",
+    "DeploymentRecordTransfer",
+    "DeploymentRecordTransferred",
     "DeploymentSecretBody",
     "DeploymentSecretCleared",
     "DeploymentSecrets",
@@ -976,6 +1000,14 @@ __all__ = (
     "DeploymentShown",
     "DeploymentShownOwner",
     "DeploymentShownOwnerKind",
+    "DeploymentShownTransferred",
+    "DeploymentShownTransferredFrom",
+    "DeploymentShownTransferredFromKind",
+    "DeploymentTransferAcceptBody",
+    "DeploymentTransferCancelled",
+    "DeploymentTransferOfferBody",
+    "DeploymentTransferredType0",
+    "DeploymentTransferType0",
     "EgressSet",
     "EgressView",
     "EgressViewEgress",

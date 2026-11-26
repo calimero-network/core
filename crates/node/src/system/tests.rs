@@ -9635,11 +9635,76 @@ fn deployment_changes_carry_their_managers_consent() {
         &json!({ "app": "notes" }),
     );
     let _ok = m.run(withdraw(c)).unwrap();
-    let c = consent(&mut alice, &subject, "__delete_deployment", &json!({}));
+
+    // A transfer: each side signs its own step, naming the receiver.
+    let _ok = m.run_unproven(account("carol")).unwrap();
+    let to_bob = json!({ "to": { "account": "bob" } });
+    let offer_to = |to: &str, consent: serde_json::Value| SystemCmd::OfferDeployment {
+        deployment: id.clone(),
+        to: Deployer::Account(to.into()),
+        actor: "alice".into(),
+        at: 10,
+        consent,
+    };
+    assert!(m.run(offer_to("bob", Value::Null)).is_err(), "no consent");
+    let by_bob = consent(&mut bob, &subject, "__offer_deployment", &to_bob);
+    assert!(m.run(offer_to("bob", by_bob)).is_err(), "bob's passkey");
+    let c = consent(&mut alice, &subject, "__offer_deployment", &to_bob);
+    assert!(
+        m.run(offer_to("carol", c.clone())).is_err(),
+        "another receiver"
+    );
+    let _ok = m.run(offer_to("bob", c)).unwrap();
+    let accept = |actor: &str, consent: serde_json::Value| SystemCmd::AcceptDeployment {
+        deployment: id.clone(),
+        to: Deployer::Account("bob".into()),
+        offered_at: 10,
+        actor: actor.into(),
+        at: 11,
+        consent,
+    };
+    let the_offer = json!({ "to": { "account": "bob" }, "offeredAt": 10 });
+    assert!(m.run(accept("bob", Value::Null)).is_err(), "no consent");
+    let by_alice = consent(&mut alice, &subject, "__accept_deployment", &the_offer);
+    assert!(m.run(accept("bob", by_alice)).is_err(), "alice's passkey");
+    let other = consent(&mut bob, &subject, "__accept_deployment", &to_bob);
+    assert!(m.run(accept("bob", other)).is_err(), "another offer");
+    let c = consent(&mut bob, &subject, "__accept_deployment", &the_offer);
+    let _ok = m.run(accept("bob", c)).unwrap();
+    let cancel = |actor: &str, consent: serde_json::Value| SystemCmd::CancelDeploymentTransfer {
+        deployment: id.clone(),
+        actor: actor.into(),
+        consent,
+    };
+    let c = consent(
+        &mut bob,
+        &subject,
+        "__offer_deployment",
+        &json!({ "to": { "account": "alice" } }),
+    );
+    let _ok = m
+        .run(SystemCmd::OfferDeployment {
+            deployment: id.clone(),
+            to: Deployer::Account("alice".into()),
+            actor: "bob".into(),
+            at: 12,
+            consent: c,
+        })
+        .unwrap();
+    assert!(m.run(cancel("alice", Value::Null)).is_err(), "no consent");
+    let c = consent(
+        &mut alice,
+        &subject,
+        "__cancel_deployment_transfer",
+        &json!({}),
+    );
+    let _ok = m.run(cancel("alice", c)).unwrap();
+
+    let c = consent(&mut bob, &subject, "__delete_deployment", &json!({}));
     let _ok = m
         .run(SystemCmd::DeleteDeployment {
             deployment: id.clone(),
-            actor: "alice".into(),
+            actor: "bob".into(),
             consent: c,
         })
         .unwrap();
@@ -14721,6 +14786,373 @@ fn an_organization_owns_a_deployment_only_with_a_recovery_key() {
     );
 }
 
+// ------------------------------------------------------ deployment transfer
+
+fn offer_deployment(deployment: &str, to: super::Deployer, actor: &str, at: u64) -> SystemCmd {
+    SystemCmd::OfferDeployment {
+        deployment: deployment.into(),
+        to,
+        actor: actor.into(),
+        at,
+        consent: serde_json::Value::Null,
+    }
+}
+
+/// An acceptance of the offer made at `offered_at`.
+fn accept_deployment(
+    deployment: &str,
+    to: super::Deployer,
+    offered_at: u64,
+    actor: &str,
+    at: u64,
+) -> SystemCmd {
+    SystemCmd::AcceptDeployment {
+        deployment: deployment.into(),
+        to,
+        offered_at,
+        actor: actor.into(),
+        at,
+        consent: serde_json::Value::Null,
+    }
+}
+
+fn cancel_transfer(deployment: &str, actor: &str) -> SystemCmd {
+    SystemCmd::CancelDeploymentTransfer {
+        deployment: deployment.into(),
+        actor: actor.into(),
+        consent: serde_json::Value::Null,
+    }
+}
+
+/// A deployment changes hands when its owner offers it and a manager of the receiver accepts
+/// in time; see `governance.mdx`, "Transfer", for every rule this walks through.
+#[test]
+fn a_deployment_changes_hands_when_its_receiver_accepts() {
+    use super::{
+        Deployer, Deployments, NOT_A_DEPLOYER, NO_TRANSFER, OFFERS_NOT_USABLE,
+        RECOVERY_KEY_REQUIRED, TRANSFER_LAPSED, TRANSFER_PENDING, TRANSFER_STALE,
+        TRANSFER_TTL_SECS,
+    };
+    let mut m = deploying(Deployments::Granted);
+    // Transfers are proposed only once every node runs the release that brings them.
+    register(&mut m, 1, "replica");
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: "1.0.0-rc.38".into(),
+            nodes: [(1, "1.0.0-rc.38".to_owned())].into(),
+        })
+        .unwrap();
+    for who in ["dave", "erin"] {
+        let _ok = m.run_unproven(account(who)).unwrap();
+    }
+    let org = || Deployer::Org("org".into());
+    let dave = || Deployer::Account("dave".into());
+    let erin = || Deployer::Account("erin".into());
+    let grant = |who: Deployer| SystemCmd::GrantDeployer {
+        deployer: who,
+        until: None,
+        at: 1,
+        actor: super::OPERATOR.into(),
+        proof: None,
+        consent: None,
+    };
+    for who in [dave(), org()] {
+        let _ok = m.run_unproven(grant(who)).unwrap();
+    }
+    let _ok = m
+        .run_unproven(create_deployment("d", dave(), "dave"))
+        .unwrap();
+    let _ok = m.run_unproven(install_declaring("dave", "1.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(offer_app("d", "notes", "1.0.0", "dave"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set_secret("d", "API_KEY", "dave-key", "dave"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(instance("i1", "bob", "b-1.0.0", Some("d")))
+        .unwrap();
+    let manages_not = |e: super::Rejection| assert!(e.message().contains("manage"), "{e}");
+
+    // Only a manager offers, to another owner that exists.
+    manages_not(
+        m.run_unproven(offer_deployment("d", org(), "carol", 100))
+            .unwrap_err(),
+    );
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", dave(), "dave", 100)),
+        Err("the deployment is that owner's already".into())
+    );
+    assert_eq!(
+        m.run_unproven(offer_deployment(
+            "d",
+            Deployer::Org("nope".into()),
+            "dave",
+            100
+        )),
+        Err("no such account or organization".into())
+    );
+    let _ok = m
+        .run_unproven(offer_deployment("d", org(), "dave", 100))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", erin(), "dave", 101)),
+        Err(TRANSFER_PENDING)
+    );
+
+    // The receiver: a manager of `to`, naming it and the offer, with a recovery key for an
+    // organization.
+    let accepted_by = |e: super::Rejection| assert!(e.message().contains("accepted by"), "{e}");
+    accepted_by(
+        m.run_unproven(accept_deployment("d", org(), 100, "bob", 110))
+            .unwrap_err(),
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", erin(), 100, "erin", 110)),
+        Err(NO_TRANSFER)
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), 99, "carol", 110)),
+        Err(NO_TRANSFER),
+        "another offer than the one waiting"
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), 100, "carol", 110)),
+        Err(RECOVERY_KEY_REQUIRED)
+    );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    // Lapsed one second after its last day: refused, and no longer blocking a new offer.
+    let last = 100 + TRANSFER_TTL_SECS;
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), 100, "carol", last + 1)),
+        Err(TRANSFER_LAPSED)
+    );
+    let late = last + 1;
+    let _ok = m
+        .run_unproven(offer_deployment("d", erin(), "dave", late))
+        .unwrap();
+    // erin holds no deployer grant on this granted cluster, nor after one is revoked.
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", erin(), late, "erin", late + 1)),
+        Err(NOT_A_DEPLOYER)
+    );
+    // Either side cancels; a stranger does not, and a cancelled offer is not accepted.
+    assert!(m
+        .run_unproven(cancel_transfer("d", "bob"))
+        .unwrap_err()
+        .message()
+        .contains("cancelled by"));
+    let _ok = m.run_unproven(cancel_transfer("d", "erin")).unwrap();
+    assert_eq!(
+        m.run_unproven(cancel_transfer("d", "dave")),
+        Err(NO_TRANSFER)
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", erin(), late, "erin", late + 2)),
+        Err(NO_TRANSFER)
+    );
+
+    // On its last second the offer is still live; the deployment changes hands, its offers
+    // and instances stay, and dave's secret values do not go with it.
+    let at = late + 3;
+    let _ok = m
+        .run_unproven(offer_deployment("d", org(), "dave", at))
+        .unwrap();
+    accepted_by(
+        m.run_unproven(accept_deployment("d", org(), at, "bob", at))
+            .unwrap_err(),
+    );
+    // The receiver must use every release the deployment offers, or the offer would stop
+    // serving its customers: dave's install is his alone until carol installs it too.
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), at, "carol", at)),
+        Err(OFFERS_NOT_USABLE)
+    );
+    let _ok = m.run_unproven(install_declaring("carol", "1.0.0")).unwrap();
+    let done = m
+        .run_unproven(accept_deployment(
+            "d",
+            org(),
+            at,
+            "carol",
+            at + TRANSFER_TTL_SECS,
+        ))
+        .unwrap();
+    assert_eq!(done["secretsDropped"], json!(["API_KEY"]), "{done}");
+    assert!(!m.state.deployment_secrets.contains_key("d"));
+    let d = &m.state.deployments["d"];
+    assert_eq!(d.owner, org());
+    assert_eq!(d.transfer, None);
+    assert_eq!(
+        d.transferred,
+        Some(super::Transferred {
+            from: dave(),
+            at: at + TRANSFER_TTL_SECS
+        })
+    );
+    assert_eq!(d.apps["notes"].version, "1.0.0");
+    assert_eq!(m.state.apps["i1"].deployment.as_deref(), Some("d"));
+    // The old owner no longer manages it; the new one does.
+    manages_not(
+        m.run_unproven(withdraw_app("d", "notes", "dave"))
+            .unwrap_err(),
+    );
+    manages_not(
+        m.run_unproven(offer_deployment("d", dave(), "dave", at + 1))
+            .unwrap_err(),
+    );
+    // The org's key stays while it owns the deployment.
+    assert_eq!(
+        m.run_unproven(set_key(None, "alice", Value::Null)),
+        Err(RECOVERY_KEY_REQUIRED)
+    );
+
+    // Managing an organization's deployment is not handing it over: carol, who holds
+    // MANAGE_APPLICATION, cannot move it to her own account; an owner or admin can.
+    let now = at + TRANSFER_TTL_SECS + 1;
+    let carol = || Deployer::Account("carol".into());
+    let _ok = m.run_unproven(grant(carol())).unwrap();
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", carol(), "carol", now)),
+        Err(super::NOT_HANDING_OVER)
+    );
+    // An offer outlives nobody's authority: bob, an admin, offers it, then is made a plain
+    // member again, though one who still manages its apps (as a removal or the
+    // organization's recovery would end it too), and the offer is stale.
+    if let Some(o) = m.state.orgs.get_mut("org") {
+        let _prev = o
+            .capabilities
+            .insert("bob".into(), crate::types::caps::MANAGE_APPLICATION);
+    }
+    let role = |m: &mut SystemMachine, r: OrgRole| {
+        if let Some(o) = m.state.orgs.get_mut("org") {
+            let _prev = o.members.insert("bob".into(), r);
+        }
+    };
+    role(&mut m, OrgRole::Admin);
+    let _ok = m
+        .run_unproven(offer_deployment("d", dave(), "bob", now))
+        .unwrap();
+    role(&mut m, OrgRole::Member);
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", dave(), now, "dave", now + 1)),
+        Err(TRANSFER_STALE)
+    );
+
+    // The receiver's quota counts at acceptance too.
+    let _ok = m.run_unproven(cancel_transfer("d", "alice")).unwrap();
+    for n in 0..super::MAX_DEPLOYMENTS_PER_OWNER {
+        let _ok = m
+            .run_unproven(create_deployment(&format!("dave{n}"), dave(), "dave"))
+            .unwrap();
+    }
+    let _ok = m
+        .run_unproven(offer_deployment("d", dave(), "alice", now + 2))
+        .unwrap();
+    assert!(m
+        .run_unproven(accept_deployment("d", dave(), now + 2, "dave", now + 3))
+        .unwrap_err()
+        .message()
+        .starts_with(super::QUOTA_PREFIX));
+}
+
+/// A customer is shown a deployment's new owner until a person approves an update of
+/// their instance; meanwhile nothing updates it on its own. An update that applied on its
+/// own, failed or was undone showed no sheet, so it does not count.
+#[test]
+fn a_new_owner_reaches_its_customers_on_a_sheet_before_any_update_applies_alone() {
+    use super::{Deployer, Transferred, AUTO_UPDATE_REFUSED};
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "d",
+            Deployer::Account("pam".into()),
+            "pam",
+        ))
+        .unwrap();
+    let mut offer = offer_app("d", "notes", "1.0.1", "pam");
+    if let SystemCmd::OfferApp { at, .. } = &mut offer {
+        *at = 2000;
+    }
+    let _ok = m.run_unproven(offer).unwrap();
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.deployment = Some("d".into());
+    }
+    let after_hold = 2000 + 24 * 3600;
+    let ready = |m: &SystemMachine| !m.state.auto_update_candidates(after_hold).is_empty();
+    assert!(ready(&m));
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
+
+    if let Some(d) = m.state.deployments.get_mut("d") {
+        d.transferred = Some(Transferred {
+            from: Deployer::Account("pam".into()),
+            at: 1500,
+        });
+    }
+    assert!(m.state.handed_over_unseen(&m.state.apps["inst"]));
+    assert!(!ready(&m));
+    let up = auto_upgrade(
+        "1.0.1",
+        "b3",
+        Some(green()),
+        after_hold,
+        Some(taken_on(1, 4)),
+    );
+    assert_eq!(m.run(up), Err(AUTO_UPDATE_REFUSED));
+
+    // A person's own upgrade after the hand-over is seen, and stays seen after an update
+    // that then applies on its own.
+    assert_eq!(m.state.apps["inst"].owner_seen_at, None);
+    let mut by_cora = classified_upgrade("cora", "1.0.1", Some(green()), 1600);
+    if let SystemCmd::UpgradeApp { bundle, .. } = &mut by_cora {
+        *bundle = "b3".into();
+    }
+    let _ok = m.run_unproven(by_cora).unwrap();
+    assert_eq!(m.state.apps["inst"].owner_seen_at, Some(1600));
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.owner_seen_at = Some(1501);
+        a.bundle = "b1".into();
+        a.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m
+        .run(auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            after_hold,
+            Some(taken_on(1, 5)),
+        ))
+        .unwrap();
+    assert_eq!(
+        m.state.apps["inst"].owner_seen_at,
+        Some(1501),
+        "an update on its own"
+    );
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
+}
+
+/// A deployment written before transfers has neither a pending offer nor a hand-over,
+/// and writes the bytes it did.
+#[test]
+fn a_deployment_from_before_transfers_reads_with_none_and_writes_as_before() {
+    let before = json!({
+        "id": "d", "name": "acme", "owner": { "account": "alice" }, "apps": {},
+        "createdBy": "alice", "createdAt": 1,
+    });
+    let d: super::Deployment = serde_json::from_value(before.clone()).unwrap();
+    assert_eq!((d.transfer.clone(), d.transferred.clone()), (None, None));
+    assert_eq!(serde_json::to_value(&d).unwrap(), before);
+}
+
 /// `inst` with a member `kv` of package `q` on 0.1.0, under the automatic policy:
 /// `p` 1.0.1's lock pins `kv` at 0.1.1 (it would move the member), 1.0.2's at 0.1.0.
 fn auto_unit_fixture() -> SystemMachine {
@@ -14957,6 +15389,8 @@ fn an_org_deployment_serves_a_private_release_of_its_own_org_alone() {
         apps: BTreeMap::new(),
         created_by: org.into(),
         created_at: 0,
+        transfer: None,
+        transferred: None,
     };
     let release = |extra: Value| -> super::PackageVersion {
         let mut v = json!({

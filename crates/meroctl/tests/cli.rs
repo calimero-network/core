@@ -1195,18 +1195,63 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
         bobs_org.as_str()
     );
 
-    // Taken down: withdrawn once no instance runs it, then deleted.
-    let _ = bob.run(&["instance", "delete", &customer_app]);
+    // Handed to bob's account: offered, cancelled, offered again and accepted.
+    let bob_id = s(&bob.run(&["whoami"])["accountId"]);
+    let to_bob = format!("account:{bob_id}");
+    let offer_to_bob = [
+        "deployment",
+        "transfer",
+        "acme-apps",
+        "--to",
+        &to_bob,
+        "--dev-passkey",
+        pk,
+    ];
+    let _ = alice.run(&offer_to_bob);
     let _ = alice.run(&[
+        "deployment",
+        "cancel-transfer",
+        "acme-apps",
+        "--dev-passkey",
+        pk,
+    ]);
+    let _ = alice.run(&offer_to_bob);
+    let offered = bob.run(&["deployment", "list"]);
+    assert_eq!(offered["offered"][0]["id"], id.as_str(), "{offered}");
+    let accept = [
+        "deployment",
+        "accept",
+        &id,
+        "--to",
+        "account",
+        "--dev-passkey",
+        path(&bob_pk),
+    ];
+    // The offered release is alice's organization's: bob installs it before taking over.
+    let unusable = bob.try_run(&accept).unwrap_err();
+    assert!(unusable.contains("OFFERS_NOT_USABLE"), "{unusable}");
+    let _ = bob.run(&[
+        "app",
+        "install",
+        "--path",
+        path(&app.join("dist/com.test.dep-1.1.0.mpk")),
+    ]);
+    let _ = bob.run(&accept);
+    assert_eq!(alice.run(&["deployment", "list"])["deployments"], json!([]));
+
+    // Taken down by its new owner: withdrawn once no instance runs it, then deleted.
+    let _ = bob.run(&["instance", "delete", &customer_app]);
+    let bob_pk = path(&bob_pk);
+    let _ = bob.run(&[
         "deployment",
         "withdraw",
         "acme-apps",
         "notes",
         "--dev-passkey",
-        pk,
+        bob_pk,
     ]);
-    let _ = alice.run(&["deployment", "delete", "acme-apps", "--dev-passkey", pk]);
-    assert_eq!(alice.run(&["deployment", "list"])["deployments"], json!([]));
+    let _ = bob.run(&["deployment", "delete", "acme-apps", "--dev-passkey", bob_pk]);
+    assert_eq!(bob.run(&["deployment", "list"])["deployments"], json!([]));
 }
 
 /// `meroctl proxy`: a node's API as plain HTTP on loopback, every request

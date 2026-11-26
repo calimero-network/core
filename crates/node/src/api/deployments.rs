@@ -318,6 +318,16 @@ pub(super) struct DeploymentBody {
     confirm: Option<ConfirmBody>,
 }
 
+/// An offer of a deployment to another owner, or its acceptance, naming the receiver.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DeploymentTransferBody {
+    to: Deployer,
+    /// The manager's passkey, once the node asked for it (`412`).
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct OfferBody {
@@ -349,6 +359,37 @@ async fn managed_deployment(node: &Node, p: &Principal, id: &str) -> Result<Depl
     })
 }
 
+/// A deployment as the owner it is offered to reads it before accepting: what it offers,
+/// who runs it and until when the offer waits; never the accounts of the offering side.
+fn offered_json(
+    s: &crate::system::SystemState,
+    d: &Deployment,
+    t: &crate::system::PendingTransfer,
+) -> OfferedDeployment {
+    let (owner, owner_name) = s.deployer_named(&d.owner);
+    OfferedDeployment {
+        id: d.id.clone(),
+        name: d.name.clone(),
+        owner: owner.to_owned(),
+        owner_name,
+        apps: d
+            .apps
+            .iter()
+            .map(|(app, o)| PublicDeploymentApp {
+                app: app.clone(),
+                package: o.package.clone(),
+                version: o.version.clone(),
+            })
+            .collect(),
+        to: t.to.clone(),
+        offered_at: crate::system::rfc3339(t.offered_at),
+        expires_at: crate::system::rfc3339(
+            t.offered_at
+                .saturating_add(crate::system::TRANSFER_TTL_SECS),
+        ),
+    }
+}
+
 /// A deployment as its managers read it.
 fn deployment_json(node: &Node, d: &Deployment) -> DeploymentView {
     DeploymentView {
@@ -369,6 +410,19 @@ fn deployment_json(node: &Node, d: &Deployment) -> DeploymentView {
             .collect(),
         created_by: d.created_by.clone(),
         created_at: crate::system::rfc3339(d.created_at),
+        transfer: d.transfer.as_ref().map(|t| TransferShown {
+            to: t.to.clone(),
+            offered_by: t.offered_by.clone(),
+            offered_at: crate::system::rfc3339(t.offered_at),
+            expires_at: crate::system::rfc3339(
+                t.offered_at
+                    .saturating_add(crate::system::TRANSFER_TTL_SECS),
+            ),
+        }),
+        transferred: d.transferred.as_ref().map(|t| TransferredShown {
+            from: t.from.clone(),
+            at: crate::system::rfc3339(t.at),
+        }),
     }
 }
 
@@ -404,6 +458,25 @@ pub(super) struct DeploymentView {
     apps: Vec<DeploymentOffer>,
     created_by: String,
     created_at: String,
+    transfer: Option<TransferShown>,
+    transferred: Option<TransferredShown>,
+}
+
+/// The offer of a [`DeploymentView`] to another owner, waiting for acceptance.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TransferShown {
+    to: Deployer,
+    offered_by: String,
+    offered_at: String,
+    expires_at: String,
+}
+
+/// Whom a [`DeploymentView`] came from at its last hand-over.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct TransferredShown {
+    from: Deployer,
+    at: String,
 }
 
 /// One offer of a [`DeploymentView`].
@@ -421,6 +494,21 @@ pub(super) struct DeploymentOffer {
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct DeploymentList {
     deployments: Vec<DeploymentView>,
+    offered: Vec<OfferedDeployment>,
+}
+
+/// A deployment offered to an owner the caller acts for, as [`DeploymentList`] lists it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OfferedDeployment {
+    id: String,
+    name: String,
+    owner: String,
+    owner_name: Option<String>,
+    apps: Vec<PublicDeploymentApp>,
+    to: Deployer,
+    offered_at: String,
+    expires_at: String,
 }
 
 /// `POST /deployments`: the record the log made, and its frontend host.
@@ -693,8 +781,184 @@ async fn deployment_delete(
     ))
 }
 
+/// Offer a deployment the caller may hand over (its owner account, or an owner or admin of
+/// its organization) to another owner, with a passkey assertion over
+/// `deployment:{id} / __offer_deployment / { to }`; one offer waits at a time.
+async fn deployment_transfer_offer(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<DeploymentTransferBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
+        .await?;
+    let d = managed_deployment(&node, &p, &id).await?;
+    if !node.sys(|s| s.hands_over(&d.owner, &account)) {
+        return Err(crate::node::rejected(crate::system::NOT_HANDING_OVER));
+    }
+    if !node.sys(|s| s.exists(&body.to)) {
+        return Err(ApiError::not_found("no such account or organization"));
+    }
+    if body.to == d.owner {
+        return Err(ApiError::bad_request(
+            "SAME_OWNER",
+            "the deployment is that owner's already",
+        ));
+    }
+    let at = now_secs();
+    if d.transfer.as_ref().is_some_and(|t| t.live(at)) {
+        return Err(crate::node::rejected(crate::system::TRANSFER_PENDING));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__offer_deployment",
+        &json!({ "to": body.to }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::OfferDeployment {
+            deployment: id,
+            to: body.to,
+            actor: account,
+            at,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Accept a deployment offered to `to`, an owner the caller acts for, with a passkey
+/// assertion over `deployment:{id} / __accept_deployment / { to }`: `to` becomes its owner.
+/// Judged first as apply judges it, so no passkey is asked for what would be refused.
+async fn deployment_transfer_accept(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<DeploymentTransferBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
+        .await?;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let at = now_secs();
+    let offered_at = node.sys(|s| {
+        let d = s
+            .deployments
+            .get(&id)
+            .ok_or_else(|| ApiError::not_found("no such deployment"))?;
+        if !s.acts_for(&body.to, &account) {
+            return Err(ApiError::forbidden(
+                "a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization",
+            ));
+        }
+        let t = d
+            .transfer
+            .as_ref()
+            .filter(|t| t.to == body.to)
+            .ok_or_else(|| crate::node::rejected(crate::system::NO_TRANSFER))?;
+        if !s.hands_over(&d.owner, &t.offered_by) {
+            return Err(crate::node::rejected(crate::system::TRANSFER_STALE));
+        }
+        if !t.live(at) {
+            return Err(crate::node::rejected(crate::system::TRANSFER_LAPSED));
+        }
+        if !s.granted(&body.to, at) {
+            return Err(crate::node::not_a_deployer());
+        }
+        if !s.keeps_recoverable(&body.to, true) {
+            return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+        }
+        if s.deployments.values().filter(|d| d.owner == body.to).count()
+            >= crate::system::MAX_DEPLOYMENTS_PER_OWNER
+        {
+            return Err(crate::node::rejected("quota exceeded: deployments per owner"));
+        }
+        Ok(t.offered_at)
+    })?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__accept_deployment",
+        &json!({ "to": body.to, "offeredAt": offered_at }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::AcceptDeployment {
+            deployment: id,
+            to: body.to,
+            offered_at,
+            actor: account,
+            at,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Drop the offer of a deployment, as a manager of its owner or of the owner it is
+/// offered to, with a passkey assertion over
+/// `deployment:{id} / __cancel_deployment_transfer / {}`.
+async fn deployment_transfer_cancel(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
+        .await?;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    node.sys(|s| {
+        let d = s
+            .deployments
+            .get(&id)
+            .ok_or_else(|| ApiError::not_found("no such deployment"))?;
+        let receiver = d
+            .transfer
+            .as_ref()
+            .is_some_and(|t| s.acts_for(&t.to, &account));
+        if !s.acts_for(&d.owner, &account) && !receiver {
+            return Err(ApiError::forbidden(
+                "an offer of a deployment is cancelled by a manager of its owner or of the owner it is offered to",
+            ));
+        }
+        if d.transfer.is_none() {
+            return Err(crate::node::rejected(crate::system::NO_TRANSFER));
+        }
+        Ok(())
+    })?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__cancel_deployment_transfer",
+        &json!({}),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::CancelDeploymentTransfer {
+            deployment: id,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
 /// The deployments the caller manages: its own account's, and those of the
-/// organizations where it holds `MANAGE_APPLICATION` org-wide.
+/// organizations where it holds `MANAGE_APPLICATION` org-wide; and, in `offered`, those
+/// offered to an owner it acts for, waiting for its acceptance.
 async fn deployment_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -703,14 +967,31 @@ async fn deployment_list(
     p.unbound()?;
     let account = p.account()?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
-    let deployments = node.sys(|s| {
-        s.deployments
+    let now = now_secs();
+    let (deployments, offered) = node.sys(|s| {
+        let managed = s
+            .deployments
             .values()
             .filter(|d| s.acts_for(&d.owner, &account))
             .map(|d| deployment_json(&node, d))
-            .collect()
+            .collect();
+        let offered = s
+            .deployments
+            .values()
+            .filter_map(|d| {
+                let t = d.transfer.as_ref()?;
+                (t.live(now)
+                    && s.acts_for(&t.to, &account)
+                    && s.hands_over(&d.owner, &t.offered_by))
+                .then(|| offered_json(s, d, t))
+            })
+            .collect();
+        (managed, offered)
     });
-    Ok(Json(DeploymentList { deployments }))
+    Ok(Json(DeploymentList {
+        deployments,
+        offered,
+    }))
 }
 
 /// A deployment as anyone may read it, by id: its name, its owner's kind
@@ -1025,6 +1306,14 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/deployments/{id}/apps", post(deployment_offer))
         .route("/deployments/{id}/apps/{app}", delete(deployment_withdraw))
         .route("/deployments/{id}/orgs", get(deployment_orgs))
+        .route(
+            "/deployments/{id}/transfer",
+            post(deployment_transfer_offer).delete(deployment_transfer_cancel),
+        )
+        .route(
+            "/deployments/{id}/transfer/accept",
+            post(deployment_transfer_accept),
+        )
         .route("/deployments/{id}/secrets", get(deployment_secrets))
         .route(
             "/deployments/{id}/secrets/{name}",
@@ -1114,6 +1403,16 @@ mod answer_tests {
                     .collect(),
                 created_by: d.created_by.clone(),
                 created_at: crate::system::rfc3339(d.created_at),
+                transfer: Some(TransferShown {
+                    to: Deployer::Account("bob".to_owned()),
+                    offered_by: "alice".to_owned(),
+                    offered_at: crate::system::rfc3339(5),
+                    expires_at: crate::system::rfc3339(5 + crate::system::TRANSFER_TTL_SECS),
+                }),
+                transferred: Some(TransferredShown {
+                    from: Deployer::Org("o1".to_owned()),
+                    at: crate::system::rfc3339(3),
+                }),
             };
             let before = json!({
                 "id": d.id,
@@ -1129,13 +1428,48 @@ mod answer_tests {
                 })).collect::<Vec<_>>(),
                 "createdBy": d.created_by,
                 "createdAt": crate::system::rfc3339(d.created_at),
+                "transfer": json!({
+                    "to": Deployer::Account("bob".to_owned()),
+                    "offeredBy": "alice",
+                    "offeredAt": crate::system::rfc3339(5),
+                    "expiresAt": crate::system::rfc3339(5 + crate::system::TRANSFER_TTL_SECS),
+                }),
+                "transferred": json!({
+                    "from": Deployer::Org("o1".to_owned()),
+                    "at": crate::system::rfc3339(3),
+                }),
             });
             same(&view, &before);
+            let offered = OfferedDeployment {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                owner: "org".to_owned(),
+                owner_name: None,
+                apps: vec![PublicDeploymentApp {
+                    app: "a".to_owned(),
+                    package: "p".to_owned(),
+                    version: "1.0.0".to_owned(),
+                }],
+                to: Deployer::Account("bob".to_owned()),
+                offered_at: crate::system::rfc3339(5),
+                expires_at: crate::system::rfc3339(5 + crate::system::TRANSFER_TTL_SECS),
+            };
+            let offered_before = json!({
+                "id": d.id,
+                "name": d.name,
+                "owner": "org",
+                "ownerName": Option::<String>::None,
+                "apps": [json!({ "app": "a", "package": "p", "version": "1.0.0" })],
+                "to": Deployer::Account("bob".to_owned()),
+                "offeredAt": crate::system::rfc3339(5),
+                "expiresAt": crate::system::rfc3339(5 + crate::system::TRANSFER_TTL_SECS),
+            });
             same(
                 &DeploymentList {
                     deployments: vec![view],
+                    offered: vec![offered],
                 },
-                &json!({ "deployments": [before] }),
+                &json!({ "deployments": [before], "offered": [offered_before] }),
             );
             let public = PublicDeployment {
                 id: d.id.clone(),

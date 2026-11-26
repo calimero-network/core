@@ -183,6 +183,36 @@ fn deployment_answers_write_their_old_bytes() {
         },
         &json!({ "deployment": deployment, "app": app }),
     );
+    let transfer = PendingTransfer {
+        to: Deployer::Account("bob".to_owned()),
+        offered_by: "alice".to_owned(),
+        offered_at: 5,
+    };
+    same(
+        &DeploymentOffered {
+            deployment: deployment.clone(),
+            transfer: transfer.clone(),
+        },
+        &json!({ "deployment": deployment, "transfer": transfer }),
+    );
+    same(
+        &DeploymentAccepted {
+            deployment: deployment.clone(),
+            owner: Deployer::Account("bob".to_owned()),
+            from: Deployer::Org("o1".to_owned()),
+            secrets_dropped: vec!["API_KEY".to_owned()],
+        },
+        &json!({
+            "deployment": deployment, "owner": Deployer::Account("bob".to_owned()),
+            "from": Deployer::Org("o1".to_owned()), "secretsDropped": vec!["API_KEY".to_owned()],
+        }),
+    );
+    same(
+        &DeploymentTransferCancelled {
+            deployment: deployment.clone(),
+        },
+        &json!({ "deployment": deployment }),
+    );
     same(
         &DeploymentDeleted {
             deployment: deployment.clone(),

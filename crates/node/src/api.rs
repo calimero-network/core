@@ -135,7 +135,8 @@ use {
     backup_keys::{BackupKeyBody, OpsBackupKeyBody},
     calls::{EventsQuery, IntentBody, MethodBody, PresenceBody, RunsQuery, ViewBody},
     deployments::{
-        ClusterOwnerBody, DeployerBody, DeploymentBody, DeploymentSecretBody, OfferBody,
+        ClusterOwnerBody, DeployerBody, DeploymentBody, DeploymentSecretBody,
+        DeploymentTransferBody, OfferBody,
     },
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},

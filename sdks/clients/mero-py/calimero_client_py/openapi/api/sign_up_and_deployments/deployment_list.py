@@ -63,7 +63,8 @@ def sync_detailed(
 ) -> Response[Union[DeploymentList, Error]]:
     """Deployments
 
-     The deployments the caller manages.
+     The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
+    for its acceptance (`POST /deployments/{id}/transfer/accept`).
 
     **Who:** signed in (a session or an API key).
 
@@ -90,7 +91,8 @@ def sync(
 ) -> Optional[Union[DeploymentList, Error]]:
     """Deployments
 
-     The deployments the caller manages.
+     The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
+    for its acceptance (`POST /deployments/{id}/transfer/accept`).
 
     **Who:** signed in (a session or an API key).
 
@@ -113,7 +115,8 @@ async def asyncio_detailed(
 ) -> Response[Union[DeploymentList, Error]]:
     """Deployments
 
-     The deployments the caller manages.
+     The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
+    for its acceptance (`POST /deployments/{id}/transfer/accept`).
 
     **Who:** signed in (a session or an API key).
 
@@ -138,7 +141,8 @@ async def asyncio(
 ) -> Optional[Union[DeploymentList, Error]]:
     """Deployments
 
-     The deployments the caller manages.
+     The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
+    for its acceptance (`POST /deployments/{id}/transfer/accept`).
 
     **Who:** signed in (a session or an API key).
 

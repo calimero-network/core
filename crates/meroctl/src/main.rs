@@ -975,6 +975,16 @@ mod tests {
             &[
                 "meroctl",
                 "deployment",
+                "transfer",
+                "acme-apps",
+                "--to",
+                "org:o2",
+            ],
+            &["meroctl", "deployment", "accept", "d1", "--to", "org:o2"],
+            &["meroctl", "deployment", "cancel-transfer", "acme-apps"],
+            &[
+                "meroctl",
+                "deployment",
                 "offer",
                 "acme-apps",
                 "notes",

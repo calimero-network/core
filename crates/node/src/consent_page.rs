@@ -2027,19 +2027,40 @@ enum Part {
 /// The sheet's fact naming the deployment an instance comes from
 /// ([`crate::system::SystemState::deployment_shown`]): its name and owner, then its id.
 fn offered_by(d: &Value) -> Value {
-    let kind = if d["owner"]["kind"] == "org" {
+    json!({
+        "title": format!(
+            "Offered by {}, run by {}.",
+            d["name"].as_str().unwrap_or_default(),
+            party(&d["owner"])
+        ),
+        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
+    })
+}
+
+/// The sheet's warning that a customer's deployment changed hands since they last
+/// approved anything for the instance.
+fn taken_over(d: &Value) -> Value {
+    json!({
+        "title": format!("{} has a new owner", d["name"].as_str().unwrap_or_default()),
+        "detail": format!(
+            "Now run by {}, who took it over from {}. They choose this app's updates from now on.",
+            party(&d["owner"]),
+            party(&d["transferred"]["from"])
+        ),
+    })
+}
+
+/// An owner as `deployment_shown` names it (`{ kind, name }`), in words.
+fn party(who: &Value) -> String {
+    let kind = if who["kind"] == "org" {
         "organization"
     } else {
         "account"
     };
-    let owner = d["owner"]["name"].as_str().map_or_else(
+    who["name"].as_str().map_or_else(
         || format!("an {kind} no longer on this cluster"),
         |n| format!("the {kind} {n}"),
-    );
-    json!({
-        "title": format!("Offered by {}, run by {owner}.", d["name"].as_str().unwrap_or_default()),
-        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
-    })
+    )
 }
 
 async fn upgrade_request(
@@ -2227,7 +2248,7 @@ async fn upgrade_request(
             members_move,
         )
     });
-    let model = json!({
+    let mut model = json!({
         "kind": "upgrade",
         "update": update,
         "scope": {
@@ -2260,6 +2281,9 @@ async fn upgrade_request(
         "notes": notes,
         "upgrade": sheet,
     });
+    if let (true, Some(d)) = (node.sys(|s| s.handed_over_unseen(&app)), &shown) {
+        model["takenOver"] = taken_over(d);
+    }
     let action = if step == updates::ApprovalStep::First {
         Action::ApproveFirst {
             from: BTreeMap::from([(app_id.clone(), app.bundle.clone())]),
@@ -3902,6 +3926,15 @@ mod tests {
         assert_eq!(
             offered_by(&shown(json!({ "kind": "account", "name": null })))["title"],
             "Offered by acme, run by an account no longer on this cluster."
+        );
+        let mut d = shown(json!({ "kind": "org", "name": "Globex" }));
+        d["transferred"] = json!({ "from": { "kind": "account", "name": "dev" }, "at": "x" });
+        assert_eq!(
+            taken_over(&d),
+            json!({
+                "title": "acme has a new owner",
+                "detail": "Now run by the organization Globex, who took it over from the account dev. They choose this app's updates from now on.",
+            })
         );
     }
 

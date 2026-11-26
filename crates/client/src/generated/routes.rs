@@ -1960,6 +1960,69 @@ impl Deployments<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// Accept a deployment offered to an owner.
+    ///
+    /// `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn transfer_accept(
+        self,
+        id: &str,
+        to: Deployer,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentAccepted> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "to", &to)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("deployments/{}/transfer/accept", route::segment(id)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Cancel the offer of a deployment.
+    ///
+    /// `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn transfer_cancel(
+        self,
+        id: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentTransferCancelled> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!("deployments/{}/transfer", route::segment(id)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Offer a deployment to another owner.
+    ///
+    /// `POST /deployments/{id}/transfer` (`deployment_transfer_offer`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn transfer_offer(
+        self,
+        id: &str,
+        to: Deployer,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentOffered> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "to", &to)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("deployments/{}/transfer", route::segment(id)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Withdraw an offer.
     ///
     /// `DELETE /deployments/{id}/apps/{app}` (`deployment_withdraw`). Who: an account holder (a passkey session not bound to an app's frontend).

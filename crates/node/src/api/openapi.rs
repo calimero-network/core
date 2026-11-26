@@ -1498,9 +1498,27 @@ fn components() -> Vec<Component> {
         )
         .of::<crate::system::DeploymentDeleted>(),
         component(
+            "DeploymentOffered",
+            "`POST /deployments/{id}/transfer`: the offer as logged (`offeredAt`: Unix seconds).",
+            "{ deployment: string, transfer: { to: #Deployer, offeredBy: string, offeredAt: uint } }",
+        )
+        .of::<crate::system::DeploymentOffered>(),
+        component(
+            "DeploymentAccepted",
+            "`POST /deployments/{id}/transfer/accept`: its new owner, the owner it came from, and the secret names whose values were dropped.",
+            "{ deployment: string, owner: #Deployer, from: #Deployer, secretsDropped: string[] }",
+        )
+        .of::<crate::system::DeploymentAccepted>(),
+        component(
+            "DeploymentTransferCancelled",
+            "`DELETE /deployments/{id}/transfer`.",
+            "{ deployment: string }",
+        )
+        .of::<crate::system::DeploymentTransferCancelled>(),
+        component(
             "DeploymentList",
             "`GET /deployments`.",
-            "{ deployments: #Deployment[] }",
+            r#"{ deployments: #Deployment[], offered: { id: string, name: string, owner: "account" | "org", ownerName: string | null, apps: { app: string, package: string, version: string }[], to: #Deployer, offeredAt: string, expiresAt: string }[] }"#,
         )
         .of::<super::deployments::DeploymentList>(),
         component(
@@ -2080,7 +2098,7 @@ fn components() -> Vec<Component> {
         component(
             "App",
             "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint, egressOff?: bool }"#,
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, ownerSeenAt?: uint, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint, egressOff?: bool }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -2133,13 +2151,14 @@ fn components() -> Vec<Component> {
         .of::<super::orgs::TeamView>(),
         component(
             "Deployment",
-            "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.",
-            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: #DeploymentOffer[], createdBy: string, createdAt: string }",        )
+            "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`.",
+            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: #DeploymentOffer[], createdBy: string, createdAt: string, transfer: { to: #Deployer, offeredBy: string, offeredAt: string, expiresAt: string } | null, transferred: { from: #Deployer, at: string } | null }",
+        )
         .of::<super::deployments::DeploymentView>(),
         component(
             "DeploymentShown",
-            "The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone).",
-            r#"{ id: string, name: string, owner: { kind: "account" | "org", name: string | null } }"#,
+            "The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone); once it changed hands, whom it came from and when (`transferred`, RFC 3339).",
+            r#"{ id: string, name: string, owner: { kind: "account" | "org", name: string | null }, transferred?: { from: { kind: "account" | "org", name: string | null }, at: string } }"#,
         ),
         component(
             "DeadLetter",
@@ -2189,7 +2208,7 @@ fn components() -> Vec<Component> {
         component(
             "DeploymentRecord",
             "A deployment as the directory records it: the release it offers by app name (`addedAt` Unix seconds), who created it and when (Unix seconds).",
-            "{ id: string, name: string, owner: #Deployer, apps: { [string]: { package: string, version: string, addedBy: string, addedAt: uint } }, createdBy: string, createdAt: uint }",
+            "{ id: string, name: string, owner: #Deployer, apps: { [string]: { package: string, version: string, addedBy: string, addedAt: uint } }, createdBy: string, createdAt: uint, transfer?: { to: #Deployer, offeredBy: string, offeredAt: uint }, transferred?: { from: #Deployer, at: uint } }",
         )
         .of::<crate::system::Deployment>(),
         component(
@@ -3310,7 +3329,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (409, "RECOVERY_KEY_REQUIRED")]),
         get("/deployments", "deployment_list", SignedIn, "Deployments")
-            .about("The deployments the caller manages.")
+            .about("The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).")
             .ok("#DeploymentList"),
         get("/deployments/{id}", "deployment_get", SignedIn, "One deployment")
             .about("As anyone may read it: its name, its owner's kind and name (`null` when unknown), and the releases it offers; never its managers or customers.")
@@ -3330,6 +3349,24 @@ fn operations() -> Vec<Op> {
             .ok("#AppWithdrawn")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
+        post("/deployments/{id}/transfer", "deployment_transfer_offer", AccountHolder, "Offer a deployment to another owner")
+            .about("The deployment's owner account, or an owner or admin of its organization (managing it, `MANAGE_APPLICATION`, is not enough: `403`), offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.")
+            .json::<super::DeploymentTransferBody>("{ to: #Deployer, confirm?: #Confirm }")
+            .ok("#DeploymentOffered")
+            .step_up()
+            .errors(&[(400, "SAME_OWNER"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE"), (409, "TRANSFER_PENDING")]),
+        delete("/deployments/{id}/transfer", "deployment_transfer_cancel", AccountHolder, "Cancel the offer of a deployment")
+            .about("A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
+            .ok("#DeploymentTransferCancelled")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_TRANSFER"), (409, "FEATURE_NOT_ACTIVE")]),
+        post("/deployments/{id}/transfer/accept", "deployment_transfer_accept", AccountHolder, "Accept a deployment offered to an owner")
+            .about("A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.")
+            .json::<super::DeploymentTransferBody>("{ to: #Deployer, confirm?: #Confirm }")
+            .ok("#DeploymentAccepted")
+            .step_up()
+            .errors(&[(403, "DEPLOY_NOT_GRANTED"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_TRANSFER"), (409, "FEATURE_NOT_ACTIVE"), (409, "OFFERS_NOT_USABLE"), (409, "RECOVERY_KEY_REQUIRED"), (409, "TRANSFER_LAPSED"), (409, "TRANSFER_STALE"), (429, "QUOTA_EXCEEDED")]),
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
             .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
             .ok("#DeploymentOrgs"),

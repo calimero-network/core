@@ -167,6 +167,9 @@ Generated from core's `docs/public/openapi.json`.
 | `sign_up_invite_revoke(key, confirm=None)` | `DELETE /sign-up/invites/{key}` | Withdraw a cluster sign-up invite. **passkey** |
 | `sign_up_public()` | `GET /sign-up` | The sign-up policy |
 | `sign_up_set(policy, confirm=None)` | `POST /sign-up` | Set the sign-up policy. **passkey** |
+| `transfer_accept(id, to, confirm=None)` | `POST /deployments/{id}/transfer/accept` | Accept a deployment offered to an owner. **passkey**. *Refusals:* `403 DEPLOY_NOT_GRANTED`, `404 NO_TRANSFER`, `409 FEATURE_NOT_ACTIVE`, `409 OFFERS_NOT_USABLE`, `409 RECOVERY_KEY_REQUIRED`, `409 TRANSFER_LAPSED`, `409 TRANSFER_STALE`, `429 QUOTA_EXCEEDED` |
+| `transfer_cancel(id, confirm=None)` | `DELETE /deployments/{id}/transfer` | Cancel the offer of a deployment. **passkey**. *Refusals:* `404 NO_TRANSFER`, `409 FEATURE_NOT_ACTIVE` |
+| `transfer_offer(id, to, confirm=None)` | `POST /deployments/{id}/transfer` | Offer a deployment to another owner. **passkey**. *Refusals:* `400 SAME_OWNER`, `409 FEATURE_NOT_ACTIVE`, `409 TRANSFER_PENDING` |
 | `withdraw(id, app, confirm=None)` | `DELETE /deployments/{id}/apps/{app}` | Withdraw an offer. **passkey** |
 
 ## `client.ops`

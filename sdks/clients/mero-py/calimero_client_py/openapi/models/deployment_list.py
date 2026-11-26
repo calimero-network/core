@@ -10,6 +10,7 @@ from typing import cast
 
 if TYPE_CHECKING:
     from ..models.deployment import Deployment
+    from ..models.deployment_list_offered_item import DeploymentListOfferedItem
 
 
 T = TypeVar("T", bound="DeploymentList")
@@ -21,24 +22,33 @@ class DeploymentList:
 
     Attributes:
         deployments (list['Deployment']):
+        offered (list['DeploymentListOfferedItem']):
     """
 
     deployments: list["Deployment"]
+    offered: list["DeploymentListOfferedItem"]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.deployment import Deployment
+        from ..models.deployment_list_offered_item import DeploymentListOfferedItem
 
         deployments = []
         for deployments_item_data in self.deployments:
             deployments_item = deployments_item_data.to_dict()
             deployments.append(deployments_item)
 
+        offered = []
+        for offered_item_data in self.offered:
+            offered_item = offered_item_data.to_dict()
+            offered.append(offered_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "deployments": deployments,
+                "offered": offered,
             }
         )
 
@@ -47,6 +57,7 @@ class DeploymentList:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.deployment import Deployment
+        from ..models.deployment_list_offered_item import DeploymentListOfferedItem
 
         d = dict(src_dict)
         deployments = []
@@ -56,8 +67,16 @@ class DeploymentList:
 
             deployments.append(deployments_item)
 
+        offered = []
+        _offered = d.pop("offered")
+        for offered_item_data in _offered:
+            offered_item = DeploymentListOfferedItem.from_dict(offered_item_data)
+
+            offered.append(offered_item)
+
         deployment_list = cls(
             deployments=deployments,
+            offered=offered,
         )
 
         deployment_list.additional_properties = d
