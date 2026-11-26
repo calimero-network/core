@@ -612,6 +612,69 @@ class Usage(DeepCase):
 
 # What no case in this file seeds yet, and why (the matrix lists it as not covered).
 
+@case
+class AppOrigins(DeepCase):
+    name = "app-origins"
+    area = "Apps"
+    since = "1.0.0-rc.39"
+    seeds = "a web origin registered for one instance by its owner"
+    verifies = ("the owner's list as they read it; a stranger refused the list and the registration; on every "
+                "node a sign-in begun from the origin names its host as its rp-id; on the new release the origin "
+                "removed and another registered, after a restart too; a removed origin is refused "
+                "`ORIGIN_NOT_REGISTERED`. The assertion itself is not signed")
+
+    def _path(self, s):
+        return f"apps/{s['app']}/origins"
+
+    def _decisions(self, w, s):
+        otto = person(w, "otto")
+        return decisions({"stranger lists": lambda: otto.get(self._path(s)),
+                          "stranger registers": lambda: otto.raw("post", self._path(s),
+                                                                 {"origin": "https://otto-app.example.test"})})
+
+    def _begin(self, w, origin, node):
+        got = decision(lambda: anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node))
+        if got != "ok":
+            return got
+        return anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node)["options"]["rpId"]
+
+    def _ceremonies(self, w, s):
+        for node in w.members():
+            eq(self._begin(w, s["origin"], node), s["origin"].split("://", 1)[1], f"{s['origin']}'s rp-id on node {node}")
+            for origin in s["gone"]:
+                eq(self._begin(w, origin, node), "ORIGIN_NOT_REGISTERED", f"{origin} on node {node}")
+
+    def _read(self, w, s):
+        s["read"] = snap(person(w, "ivy"), self._path(s))
+        eq([o["origin"] for o in s["read"]["origins"]], [s["origin"]], "the instance's origins")
+
+    def populate(self, w):
+        ivy = person(w, "ivy")
+        s = {"app": ivy.deploy(kv_wasm(w), "origins"), "origin": "https://store-ivy.example.test",
+             "gone": ["https://never-ivy.example.test"]}
+        ivy.raw("post", self._path(s), {"origin": s["origin"]})
+        s["decisions"] = self._decisions(w, s)
+        check("ok" not in s["decisions"].values(), f"a stranger handled the origins: {s['decisions']}")
+        self._read(w, s)
+        self._ceremonies(w, s)
+        return s
+
+    def check(self, w, s):
+        ivy = person(w, "ivy")
+        until("the origins read back", lambda: same_read(ivy, self._path(s), s["read"], "the instance's origins"), 15)
+        same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
+        self._ceremonies(w, s)
+
+    def exercise(self, w, s):
+        ivy = person(w, "ivy")
+        ivy.raw("delete", self._path(s), {"origin": s["origin"]})
+        s["gone"].append(s["origin"])
+        s["origin"] = "https://store-ivy-2.example.test"
+        ivy.raw("post", self._path(s), {"origin": s["origin"]})
+        self._read(w, s)
+        self.check(w, s)
+
+
 not_covered("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
             "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
             "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "

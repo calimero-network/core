@@ -492,8 +492,13 @@ async fn app_create(
     match p.bound_app() {
         // A frontend makes instances of its own package, already installed.
         Some(pkg) => {
-            let installed = node.sys(|s| s.packages.contains_key(pkg));
-            if body.bundle.is_some() || body.package.as_deref() != Some(pkg) || !installed {
+            let (installed, admitted) =
+                node.sys(|s| (s.packages.contains_key(pkg), p.origin_admits(s, None)));
+            if body.bundle.is_some()
+                || body.package.as_deref() != Some(pkg)
+                || !installed
+                || !admitted
+            {
                 return Err(ApiError::forbidden(
                     "a session opened on an app's frontend creates instances of that app only",
                 ));
@@ -988,6 +993,7 @@ async fn app_list(
             })
             .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref()))
+            .filter(|a| p.as_ref().is_none_or(|p| p.origin_admits(s, Some(&a.app_id))))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
             .map(|a| (a, crate::report::release_of_app(s, a, reader)))
             // Releases may share a WASM: filter by the release the row names, not the bundle's.
@@ -2316,6 +2322,177 @@ async fn app_unlink(
     Ok(Json(json!({})))
 }
 
+/// An instance's origin: never served, so no `served`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AddAppOriginBody {
+    origin: String,
+    #[serde(default)]
+    rp_id: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Refuse unless `account` manages instance `app_id`, on fresh state: `404` for an
+/// instance it does not reach, `403` for one it reaches.
+async fn manages_instance(node: &Node, account: &str, app_id: &str) -> Result<(), ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| {
+        let Some(app) = s.apps.get(app_id) else {
+            return Err(ApiError::not_found("no such app"));
+        };
+        if s.manages_app(app, account) {
+            return Ok(());
+        }
+        if s.may_reach(app, Some(account)) {
+            return Err(ApiError::forbidden(
+                "only whoever manages the instance handles its origins: its owner or an admin of its organization",
+            ));
+        }
+        Err(ApiError::not_found("no such app"))
+    })
+}
+
+/// The origins registered for app instance `app`, for whoever manages it.
+async fn app_origins(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app): Path<String>,
+) -> ApiResult<Json<AppOriginList>> {
+    let app = node.canonical_app_id(&app);
+    let account = holder(&node, &headers).await?.account()?;
+    manages_instance(&node, &account, &app).await?;
+    let origins = node.sys(|s| {
+        s.origins_of_app(&app)
+            .map(|(origin, o)| crate::origins::origin_json(origin, o))
+            .collect()
+    });
+    Ok(Json(AppOriginList { app, origins }))
+}
+
+/// `GET /apps/{app}/origins`: the origins registered for an instance.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppOriginList {
+    app: String,
+    origins: Vec<crate::origins::OriginView>,
+}
+
+/// Register an origin for app instance `app`, with a manager's passkey assertion over
+/// `{app} / __add_origin / { origin, rpId }` (the rp-id as the node resolves it): the
+/// sessions opened there reach that instance alone.
+async fn app_origin_add(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app): Path<String>,
+    Json(body): Json<AddAppOriginBody>,
+) -> ApiResult {
+    let app = node.canonical_app_id(&app);
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let origin = body.origin;
+    let rp_id = super::origins::registrable(&node, &origin, body.rp_id.as_deref())?;
+    manages_instance(&node, &account, &app).await?;
+    node.sys(|s| {
+        match s.package_origins.get(&origin) {
+            Some(o) if o.app.as_deref() != Some(app.as_str()) => {
+                return Err(super::origins::taken(
+                    "another package or app registered that origin",
+                ))
+            }
+            Some(_) => return Ok(()),
+            None => {}
+        }
+        if s.origins_of_app(&app).count() >= crate::origins::MAX_ORIGINS_PER_APP {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                &format!(
+                    "an instance registers at most {} origins",
+                    crate::origins::MAX_ORIGINS_PER_APP
+                ),
+            ));
+        }
+        if s.package_origins.len() >= crate::origins::MAX_PACKAGE_ORIGINS {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                "this cluster holds as many origins as it takes",
+            ));
+        }
+        Ok(())
+    })?;
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AppOrigins]).await?;
+    let consent = consent(
+        &node,
+        &p,
+        &app,
+        "__add_origin",
+        &crate::origins::add_args(&origin, &rp_id, false),
+        body.confirm,
+    )
+    .await?;
+    let out = node
+        .sys_write(&SystemCmd::AddAppOrigin {
+            app_id: app.clone(),
+            origin: origin.clone(),
+            rp_id: rp_id.clone(),
+            actor: account.clone(),
+            at: now_secs(),
+            consent,
+        })
+        .await?;
+    info!(%app, %origin, %rp_id, "registered an origin for an instance");
+    tracing::debug!(%app, %origin, %account, "the origin's registrant");
+    Ok(Json(out))
+}
+
+/// Remove an origin of app instance `app`, with a manager's passkey assertion over
+/// `{app} / __remove_origin / { origin }`. The sessions opened on it are refused from then on.
+async fn app_origin_remove(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app): Path<String>,
+    Json(body): Json<super::origins::RemoveOriginBody>,
+) -> ApiResult {
+    let app = node.canonical_app_id(&app);
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    manages_instance(&node, &account, &app).await?;
+    let origin = body.origin;
+    let held = node.sys(|s| {
+        s.package_origins
+            .get(&origin)
+            .is_some_and(|o| o.app.as_deref() == Some(app.as_str()))
+    });
+    if !held {
+        return Err(ApiError::not_found(
+            "that origin is not registered for this app",
+        ));
+    }
+    node.require_features(&[Feature::AppOrigins]).await?;
+    let consent = consent(
+        &node,
+        &p,
+        &app,
+        "__remove_origin",
+        &json!({ "origin": origin }),
+        body.confirm,
+    )
+    .await?;
+    let out = node
+        .sys_write(&SystemCmd::RemoveAppOrigin {
+            app_id: app.clone(),
+            origin: origin.clone(),
+            actor: account.clone(),
+            consent,
+        })
+        .await?;
+    info!(%app, %origin, "removed an origin of an instance");
+    tracing::debug!(%app, %origin, %account, "the origin's remover");
+    Ok(Json(out))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps", post(app_create).get(app_list))
@@ -2328,6 +2505,12 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/access", post(app_access))
+        .route(
+            "/apps/{app}/origins",
+            get(app_origins)
+                .post(app_origin_add)
+                .delete(app_origin_remove),
+        )
         .route(
             "/apps/{app}/invites",
             post(app_invite_create).get(app_invite_list),

@@ -389,6 +389,63 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appOpenapi(app = app)
 
     /**
+     * Register a web origin for an instance
+     *
+     * By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/origins` (`app_origin_add`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun originAdd(
+        app: kotlin.String,
+        origin: kotlin.String,
+        rpId: kotlin.String? = null,
+        passkey: PasskeyProvider? = null,
+    ): PackageOrigin =
+        api(passkey, null, emptySet()).apps.appOriginAdd(app = app, appOriginAddRequest = AppOriginAddRequest(origin = origin, rpId = rpId))
+
+    /**
+     * Remove an instance's web origin
+     *
+     * Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/origins` (`app_origin_remove`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun originRemove(
+        app: kotlin.String,
+        origin: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): OriginRemoved =
+        api(passkey, null, emptySet()).apps.appOriginRemove(app = app, appOriginRemoveRequest = AppOriginRemoveRequest(origin = origin))
+
+    /**
+     * An instance's web origins
+     *
+     * The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend).
+     *
+     * `GET /apps/{app}/origins` (`app_origins`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun origins(
+        app: kotlin.String,
+    ): AppOriginList =
+        api(null, null, emptySet()).apps.appOrigins(app = app)
+
+    /**
      * An app's outbound requests
      *
      * The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.

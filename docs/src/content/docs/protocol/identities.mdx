@@ -422,6 +422,32 @@ registers another developer's origin denies them its use on this cluster, but
 never sees a token, since the sessions go to the pages on that origin. Origins
 belong to a package, never to a deployment.
 
+**An instance's origins.** A package's origins are its manager's, so the
+customer who runs an instance of someone else's package (a Confidential KV
+store, say) registers a site of their own for that instance instead:
+whoever manages the instance (its owner or an admin of its organization)
+registers it with their passkey.
+
+| Action | Route | Consent |
+| --- | --- | --- |
+| List | `GET /apps/{app}/origins` | none |
+| Register | `POST /apps/{app}/origins { origin, rpId? }` | `{app} / __add_origin / { origin, rpId }` |
+| Remove | `DELETE /apps/{app}/origins { origin }` | `{app} / __remove_origin / { origin }` |
+
+The commands are `AddAppOrigin` and `RemoveAppOrigin` (cluster version
+1.0.0-rc.39, `409 FEATURE_NOT_ACTIVE` below it), judged where they apply. The
+registration is a package origin in every other way (its own rp-id, the
+ceremonies, CORS, a session bound to the instance's package and naming the
+origin, removal ending it), and one more rule: such a session reaches that
+instance alone. Any other instance answers `404` though the account reaches
+it, as does a new instance, and a team change is refused. What the account may
+do in the instance is the instance's own access: a person who signs up there
+has a new account, which reaches the instance only once its managers let it in
+(a guest of the organization with a grant on the instance) and the app's own
+grants then decide. An instance's origin is never served, 4 per instance, and
+deleting the instance takes them with it. The same first-come rule holds: one
+package or instance per origin.
+
 ## Account recovery
 
 An account acts only with its own passkeys. A person who loses every one can
@@ -634,6 +660,7 @@ Code: `origins.rs`, `api/origins.rs`.
 - The origin rides in `SessionClaims::origin` and `RefreshRecord::origin`, kept by `Pending::SignUp` and stated nowhere in the sign-in challenge.
 - `principal` and `refresh` refuse such sessions once the origin is removed, and `UseRefresh` refuses an exchange that changes it.
 - `UninstallPackage` of the last release forgets them.
+- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app` forgets them, and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, instance creation, app lists, streams).
 - Limits `MAX_ORIGINS_PER_PACKAGE` and `MAX_PACKAGE_ORIGINS`; `http` only for `localhost` names on a `--dev` node (`allow_package_uploads`).
 
 #### Served origins

@@ -420,7 +420,7 @@ pub(super) async fn install_request(
 ) -> Result<(Action, Value), ApiError> {
     let package = subject.package;
     let frontend = p.bound_app() == Some(package.as_str());
-    if p.bound_app().is_some() && !frontend {
+    if p.bound_app().is_some() && (!frontend || !node.sys(|s| p.origin_admits(s, None))) {
         return Err(ApiError::forbidden(
             "a session opened on an app's frontend creates instances of that app only",
         ));

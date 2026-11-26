@@ -142,6 +142,30 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             "__remove_origin",
             &json!({ "origin": origin }),
         ),
+        SystemCmd::AddAppOrigin {
+            app_id,
+            origin,
+            rp_id,
+            actor,
+            consent,
+            ..
+        } => {
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = crate::origins::add_args(origin, rp_id, false);
+            proofs.states(&statement, app_id, "__add_origin", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveAppOrigin {
+            app_id,
+            origin,
+            actor,
+            consent,
+        } => {
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = json!({ "origin": origin });
+            proofs.states(&statement, app_id, "__remove_origin", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -201,6 +225,20 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             ..
         } => state.remove_package_origin(&package, &origin, &actor),
+        SystemCmd::AddAppOrigin {
+            app_id,
+            origin,
+            rp_id,
+            actor,
+            at,
+            ..
+        } => state.add_app_origin(app_id, origin, &rp_id, actor, at),
+        SystemCmd::RemoveAppOrigin {
+            app_id,
+            origin,
+            actor,
+            ..
+        } => state.remove_app_origin(&app_id, &origin, &actor),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached packages::apply"),

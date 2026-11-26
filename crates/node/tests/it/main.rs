@@ -30,6 +30,7 @@ mod harness;
 mod access_gate;
 mod account_proofs;
 mod activity;
+mod app_origins;
 mod approval_bypasses;
 mod bench;
 mod cluster;

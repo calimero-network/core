@@ -192,6 +192,11 @@ pub enum ContextCmd {
     /// Who is present in the instance now (ephemeral, never stored).
     #[command(subcommand)]
     Presence(PresenceCmd),
+    /// The web origins (a site of the instance's own) whose pages may sign people in, each
+    /// under its own passkey rp-id; their sessions reach this instance alone. Its managers':
+    /// the owner or an admin of its organization.
+    #[command(subcommand)]
+    Origins(InstanceOriginsCmd),
 }
 
 /// A `--grant`: `org`, `anyone`, `team:<TEAM>`, `account:<ACCOUNT>[=<SCOPE JSON>]`.
@@ -238,6 +243,38 @@ pub enum AliasCmd {
     },
     #[command(alias = "ls")]
     List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InstanceOriginsCmd {
+    /// The origins registered for the instance, with their rp-ids.
+    #[command(alias = "ls")]
+    List {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+    },
+    /// Register an origin (`https://host[:port]`, as a browser writes it), approved with a
+    /// passkey: `--dev-passkey` on a development cluster.
+    Add {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+        origin: String,
+        /// The passkey rp-id ceremonies there use: the origin's host (the default) or a
+        /// parent domain of it, never the cluster's.
+        #[arg(long)]
+        rp_id: Option<String>,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Remove an origin; the sessions opened there end. Approved as `add`.
+    #[command(alias = "rm")]
+    Remove {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+        origin: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -454,6 +491,34 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             to_json(&apps.outbound_log(&env.app(&context).await?).await?)?
         }
         ContextCmd::Abi { context } => to_json(&apps.abi(&env.app(&context).await?).await?)?,
+        ContextCmd::Origins(InstanceOriginsCmd::List { context }) => {
+            to_json(&apps.origins(&env.app(&context).await?).await?)?
+        }
+        ContextCmd::Origins(InstanceOriginsCmd::Add {
+            context,
+            origin,
+            rp_id,
+            dev_passkey,
+        }) => {
+            let app = env.app(&context).await?;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = apps
+                .origin_add(&app, &origin, rp_id.as_deref(), pk.get())
+                .await;
+            pk.save()?;
+            to_json(&out?)?
+        }
+        ContextCmd::Origins(InstanceOriginsCmd::Remove {
+            context,
+            origin,
+            dev_passkey,
+        }) => {
+            let app = env.app(&context).await?;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = apps.origin_remove(&app, &origin, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
+        }
         ContextCmd::Presence(PresenceCmd::List { context }) => {
             to_json(&apps.presence_get(&env.app(&context).await?).await?)?
         }

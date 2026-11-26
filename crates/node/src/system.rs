@@ -2056,6 +2056,8 @@ impl SystemState {
     fn remove_app(&mut self, app_id: &str) {
         self.set_app_file_bytes(app_id, 0);
         let _gone = self.apps.remove(app_id);
+        self.package_origins
+            .retain(|_, o| o.app.as_deref() != Some(app_id));
         // A grant from or to the app goes with it.
         for sources in self.delegations.values_mut() {
             let _from = sources.remove(app_id);
@@ -5924,6 +5926,7 @@ impl SystemCmd {
             Self::WithdrawApp { .. } => Area::Deployments,
             Self::AddPackageOrigin { .. } => Area::Packages,
             Self::RemovePackageOrigin { .. } => Area::Packages,
+            Self::AddAppOrigin { .. } | Self::RemoveAppOrigin { .. } => Area::Packages,
             Self::DeleteDeployment { .. } => Area::Deployments,
             Self::OfferDeployment { .. }
             | Self::AcceptDeployment { .. }
@@ -7344,6 +7347,26 @@ pub enum SystemCmd {
     /// { origin }`): the sessions opened there end with it.
     RemovePackageOrigin {
         package: String,
+        origin: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Register `origin` for app instance `app_id` (`{app_id} / __add_origin /
+    /// { origin, rpId }`, the passkey `consent` of a manager of the instance):
+    /// its sessions reach that instance alone ([`crate::origins`]).
+    AddAppOrigin {
+        app_id: AppId,
+        origin: String,
+        rp_id: String,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove an instance's origin (`{app_id} / __remove_origin / { origin }`).
+    RemoveAppOrigin {
+        app_id: AppId,
         origin: String,
         actor: AccountId,
         #[serde(default)]

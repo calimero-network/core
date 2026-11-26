@@ -45,16 +45,16 @@ pub(super) struct AddOriginBody {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RemoveOriginBody {
-    origin: String,
+    pub(super) origin: String,
     #[serde(default)]
-    confirm: Option<ConfirmBody>,
+    pub(super) confirm: Option<ConfirmBody>,
 }
 
 fn bad_origin(why: &str) -> ApiError {
     ApiError::bad_request("BAD_ORIGIN", why)
 }
 
-fn taken(why: &str) -> ApiError {
+pub(super) fn taken(why: &str) -> ApiError {
     ApiError::new(409, "ORIGIN_TAKEN", why)
 }
 
@@ -110,38 +110,7 @@ pub(super) async fn add(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let origin = body.origin;
-    let rp_id = match resolve_rp_id(&origin, body.rp_id.as_deref()) {
-        Ok(rp_id) => rp_id,
-        Err(crate::origins::Refusal::Origin) => {
-            return Err(bad_origin(crate::origins::Refusal::Origin.message()))
-        }
-        Err(r) => return Err(ApiError::bad_request("BAD_RP_ID", r.message())),
-    };
-    // `origin_host` accepted `http` only for a localhost name; this node
-    // takes one only in development.
-    if origin.starts_with("http://") && !node.config.allow_package_uploads {
-        return Err(bad_origin(
-            "a localhost origin is registered on a development node only (--dev); use https",
-        ));
-    }
-    let _host = origin_host(&origin).map_err(|r| bad_origin(r.message()))?;
-    if covers_cluster(&rp_id, &node.config.rp_id) {
-        return Err(ApiError::bad_request(
-            "BAD_RP_ID",
-            "that rpId is the cluster's (or a parent of it): its passkeys stay on the cluster's own origins",
-        ));
-    }
-    if node
-        .config
-        .origins
-        .iter()
-        .any(|o| o.trim_end_matches('/') == origin)
-        || node.app_origin_package(&origin).is_some()
-    {
-        return Err(taken(
-            "that is one of the cluster's own origins, or a frontend it serves",
-        ));
-    }
+    let rp_id = registrable(&node, &origin, body.rp_id.as_deref())?;
     if body.served {
         served_fits(&node, &origin)?;
     }
@@ -149,8 +118,8 @@ pub(super) async fn add(
     let served = body.served;
     node.sys(|s| {
         match s.package_origins.get(&origin) {
-            Some(o) if o.package != package => {
-                return Err(taken("another package registered that origin"))
+            Some(o) if o.package != package || o.app.is_some() => {
+                return Err(taken("another package or app registered that origin"))
             }
             Some(o) if o.served != served => {
                 return Err(taken(
@@ -224,6 +193,48 @@ pub(super) async fn add(
     info!(%package, %origin, %rp_id, served, "registered an origin for a package");
     debug!(%package, %origin, %account, "the origin's registrant");
     Ok(Json(out))
+}
+
+/// The rp-id `origin` is registered with: `rp_id`, or the origin's host. Refused: an
+/// origin or rp-id that does not fit, the cluster's own, or a frontend it serves.
+pub(super) fn registrable(
+    node: &Node,
+    origin: &str,
+    rp_id: Option<&str>,
+) -> Result<String, ApiError> {
+    let rp_id = match resolve_rp_id(origin, rp_id) {
+        Ok(rp_id) => rp_id,
+        Err(crate::origins::Refusal::Origin) => {
+            return Err(bad_origin(crate::origins::Refusal::Origin.message()))
+        }
+        Err(r) => return Err(ApiError::bad_request("BAD_RP_ID", r.message())),
+    };
+    // `origin_host` accepted `http` only for a localhost name; this node
+    // takes one only in development.
+    if origin.starts_with("http://") && !node.config.allow_package_uploads {
+        return Err(bad_origin(
+            "a localhost origin is registered on a development node only (--dev); use https",
+        ));
+    }
+    let _host = origin_host(origin).map_err(|r| bad_origin(r.message()))?;
+    if covers_cluster(&rp_id, &node.config.rp_id) {
+        return Err(ApiError::bad_request(
+            "BAD_RP_ID",
+            "that rpId is the cluster's (or a parent of it): its passkeys stay on the cluster's own origins",
+        ));
+    }
+    if node
+        .config
+        .origins
+        .iter()
+        .any(|o| o.trim_end_matches('/') == origin)
+        || node.app_origin_package(origin).is_some()
+    {
+        return Err(taken(
+            "that is one of the cluster's own origins, or a frontend it serves",
+        ));
+    }
+    Ok(rp_id)
 }
 
 /// Refuse a served origin (a custom domain) the cluster cannot or must not
@@ -302,7 +313,7 @@ pub(super) async fn remove(
     let held = node.sys(|s| {
         s.package_origins
             .get(&origin)
-            .is_some_and(|o| o.package == package)
+            .is_some_and(|o| o.package == package && o.app.is_none())
     });
     if !held {
         return Err(ApiError::not_found(

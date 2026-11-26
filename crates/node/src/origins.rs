@@ -15,6 +15,11 @@
 //! (`package:{package} / __add_origin / { origin, rpId }`,
 //! `__remove_origin / { origin }`), checked where it applies.
 //!
+//! An origin may instead be registered for one app instance by those who
+//! manage it (`/apps/{app}/origins`, `{app} / __add_origin`): its sessions are
+//! bound to the instance's package and reach that instance only
+//! ([`PackageOrigin::app`]), as a store's own site does.
+//!
 //! A **served** origin (`served: true`, a custom domain) is one the cluster
 //! also serves the package's frontend on, from its signed bundle, as it does
 //! at `{label}.{apps_domain}` (`app_host`): the developer points their domain
@@ -28,10 +33,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::system::{Rejection, SystemState, OPERATOR};
-use crate::types::AccountId;
+use crate::types::{AccountId, AppId};
 
 /// How many origins one package registers.
 pub const MAX_ORIGINS_PER_PACKAGE: usize = 8;
+
+/// How many origins one app instance registers.
+pub const MAX_ORIGINS_PER_APP: usize = 4;
 
 /// How many origins a cluster keeps.
 pub const MAX_PACKAGE_ORIGINS: usize = 4096;
@@ -63,6 +71,10 @@ pub struct PackageOrigin {
     /// reads and writes as it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub served: bool,
+    /// The instance its sessions reach, alone; `None` for the package's own
+    /// origin, whose sessions reach every instance of the package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
 }
 
 /// Why an origin is refused before anything is recorded.
@@ -230,14 +242,24 @@ impl SystemState {
         }
     }
 
-    /// The origins registered for `package`, by origin.
+    /// The origins registered for `package` by its manager, by origin.
     pub fn origins_of<'a>(
         &'a self,
         package: &'a str,
     ) -> impl Iterator<Item = (&'a String, &'a PackageOrigin)> + 'a {
         self.package_origins
             .iter()
-            .filter(move |(_, o)| o.package == package)
+            .filter(move |(_, o)| o.package == package && o.app.is_none())
+    }
+
+    /// The origins registered for app instance `app`, by origin.
+    pub fn origins_of_app<'a>(
+        &'a self,
+        app: &'a str,
+    ) -> impl Iterator<Item = (&'a String, &'a PackageOrigin)> + 'a {
+        self.package_origins
+            .iter()
+            .filter(move |(_, o)| o.app.as_deref() == Some(app))
     }
 
     /// The registration whose origin the cluster serves `package`'s
@@ -267,7 +289,7 @@ impl SystemState {
             let _host = served_host(&origin).map_err(Refusal::message)?;
         }
         if let Some(held) = self.package_origins.get(&origin) {
-            if held.package != package {
+            if held.package != package || held.app.is_some() {
                 return Err("another package registered that origin".into());
             }
             if held.rp_id != resolved {
@@ -303,6 +325,7 @@ impl SystemState {
             added_by: actor,
             added_at: at,
             served,
+            app: None,
         };
         let out = json!(origin_json(&origin, &record));
         let _prev = self.package_origins.insert(origin, record);
@@ -322,13 +345,88 @@ impl SystemState {
         if self
             .package_origins
             .get(origin)
-            .is_none_or(|o| o.package != package)
+            .is_none_or(|o| o.package != package || o.app.is_some())
         {
             return Err("that origin is not registered for this package".into());
         }
         let _gone = self.package_origins.remove(origin);
         Ok(json!(OriginRemoved {
             package: package.to_owned(),
+            origin: origin.to_owned(),
+            removed: true,
+        }))
+    }
+
+    /// `AddAppOrigin`: by a manager of instance `app`, an origin no one holds
+    /// yet, within the limits; its sessions are bound to the package the
+    /// instance runs and reach the instance alone.
+    pub(crate) fn add_app_origin(
+        &mut self,
+        app: AppId,
+        origin: String,
+        rp_id: &str,
+        actor: AccountId,
+        at: u64,
+    ) -> Result<Value, Rejection> {
+        let record = self.apps.get(&app).ok_or("no such app")?;
+        if !self.manages_app(record, &actor) {
+            return Err("only whoever manages the instance registers its origins".into());
+        }
+        let package = self
+            .package_of(record)
+            .ok_or("the instance runs no installed release")?
+            .to_owned();
+        let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;
+        if let Some(held) = self.package_origins.get(&origin) {
+            if held.app.as_deref() != Some(app.as_str()) {
+                return Err("another app or package registered that origin".into());
+            }
+            if held.rp_id != resolved {
+                return Err("that origin is registered with another rpId; remove it first".into());
+            }
+            return Ok(json!(origin_json(&origin, held)));
+        }
+        if self.origins_of_app(&app).count() >= MAX_ORIGINS_PER_APP {
+            return Err(Rejection::quota("origins per app"));
+        }
+        if self.package_origins.len() >= MAX_PACKAGE_ORIGINS {
+            return Err(Rejection::quota("origins"));
+        }
+        let record = PackageOrigin {
+            package,
+            rp_id: resolved,
+            added_by: actor,
+            added_at: at,
+            served: false,
+            app: Some(app),
+        };
+        let out = json!(origin_json(&origin, &record));
+        let _prev = self.package_origins.insert(origin, record);
+        Ok(out)
+    }
+
+    /// `RemoveAppOrigin`: by a manager of instance `app`.
+    pub(crate) fn remove_app_origin(
+        &mut self,
+        app: &str,
+        origin: &str,
+        actor: &str,
+    ) -> Result<Value, Rejection> {
+        let record = self.apps.get(app).ok_or("no such app")?;
+        if !self.manages_app(record, actor) {
+            return Err("only whoever manages the instance removes its origins".into());
+        }
+        let Some(held) = self
+            .package_origins
+            .get(origin)
+            .filter(|o| o.app.as_deref() == Some(app))
+        else {
+            return Err("that origin is not registered for this app".into());
+        };
+        let package = held.package.clone();
+        let _gone = self.package_origins.remove(origin);
+        Ok(json!(OriginRemoved {
+            package,
             origin: origin.to_owned(),
             removed: true,
         }))
@@ -360,6 +458,8 @@ pub struct OriginView {
     /// RFC 3339.
     pub added_at: String,
     pub served: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
 }
 
 /// `o`, registered for `origin`, as the API answers it.
@@ -372,6 +472,7 @@ pub fn origin_json(origin: &str, o: &PackageOrigin) -> OriginView {
         added_by: o.added_by.clone(),
         added_at: crate::system::rfc3339(o.added_at),
         served: o.served,
+        app: o.app.clone(),
     }
 }
 

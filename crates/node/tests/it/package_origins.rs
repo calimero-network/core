@@ -33,13 +33,13 @@ const SITE_RP: &str = "notes.example.com";
 /// each package ships its own.
 /// The operator installs `mpk` too, which puts the release in the cluster's catalog that
 /// every account uses: a stranger's session on its frontend creates from it.
-async fn into_catalog(c: &Cluster, mpk: Vec<u8>) {
+pub(crate) async fn into_catalog(c: &Cluster, mpk: Vec<u8>) {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ok = ops.ops().package_upload(mpk).await.unwrap();
 }
 
-fn release(package: &str, version: &str) -> Vec<u8> {
+pub(crate) fn release(package: &str, version: &str) -> Vec<u8> {
     release_with(package, version, &[])
 }
 
@@ -114,12 +114,12 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-fn status(e: &calimero_client::Error) -> u16 {
+pub(crate) fn status(e: &calimero_client::Error) -> u16 {
     e.to_string()[..3].parse().unwrap()
 }
 
 /// Whether the node lets a browser page on `origin` call it (a CORS preflight).
-async fn cors_allows(url: &str, origin: &str) -> bool {
+pub(crate) async fn cors_allows(url: &str, origin: &str) -> bool {
     let r = reqwest::Client::new()
         .request(reqwest::Method::OPTIONS, format!("{url}auth/me"))
         .header("origin", origin)

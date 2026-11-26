@@ -84,7 +84,7 @@ That holds for `call` (a confirm method), `instance update`, `instance transfer`
 `account api-key revoke`, `account device revoke`, `team delete`,
 `team members add`, `team members remove`, `team settings`, `team leave`,
 `team upgrade trigger`, `team upgrade retry`, `package origins add`,
-`package origins remove` and `raw`. `package watch`, `dev start` and `dev watch`
+`package origins remove`, `instance origins add`, `instance origins remove` and `raw`. `package watch`, `dev start` and `dev watch`
 require it; `local dev` signs up a deployer of its own. `account device add` takes `--approve-with FILE`, a passkey file
 the account already has.
 
@@ -251,6 +251,9 @@ App instances (v1's contexts).
 | `instance storage INSTANCE` | `GET /apps/{app}/storage` | Keys, bytes and blobs the instance holds. |
 | `instance outbound-log INSTANCE` | `GET /apps/{app}/outbound-log` | Its recent outbound HTTPS requests, newest first: host, path (no query), status or failure, secret names, sizes; never a value or body. Its owner and its organization's admins only. |
 | `instance abi INSTANCE` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
+| `instance origins list INSTANCE` (`ls`) | `GET /apps/{app}/origins` | The web origins registered for the instance, each with its `rpId`. Its managers' only. |
+| `instance origins add INSTANCE ORIGIN [--rp-id ID] [--dev-passkey FILE]` | `POST /apps/{app}/origins` | Register a site of the instance's own whose pages sign people in; their sessions reach this instance alone ([an instance's origins](/protocol/identities/#registered-origins)). By its owner or an admin of its organization, though the package is someone else's. `ORIGIN` and `--rp-id` as for `package origins add`; at most 4 per instance. |
+| `instance origins remove INSTANCE ORIGIN [--dev-passkey FILE]` (`rm`) | `DELETE /apps/{app}/origins` | Remove it; the sessions opened there end. |
 | `instance presence list INSTANCE` (`ls`) | `GET /apps/{app}/presence` | Who is present now (ephemeral, never stored). |
 | `instance presence publish INSTANCE --seq N [--state HEX]` | `POST /apps/{app}/presence` | Publish this device's presence; no `--state` retracts it. |
 | `instance presence stream INSTANCE [--limit N]` | `GET /apps/{app}/presence/stream` | The snapshot, then each change, as JSON lines. |

@@ -764,6 +764,7 @@ impl Principal {
                             .get(o)
                             .is_some_and(|r| Some(r.package.as_str()) == c.app.as_deref())
                     })
+                    && self.origin_admits(s, Some(app_id))
                     && self
                         .issuer_release
                         .as_ref()
@@ -789,6 +790,18 @@ impl Principal {
     /// bound to: it reaches that package's apps only.
     pub(crate) fn bound_app(&self) -> Option<&str> {
         self.session.as_ref().and_then(|s| s.app.as_deref())
+    }
+
+    /// Whether the registration of the origin this session was opened on admits
+    /// `app_id` (`None`: no one instance, such as a team or a new instance): an
+    /// instance's origin admits that instance alone, and a removed origin nothing.
+    pub(crate) fn origin_admits(&self, s: &SystemState, app_id: Option<&str>) -> bool {
+        let Some(origin) = self.session.as_ref().and_then(|c| c.origin.as_deref()) else {
+            return true;
+        };
+        s.package_origins
+            .get(origin)
+            .is_some_and(|o| o.app.as_deref().is_none_or(|i| Some(i) == app_id))
     }
 
     /// Refuse a package-bound session: credentials, keys, approvals and
@@ -823,6 +836,9 @@ impl Principal {
                 "a session opened on an app's frontend changes only that app's own teams; do this on the cluster's own page",
             )
         };
+        if !node.sys(|s| self.origin_admits(s, None)) {
+            return Err(refused());
+        }
         let (own, app_team, apps) = node.sys(|s| {
             let Some((package, app_team)) = s
                 .orgs
@@ -878,6 +894,9 @@ impl Principal {
                     "this session was signed by a node whose release is not approved for this app; sign in again",
                 ));
             }
+        }
+        if !node.sys(|s| self.origin_admits(s, Some(&app.app_id))) {
+            return Err(ApiError::not_found("no such app"));
         }
         match self.bound_app() {
             None => Ok(()),
@@ -2575,6 +2594,7 @@ async fn scope_report(
                     report::release_of_app(s, a, Reader::Account(account))
                         .is_some_and(|r| r.package == pkg)
                 })
+                && p.origin_admits(s, Some(&a.app_id))
                 && key_apps.is_none_or(|apps| apps.contains(&a.app_id))
         };
         let (page, next) = report::page(s, q.after.as_deref(), limit, keep);

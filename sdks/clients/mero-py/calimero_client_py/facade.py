@@ -67,6 +67,9 @@ from .openapi.api.apps import app_metadata as _app_metadata
 from .openapi.api.apps import app_method as _app_method
 from .openapi.api.apps import app_move as _app_move
 from .openapi.api.apps import app_openapi as _app_openapi
+from .openapi.api.apps import app_origin_add as _app_origin_add
+from .openapi.api.apps import app_origin_remove as _app_origin_remove
+from .openapi.api.apps import app_origins as _app_origins
 from .openapi.api.apps import app_outbound_log as _app_outbound_log
 from .openapi.api.apps import app_policy as _app_policy
 from .openapi.api.apps import app_policy_set as _app_policy_set
@@ -293,6 +296,8 @@ from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
+from .openapi.models import AppOriginAddBody
+from .openapi.models import AppOriginRemoveBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppSetEgressBody
 from .openapi.models import AppTransferBody
@@ -585,6 +590,26 @@ _APP_MOVE = Operation(
 _APP_OPENAPI = Operation(
     _app_openapi,
     "app_openapi",
+    body="none",
+    answer="json",
+)
+_APP_ORIGIN_ADD = Operation(
+    _app_origin_add,
+    "app_origin_add",
+    body=AppOriginAddBody,
+    answer="json",
+    confirm=True,
+)
+_APP_ORIGIN_REMOVE = Operation(
+    _app_origin_remove,
+    "app_origin_remove",
+    body=AppOriginRemoveBody,
+    answer="json",
+    confirm=True,
+)
+_APP_ORIGINS = Operation(
+    _app_origins,
+    "app_origins",
     body="none",
     answer="json",
 )
@@ -1486,6 +1511,61 @@ class Apps(Group):
         Returns: AppOpenApi
         """
         return self._run(_APP_OPENAPI, (app,), {}, None)
+
+    def origin_add(self, *, app, origin, rp_id=UNSET, confirm=None):
+        """Register a web origin for an instance (`POST /apps/{app}/origins`, `app_origin_add`).
+
+        By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            origin: body `origin`
+            rp_id: body `rpId`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: PackageOrigin
+        """
+        return self._run(
+            _APP_ORIGIN_ADD,
+            (app,),
+            {},
+            {"origin": origin, "rpId": rp_id},
+            confirm=confirm,
+        )
+
+    def origin_remove(self, *, app, origin, confirm=None):
+        """Remove an instance's web origin (`DELETE /apps/{app}/origins`, `app_origin_remove`).
+
+        Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            origin: body `origin`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: OriginRemoved
+        """
+        return self._run(
+            _APP_ORIGIN_REMOVE, (app,), {}, {"origin": origin}, confirm=confirm
+        )
+
+    def origins(self, *, app):
+        """An instance's web origins (`GET /apps/{app}/origins`, `app_origins`).
+
+        The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend).
+
+        Args:
+            app: path
+
+        Returns: AppOriginList
+        """
+        return self._run(_APP_ORIGINS, (app,), {}, None)
 
     def outbound_log(self, *, app):
         """An app's outbound requests (`GET /apps/{app}/outbound-log`, `app_outbound_log`).
