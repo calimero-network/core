@@ -1299,12 +1299,9 @@ impl AppMachine {
                 deltas.retain(|_, d| *d != 0);
                 c.blobs.count(tx, &deltas, ts_ms);
                 if self.changes_tx.receiver_count() > 0 {
-                    let keys = outcome.diff.iter().map(|w| w.key.0.clone()).collect();
-                    let _receivers = self.changes_tx.send(Arc::new(crate::app::Changed {
-                        index,
-                        keys: Some(keys),
-                        blobs: false,
-                    }));
+                    // Sent with the entry's other changes once it applied (`AppMachine::apply`).
+                    self.changed_keys
+                        .extend(outcome.diff.iter().map(|w| w.key.0.clone()));
                 }
             }
             self.apply_run_changes(tx, ts_ms, starter, outcome);
@@ -4206,5 +4203,41 @@ mod tests {
             file_cmd(1, 3, Some("k")),
         ]);
         assert_eq!(r["remembered"]["status"], json!("ok"), "{r}");
+    }
+
+    /// Watched views hear of every applied entry, once: a write by its keys, one that wrote
+    /// nothing still moves the clock and index a view reads, and an upgrade changes the code
+    /// every view runs.
+    #[test]
+    fn every_applied_entry_reaches_watched_views_once() {
+        let mut r = Rig::new();
+        let mut rx = r.machine.changes_tx.subscribe();
+        let _ = r.apply(1, &init(0));
+        while rx.try_recv().is_ok() {}
+
+        let _ = r.apply(2, &file_call(1, 50, Status::Ok, Vec::new(), Vec::new()));
+        let c = rx.try_recv().expect("an entry that wrote nothing");
+        assert_eq!(c.index, 2);
+        assert_eq!(c.keys.as_deref(), Some(&[][..]));
+
+        let _ = r.apply(
+            3,
+            &file_call(2, 60, Status::Ok, Vec::new(), vec![w("k", "v")]),
+        );
+        let c = rx.try_recv().expect("a write");
+        assert_eq!(c.index, 3);
+        assert_eq!(c.keys.as_deref(), Some(&[b"k".to_vec()][..]));
+        assert!(rx.try_recv().is_err(), "one change per entry");
+
+        let upgrade = serde_json::to_vec(&ComponentCmd::Upgrade {
+            bundle: "b2".into(),
+            compute_bundle: None,
+            base_index: 3,
+        })
+        .unwrap();
+        let _ = r.apply(4, &upgrade);
+        let c = rx.try_recv().expect("an upgrade");
+        assert_eq!(c.index, 4);
+        assert!(c.keys.is_none());
     }
 }
