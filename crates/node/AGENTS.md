@@ -105,7 +105,7 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
 - **Upgrades**: `node/cluster_version.rs`, `node/auto_updates.rs`, `node/restore_points.rs`,
   `api/upgrades.rs`, `api/update_policies.rs`, `api/undo.rs`.
 - **Keys and attestation**: `kms.rs` (K_r), `cluster_key.rs` (K_c), `signing_key.rs` (receipt
-  key), `attest.rs` (quotes), `rollback.rs`, `peer_tls.rs`.
+  key), `attest.rs` (quotes), `rollback.rs`.
 - **Storage, blobs and files**: `files.rs` and `files/wrap.rs`, `node/blob_guards.rs`,
   `node/segments.rs`, `node/disk.rs`, `backup.rs`, `node/restore.rs`, `recovery_disk.rs` and
   `node/recovery_disk.rs`, `node/digests.rs`.

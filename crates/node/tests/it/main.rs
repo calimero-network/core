@@ -56,7 +56,6 @@ mod org_member_security;
 mod org_recovery;
 mod org_rename;
 mod package_origins;
-mod peer_tls;
 mod pipeline_runs;
 mod public_links;
 mod recovery;

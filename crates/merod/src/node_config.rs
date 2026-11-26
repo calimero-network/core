@@ -172,14 +172,6 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_RECOVERY_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_dir: Option<PathBuf>,
-    /// A PEM file of extra CA roots this node trusts for HTTPS to its peers
-    /// (attestation, the cluster key, the sealed channel, job nodes), on top
-    /// of the built-in web roots. For a test environment whose node
-    /// certificates come from a CA browsers do not trust, such as the Let's
-    /// Encrypt staging CA. A file that holds no certificate stops the node.
-    #[arg(long, env = "MEROD_TLS_EXTRA_ROOTS")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tls_extra_roots: Option<PathBuf>,
     /// Found a cluster again from a recovery disk (with `--bootstrap`, on an
     /// empty data directory), after every mero-kms it used is gone: the
     /// founder waits for the operator's key to the newest `system` file in
@@ -413,7 +405,6 @@ impl NodeArgs {
             replicas: self.replicas.or(base.replicas),
             backup_dir: self.backup_dir.or(base.backup_dir),
             recovery_dir: self.recovery_dir.or(base.recovery_dir),
-            tls_extra_roots: self.tls_extra_roots.or(base.tls_extra_roots),
             recover_from: self.recover_from.or(base.recover_from),
             restore_from: self.restore_from.or(base.restore_from),
             storage_key_file: self.storage_key_file.or(base.storage_key_file),

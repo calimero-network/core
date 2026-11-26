@@ -86,10 +86,6 @@ tracing-subscriber.workspace = true
 # The cluster scenario runner reads `cluster.settings` (TOML) and crate manifests.
 toml.workspace = true
 rand_chacha.workspace = true
-# A TLS server signed by its own CA, for the peer client's extra roots (`peer_tls`).
-rcgen.workspace = true
-rustls.workspace = true
-tokio-rustls.workspace = true
 # The OpenAPI generator trial (`api/openapi/generated.rs`): one route group's paths
 # generated from its handlers and types, held to the hand-written registry.
 utoipa.workspace = true

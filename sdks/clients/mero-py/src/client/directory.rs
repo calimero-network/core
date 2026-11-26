@@ -154,11 +154,7 @@ pub(crate) fn random() -> u64 {
 }
 
 /// Fetch and [`parse`] `cluster`'s listing from `directory`.
-pub(crate) async fn fetch(
-    directory: &str,
-    cluster: &str,
-    roots: &super::tls::ExtraRoots,
-) -> Result<Listing, DirectoryError> {
+pub(crate) async fn fetch(directory: &str, cluster: &str) -> Result<Listing, DirectoryError> {
     let url = listing_url(directory, cluster);
     let failed = |status: u16, why: String| DirectoryError {
         status,
@@ -166,8 +162,7 @@ pub(crate) async fn fetch(
     };
     // A redirect is not followed: the listing comes from the directory the
     // caller named, not from wherever (or over whatever scheme) it points.
-    let http = roots
-        .builder()
+    let http = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -202,15 +197,12 @@ pub(crate) struct Remote {
     pub(crate) zone: Option<String>,
     /// The client's policy, every node a listing adds is attested under.
     pub(crate) policy: calimero_client::Policy,
-    /// The roots trusted on top of the public ones (`ca_bundle`), for the
-    /// directory and every node it lists.
-    pub(crate) roots: super::tls::ExtraRoots,
 }
 
 impl Remote {
     /// The cluster's nodes in the order to use them, and when to ask again.
     pub(crate) async fn listing(&self) -> Result<(Vec<String>, Duration), DirectoryError> {
-        let listing = fetch(&self.directory, &self.cluster, &self.roots).await?;
+        let listing = fetch(&self.directory, &self.cluster).await?;
         let mut draw = random;
         let urls = order(listing.nodes, self.zone.as_deref(), &mut draw);
         Ok((urls, listing.refresh_after))
@@ -227,8 +219,7 @@ impl super::recover::Directory<super::sealed::SealedNode> for Remote {
     }
 
     fn connect(&self, url: &str) -> Result<super::sealed::SealedNode, String> {
-        super::sealed::SealedNode::connect(url, self.policy.clone(), &self.roots)
-            .map_err(|e| format!("{e:#}"))
+        super::sealed::SealedNode::connect(url, self.policy.clone()).map_err(|e| format!("{e:#}"))
     }
 }
 

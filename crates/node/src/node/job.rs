@@ -306,7 +306,7 @@ impl Node {
             channel: Arc::new(SealedTransport::with_key(
                 url.parse()?,
                 // No total timeout: `within` bounds every job call.
-                crate::peer_tls::peer_client(&self.config.tls_extra_roots).build()?,
+                reqwest::Client::new(),
                 transport_key,
             )),
         })

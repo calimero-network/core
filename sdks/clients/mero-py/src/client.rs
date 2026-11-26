@@ -22,7 +22,6 @@ mod prelude;
 mod recover;
 mod sealed;
 mod streams;
-mod tls;
 
 use std::collections::HashMap;
 
@@ -33,7 +32,6 @@ use crate::visitor::PyVisitor;
 use prelude::*;
 use recover::{Credential, Nodes};
 use sealed::{as_response, recoverable, RawRequest, RawResponse, SealedNode};
-use tls::ExtraRoots;
 
 /// The attested sealed channel to one node of a Calimero 1.0 cluster (and,
 /// given `nodes`, the others it may move to).
@@ -47,9 +45,6 @@ pub struct PyCloudClient {
     /// The trust policy this client was made with, so a request that must
     /// run on a leader (`NOT_LEADER`) is sent to a node attested the same way.
     policy: Policy,
-    /// The roots trusted for TLS on top of the public ones (`ca_bundle`), for
-    /// every node, leader and directory this client reaches.
-    roots: ExtraRoots,
     /// The operator's Ed25519 key (`use_operator_key`): the Ops API's
     /// decisions answer `428 OPERATOR_SIGNATURE_REQUIRED` with it.
     operator_key: Arc<std::sync::Mutex<Option<OperatorKey>>>,
@@ -219,7 +214,7 @@ impl PyCloudClient {
         }
         let _enter = self.runtime.enter();
         let node = Arc::new(
-            SealedNode::connect(&url, self.policy.clone(), &self.roots)
+            SealedNode::connect(&url, self.policy.clone())
                 .map_err(|e| PyValueError::new_err(format!("{e:#}")))?,
         );
         let _prev = leaders.insert(url, Arc::clone(&node));
@@ -270,7 +265,6 @@ fn connect_all(
     runtime: &Runtime,
     urls: impl IntoIterator<Item = String>,
     policy: &Policy,
-    roots: &ExtraRoots,
 ) -> PyResult<Vec<(String, SealedNode)>> {
     let mut unique: Vec<String> = Vec::new();
     for url in urls {
@@ -283,7 +277,7 @@ fn connect_all(
     unique
         .into_iter()
         .map(|url| {
-            let client = SealedNode::connect(&url, policy.clone(), roots)
+            let client = SealedNode::connect(&url, policy.clone())
                 .map_err(|e| PyValueError::new_err(format!("{e:#}")))?;
             Ok((url, client))
         })
@@ -312,14 +306,8 @@ impl PyCloudClient {
     /// Without it, only mock quotes (`allow_mock`) can be accepted. A
     /// release's debug profiles (whose memory the host can read) are refused
     /// unless `allow_debug_profiles`.
-    ///
-    /// `ca_bundle`: the path of a PEM file whose certificates are trusted as
-    /// TLS roots on top of the built-in public ones (a private or staging CA),
-    /// for every node, leader and directory the client reaches. None trusts
-    /// the public roots only. A file that cannot be read raises the `OSError`
-    /// it stands for, one with no usable certificate `ValueError`, here.
     #[new]
-    #[pyo3(signature = (base_url, allow_mock = false, app_hash = None, tee_profiles = None, min_release = None, allow_debug_profiles = false, nodes = None, ca_bundle = None))]
+    #[pyo3(signature = (base_url, allow_mock = false, app_hash = None, tee_profiles = None, min_release = None, allow_debug_profiles = false, nodes = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         base_url: &str,
@@ -329,9 +317,7 @@ impl PyCloudClient {
         min_release: Option<String>,
         allow_debug_profiles: bool,
         nodes: Option<Vec<String>>,
-        ca_bundle: Option<&str>,
     ) -> PyResult<Self> {
-        let roots = ExtraRoots::load(ca_bundle)?;
         let policy = policy(
             allow_mock,
             app_hash,
@@ -341,12 +327,11 @@ impl PyCloudClient {
         )?;
         let runtime = Runtime::new().map_err(|e| PyValueError::new_err(e.to_string()))?;
         let urls = std::iter::once(base_url.to_owned()).chain(nodes.unwrap_or_default());
-        let nodes = connect_all(&runtime, urls, &policy, &roots)?;
+        let nodes = connect_all(&runtime, urls, &policy)?;
         Ok(Self {
             nodes: Arc::new(Nodes::new(nodes)),
             runtime: Arc::new(runtime),
             policy,
-            roots: roots.clone(),
             operator_key: Arc::new(std::sync::Mutex::new(None)),
             leaders: std::sync::Mutex::new(HashMap::new()),
         })
@@ -364,9 +349,8 @@ impl PyCloudClient {
     /// node. Raises `CloudError` (code `DIRECTORY`; the status is the
     /// directory's, `404` for an unknown cluster, 0 when it could not be
     /// reached) when the directory lists no usable node.
-    /// `ca_bundle` is the constructor's, and covers the directory too.
     #[staticmethod]
-    #[pyo3(signature = (cluster, *, tee_profiles = None, min_release = None, allow_mock = false, app_hash = None, allow_debug_profiles = false, directory = None, zone = None, ca_bundle = None))]
+    #[pyo3(signature = (cluster, *, tee_profiles = None, min_release = None, allow_mock = false, app_hash = None, allow_debug_profiles = false, directory = None, zone = None))]
     #[allow(clippy::too_many_arguments)]
     fn connect(
         py: Python<'_>,
@@ -378,9 +362,7 @@ impl PyCloudClient {
         allow_debug_profiles: bool,
         directory: Option<String>,
         zone: Option<String>,
-        ca_bundle: Option<&str>,
     ) -> PyResult<Self> {
-        let roots = ExtraRoots::load(ca_bundle)?;
         if cluster.is_empty() {
             return Err(PyValueError::new_err("cluster must not be empty"));
         }
@@ -397,17 +379,15 @@ impl PyCloudClient {
             cluster: cluster.to_owned(),
             zone,
             policy: policy.clone(),
-            roots: roots.clone(),
         };
         let (urls, refresh_after) = py
             .detach(|| runtime.block_on(source.listing()))
             .map_err(directory_err)?;
-        let nodes = connect_all(&runtime, urls, &policy, &roots)?;
+        let nodes = connect_all(&runtime, urls, &policy)?;
         Ok(Self {
             nodes: Arc::new(Nodes::new(nodes).with_directory(Box::new(source), refresh_after)),
             runtime: Arc::new(runtime),
             policy,
-            roots: roots.clone(),
             operator_key: Arc::new(std::sync::Mutex::new(None)),
             leaders: std::sync::Mutex::new(HashMap::new()),
         })
