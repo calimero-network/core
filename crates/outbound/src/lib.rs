@@ -82,12 +82,10 @@ use tracing::{info, warn};
 use zeroize::Zeroizing;
 
 mod audit;
-mod connector;
 mod redact;
 mod settings;
 
 pub use audit::*;
-pub use connector::*;
 use redact::Redactor;
 pub use redact::{
     MAX_ENCODED_SECRET_BYTES, MAX_REDACTION_PATTERNS, MAX_SECRETS_PER_REQUEST,
@@ -602,31 +600,6 @@ impl OutboundService {
         sent: Arc<AtomicU64>,
         audit: Arc<OutboundAudit>,
     ) -> Option<Arc<dyn OutboundHost>> {
-        self.run_outbound(
-            app,
-            declared,
-            BTreeMap::new(),
-            approval,
-            context,
-            sent,
-            audit,
-        )
-    }
-
-    /// The raw client for a run, refusing every host of `reserved` (a declared
-    /// connector's host, by the connector's name); `None` when the app
-    /// declared no prefix this node can use.
-    #[expect(clippy::too_many_arguments, reason = "one run's whole outbound scope")]
-    fn run_outbound(
-        self: &Arc<Self>,
-        app: AppIdentity,
-        declared: Vec<String>,
-        reserved: BTreeMap<String, String>,
-        approval: Option<Approval>,
-        context: String,
-        sent: Arc<AtomicU64>,
-        audit: Arc<OutboundAudit>,
-    ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
             .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
@@ -638,7 +611,6 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
-            reserved,
             approval,
             context,
             sent,
@@ -953,8 +925,6 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
-    /// Hosts reached only through a connector the app declares, by its name.
-    reserved: BTreeMap<String, String>,
     approval: Option<Approval>,
     context: String,
     /// Requests handed to the transport.
@@ -980,26 +950,6 @@ impl OutboundHost for RunOutbound {
         let host = reqwest::Url::parse(&request.url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
-        let reserved = host
-            .as_deref()
-            .map(|h| h.trim_end_matches('.'))
-            .and_then(|h| Some((self.reserved.get(h)?, h)));
-        if let Some((connector, reserved_host)) = reserved {
-            entry.failure = Some(AuditFailure::Refused);
-            audit.record(&self.context, entry);
-            warn!(
-                context = %self.context,
-                package = %self.app.package,
-                host = reserved_host,
-                connector = %connector,
-                refusal = "ConnectorHost",
-                "outbound request refused"
-            );
-            return Err(format!(
-                "{reserved_host} is reached only through the {connector} connector this app \
-                 declares, never by a raw request"
-            ));
-        }
         let prepared =
             match self
                 .service
@@ -1054,7 +1004,7 @@ impl OutboundHost for RunOutbound {
 impl OutboundService {
     /// Sends a prepared request, counts it in `sent`, logs it (with the prefix of
     /// `declared` that covers it, never its path) and redacts its secrets from
-    /// the answer: every raw request and connector call ends here.
+    /// the answer: every request ends here.
     fn transmit(
         &self,
         app: &AppIdentity,

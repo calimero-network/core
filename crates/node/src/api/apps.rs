@@ -1899,7 +1899,7 @@ async fn secrets_gate(
     }
     let declared = node
         .release_of_app(&app)
-        .map(|r| r.version.secret_bindings())
+        .map(|r| r.version.secrets)
         .unwrap_or_default();
     Ok((p, app, declared))
 }
