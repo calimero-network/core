@@ -2437,6 +2437,7 @@ async fn app_origin_add(
             app_id: app.clone(),
             origin: origin.clone(),
             rp_id: rp_id.clone(),
+            registration: crate::origins::new_registration(),
             actor: account.clone(),
             at: now_secs(),
             consent,

@@ -38,14 +38,26 @@ async fn new_session(
     consent: Value,
 ) -> ApiResult<Json<SessionAnswer>> {
     let origin = from.as_ref().and_then(AppOrigin::registered);
+    let registration = from
+        .as_ref()
+        .map(|a| a.registration.clone())
+        .unwrap_or_default();
     let app = from.map(|a| a.package);
     if let (Some(package), Some(origin)) = (&app, &origin) {
         info!(%package, %origin, "a session opened on a registered origin");
     }
-    let token = session_token_for(node, account, passkey, app.clone(), origin.clone(), &new)?;
+    let token = session_token_for(
+        node,
+        account,
+        passkey,
+        app.clone(),
+        origin.clone(),
+        registration.clone(),
+        &new,
+    )?;
     let record = RefreshRecord {
         opened_at: now_secs(),
-        ..new.record(account, passkey, app, origin)
+        ..new.record(account, passkey, app, origin, registration)
     };
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
@@ -292,10 +304,20 @@ async fn register_finish(
         .and_then(|a| a.rp_id.clone())
         .unwrap_or_else(|| node.config.rp_id.clone());
     let origin = app.as_ref().and_then(AppOrigin::registered);
+    let registration = app
+        .as_ref()
+        .map(|a| a.registration.clone())
+        .unwrap_or_default();
     let app = app.map(|a| a.package);
     let grant = RefreshGrant {
         hash: session.hash(),
-        record: session.record(&account.account_id, &cred.id, app.clone(), origin.clone()),
+        record: session.record(
+            &account.account_id,
+            &cred.id,
+            app.clone(),
+            origin.clone(),
+            registration.clone(),
+        ),
     };
     let statement = crate::proof::Statement::new(
         &format!("account:{}", account.account_id),
@@ -313,6 +335,7 @@ async fn register_finish(
             session,
             app,
             origin,
+            registration,
         },
         sealed.map(|Extension(s)| s),
     )?;
@@ -340,6 +363,7 @@ async fn sign_up_confirmed(
         session,
         app,
         origin,
+        registration,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
     else {
@@ -358,7 +382,11 @@ async fn sign_up_confirmed(
     // origin itself, for one), or the cluster's.
     let from = claimed_app(node, &confirm.assertion.client_data_json)
         .await
-        .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
+        .filter(|a| {
+            app.as_deref() == Some(a.package.as_str())
+                && a.registered() == origin
+                && a.registration == registration
+        });
     if origin.is_some() && from.is_none() {
         return Err(ApiError::unauthenticated(
             "confirm the sign-up on the origin it began on",
@@ -379,6 +407,7 @@ async fn sign_up_confirmed(
         &passkey,
         app.clone(),
         origin.clone(),
+        registration.clone(),
         &session,
     )?;
     let consent = crate::proof::Consent {
@@ -418,7 +447,7 @@ async fn sign_up_confirmed(
             invite,
             refresh: Some(RefreshGrant {
                 hash: session.hash(),
-                record: session.record(&account_id, &passkey, app, origin),
+                record: session.record(&account_id, &passkey, app, origin, registration),
             }),
             consent: super::consent_value(&consent)?,
             at: now,
@@ -775,7 +804,7 @@ async fn refresh(
         // Judged on the cluster's latest state: a removal made through
         // another node holds here at once.
         let _caught_up = node.sys_fresh().await;
-        if !origin_holds(&node, rec.app.as_deref(), origin) {
+        if !origin_holds(&node, rec.app.as_deref(), origin, &rec.registration) {
             return Err(origin_gone());
         }
     }
@@ -790,6 +819,7 @@ async fn refresh(
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
         origin: rec.origin.clone(),
+        registration: rec.registration.clone(),
         key: crate::proof::refresh_key(&new_refresh),
         opened_at: rec.opened_at,
         holder: rec.holder.clone(),
@@ -848,6 +878,7 @@ async fn refresh(
             passkey: rec.passkey,
             app: rec.app,
             origin: rec.origin,
+            registration: rec.registration,
             node: 0,
             key: String::new(),
         },
@@ -909,6 +940,7 @@ async fn kept_refresh(
             passkey: rec.passkey.clone(),
             app: rec.app.clone(),
             origin: rec.origin.clone(),
+            registration: rec.registration.clone(),
             node: 0,
             key: String::new(),
         },

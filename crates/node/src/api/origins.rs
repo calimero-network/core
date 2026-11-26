@@ -20,10 +20,11 @@ use crate::app_host::label;
 use crate::error::ApiError;
 use crate::node::Node;
 use crate::origins::{
-    add_args, covers_cluster, origin_host, origin_json, resolve_rp_id, served_host, within,
-    MAX_ORIGINS_PER_PACKAGE, MAX_PACKAGE_ORIGINS, MAX_SERVED_ORIGINS,
+    add_args, covers_cluster, new_registration, origin_host, origin_json, resolve_rp_id,
+    served_host, within, MAX_ORIGINS_PER_PACKAGE, MAX_PACKAGE_ORIGINS, MAX_SERVED_ORIGINS,
     MAX_SERVED_ORIGINS_PER_PACKAGE,
 };
+use crate::system::cluster_version::Feature;
 use crate::system::SystemCmd;
 use crate::types::now_secs;
 
@@ -178,12 +179,18 @@ pub(super) async fn add(
         body.confirm,
     )
     .await?;
+    // An earlier release would drop the registration and hold other state.
+    let registration = node
+        .require_features(&[Feature::AppOrigins])
+        .await
+        .map_or_else(|_| String::new(), |()| new_registration());
     let out = node
         .sys_write(&SystemCmd::AddPackageOrigin {
             package: package.clone(),
             origin: origin.clone(),
             rp_id: rp_id.clone(),
             served,
+            registration,
             actor: account.clone(),
             at: now_secs(),
             consent,

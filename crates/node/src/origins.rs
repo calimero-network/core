@@ -75,6 +75,16 @@ pub struct PackageOrigin {
     /// origin, whose sessions reach every instance of the package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<AppId>,
+    /// Random, from the entry that registered it (empty in one from before): a
+    /// session names it, so the origin removed and registered again ends it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registration: String,
+}
+
+/// A new registration's id ([`PackageOrigin::registration`]).
+#[must_use]
+pub fn new_registration() -> String {
+    calimero_identity::b64url(&calimero_identity::random::<16>())
 }
 
 /// Why an origin is refused before anything is recorded.
@@ -272,12 +282,14 @@ impl SystemState {
     /// `AddPackageOrigin`: by the package's manager, an origin no package
     /// holds yet, within the limits; `served`, one the cluster serves the
     /// package's frontend on.
+    #[allow(clippy::too_many_arguments, reason = "the command's fields")]
     pub(crate) fn add_package_origin(
         &mut self,
         package: String,
         origin: String,
         rp_id: &str,
         served: bool,
+        registration: String,
         actor: AccountId,
         at: u64,
     ) -> Result<Value, Rejection> {
@@ -326,6 +338,7 @@ impl SystemState {
             added_at: at,
             served,
             app: None,
+            registration,
         };
         let out = json!(origin_json(&origin, &record));
         let _prev = self.package_origins.insert(origin, record);
@@ -365,6 +378,7 @@ impl SystemState {
         app: AppId,
         origin: String,
         rp_id: &str,
+        registration: String,
         actor: AccountId,
         at: u64,
     ) -> Result<Value, Rejection> {
@@ -399,6 +413,7 @@ impl SystemState {
             added_at: at,
             served: false,
             app: Some(app),
+            registration,
         };
         let out = json!(origin_json(&origin, &record));
         let _prev = self.package_origins.insert(origin, record);
@@ -430,6 +445,19 @@ impl SystemState {
             origin: origin.to_owned(),
             removed: true,
         }))
+    }
+
+    /// `origin`'s registration a session of `package` opened under
+    /// `registration` names, while it holds: none once removed or registered anew.
+    pub(crate) fn origin_registration(
+        &self,
+        origin: &str,
+        package: Option<&str>,
+        registration: &str,
+    ) -> Option<&PackageOrigin> {
+        self.package_origins
+            .get(origin)
+            .filter(|o| Some(o.package.as_str()) == package && o.registration == registration)
     }
 
     /// Forget the origins of a package no longer installed, so whoever

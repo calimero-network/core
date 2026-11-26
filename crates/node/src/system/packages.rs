@@ -215,10 +215,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             origin,
             rp_id,
             served,
+            registration,
             actor,
             at,
             ..
-        } => state.add_package_origin(package, origin, &rp_id, served, actor, at),
+        } => state.add_package_origin(package, origin, &rp_id, served, registration, actor, at),
         SystemCmd::RemovePackageOrigin {
             package,
             origin,
@@ -229,10 +230,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             app_id,
             origin,
             rp_id,
+            registration,
             actor,
             at,
             ..
-        } => state.add_app_origin(app_id, origin, &rp_id, actor, at),
+        } => state.add_app_origin(app_id, origin, &rp_id, registration, actor, at),
         SystemCmd::RemoveAppOrigin {
             app_id,
             origin,

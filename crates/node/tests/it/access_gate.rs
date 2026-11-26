@@ -1336,6 +1336,7 @@ async fn a_credential_that_cannot_be_valid_costs_no_system_read_round() {
             passkey: None,
             app: None,
             origin: None,
+            registration: String::new(),
             node: c.nodes[entry].node.config.node_id,
             key: calimero_identity::b64url(&c.nodes[entry].node.receipt_public()),
         },

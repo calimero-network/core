@@ -7338,6 +7338,9 @@ pub enum SystemCmd {
         rp_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         served: bool,
+        /// [`crate::origins::PackageOrigin::registration`]; empty from a release before.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        registration: String,
         actor: AccountId,
         at: u64,
         #[serde(default)]
@@ -7359,6 +7362,8 @@ pub enum SystemCmd {
         app_id: AppId,
         origin: String,
         rp_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        registration: String,
         actor: AccountId,
         at: u64,
         #[serde(default)]

@@ -208,6 +208,9 @@ pub enum Pending {
         /// names (`SessionClaims::origin`).
         #[serde(default)]
         origin: Option<String>,
+        /// That origin's registration (`SessionClaims::registration`).
+        #[serde(default)]
+        registration: String,
     },
     AddPasskey {
         challenge: [u8; 32],
@@ -619,6 +622,8 @@ pub(crate) struct AppOrigin {
     /// A registered origin's rp-id (a custom domain's too); `None` for a
     /// frontend under the apps domain, whose ceremonies use the cluster's.
     pub(crate) rp_id: Option<String>,
+    /// A registered origin's registration (`SessionClaims::registration`).
+    pub(crate) registration: String,
 }
 
 impl AppOrigin {
@@ -637,6 +642,7 @@ pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
             package,
             origin: origin.to_owned(),
             rp_id: None,
+            registration: String::new(),
         });
     }
     let held = node.sys(|s| s.package_origins.get(origin).cloned())?;
@@ -647,6 +653,7 @@ pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
         package: held.package,
         origin: origin.to_owned(),
         rp_id: Some(held.rp_id),
+        registration: held.registration,
     })
 }
 
@@ -759,11 +766,6 @@ impl Principal {
                     && c.passkey
                         .as_ref()
                         .is_none_or(|k| s.credentials.get(k) == Some(&c.account))
-                    && c.origin.as_ref().is_none_or(|o| {
-                        s.package_origins
-                            .get(o)
-                            .is_some_and(|r| Some(r.package.as_str()) == c.app.as_deref())
-                    })
                     && self.origin_admits(s, Some(app_id))
                     && self
                         .issuer_release
@@ -792,15 +794,17 @@ impl Principal {
         self.session.as_ref().and_then(|s| s.app.as_deref())
     }
 
-    /// Whether the registration of the origin this session was opened on admits
+    /// Whether the registration of the origin this session was opened under admits
     /// `app_id` (`None`: no one instance, such as a team or a new instance): an
-    /// instance's origin admits that instance alone, and a removed origin nothing.
+    /// instance's origin admits that instance alone, and one removed or registered anew nothing.
     pub(crate) fn origin_admits(&self, s: &SystemState, app_id: Option<&str>) -> bool {
-        let Some(origin) = self.session.as_ref().and_then(|c| c.origin.as_deref()) else {
+        let Some(c) = &self.session else {
             return true;
         };
-        s.package_origins
-            .get(origin)
+        let Some(origin) = c.origin.as_deref() else {
+            return true;
+        };
+        s.origin_registration(origin, c.app.as_deref(), &c.registration)
             .is_some_and(|o| o.app.as_deref().is_none_or(|i| Some(i) == app_id))
     }
 
@@ -1059,7 +1063,7 @@ async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal
     }
     // A session opened on a registered origin ends when the origin is removed.
     if let Some(origin) = &claims.origin {
-        if !origin_holds(node, claims.app.as_deref(), origin) {
+        if !origin_holds(node, claims.app.as_deref(), origin, &claims.registration) {
             return Err(origin_gone());
         }
     }
@@ -1173,12 +1177,11 @@ async fn api_key(node: &Node, token: &str) -> Result<Principal, ApiError> {
     })
 }
 
-/// Whether `origin` is still registered for `package`.
-fn origin_holds(node: &Node, package: Option<&str>, origin: &str) -> bool {
+/// Whether `origin` is still registered for `package` under `registration`.
+fn origin_holds(node: &Node, package: Option<&str>, origin: &str, registration: &str) -> bool {
     node.sys(|s| {
-        s.package_origins
-            .get(origin)
-            .is_some_and(|o| Some(o.package.as_str()) == package)
+        s.origin_registration(origin, package, registration)
+            .is_some()
     })
 }
 
@@ -1348,6 +1351,7 @@ impl NewSession {
         passkey: &str,
         app: Option<String>,
         origin: Option<String>,
+        registration: String,
     ) -> RefreshRecord {
         RefreshRecord {
             account: account.to_owned(),
@@ -1356,6 +1360,7 @@ impl NewSession {
             passkey: Some(passkey.to_owned()),
             app,
             origin,
+            registration,
             key: crate::proof::refresh_key(&self.refresh),
             // Stated nowhere a passkey signs: each entry sets it
             // (`CreateRefresh`'s record, `CreateAccount::at`).
@@ -1368,7 +1373,10 @@ impl NewSession {
     /// record's account, passkey and package are not known yet and not
     /// stated; the passkey that signs names them.
     fn sign_in_statement(&self) -> crate::proof::Statement {
-        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None, None));
+        let args = crate::system::sign_in_args(
+            &self.hash(),
+            &self.record("", "", None, None, String::new()),
+        );
         crate::proof::Statement::new("session", "__sign_in", &args)
     }
 }
@@ -1380,6 +1388,7 @@ fn session_token_for(
     passkey: &str,
     app: Option<String>,
     origin: Option<String>,
+    registration: String,
     new: &NewSession,
 ) -> Result<(String, u64), ApiError> {
     let expires_at = now_secs() + SESSION_TTL;
@@ -1392,6 +1401,7 @@ fn session_token_for(
             passkey: Some(passkey.to_owned()),
             app,
             origin,
+            registration,
             node: 0,
             key: String::new(),
         },

@@ -283,7 +283,7 @@ pub enum Feature {
     /// `UpgradeApp` and `ApproveUpgrade` whose class carries a `pinsLineage` reason.
     PinnedLineage,
     /// `AddAppOrigin` and `RemoveAppOrigin`: an earlier release cannot read them, so its
-    /// replicas would keep no instance's origin.
+    /// replicas would keep no instance's origin; nor `AddPackageOrigin`'s `registration`.
     AppOrigins,
 }
 
@@ -909,6 +909,9 @@ impl SystemCmd {
             | Self::AcceptDeployment { .. }
             | Self::CancelDeploymentTransfer { .. } => vec![Feature::DeploymentTransfer],
             Self::AddAppOrigin { .. } | Self::RemoveAppOrigin { .. } => vec![Feature::AppOrigins],
+            Self::AddPackageOrigin { registration, .. } if !registration.is_empty() => {
+                vec![Feature::AppOrigins]
+            }
             Self::ScopeApps {
                 apps, by_release, ..
             } => {

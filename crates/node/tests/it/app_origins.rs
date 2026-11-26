@@ -246,16 +246,85 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
     assert_eq!(status(&e), 401, "{e}");
     assert!(!cors_allows(&c.urls[0], SITE).await);
 
-    // An instance deleted takes its origin with it: the site is free again.
+    // Registered again, the site does not bring her session back: it was
+    // opened under the registration that was removed.
     let _ok = alice
         .apps()
         .origin_add(&store, SITE, None, Some(&mut alice_pk))
         .await
         .unwrap();
+    let e = carol
+        .apps()
+        .view(&store, "get", Some(get()), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
+
+    // An instance deleted takes its origin with it: the site is free again,
+    // and registered for another instance it reaches nothing of hers.
     let _gone = alice.apps().delete(&store).await.unwrap();
     let _ok = alice
         .apps()
         .origin_add(&other, SITE, None, Some(&mut alice_pk))
         .await
         .unwrap();
+    let e = carol
+        .apps()
+        .view(&other, "get", Some(get()), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
+    let e = carol.refresh().await.unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
+}
+
+/// An instance's origin removed and registered again as its package's own
+/// does not hand the sessions opened under the first registration the package.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sessions_registration_ends_with_it_though_the_origin_returns() {
+    const OWN: &str = "com.test.own";
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let org = crate::common::home_org(&alice).await;
+    let _ok = alice
+        .packages()
+        .upload(release(OWN, "1.0.0"), Some(&org))
+        .await
+        .unwrap();
+    into_catalog(&c, release(OWN, "1.0.0")).await;
+    let store = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "flags", "package": OWN, "org": org }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+    let _ok = alice
+        .apps()
+        .origin_add(&store, SITE, None, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let carol = c.client(2);
+    let mut carol_pk = SoftAuthenticator::new(SITE_RP, SITE);
+    let _s = carol
+        .sign_up_at(&mut carol_pk, "carol", Some(SITE))
+        .await
+        .unwrap();
+    let _me = carol.auth().me().await.unwrap();
+
+    let _ok = alice
+        .apps()
+        .origin_remove(&store, SITE, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let _ok = alice
+        .packages()
+        .origins_add(OWN, SITE, None, None, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let e = carol.auth().me().await.unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
+    let e = carol.refresh().await.unwrap_err();
+    assert_eq!(status(&e), 401, "{e}");
 }
