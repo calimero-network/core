@@ -13,3 +13,4 @@
 # reports the cutover instead of running, until the next release puts a version back.
 hard-cutover: 5357 SetEgress (the egress switch) is an ungated system command a node of 1.0.0-rc.35 cannot decode: clusters are recreated, not rolled
 hard-cutover: 5352 a release's secrets are credential bindings (one host, one header or body field, attached by the node); manifests and InstallPackage records in the earlier {{secret:NAME}} shape are not read
+hard-cutover: 5440 releases record the first-party connectors they declare (InstallPackage.connectors), which a node of an earlier release drops, and apply counts a declared connector's key as a declared secret: clusters are recreated, not rolled

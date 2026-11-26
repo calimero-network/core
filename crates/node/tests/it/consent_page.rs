@@ -98,6 +98,7 @@ fn release_of(
         services: None,
         pipelines: Vec::new(),
         signature: None,
+        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
@@ -580,6 +581,9 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "minRuntimeVersion": { "from": "0.1.0", "to": "0.1.0" },
         },
     });
+    // Neither release declares a connector (kept out of the literal: `json!`'s recursion limit).
+    let mut expected = expected;
+    expected["upgrade"]["connectors"] = json!({ "added": [], "removed": [], "kept": [] });
     assert_eq!(
         snapshot,
         expected,

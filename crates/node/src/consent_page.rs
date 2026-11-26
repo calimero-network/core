@@ -2207,6 +2207,17 @@ async fn upgrade_request(
             join(&added)
         ));
     }
+    let connectors = sheet["connectors"]["added"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if !connectors.is_empty() {
+        notes.push(format!(
+            "{new} declares {} new connector operation(s) or value(s), which the node builds and sends with the key: {}.",
+            connectors.len(),
+            join(&connectors)
+        ));
+    }
     if sheet["publisher"]["changed"] == json!(true) {
         notes.push("The release is signed by a different key than the one running now.".to_owned());
     }
@@ -2585,7 +2596,7 @@ async fn outbound_request(
         crate::api::refuse_egress_off(node, org)?;
     }
     let facts = release_facts(node, &package, &latest).await?;
-    let declared: Vec<String> = latest.outbound.clone();
+    let declared: Vec<String> = latest.approvable_prefixes();
     let requested = match subject.prefixes {
         None => declared.clone(),
         Some(p) => p,
@@ -2622,6 +2633,27 @@ async fn outbound_request(
          Data sent there leaves your Calimero cluster.",
         phrase(&requested_hosts)
     )];
+    for (name, c) in &latest.connectors {
+        let ops: Vec<&str> = c.operations.iter().map(String::as_str).collect();
+        let limits: Vec<String> = c
+            .limits
+            .iter()
+            .map(|(limit, values)| {
+                let values: Vec<&str> = values.iter().map(String::as_str).collect();
+                format!("{limit}: {}", values.join(", "))
+            })
+            .collect();
+        points.push(format!(
+            "Through the node's {name} connector it may call only {}{}: the node builds those \
+             requests itself and attaches the key, and no other {name} request is sent for it.",
+            ops.join(", "),
+            if limits.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", limits.join("; "))
+            }
+        ));
+    }
     let kept = hosts(
         requested
             .iter()

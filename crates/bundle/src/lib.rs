@@ -8,6 +8,7 @@
 //! Crate guide: [`crates/bundle/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/bundle/AGENTS.md).
 
 pub mod archive;
+pub mod connectors;
 mod frontend;
 #[cfg(feature = "html")]
 mod html;
@@ -19,6 +20,7 @@ pub use archive::{
     extract_bundle_manifest, is_bundle_blob, validate_artifact_path, validate_path_component,
     VerifiedBundle, VerifiedContents, VerifiedWasm, MAX_ARCHIVE_BYTES,
 };
+pub use connectors::{BundleConnector, ConnectorsError};
 pub use frontend::{
     mime_type, verify_frontend_file, BundleFrontend, FrontendError, FRONTEND_ROOT,
     MAX_FRONTEND_BYTES,
@@ -269,6 +271,12 @@ impl BundleManifest {
             .filter_map(|p| outbound_host(p))
             .collect();
         secrets::check(secrets, &self.outbound, &hosts)
+    }
+
+    /// Checks the shape and bounds of `connectors` ([`connectors::check`]); the node checks
+    /// the names against its own connectors.
+    pub fn check_connectors(&self) -> Result<(), ConnectorsError> {
+        self.connectors.as_ref().map_or(Ok(()), connectors::check)
     }
 
     /// Checks `uses` against the node's install rules: names, count, own-package ban, semver range,
@@ -542,6 +550,11 @@ pub struct BundleManifest {
     /// before install. An older node ignores the field (the signature is over the raw manifest).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uses: Option<BTreeMap<String, BundleUse>>,
+    /// The node's first-party connectors this release calls ([`BundleConnector`]): for each, the operations
+    /// it may call and the values each limit allows; signed, shown on the consent page. A release that
+    /// declares one may not reach the connector's host with a raw request. Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<BTreeMap<String, BundleConnector>>,
 
     /// Who upgrades the package's instances ([`UpgradeAuthority`]); absent means `Owner`. Signed with the rest;
     /// a value other than `owner` or `publisher` fails to parse, so the bundle is refused.
@@ -632,6 +645,7 @@ impl BundleManifest {
             outbound: _,
             secrets: _,
             uses: _,
+            connectors: _,
             upgrades: _,
             instance_org: _,
             guests: _,

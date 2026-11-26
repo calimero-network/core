@@ -30,7 +30,7 @@ test('a red update leads with keeping the current version, and a second approver
   ]);
   // Installed once the owner has its organization, so the organization's admin may use it.
   install(owner, { pkg, version: '2.0.0', tag: 'red1', extra: ['--outbound', TELEMETRY] });
-  const org = ctl(owner, ['org', 'list']).namespaces[0].orgId;
+  const org = ctl(owner, ['org', 'list']).orgs[0].orgId;
   const { token } = ctl(owner, ['org', 'invite', org, '--role', 'admin'], { passkey: true });
   ctl(admin, ['org', 'join', token]);
 

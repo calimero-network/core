@@ -2674,29 +2674,36 @@ impl Node {
         Err(ApiError::unavailable("no peer holds the bundle"))
     }
 
-    /// The outbound client for a writing run of `app_id` on `bundle`: `None`
-    /// when the operator turned outbound off, or the bundle is no signed
-    /// release declaring a prefix. A declared prefix not approved for the app
-    /// still gets a client, whose refusal (`AWAITING_APPROVAL`, `NOT_APPROVED`)
-    /// the app can show. Every client asks the egress switch before each request
-    /// (`SystemState::egress_off`) and refuses with `EGRESS_OFF` while it is off.
+    /// The outbound clients for a writing run of `app_id` on `bundle`: raw requests (`None`
+    /// when the operator turned outbound off, or the bundle is no signed release declaring a
+    /// prefix) and the first-party connectors the release declares (`None` when it declares
+    /// none). A declared prefix or connector not approved for the app still gets a client,
+    /// whose refusal (`AWAITING_APPROVAL`, `NOT_APPROVED`) the app can show. Both clients ask
+    /// the egress switch before each request or call (`SystemState::egress_off`) and refuse
+    /// with `EGRESS_OFF` while it is off; a raw request to a declared connector's host is
+    /// refused.
     fn outbound_for(
         &self,
         app_id: &str,
         bundle: &str,
         sent: Arc<std::sync::atomic::AtomicU64>,
         own: &crate::component::InstanceSecrets,
-    ) -> Option<Arc<dyn calimero_outbound::OutboundHost>> {
-        let service = self.config.outbound.as_ref()?;
+    ) -> calimero_outbound::RunClients {
+        let Some(service) = self.config.outbound.as_ref() else {
+            return calimero_outbound::RunClients::default();
+        };
         // The release the app runs, when its record names one for this bundle: releases may
         // share a WASM, and each declares its own prefixes and secrets. Else (a record from
         // before, or a run on a bundle the record has moved past) the bundle's release.
         let record = self.sys(|s| s.apps.get(app_id).cloned());
-        let release = record
+        let Some(release) = record
             .filter(|a| a.bundle == bundle)
             .and_then(|a| self.release_of_app(&a))
-            .or_else(|| self.release_of(bundle))?;
-        let (identity, approval) = self.sys(|s| {
+            .or_else(|| self.release_of(bundle))
+        else {
+            return calimero_outbound::RunClients::default();
+        };
+        let Some((identity, approval)) = self.sys(|s| {
             let signer = s.packages.get(&release.at.package)?.signer_id.clone();
             let approval = s.apps.get(app_id).and_then(|app| {
                 s.outbound_approval(app, &signer)
@@ -2710,35 +2717,36 @@ impl Node {
                     package: release.at.package.clone(),
                     signer,
                     // The credentials the release binds: the outbound gate attaches each
-                    // to its host's requests itself; a release binding none sends none.
+                    // to its host's requests itself; a release binding none sends none. A
+                    // connector call carries its connector's binding alone.
                     secrets: release.version.secrets.clone(),
                     // The owner's own values, then the deployment's (read from this
                     // node's system state at run time), for names the release still
-                    // binds; the deployment's only for a release of a package it
-                    // offers, whatever the record says the instance runs.
+                    // binds or a connector it declares takes; the deployment's only for
+                    // a release of a package it offers, whatever the record says the
+                    // instance runs.
                     own: crate::component::run_secrets(
                         own,
                         s.deployment_secrets_of(app_id, &release.at.package),
-                        &release.version.secrets,
+                        &release.version.secret_bindings(),
                     ),
                 },
                 approval,
             ))
-        })?;
-        let gate = service.for_run_counted(
-            identity,
-            release.version.outbound.clone(),
-            approval,
-            app_id.to_owned(),
-            sent,
-            Arc::clone(&self.outbound_audit),
-        )?;
+        }) else {
+            return calimero_outbound::RunClients::default();
+        };
         // The egress switch, asked before each request on this node's system state, so one
         // turned off refuses the next request of a run already going, over every approval.
         let system = Arc::clone(&self.system);
         let app = app_id.to_owned();
-        Some(calimero_outbound::egress_gated(
-            gate,
+        service.for_run_with_connectors(
+            identity,
+            release.version.outbound.clone(),
+            release.version.connector_grants(),
+            approval,
+            app_id.to_owned(),
+            sent,
             Arc::new(move || {
                 system.read_local(|m, _| {
                     let s = &m.state;
@@ -2749,8 +2757,7 @@ impl Node {
                 })
             }),
             Arc::clone(&self.outbound_audit),
-            app_id.to_owned(),
-        ))
+        )
     }
 
     /// `app`'s outbound audit: the entries of every replica that answers and of

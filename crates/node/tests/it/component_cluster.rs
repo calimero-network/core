@@ -5902,6 +5902,51 @@ fn mpk_bound(
     secrets: Option<std::collections::BTreeMap<String, calimero_bundle::BundleSecret>>,
     uses: Value,
 ) -> Vec<u8> {
+    mpk_extended(
+        package,
+        version,
+        wasm,
+        key,
+        outbound,
+        secrets,
+        uses,
+        Value::Null,
+    )
+}
+
+/// [`mpk_declaring`], with `extra`'s keys (e.g. `connectors`) set in the signed manifest.
+pub(crate) fn mpk_declaring_with(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    extra: Value,
+) -> Vec<u8> {
+    mpk_extended(
+        package,
+        version,
+        wasm,
+        key,
+        outbound,
+        None,
+        Value::Null,
+        extra,
+    )
+}
+
+/// [`mpk_bound`], with `extra`'s keys set in the signed manifest.
+#[allow(clippy::too_many_arguments)]
+fn mpk_extended(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<std::collections::BTreeMap<String, calimero_bundle::BundleSecret>>,
+    uses: Value,
+    extra: Value,
+) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
@@ -5934,8 +5979,14 @@ fn mpk_bound(
         services: None,
         pipelines: Vec::new(),
         signature: None,
+        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
+    if let Value::Object(extra) = extra {
+        for (k, v) in extra {
+            manifest[k] = v;
+        }
+    }
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
         Vec::new(),
@@ -5997,6 +6048,7 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6154,6 +6206,7 @@ async fn a_release_gets_only_the_credentials_it_binds_attached_by_the_node() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6301,6 +6354,7 @@ async fn an_instances_owner_reads_its_outbound_requests_without_values() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6579,6 +6633,7 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6885,6 +6940,7 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: std::collections::BTreeMap::new(),
         }),
         ..calimero_outbound::OutboundSettings::default()
@@ -7087,6 +7143,7 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -7318,6 +7375,7 @@ async fn an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared(
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
+            connectors: false,
             secrets: std::collections::BTreeMap::new(),
         }),
         ..calimero_outbound::OutboundSettings::default()
@@ -8568,6 +8626,7 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
         hosts: vec![HOST.to_owned()],
         testing: Some(calimero_outbound::OutboundTestSettings {
             turnstile: true,
+            connectors: false,
             secrets: [(
                 "TURNSTILE_SECRET".to_owned(),
                 calimero_outbound::TestSecretSettings {

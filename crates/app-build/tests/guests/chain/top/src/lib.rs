@@ -8,7 +8,7 @@ wit_bindgen::generate!({
 
 #[link_section = "calimero:abi"]
 #[used]
-static ABI: [u8; 69] = *b"{\"world\":\"calimero:app@0.5.7\",\"methods\":{\"top_only\":{\"kind\":\"call\"}}}";
+static ABI: [u8; 69] = *b"{\"world\":\"calimero:app@0.5.8\",\"methods\":{\"top_only\":{\"kind\":\"call\"}}}";
 
 struct App;
 
