@@ -755,8 +755,7 @@ fn create_app(
     state.next_group = state.next_group.max(1) + 1;
     app.group = state.next_group;
     app.restore = None;
-    app.lineage =
-        state.lineage_of(state.governing(app.release.as_ref(), &app.bundle, app.created_at));
+    app.lineage = state.lineage_of(app.release.as_ref(), &app.bundle, app.created_at);
     let out = json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
     let _prev = state.apps.insert(app.app_id.clone(), app);
     Ok(out)

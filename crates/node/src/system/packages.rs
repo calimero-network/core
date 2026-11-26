@@ -47,6 +47,12 @@ const UPGRADES_OUT_OF_ORDER: Rejection = Rejection::new(
     RejectionKind::Rejected,
     "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
 );
+/// A release pinning its instances (`lineage: pinned`) whose version is not semver: no
+/// instance of it could ever move forward.
+const PINNED_NOT_SEMVER: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a release that pins its instances (lineage: pinned) names a semver version",
+);
 /// An uninstall by someone other than whoever installed the package.
 const ONLY_INSTALLER_UNINSTALLS: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -289,6 +295,9 @@ fn install_package(
         .is_some_and(|record| !record.upgrades_in_order(&release.version, release.upgrades))
     {
         return Err(UPGRADES_OUT_OF_ORDER);
+    }
+    if !release.lineage.is_free() && semver::Version::parse(&release.version).is_err() {
+        return Err(PINNED_NOT_SEMVER);
     }
     // The operator's installs count against no account's quota.
     if !by_operator
