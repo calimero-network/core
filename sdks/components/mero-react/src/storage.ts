@@ -3,7 +3,8 @@
  * the app instance it opened last, and the passkey session.
  *
  * A Calimero 1.0 session is a short-lived session token (`v2.…`, 15 minutes)
- * plus a single-use refresh token (`rt_…`, 30 days). Both are kept together as
+ * plus a refresh token (`rt_…`), bound to the browser's holder key (7 days;
+ * 30 without one). Both are kept together as
  * one {@link CalimeroSession} so a reload resumes where the page left off: the
  * client refreshes on the first `401` by itself.
  */
@@ -64,10 +65,15 @@ function isSession(value: unknown): value is CalimeroSession {
  * The default store: `localStorage`, so a reload stays signed in.
  *
  * SECURITY: anything in `localStorage` is readable by every script on the
- * origin, the refresh token included. A frontend the node serves runs on its
- * own `{label}.{apps-domain}` origin under the node's CSP, which is the
- * intended setup. Pass {@link memorySessionStore} to keep the session for the
- * tab's lifetime only.
+ * origin. The provider binds each session to the browser's holder key
+ * (`MeroProvider`'s `holder`, a non-extractable WebCrypto key in IndexedDB),
+ * so the refresh token kept here refreshes nothing copied off the device, and
+ * lives 7 days. What a script on the page can still do is use the session
+ * while it runs there, and copy the session token, which lives 15 minutes. A
+ * frontend the node serves runs on its own `{label}.{apps-domain}` origin under
+ * the node's CSP, which is the intended setup. Pass {@link memorySessionStore}
+ * to keep the session for the tab's lifetime only; with `holder: null` the
+ * refresh token here is a bearer credential for 30 days.
  */
 export const localStorageSessionStore: SessionStore = {
   load() {

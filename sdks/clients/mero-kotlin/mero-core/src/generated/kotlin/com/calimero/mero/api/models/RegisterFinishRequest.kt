@@ -37,6 +37,7 @@ import kotlinx.serialization.Contextual
  * @param registration 
  * @param invite 
  * @param confirm 
+ * @param holderKey 
  */
 @Serializable
 
@@ -52,7 +53,10 @@ data class RegisterFinishRequest (
     val invite: kotlin.String? = null,
 
     @SerialName(value = "confirm")
-    val confirm: Confirm? = null
+    val confirm: Confirm? = null,
+
+    @SerialName(value = "holderKey")
+    val holderKey: kotlin.String? = null
 
 ) {
 

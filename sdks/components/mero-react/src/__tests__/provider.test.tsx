@@ -96,6 +96,26 @@ describe('MeroProvider', () => {
     expect(screen.getByRole('button').textContent).toBe(`true ${origin} ${origin}`);
   });
 
+  it("binds the client's sessions to this browser's holder key, unless told not to", () => {
+    function Probe() {
+      const { client } = useMero();
+      return <span>{client?.transport.holder ? 'held' : 'unbound'}</span>;
+    }
+    const { unmount } = render(
+      <MeroProvider allowMock nodeUrl="https://n1.test" sessionStore={memorySessionStore()}>
+        <Probe />
+      </MeroProvider>,
+    );
+    expect(screen.getByText('held')).toBeTruthy();
+    unmount();
+    render(
+      <MeroProvider allowMock nodeUrl="https://n1.test" sessionStore={memorySessionStore()} holder={null}>
+        <Probe />
+      </MeroProvider>,
+    );
+    expect(screen.getByText('unbound')).toBeTruthy();
+  });
+
   it('builds a client for a chosen node and remembers it', async () => {
     function Probe() {
       const { client, connectToNode } = useMero();
