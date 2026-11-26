@@ -739,6 +739,20 @@ fn a_view_records_which_system_facts_it_read() {
     assert!(set.system_reads().is_none());
 }
 
+/// The log index a view reads at moves with every entry the app applies, as its clock does:
+/// a view that read it is re-run on every entry, never left answering an old index.
+#[test]
+fn a_view_that_reads_the_applied_index_follows_every_entry() {
+    let state = base(&[(b"a", b"1")]);
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.applied_index();
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.reads_clock());
+}
+
 /// A cursor read to its end covers its whole range, even when the view never closed it.
 #[test]
 fn an_exhausted_cursor_covers_its_range() {

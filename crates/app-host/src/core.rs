@@ -863,6 +863,8 @@ impl HostCore {
     /// The log index the run reads at; a compute run has no log to read, so 0.
     #[must_use]
     pub fn applied_index(&self) -> u64 {
+        // It moves with every entry, as the clock does.
+        self.note(ReadSet::clock);
         if self.is_compute() {
             return 0;
         }
