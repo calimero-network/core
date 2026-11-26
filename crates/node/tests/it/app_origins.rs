@@ -195,6 +195,18 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         .await
         .unwrap_err();
     assert_eq!(status(&e), 403, "{e}");
+    // Made an admin of the organization, she still sees nothing of the other
+    // store's from the site.
+    let _ok = alice
+        .orgs()
+        .set_member(&org, &carol_id, typed(json!("admin")), Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let e = carol.apps().invite_list(&other).await.unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    let e = carol.apps().public_link_list(&other).await.unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    let _ok = carol.apps().invite_list(&store).await.unwrap();
     // Bob's own valid consent over the change, logged without the API, is refused at apply.
     let statement = calimero_node::proof::Statement::new(
         &store,
