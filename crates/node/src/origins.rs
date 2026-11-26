@@ -386,10 +386,12 @@ impl SystemState {
         if !self.manages_app(record, &actor) {
             return Err("only whoever manages the instance registers its origins".into());
         }
+        // The release the instance runs, as `Principal::within` judges it: a
+        // shared component bundle's record names only its first package.
         let package = self
-            .package_of(record)
+            .running_release(record)
             .ok_or("the instance runs no installed release")?
-            .to_owned();
+            .package;
         let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;
         if let Some(held) = self.package_origins.get(&origin) {
             if held.app.as_deref() != Some(app.as_str()) {
