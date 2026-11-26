@@ -115,7 +115,10 @@ def sync_detailed(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -165,7 +168,10 @@ def sync(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -210,7 +216,10 @@ async def asyncio_detailed(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -258,7 +267,10 @@ async def asyncio(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

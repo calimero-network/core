@@ -74,6 +74,7 @@ fn release(package: &str) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,

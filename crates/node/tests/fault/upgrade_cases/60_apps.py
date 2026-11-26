@@ -669,3 +669,8 @@ not_covered("Apps", "The consent page's install sheet (`install`), update sheets
             "`update-classes-approvals` cases'. "
             "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
             "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build")
+
+not_covered("Apps", "A pinned instance (`lineage: pinned`, `AppRecord::lineage`) held to its package, publisher and "
+            "forward order",
+            "no release before 1.0.0-rc.39 installs a pinning release (`Feature::PinnedLineage`), so the old build "
+            "seeds none; `tests/it/lineage.rs` covers the refusals end to end and `system/tests.rs` the rule at apply")

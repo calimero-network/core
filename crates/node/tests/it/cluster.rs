@@ -975,6 +975,7 @@ fn mpk_full(
         upgrades,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
         uses: None,

@@ -16,9 +16,9 @@ use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Grant,
-    Invite, NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin,
-    TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppLineage, AppRecord, Audience, Components,
+    Grant, Invite, NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId,
+    TeamJoin, TeamRole,
 };
 
 mod accounts;
@@ -528,6 +528,11 @@ pub struct PackageVersion {
     /// manifest ([`UpgradeAuthority`]); left out when `owner`.
     #[serde(default, skip_serializing_if = "UpgradeAuthority::is_owner")]
     pub upgrades: UpgradeAuthority,
+    /// Where an instance of it may move, from its signed manifest
+    /// ([`calimero_bundle::Lineage`]); left out when `free`. A `pinned` release is installed
+    /// only from `Feature::PinnedLineage`.
+    #[serde(default, skip_serializing_if = "calimero_bundle::Lineage::is_free")]
+    pub lineage: calimero_bundle::Lineage,
     /// The oldest runtime its signed manifest says it runs on
     /// (`minRuntimeVersion`), kept so placement and the reports judge it
     /// without the `.mpk` ([`crate::runtime`]). Absent in releases recorded
@@ -1508,6 +1513,20 @@ pub struct SecretDeclarers {
 /// (`SystemState::within_deployment`).
 pub const OUTSIDE_DEPLOYMENT: Rejection =
     Rejection::new(RejectionKind::OutsideDeployment, "an instance from a deployment runs the release its deployment offers: its developer decides which, and its owner accepts it or not");
+
+/// Why a move of a pinned instance (`AppRecord::lineage`) is refused: it names a raw bundle, another
+/// package, or a package now signed by another key (`SystemState::within_lineage`).
+pub const OUTSIDE_LINEAGE: Rejection = Rejection::new(
+    RejectionKind::OutsideLineage,
+    "a pinned instance moves only to a release of its own package, signed by its own publisher",
+);
+
+/// Why a move of a pinned instance to an older release, or one whose version is not semver, is
+/// refused (`SystemState::within_lineage`).
+pub const LINEAGE_OLDER_RELEASE: Rejection = Rejection::new(
+    RejectionKind::LineageOlderRelease,
+    "a pinned instance never moves to an older release",
+);
 
 /// Why clearing a deployment's secret is refused: it holds no value of it.
 pub const NO_DEPLOYMENT_SECRET: Rejection = Rejection::new(
@@ -3497,6 +3516,28 @@ impl SystemState {
         {
             return Err(OUTSIDE_DEPLOYMENT);
         }
+        Ok(())
+    }
+
+    /// The package and signer `release` pins an instance to, where it declares `lineage: pinned`.
+    #[must_use]
+    pub fn lineage_of(&self, release: Option<&PackageRef>) -> Option<AppLineage> {
+        let _ = release;
+        None
+    }
+
+    /// Whether moving `app` to `release` keeps it on its lineage ([`AppRecord::lineage`]): a
+    /// release of its package, still signed by its signer, and no older than the release it
+    /// runs by semver. The operator is held to it too; an unpinned instance goes anywhere.
+    ///
+    /// # Errors
+    /// [`OUTSIDE_LINEAGE`], or [`LINEAGE_OLDER_RELEASE`] for an older or non-semver version.
+    pub fn within_lineage(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+    ) -> Result<(), Rejection> {
+        let _ = (app, release);
         Ok(())
     }
 

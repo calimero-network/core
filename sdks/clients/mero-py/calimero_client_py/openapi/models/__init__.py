@@ -56,6 +56,7 @@ from .app_invite_list import AppInviteList
 from .app_invite_made import AppInviteMade
 from .app_invite_revoke_response_200 import AppInviteRevokeResponse200
 from .app_invite_view import AppInviteView
+from .app_lineage import AppLineage
 from .app_link_body import AppLinkBody
 from .app_link_list import AppLinkList
 from .app_links import AppLinks
@@ -834,6 +835,7 @@ __all__ = (
     "AppInviteView",
     "Applied",
     "AppliedStatus",
+    "AppLineage",
     "AppLinkBody",
     "AppLinkList",
     "AppLinks",

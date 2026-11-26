@@ -5928,6 +5928,7 @@ fn mpk_bound(
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets,
         uses: serde_json::from_value(uses).unwrap(),

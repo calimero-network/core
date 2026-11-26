@@ -708,7 +708,7 @@ fn uses_of(
 /// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
 /// `author`, `icon`, `tags`, `license`, `category`, `guide`), `handlers.slug`
 /// (default: the package), `links` (`frontend`, `github`, `docs`),
-/// `frontendAliases`, `outbound`, `upgrades`, `instanceOrg` (`instance-org`) and `guests`, and `buildInfo` (the
+/// `frontendAliases`, `outbound`, `upgrades`, `instanceOrg` (`instance-org`), `guests` and `lineage`, and `buildInfo` (the
 /// `calimero-sdk` git source and tag). A flag wins over the table.
 fn manifest_extras(
     a: &PackArgs,
@@ -1207,6 +1207,9 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         }
         let _ = manifest.insert("guests".into(), json!(g));
     }
+    if let Some(l) = lineage_of(&meta.table)? {
+        let _ = manifest.insert("lineage".into(), json!(l));
+    }
 
     let key = signing_key(a.key.as_deref())?;
     if a.key.is_none() {
@@ -1370,6 +1373,32 @@ async fn registry_token(
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| eyre!("the Cloud answered no token"))
+}
+
+/// The crate's `lineage` (`[package.metadata.calimero]`): `pinned` or `free`.
+fn lineage_of(t: &toml::Table) -> eyre::Result<Option<&str>> {
+    let Some(l) = t.get("lineage").and_then(toml::Value::as_str) else {
+        return Ok(None);
+    };
+    if l != "pinned" && l != "free" {
+        bail!("lineage = {l:?}: pinned or free");
+    }
+    Ok(Some(l))
+}
+
+#[cfg(test)]
+mod lineage_tests {
+    /// `lineage` is copied as written when it is `pinned` or `free`, and refused otherwise.
+    #[test]
+    fn lineage_is_pinned_or_free() {
+        let table = |s: &str| -> toml::Table { s.parse().unwrap() };
+        assert_eq!(super::lineage_of(&table("")).unwrap(), None);
+        for word in ["pinned", "free"] {
+            let t = table(&format!("lineage = \"{word}\""));
+            assert_eq!(super::lineage_of(&t).unwrap(), Some(word));
+        }
+        assert!(super::lineage_of(&table("lineage = \"locked\"")).is_err());
+    }
 }
 
 #[cfg(test)]

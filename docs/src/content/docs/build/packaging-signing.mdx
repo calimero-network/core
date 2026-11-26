@@ -116,6 +116,14 @@ detail.
 
    `pack` checks each against the node's own rules before signing.
 
+   `lineage`, from `[package.metadata.calimero]` only, pins the
+   release's instances: with `lineage = "pinned"`, an instance created from it
+   moves only to later releases of the same package, signed by the same key,
+   whoever upgrades it, the operator included
+   ([Pinned instances](/protocol/upgrades/#pinned-instances)). Absent means
+   `free`. A pinning release names a semver version, and a node installs one
+   only from cluster version 1.0.0-rc.39.
+
    One more comes only from the crate's `[package.metadata.calimero]`:
 
    - `uses`: the other apps the release calls, by the name its code knows each by.

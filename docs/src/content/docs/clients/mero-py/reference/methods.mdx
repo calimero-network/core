@@ -90,7 +90,7 @@ Generated from core's `docs/public/openapi.json`.
 | `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 LINEAGE_OLDER_RELEASE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_LINEAGE`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 | `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `400 NO_REGISTRY`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |
 | `upload_begin(app, size)` | `POST /apps/{app}/files/uploads` | Begin a file upload. *Refusals:* `429 QUOTA_EXCEEDED` |
@@ -220,7 +220,7 @@ Generated from core's `docs/public/openapi.json`.
 | `sign_up_invite_revoke_post(key, operator_proof=None)` | `POST /ops/sign-up/invites/{key}/revoke` | Withdraw a cluster sign-up invite (POST). **operator** |
 | `sign_up_set(policy, operator_proof=None)` | `POST /ops/sign-up` | Set the sign-up policy. **operator** |
 | `status()` | `GET /ops/status` | The node and the cluster |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, operator_proof=None)` | `POST /ops/apps/{app}/upgrade` | Upgrade an app as the operator. **operator**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `409 NOT_INSTALLED`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, operator_proof=None)` | `POST /ops/apps/{app}/upgrade` | Upgrade an app as the operator. **operator**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `409 LINEAGE_OLDER_RELEASE`, `409 NOT_INSTALLED`, `409 OUTSIDE_LINEAGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 
 ## `client.orgs`
 

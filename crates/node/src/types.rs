@@ -562,6 +562,18 @@ pub struct AppRecord {
     /// (egress on, the default), so a record writes as it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub egress_off: bool,
+    /// The package and signer it is pinned to, set once it runs a release declaring
+    /// `lineage: pinned` and never cleared (`SystemState::within_lineage`). Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AppLineage>,
+}
+
+/// What a pinned instance stays on ([`AppRecord::lineage`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLineage {
+    pub package: String,
+    pub signer_id: String,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the

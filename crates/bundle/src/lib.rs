@@ -466,6 +466,27 @@ impl InstanceOrg {
     }
 }
 
+/// Where a package's instances may move (`lineage`), as its signed manifest declares. Absent means
+/// [`Self::Free`]; an older node ignores the field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lineage {
+    /// An instance moves to any release its upgrader may name. The default.
+    #[default]
+    Free,
+    /// An instance created from, or upgraded into, such a release stays on its package and
+    /// signer, never moving to an older release; nothing unpins it.
+    Pinned,
+}
+
+impl Lineage {
+    /// Whether this is [`Self::Free`] (the default, left out when stored).
+    #[must_use]
+    pub fn is_free(&self) -> bool {
+        *self == Self::Free
+    }
+}
+
 /// Bundle manifest: single-service (`wasm` + optional `abi`, backward compat) or multi-service
 /// (`services`); a non-empty `services` takes priority over `wasm`/`abi`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -558,6 +579,11 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guests: Option<GuestPolicy>,
 
+    /// Where its instances may move ([`Lineage`]); absent means `free`. Signed with the rest;
+    /// an unknown value fails to parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<Lineage>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
@@ -635,6 +661,7 @@ impl BundleManifest {
             upgrades: _,
             instance_org: _,
             guests: _,
+            lineage: _,
             signature: _,
         } = self;
 
@@ -1281,6 +1308,34 @@ mod tests {
         let _sig = sign_manifest_json(&mut signed, &key).unwrap();
         assert!(verify_manifest_signature(&signed).is_ok());
         signed["guests"] = serde_json::json!("allowed");
+        assert!(verify_manifest_signature(&signed).is_err());
+    }
+
+    /// `lineage` absent (every older manifest) is `free` and written back absent; an unknown value
+    /// is refused, and the field is signed.
+    #[test]
+    fn lineage_is_free_unless_the_manifest_pins_it() {
+        let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
+        let none = parse("").unwrap();
+        assert_eq!(none.lineage, None);
+        assert_eq!(none.lineage.unwrap_or_default(), Lineage::Free);
+        assert!(serde_json::to_value(&none)
+            .unwrap()
+            .get("lineage")
+            .is_none());
+        for (word, lineage) in [("pinned", Lineage::Pinned), ("free", Lineage::Free)] {
+            assert_eq!(
+                parse(&format!(r#""lineage": "{word}","#)).unwrap().lineage,
+                Some(lineage)
+            );
+        }
+        assert!(parse(r#""lineage": "locked","#).is_err());
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut signed: serde_json::Value =
+            serde_json::from_str(&manifest_json(r#""lineage": "pinned","#)).unwrap();
+        let _sig = sign_manifest_json(&mut signed, &key).unwrap();
+        assert!(verify_manifest_signature(&signed).is_ok());
+        signed["lineage"] = serde_json::json!("free");
         assert!(verify_manifest_signature(&signed).is_err());
     }
 

@@ -755,6 +755,8 @@ fn create_app(
     state.next_group = state.next_group.max(1) + 1;
     app.group = state.next_group;
     app.restore = None;
+    app.lineage =
+        state.lineage_of(state.governing(app.release.as_ref(), &app.bundle, app.created_at));
     let out = json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
     let _prev = state.apps.insert(app.app_id.clone(), app);
     Ok(out)
@@ -999,6 +1001,10 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
         if let Some(app) = state.apps.get(&app_id) {
             state.within_deployment(app, release.as_ref(), run.as_deref())?;
         }
+    }
+    // A pinned instance stays on its lineage, whoever moves it.
+    if let Some(app) = state.apps.get(&app_id) {
+        state.within_lineage(app, release.as_ref())?;
     }
     // An instance from no deployment enters another package only as its upgrader
     // could create one there; read from the logged version alone.

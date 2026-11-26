@@ -64,6 +64,7 @@ fn release(package: &str, guests: Option<calimero_bundle::GuestPolicy>) -> Vec<u
         upgrades: None,
         instance_org: None,
         guests,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,

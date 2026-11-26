@@ -256,10 +256,14 @@ pub enum Feature {
     /// with `holder_proof`: an earlier release drops the proof and would revoke a bound
     /// session for a copy of its old token that a later one refuses.
     SessionHolders,
+    /// `InstallPackage` of a release that declares `lineage: pinned`
+    /// (`PackageVersion::lineage`): an earlier release drops the field, so its replicas would
+    /// let an instance of it move off its package, signer or forward order.
+    PinnedLineage,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 57] = [
+pub const FEATURES: [Feature; 58] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -317,6 +321,7 @@ pub const FEATURES: [Feature; 57] = [
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
     Feature::SessionHolders,
+    Feature::PinnedLineage,
 ];
 
 impl Feature {
@@ -381,6 +386,7 @@ impl Feature {
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
             Self::SessionHolders => "sessionHolders",
+            Self::PinnedLineage => "pinnedLineage",
         }
     }
 
@@ -456,6 +462,7 @@ impl Feature {
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
             Self::SessionHolders => "1.0.0-rc.39",
+            Self::PinnedLineage => "1.0.0-rc.39",
         }
     }
 }
@@ -907,6 +914,9 @@ impl SystemCmd {
                 }
                 if release.visibility.is_some() || !release.orgs.is_empty() {
                     f.push(Feature::PrivateReleases);
+                }
+                if !release.lineage.is_free() {
+                    f.push(Feature::PinnedLineage);
                 }
                 f
             }
@@ -1366,6 +1376,7 @@ mod tests {
             Feature::PrivateReleases => {
                 install(json!({ "visibility": "private", "orgs": ["org"] }))
             }
+            Feature::PinnedLineage => install(json!({ "lineage": "pinned" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -2032,9 +2043,9 @@ mod tests {
         for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.39's (a session bound to a holder key) waits past rc.38: an rc.38 node drops
-        // the record's holder and would hold the session unbound.
-        assert_eq!(rc39, [Feature::SessionHolders]);
+        // rc.39's (a session bound to a holder key, a release pinning its instances) waits past
+        // rc.38: an rc.38 node drops the record's holder and the release's lineage.
+        assert_eq!(rc39, [Feature::SessionHolders, Feature::PinnedLineage]);
         for &feature in &rc39 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

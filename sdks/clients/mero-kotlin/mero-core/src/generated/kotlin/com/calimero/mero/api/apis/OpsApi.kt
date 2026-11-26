@@ -3381,7 +3381,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
     /**
      * POST /ops/apps/{app}/upgrade
      * Upgrade an app as the operator
-     * To a release the operator installed, where the operator holds app upgrades. &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
+     * To a release the operator installed, where the operator holds app upgrades. A pinned instance (its record&#39;s &#x60;lineage&#x60;) is held to its package, publisher and forward order as for anyone (&#x60;409 OUTSIDE_LINEAGE&#x60;, &#x60;409 LINEAGE_OLDER_RELEASE&#x60;). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsUpgradeRequest 
      * @return UpgradeApplied
@@ -3414,7 +3414,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
     /**
      * POST /ops/apps/{app}/upgrade
      * Upgrade an app as the operator
-     * To a release the operator installed, where the operator holds app upgrades. &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
+     * To a release the operator installed, where the operator holds app upgrades. A pinned instance (its record&#39;s &#x60;lineage&#x60;) is held to its package, publisher and forward order as for anyone (&#x60;409 OUTSIDE_LINEAGE&#x60;, &#x60;409 LINEAGE_OLDER_RELEASE&#x60;). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param app 
      * @param opsUpgradeRequest 
      * @return ApiResponse<UpgradeApplied?>

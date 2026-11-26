@@ -1275,6 +1275,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             installed_at: 0,
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
+            lineage: calimero_bundle::Lineage::Free,
             min_runtime_version: None,
             instance_org: None,
             guests: None,
@@ -1385,6 +1386,7 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             installed_at: 0,
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
+            lineage: calimero_bundle::Lineage::Free,
             min_runtime_version: None,
             instance_org: None,
             guests: None,
@@ -1431,6 +1433,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             installed_at: 0,
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
+            lineage: calimero_bundle::Lineage::Free,
             min_runtime_version: None,
             instance_org: None,
             guests: None,
@@ -9362,6 +9365,143 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_depl
     );
     let _ok = m
         .run_unproven(upgrade_to("own", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+}
+
+/// `install_at` of a release declaring `lineage: pinned`.
+fn install_pinned(by: &str, version: &str) -> SystemCmd {
+    let mut cmd = install_at(by, version, 5);
+    if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+        release.lineage = calimero_bundle::Lineage::Pinned;
+    }
+    cmd
+}
+
+/// An instance created from a pinning release records its package and signer, and every
+/// move it makes is judged at apply, the operator's too: never to another package, a raw
+/// bundle, a package now signed by another key, or an older release.
+#[test]
+fn a_pinned_instance_moves_only_forward_on_its_package_and_signer() {
+    use super::{Deployments, Rejection, LINEAGE_OLDER_RELEASE, OUTSIDE_LINEAGE};
+    let mut m = deploying(Deployments::Open);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = m.run_unproven(install_pinned("alice", version)).unwrap();
+    }
+    let other = SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: "did:key:q".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "q", "mpkSize": 1, "source": "upload",
+            "services": { "": "b-q" }, "installedBy": OPERATOR, "installedAt": 5
+        }))
+        .unwrap(),
+    };
+    let _ok = m.run_unproven(other).unwrap();
+    let _ok = m.run_unproven(raw_bundle("alice", "raw", 5)).unwrap();
+    let mut create = instance("kv", "alice", "b-1.1.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.1.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage,
+        Some(crate::types::AppLineage {
+            package: "p".into(),
+            signer_id: "did:key:z".into()
+        })
+    );
+
+    let refuse = |m: &mut SystemMachine, why: &str, cmd: SystemCmd, refused: Rejection| {
+        assert_eq!(m.run_unproven(cmd).unwrap_err(), refused, "{why}");
+        assert_eq!(m.state.apps["kv"].bundle, "b-1.1.0", "{why}");
+    };
+    let older = || upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0")));
+    let other = || upgrade_to("kv", "alice", "b-q", Some(("q", "1.0.0")));
+    refuse(&mut m, "an older release", older(), LINEAGE_OLDER_RELEASE);
+    refuse(&mut m, "another package", other(), OUTSIDE_LINEAGE);
+    let raw = upgrade_to("kv", "alice", "raw", None);
+    refuse(&mut m, "a raw bundle", raw, OUTSIDE_LINEAGE);
+
+    // Where the operator upgrades apps, it is held to the same lineage.
+    let owners = m.state.governance.clone();
+    m.state.governance = Some(Governance {
+        app_upgrades: Authority::Operator,
+        ..m.state.governance()
+    });
+    let by_operator = |mut cmd: SystemCmd| {
+        if let SystemCmd::UpgradeApp { by_operator, .. } = &mut cmd {
+            *by_operator = true;
+        }
+        cmd
+    };
+    refuse(
+        &mut m,
+        "operator, older",
+        by_operator(older()),
+        LINEAGE_OLDER_RELEASE,
+    );
+    refuse(
+        &mut m,
+        "operator, another package",
+        by_operator(other()),
+        OUTSIDE_LINEAGE,
+    );
+    m.state.governance = owners;
+
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+
+    // The package's record signed by another key (its releases all gone and installed again).
+    m.state.packages.get_mut("p").unwrap().signer_id = "did:key:other".into();
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
+            .unwrap_err(),
+        OUTSIDE_LINEAGE
+    );
+    m.state.packages.get_mut("p").unwrap().signer_id = "did:key:z".into();
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
+        .unwrap();
+    assert_eq!(m.state.apps["kv"].bundle, "b-1.2.0");
+}
+
+/// A pinning release names a semver version, so its instances can move forward; a release
+/// that pins nothing may name any version, as before.
+#[test]
+fn a_pinning_release_names_a_semver_version() {
+    let mut m = deploying(super::Deployments::Open);
+    let refused = m
+        .run_unproven(install_pinned("alice", "nightly"))
+        .unwrap_err();
+    assert!(refused.message().contains("semver"), "{refused}");
+    let _ok = m.run_unproven(install_at("alice", "nightly", 5)).unwrap();
+}
+
+/// An instance of a release that pins nothing records no lineage and moves as before.
+#[test]
+fn an_unpinned_instance_records_no_lineage() {
+    let mut m = deploying(super::Deployments::Open);
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.1.0", 5)).unwrap();
+    let mut create = instance("kv", "alice", "b-1.1.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.1.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    assert_eq!(m.state.apps["kv"].lineage, None);
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
         .unwrap();
 }
 
