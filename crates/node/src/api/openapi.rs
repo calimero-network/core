@@ -2142,11 +2142,6 @@ fn components() -> Vec<Component> {
             r#"{ id: string, name: string, owner: { kind: "account" | "org", name: string | null } }"#,
         ),
         component(
-            "DeploymentShown",
-            "The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone).",
-            r#"{ id: string, name: string, owner: { kind: "account" | "org", name: string | null } }"#,
-        ),
-        component(
             "DeadLetter",
             "A cross-app call that was never delivered: its sequence number, the target app and method, why, and when (`atMs`, Unix milliseconds).",
             "{ seq: uint, app: string, method: string, reason: string, atMs: uint }",
