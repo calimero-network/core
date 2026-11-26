@@ -12,6 +12,8 @@ cargo-fuzz = true
 axum = "*"
 calimero-bundle = { path = "../crates/bundle" }
 calimero-identity = { path = "../crates/identity", features = ["testing"] }
+calimero-log = { path = "../crates/log" }
+calimero-node = { path = "../crates/node" }
 calimero-sealed = { path = "../crates/sealed" }
 calimero-tee-attestation = { path = "../crates/tee-attestation" }
 flate2 = "*"
@@ -22,6 +24,7 @@ semver = "*"
 serde_json = "*"
 sha2 = "*"
 tar = "*"
+tempfile = "*"
 tokio = { version = "*", features = ["rt"] }
 tower = { version = "*", features = ["util"] }
 
@@ -56,6 +59,13 @@ bench = false
 [[bin]]
 name = "quote_parse"
 path = "fuzz_targets/quote_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "system_apply"
+path = "fuzz_targets/system_apply.rs"
 test = false
 doc = false
 bench = false

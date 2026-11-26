@@ -1,0 +1,5 @@
+{"op":"createOrg","org_id":"o1","name":"Docs","actor":"alice","release":"2.0.0","at":10,"name_fits":true}
+{"op":"createTeam","org":"o1","team_id":"t1","name":"T","parent":null,"join":"invite","actor":"alice","member_child_teams":true}
+{"op":"createTeam","org":"o1","team_id":"t2","name":"U","parent":"t1","join":"everyone","actor":"alice","member_child_teams":true}
+{"op":"setOrgRole","org":"o1","account":"bob","role":"admin","actor":"alice","consent":null}
+{"op":"setAlias","account":"bob","alias":"x","app":null}

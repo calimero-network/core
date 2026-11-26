@@ -2028,19 +2028,19 @@ async fn put_in_zones(c: &Cluster, zones: &[&str]) {
             .unwrap();
     }
     let node = &c.nodes[0].as_ref().unwrap().node;
-    for _ in 0..100 {
-        let applied = node.sys(|s| {
-            zones
-                .iter()
-                .enumerate()
-                .all(|(i, z)| s.nodes.get(&(i as u64 + 1)).is_some_and(|n| n.zone == *z))
-        });
-        if applied {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("node 1 never applied the zones");
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "node 1 applied the zones",
+        || {
+            node.sys(|s| {
+                zones
+                    .iter()
+                    .enumerate()
+                    .all(|(i, z)| s.nodes.get(&(i as u64 + 1)).is_some_and(|n| n.zone == *z))
+            })
+        },
+    )
+    .await;
 }
 
 /// The replicas `POST /apps` placed a new kv app on, sorted.
@@ -2272,10 +2272,12 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
         let held: Vec<u64> = logs.iter().flatten().copied().collect();
         !held.is_empty() && held.iter().all(|n| *n == held[0])
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !settled(&logs(&c)) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "the app's replicas agree on its log",
+        || settled(&logs(&c)),
+    )
+    .await;
     let before = logs(&c);
     assert!(
         before.iter().any(Option::is_some),
@@ -2855,14 +2857,19 @@ async fn blobs_list_and_delete_and_storage_is_inspectable() {
 // ---------------------------------------------------------------- upgrade runs, aliases
 
 async fn finished_run(cl: &Client, org: &str, run: &str) -> Value {
-    for _ in 0..200 {
-        let r = cl.orgs().upgrade_status(org, run).await.map(wire).unwrap();
-        if r["finished"] == json!(true) {
-            return r;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("upgrade run {run} never finished");
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        &format!("upgrade run {run} finished"),
+        || async {
+            let r = cl.orgs().upgrade_status(org, run).await.map(wire).unwrap();
+            if r["finished"] == json!(true) {
+                Ok(r)
+            } else {
+                Err(r)
+            }
+        },
+    )
+    .await
 }
 
 /// Org upgrade runs (with cascade), their status and retry, and each app's
@@ -3100,20 +3107,20 @@ async fn presence_reaches_every_node_and_expires() {
     assert_eq!(d["account"], json!(alice_id));
     assert_eq!(d["state"], json!(hex::encode(b"cursor:3")));
     // A third node has it too.
-    let mut seen = false;
-    for _ in 0..100 {
-        if carol.apps().presence_get(&app).await.map(wire).unwrap()["present"]
-            .as_array()
-            .unwrap()
-            .len()
-            == 1
-        {
-            seen = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(seen, "the third node never saw alice");
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "the third node sees alice",
+        || async {
+            let present =
+                carol.apps().presence_get(&app).await.map(wire).unwrap()["present"].clone();
+            if present.as_array().unwrap().len() == 1 {
+                Ok(())
+            } else {
+                Err(present)
+            }
+        },
+    )
+    .await;
 
     // An older seq does not win; a retract shows alice leaving.
     let _ = alice
@@ -3701,15 +3708,12 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
 
     // It joins the system group and learns the directory.
     let joined = &c.nodes[new].as_ref().unwrap().node;
-    let mut knows = false;
-    for _ in 0..200 {
-        if joined.sys(|s| s.apps.contains_key(&app)) {
-            knows = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(knows, "the new node never learned the directory");
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "the new node learned the directory",
+        || joined.sys(|s| s.apps.contains_key(&app)),
+    )
+    .await;
     let leader_node = (0..3)
         .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
         .unwrap();
@@ -3735,27 +3739,29 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let session = alice.session().await.unwrap();
     let cl = c.client(new);
     cl.use_session(session).await;
-    let mut served = Value::Null;
-    for _ in 0..100 {
-        if let Ok(v) = cl
-            .apps()
-            .view(
-                &app,
-                "get",
-                Some(json!({ "key": "a" })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(0),
-            )
-            .await
-        {
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "the new replica served the app",
+        || async {
+            let v = cl
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "a" })),
+                    Some(ViewsRequestConsistency::Stale),
+                    Some(0),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
             if v.result == json!("1") {
-                served = v.result;
-                break;
+                Ok(())
+            } else {
+                Err(v.result.to_string())
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(served, json!("1"), "the new replica never served the app");
+        },
+    )
+    .await;
     assert!(c.nodes[new].as_ref().unwrap().node.hosted(&app).is_some());
 }
 
@@ -3784,12 +3790,12 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
         .await
         .unwrap();
     let joined = &c.nodes[new].as_ref().unwrap().node;
-    for _ in 0..200 {
-        if joined.sys(|s| s.apps.contains_key(&app)) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "the new node learned the directory",
+        || joined.sys(|s| s.apps.contains_key(&app)),
+    )
+    .await;
     let before = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
     let outside = c.client(new);
     outside.use_api_key("ops-secret").await;
@@ -3893,24 +3899,22 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
                 .sys(|s| s.attributes_by_release && s.current_rules_from.is_some())
         })
     };
-    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
-    while tokio::time::Instant::now() < deadline && !marked(&c) {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        marked(&c),
-        "the release-attribution and current-rules marks were not written"
-    );
+    harness::poll::until(
+        EVENTUALLY_DEADLINE,
+        "the release-attribution and current-rules marks were written",
+        || marked(&c),
+    )
+    .await;
 
     // A node on this build supports it, so it joins and learns it.
     let new = c.join().await;
     let joined = &c.nodes[new].as_ref().unwrap().node;
-    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
-    while tokio::time::Instant::now() < deadline
-        && joined.sys(|s| s.cluster_version.as_deref() != Some(supported))
-    {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    harness::poll::until(
+        EVENTUALLY_DEADLINE,
+        "the new node joined the system group",
+        || joined.sys(|s| s.cluster_version.as_deref() == Some(supported)),
+    )
+    .await;
     assert_eq!(
         joined.sys(|s| s.cluster_version.clone()).as_deref(),
         Some(supported),
@@ -3965,13 +3969,15 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
             .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
             .unwrap()
     };
-    for _ in 0..200 {
-        let st = c.nodes[sys_leader()].as_ref().unwrap().node.system.status();
-        if st.learners.contains(&new_id) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "the new node is a system learner",
+        || {
+            let st = c.nodes[sys_leader()].as_ref().unwrap().node.system.status();
+            st.learners.contains(&new_id)
+        },
+    )
+    .await;
     // A node that is not the system leader, holding one of the app's replicas.
     let leader = sys_leader();
     let gone = (0..3).find(|i| *i != leader).unwrap();
@@ -4068,17 +4074,12 @@ async fn placement(cl: &Client, app: &str) -> (Vec<u64>, BTreeMap<u64, u64>) {
 
 /// The index of the running node that leads the system group, waiting for an election.
 async fn system_leader(c: &Cluster) -> usize {
-    for _ in 0..200 {
-        if let Some(i) = c
-            .nodes
+    harness::poll::found(harness::poll::EVENTUALLY, "a system leader", || {
+        c.nodes
             .iter()
             .position(|r| r.as_ref().is_some_and(|r| r.node.system.status().is_leader))
-        {
-            return i;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("no system leader was elected");
+    })
+    .await
 }
 
 /// A cluster started on ONE node grows: registered learners become system
@@ -4153,12 +4154,12 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         .await
         .map(wire)
         .unwrap();
-    for _ in 0..200 {
-        if first.system.status().learners.contains(&2) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "node 2 is a system learner",
+        || first.system.status().learners.contains(&2),
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(2000)).await;
     let st = first.system.status();
     assert_eq!(st.voters, vec![1], "{st:?}");
@@ -4180,16 +4181,19 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         .await
         .map(wire)
         .unwrap();
-    let mut voters = Vec::new();
-    for _ in 0..300 {
-        let st = first.system.status();
-        voters = st.voters;
-        if voters == [1, 2, 3] && st.learners.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(voters, vec![1, 2, 3], "learners became system voters");
+    harness::poll::eventually(
+        Duration::from_secs(15),
+        "learners became system voters",
+        || {
+            let st = first.system.status();
+            std::future::ready(if st.voters == [1, 2, 3] && st.learners.is_empty() {
+                Ok(())
+            } else {
+                Err(st)
+            })
+        },
+    )
+    .await;
     watch.abort();
     let _ = watch.await;
     let sizes = seen.lock().unwrap().clone();
@@ -4351,27 +4355,29 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     // The kv fixture's `get` is not `#[app::public]`: read as the reader.
     let on_four = c.client(four);
     on_four.use_session(reader.session().await.unwrap()).await;
-    let mut served = Value::Null;
-    for _ in 0..100 {
-        if let Ok(v) = on_four
-            .apps()
-            .view(
-                &app,
-                "get",
-                Some(json!({ "key": "a" })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(0),
-            )
-            .await
-        {
-            served = v.result;
-            if served == json!("1") {
-                break;
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "the new replica serves the app",
+        || async {
+            let v = on_four
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "a" })),
+                    Some(ViewsRequestConsistency::Stale),
+                    Some(0),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if v.result == json!("1") {
+                Ok(())
+            } else {
+                Err(v.result.to_string())
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(served, json!("1"), "the new replica serves the app");
+        },
+    )
+    .await;
 }
 
 /// A rebalancer may send the same move twice, or race another: a move to the
@@ -4633,24 +4639,20 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
                 .map(|_| i)
         })
     };
-    let mut caught_up = false;
-    for _ in 0..200 {
-        caught_up = next.iter().all(|i| {
-            c.nodes[*i]
-                .as_ref()
-                .unwrap()
-                .node
-                .sys(|s| s.apps.contains_key(&kv))
-        });
-        if caught_up {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        caught_up,
-        "the next release's nodes never caught up with the system group"
-    );
+    harness::poll::until(
+        harness::poll::EVENTUALLY,
+        "the next release's nodes caught up with the system group",
+        || {
+            next.iter().all(|i| {
+                c.nodes[*i]
+                    .as_ref()
+                    .unwrap()
+                    .node
+                    .sys(|s| s.apps.contains_key(&kv))
+            })
+        },
+    )
+    .await;
 
     // Every app moves onto the next release's nodes.
     for app in [&kv] {
@@ -5107,12 +5109,12 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
 
     // Every replica applied every entry; then each samples its state.
     for i in 0..3 {
-        for _ in 0..100 {
-            if applied_on(i) >= at {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        harness::poll::until(
+            harness::poll::EVENTUALLY,
+            &format!("node {i} applied {at}"),
+            || applied_on(i) >= at,
+        )
+        .await;
     }
     for r in c.nodes.iter().flatten() {
         r.node.sample_usage();

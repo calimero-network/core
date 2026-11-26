@@ -18,6 +18,7 @@ After one script run has copied the root lock in, replay a crash with `cargo +ni
 | `passkey_verify` | WebAuthn `verify_registration` and `verify_assertion` (client data JSON, authenticator data, CBOR attestation object) and `claimed_origin` | no panic, and no assertion the fuzzer made verifies against a real credential |
 | `session_token` | `peek_session` and `verify_session` on a token a request carries | no panic, and a token that verifies under the node's key verifies under no other |
 | `quote_parse` | `quote_report_data` and `verify_evidence` on a TDX quote a node or peer presents (release build: no mock path) | no panic, and nothing verifies without collateral |
+| `system_apply` | `SystemMachine::apply` on system log entries (one per line) after a genesis and two sign-ups, as every replica applies what the leader logged | no panic; an entry that does not decode stops the group and changes nothing, one that decodes never stops it; a second replica answers every entry alike and ends with the same snapshot, which restores to itself |
 
 v1's `wire_decode`, `provider_record`, `signed_ops` and `governance_apply` fuzzed gossip, sync, blob-provider and governance-op decoding, which are gone with v1's node: the untrusted bytes a node reads now arrive through the sealed channel (`sealed_request`) and its authority is passkeys and sessions (`passkey_verify`, `session_token`) checked against attested peers (`quote_parse`).
 
