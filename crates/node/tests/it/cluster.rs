@@ -4216,7 +4216,7 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     assert_eq!(again["unchanged"], json!(true), "{again}");
     let (mut replicas, _) = placement(&ops_at(&c, 1).await, &app).await;
     // The set, not the order: `placement::order_for_leader` rotates the first
-    // replica by the app id to spread initial leadership.
+    // replica by app count to spread initial leadership.
     replicas.sort_unstable();
     assert_eq!(replicas, vec![1, 2, 3]);
 

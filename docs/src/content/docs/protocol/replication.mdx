@@ -288,13 +288,14 @@ rest, deleting their data from that node.
   voters; whichever replica becomes leader runs `init` and appends the
   `componentInit` entry. So that the first replica — and so the initial leader —
   is not always the same node, the leader rotates the set (chosen by zone and
-  load) by the app id before it records it, spreading the initializer across the
-  nodes rather than always the lowest id (`placement::order_for_leader`). It is
-  ordered on the leader, before the entry, so every node applies the same order
-  and apply never recomputes it; the order spreads the initial leadership only,
-  since core moves leadership no further (openraft 0.9 has no leader transfer),
-  and ongoing balance is the cluster manager's. The first replica stays one that
-  holds the group: a
+  load) by how many apps already exist before it records it, round-robin across
+  the nodes rather than always the lowest id (`placement::order_for_leader`). The
+  first app a cluster creates is unchanged (its lowest-id replica still leads);
+  each later app moves one node along. It is ordered on the leader, before the
+  entry, so every node applies the same order and apply never recomputes it; the
+  order spreads the initial leadership only, since core moves leadership no
+  further (openraft 0.9 has no leader transfer), and ongoing balance is the
+  cluster manager's. The first replica stays one that holds the group: a
   move keeps the current replicas first in every list it records, and the
   nodes it adds after them, so a node that has not joined yet never forms a
   group of its own (initializing a node that already holds the group does
@@ -419,12 +420,13 @@ share one unknown zone, so a cluster without zones is placed by load as before.
 The set `choose` returns is sorted by id, so recording it as is would make the lowest id the first
 replica of every app — and so the initial leader of every app, concentrating the leader work
 (the WASM run and the propose) on one node. `placement::order_for_leader` rotates the first slot
-across the sorted set by the app id when the app is created, so the initial leader is spread across
-the nodes. The leader orders the set before it records it in the entry, so apply never recomputes
-it and no node disagrees across a mixed-version rollout. It changes the order only, never the set,
-and never a group that already exists: core does not move a live group's leadership (openraft 0.9
-has no leader transfer), so evening out leadership after failovers, or as the fleet grows, is the
-cluster manager's through replica moves.
+across the sorted set by how many apps already exist, so the initial leader round-robins across the
+nodes; the first app a cluster creates is unchanged (its lowest-id replica still leads) and each
+later app moves one along. The leader orders the set before it records it in the entry, so apply
+never recomputes it and no node disagrees across a mixed-version rollout. It changes the order only,
+never the set, and never a group that already exists: core does not move a live group's leadership
+(openraft 0.9 has no leader transfer), so evening out leadership after failovers, or as the fleet
+grows, is the cluster manager's through replica moves.
 
 ### Joining nodes
 
