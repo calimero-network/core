@@ -1079,7 +1079,7 @@ class AppsFacade internal constructor(
     suspend fun pipelinesGet(
         app: kotlin.String,
         run: kotlin.String,
-    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> =
+    ): PipelineRunView =
         api(null, null, emptySet()).apps.pipelinesGet(app = app, run = run)
 
     /**

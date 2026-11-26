@@ -1000,9 +1000,33 @@ fn components() -> Vec<Component> {
         )
         .of::<super::pipelines::PipelineRunList>(),
         component(
+            "PipelineCaller",
+            "Who started a pipeline run.",
+            r#"{ kind: "account", account: string } | { kind: "apiKey", key: string, account: string } | { kind: "public" } | { kind: "app", app: string } | { kind: "system" } | { kind: "visitor", link: string, key: string }"#,
+        )
+        .of::<crate::types::Caller>(),
+        component(
+            "PipelineRunCost",
+            "The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings.",
+            "{ maxCost: u64, priceVersion: uint, table: { version: uint, fuelPerVcpuSecond: uint, vcpuSecond: uint, gibSecond: uint, connectorGib: uint, storageGibMonth: uint, egressGib: uint }, worstCase: u64 }",
+        )
+        .of::<super::pipelines::PipelineCostView>(),
+        component(
+            "PipelineRunOutput",
+            "A file a pipeline step made: its size and hash only to those who handle the app's files.",
+            "{ id: string, size?: uint, sha256?: string }",
+        )
+        .of::<super::pipelines::PipelineOutputView>(),
+        component(
+            "PipelineRunStep",
+            "One step of a pipeline run. `runs`, `outputs`, `result` and `results` come only with one run (`GET /apps/{app}/pipeline-runs/{run}`), not in the list; `result` and `results` are `null` to those who may not handle the app's files. `cost` is a decimal string, under a cost cap.",
+            r#"{ status: "pending" | "running" | "succeeded" | "failed" | "skipped" | "upstreamFailed" | "cancelled", runs?: string[], resultsTooLarge: bool, reason: string | null, fan: { total: uint, items: uint, batch: uint, allowed: uint }, finished: uint, failedItems: uint, cachedCount?: uint, cachedItems: uint, cachedKeys?: { [string]: string }, cost?: u64, capped?: bool, legacyItems?: uint, cached: bool, outputs?: #PipelineRunOutput[], result?: any, results?: any[] | null }"#,
+        )
+        .of::<super::pipelines::PipelineStepView>(),
+        component(
             "PipelineRunView",
-            "A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped for the reader (results and file hashes only to those who handle the app's files). Its keys follow the record's, so the document leaves it open.",
-            "{ [string]: any }",
+            "A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap.",
+            r#"{ id: string, pipeline: string, version: string, hash: string, computeBundle: string, modules?: { [string]: string }, owner: string, inputs: { [string]: string[] }, inputFiles?: { [string]: { id: string, size: uint, sha256: string } }, params: { [string]: any }, caller: #PipelineCaller, payer: string, startTsMs: uint, state: "running" | "succeeded" | "succeededWithFailures" | "failed" | "cancelled", cancelRequested: bool, failFast: bool, stopping: bool, steps: { [string]: #PipelineRunStep }, endTsMs: uint | null, cost?: #PipelineRunCost, costSoFar?: u64, retryOf?: string, limits?: { [string]: { fuel: uint | null, memoryMib: uint | null, wallSecs: uint | null } } }"#,
         )
         .of::<super::pipelines::PipelineRunView>(),
         component(
