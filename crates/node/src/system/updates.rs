@@ -857,6 +857,7 @@ impl SystemState {
             signer: p.signer_id.clone(),
             outbound: v.outbound.iter().cloned().collect(),
             secrets: v.secrets.clone(),
+            pinned: !v.lineage.is_free(),
             ..Release::default()
         })
     }
