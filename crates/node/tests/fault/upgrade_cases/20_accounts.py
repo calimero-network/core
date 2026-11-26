@@ -7,6 +7,7 @@ import time
 
 from upgrade_deep import (DeepCase, anyone, check, decisions, eq, fixture, install, kv_wasm, people, person,
                           refused, same_decisions)
+from upgrade_deep import not_covered
 from upgrade_path import case
 
 
@@ -302,3 +303,35 @@ class UpgradeKeys(DeepCase):
         check(v2 in json.dumps(app), f"the app after the key's upgrade: {app}")
         eq(uma.result(s["app"], "get", {"key": "k"}), "kept", "data across the key's upgrade")
 
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Keys", "An API key made with follow-ups (`POST /auth/apikeys { then }`): confirm calls approved by the "
+            "key's one passkey prompt",
+            "it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its "
+            "app with the key's consent; `CreateApiKey::then` is new in the log only behind cluster version "
+            "1.0.0-rc.38 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
+            "`tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build")
+
+not_covered("Accounts", "Account recovery started and finished with a new passkey",
+            "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
+            "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
+            "recovery code (`account-recovery-code`) is covered")
+
+not_covered("Accounts", "Finishing a sign-up with a cluster sign-up invite (`register/finish { invite }`, which spends a use)",
+            "the finish carries a WebAuthn registration made by a new P-256 passkey, which the suite's standard-library "
+            "Python cannot make; meroctl's `login --dev-passkey` registers a new file but takes no invite, and the "
+            "release's meroctl is the one that seeds. Issuing, listing and revoking an invite and the node's refusal or "
+            "acceptance of a token at `register/begin` are covered (`sign-up-invites`); "
+            "`tests/sign_up.rs` covers the finish and the spent use on one build")
+
+not_covered("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
+                         "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
+                         "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
+                         "`deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link"),
+            "a consent request is approved in a browser on the node's consent page; the cluster test "
+            "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
+            "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "
+            "frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` "
+            "makes, which `app-teams` covers. The verifier link is a startup setting "
+            "(`--attestation-verifier-url`) that stores nothing")

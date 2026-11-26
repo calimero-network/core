@@ -1,5 +1,5 @@
 ---
-title: Application execution
+title: App execution
 description: How the leader runs one call of a calimero:app component — the state it runs over, what the host hands the run, what comes out, and what the node refuses.
 sidebar:
   order: 5
@@ -7,7 +7,7 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
-An **application** is a `calimero:app` component: a WASM component, built with
+An **app** is a `calimero:app` component: a WASM component, built with
 `calimero-sdk`, that defines a state machine: its data types and the methods
 that change them. An **execution** (a *run*) is one call of one method. On a
 cluster, only the app group's **leader** runs calls; the other replicas apply

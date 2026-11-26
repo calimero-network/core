@@ -39,7 +39,7 @@ pub enum AccountCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Approve URL prefixes an application's publisher may call out to from
+    /// Approve URL prefixes a package's publisher may call out to from
     /// the account's own instances.
     Outbound {
         #[arg(long)]
@@ -89,7 +89,7 @@ pub enum DeviceCmd {
 #[derive(Debug, Subcommand)]
 pub enum SessionCmd {
     /// Its live sessions: the device (passkey) each was opened with, the
-    /// application and origin it is bound to, when it opened and was last
+    /// package and origin it is bound to, when it opened and was last
     /// active (to within about an hour), and the current one.
     #[command(alias = "ls")]
     List,
@@ -120,11 +120,11 @@ pub enum ApiKeyCmd {
         #[arg(long)]
         ttl_secs: Option<u64>,
         /// An upgrade key, for CI: it upgrades this instance to signed
-        /// releases of its application (`instance update --version`) and does
+        /// releases of its package (`instance update --version`) and does
         /// nothing else. Takes no other scope.
         #[arg(long, conflicts_with_all = ["contexts", "methods", "read_only"])]
         upgrades: Option<String>,
-        /// With `--upgrades`: the application whose releases it may move the
+        /// With `--upgrades`: the package whose releases it may move the
         /// instance to (default: the one it runs).
         #[arg(long, requires = "upgrades")]
         package: Option<String>,

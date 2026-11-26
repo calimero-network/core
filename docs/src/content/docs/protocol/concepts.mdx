@@ -24,7 +24,7 @@ import RaftGroups from '../../../components/diagrams/RaftGroups.astro';
   the **system group**; every app instance gets a group of its own, numbered by
   the system group when the instance is created.
 - **App instance** (an *app*; `meroctl instance`, v1's *context*) — One
-  running copy of an application: a bundle, an owner, the organization it is
+  running copy of a package's app: a bundle, an owner, the organization it is
   in, its grants and its own replicated state. Its id is 16 random bytes in base64url; an app reads it
   with `env::app_id()`. Its **context id** is `SHA-256(app_id)` in hex, the id
   SDK 0.12 apps saw; the API takes either.

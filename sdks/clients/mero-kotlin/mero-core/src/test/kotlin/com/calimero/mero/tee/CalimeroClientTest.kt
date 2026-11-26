@@ -1330,7 +1330,7 @@ class CalimeroClientTest {
                             } else {
                                 stepUp("""{"key":"org:o1","deployer":{"org":"o1"},"grant":{"grantedAt":1,"grantedBy":"acc-1"}}""")(head, body)
                             }
-                        "/apps" -> json(200, """{"appId":"a1","contextId":"c1","group":1,"replicas":[0],"compute":false,"links":{}}""")
+                        "/apps" -> json(200, """{"appId":"a1","group":1,"replicas":[0],"compute":false,"links":{}}""")
                         "/deployers/org%3Ao1" -> stepUp("""{"key":"org:o1"}""")(head, body)
                         else ->
                             stepUp(

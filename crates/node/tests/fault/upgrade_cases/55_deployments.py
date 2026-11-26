@@ -15,6 +15,7 @@ import ed25519_sign
 from rv2 import b64url
 from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
                           signed_ops, subset, until)
+from upgrade_deep import not_covered
 from upgrade_path import case
 
 USED = "com.calimero.upgrade.used-secrets"
@@ -396,3 +397,22 @@ class DeployerGrants(DeepCase):
         s["read"] = _grants(w)
         eq(len(s["read"]["grants"]), 2, f"the grants after a revocation and a grant: {s['read']['grants']}")
         self.check(w, s)
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Deployments", "A deployment's customer accepting its offer on the consent page",
+            "the page is approved in a browser, and a consent request lives in one node's memory for minutes; what it "
+            "logs is the `UpgradeApp` that `POST /apps/{app}/upgrade` without a version logs, which "
+            "`deployment-offer-upgrades` covers with `GET /apps/{app}/update`'s `source: deployment`. "
+            "`a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) covers the page on one build")
+
+not_covered("Deployments", "A customer's instance outside every deployment on a granted cluster, refused at create and "
+            "on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and "
+            "`UpgradeApp` at apply, `Feature::OffersOnly`)",
+            "a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot "
+            "become without turning every case that installs after the switch red; an entry without `offers_only` "
+            "replays as it applied below cluster version 1.0.0-rc.36. "
+            "`on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and "
+            "`system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and "
+            "`..._keeps_out_of_a_deployers_package` (the replay) cover it on one build")

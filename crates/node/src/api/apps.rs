@@ -787,7 +787,6 @@ async fn create_instance(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Ok(json!(AppCreated {
-        context_id: hex::encode(sha256(app_id.as_bytes())),
         app_id,
         group: out["group"].as_u64().unwrap_or_default(),
         replicas: serde_json::from_value(out["replicas"].clone()).unwrap_or_default(),
@@ -2335,13 +2334,12 @@ pub(super) enum ReplicaAttestation {
     Unreachable { node: u64, error: String },
 }
 
-/// What `POST /apps` answers: the new instance, its context id, its group and replicas,
+/// What `POST /apps` answers: the new instance, its app group and replicas,
 /// whether its release ships a compute component, and the apps it created with it by name.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppCreated {
     app_id: String,
-    context_id: String,
     group: u64,
     replicas: Vec<u64>,
     compute: bool,

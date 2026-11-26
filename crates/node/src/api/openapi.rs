@@ -773,8 +773,8 @@ fn components() -> Vec<Component> {
         .of::<super::apps::AppAttestations>(),
         component(
             "AppCreated",
-            "What `POST /apps` answers: the new instance, its context id, its group and replicas, whether its release ships a compute component, and the apps it created with it by name.",
-            "{ appId: string, contextId: string, group: uint, replicas: uint[], compute: bool, links: { [string]: string } }",
+            "What `POST /apps` answers: the new instance, its app group and replicas, whether its release ships a compute component, and the apps it created with it by name.",
+            "{ appId: string, group: uint, replicas: uint[], compute: bool, links: { [string]: string } }",
         )
         .of::<super::apps::AppCreated>(),
         component(
@@ -2097,7 +2097,7 @@ fn components() -> Vec<Component> {
         .of::<crate::types::UpgradeRun>(),
         component(
             "App",
-            "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.",
+            "An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.",
             r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, ownerSeenAt?: uint, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint, egressOff?: bool }"#,
         )
         .of::<crate::types::AppRecord>(),
@@ -2146,7 +2146,7 @@ fn components() -> Vec<Component> {
         component(
             "TeamView",
             "A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the organization's).",
-            "{ teamId: string, name: string, parent: string | null, join: #TeamJoin, metadata: any, package: string | null, defaultCapabilities: uint | null, members: { account: string, role: #TeamRole, capabilities: uint }[], children: string[], apps: { appId: string, name: string, contextId: string }[], myRole: #TeamRole | null, member: bool }",
+            "{ teamId: string, name: string, parent: string | null, join: #TeamJoin, metadata: any, package: string | null, defaultCapabilities: uint | null, members: { account: string, role: #TeamRole, capabilities: uint }[], children: string[], apps: { appId: string, name: string }[], myRole: #TeamRole | null, member: bool }",
         )
         .of::<super::orgs::TeamView>(),
         component(
@@ -3437,7 +3437,7 @@ const TAGS: &[(&str, &str)] = &[
     ),
     (
         "Apps",
-        "App instances (contexts): calls, views, events, upgrades, blobs and sealed files.",
+        "App instances: calls, views, events, upgrades, blobs and sealed files.",
     ),
     (
         "Organizations",

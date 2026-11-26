@@ -113,7 +113,7 @@ a checkout of [core](https://github.com/calimero-network/core); the
    ```sh
    meroctl app pack --wasm kv_store.wasm --package com.example.kv \
      --app-version 0.1.0 --out dist/com.example.kv-0.1.0.mpk
-   meroctl app install --path dist/com.example.kv-0.1.0.mpk
+   meroctl package install --path dist/com.example.kv-0.1.0.mpk
    meroctl instance create --name kv-pkg --package com.example.kv --alias kv-pkg
    ```
 
