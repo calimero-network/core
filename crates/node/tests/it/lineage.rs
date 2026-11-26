@@ -247,3 +247,96 @@ async fn the_operator_cannot_move_a_pinned_instance_off_its_lineage() {
     assert!(moved.is_empty(), "the operator moved it to {moved:?}");
     assert_eq!(node.app(&app).await.unwrap().bundle, running);
 }
+
+/// An upgrade judged against a bundle the app's group has since left is refused by the group
+/// (`BundleMoved`), so a racing second upgrade never lands on code the record does not name:
+/// here, the second of two upgrades judged on 1.1.0 arrives after the first moved it to 1.2.0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_judged_on_a_bundle_the_group_left_is_refused() {
+    use calimero_node::node::CallRequest;
+    use calimero_node::types::Caller;
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let org = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    for version in ["1.1.0", "1.2.0"] {
+        let _ok = alice
+            .packages()
+            .upload(release(SEALED, version, true), Some(&org))
+            .await
+            .unwrap();
+    }
+    let app = create(&alice, "1.1.0", Some(&org)).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let judged = node.app(&app).await.unwrap().bundle;
+    let _up = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.2.0" })), Some(&mut pk))
+        .await
+        .unwrap();
+    let moved = node.app(&app).await.unwrap().bundle;
+    assert_ne!(judged, moved);
+
+    let late = node
+        .call(&CallRequest::host(
+            app.clone(),
+            "__upgrade",
+            json!({ "bundle": judged, "from": judged }),
+            Caller::System,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(late.error["code"], "BundleMoved", "{:?}", late.error);
+    assert_eq!(group_bundle(&c, &app), Some(moved.clone()));
+    assert_eq!(node.app(&app).await.unwrap().bundle, moved);
+}
+
+/// Two upgrades of one app at once, as the operator may send them: whatever the order the
+/// group and the log take them in, the group ends on the bundle the record names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_upgrades_leave_the_group_on_the_recorded_bundle() {
+    use calimero_node::system::{Authority, Governance};
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance = Governance {
+            app_upgrades: Authority::Operator,
+            ..Governance::default()
+        };
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = ops
+            .ops()
+            .package_upload(release(SEALED, version, true))
+            .await
+            .unwrap();
+    }
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    for round in 0..3 {
+        let app = create(&alice, "1.0.0", None).await;
+        let (a, b) = (c.client(1), c.client(2));
+        a.use_api_key("ops-secret").await;
+        b.use_api_key("ops-secret").await;
+        let path = format!("ops/apps/{app}/upgrade");
+        let (_x, _y) = tokio::join!(
+            harness::ops_signed(&a, &path, json!({ "version": "1.2.0" })),
+            harness::ops_signed(&b, &path, json!({ "version": "1.1.0" })),
+        );
+        let record = node.app(&app).await.unwrap().bundle;
+        let mut group = None;
+        for _ in 0..50 {
+            group = group_bundle(&c, &app);
+            if group.as_ref() == Some(&record) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(group, Some(record), "round {round}");
+    }
+}

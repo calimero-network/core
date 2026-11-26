@@ -3673,8 +3673,15 @@ impl Node {
                 conflict: false,
             });
         }
-        self.upgrade_component(g, &bundle, compute_bundle.as_deref(), migrate.as_deref())
-            .await
+        let judged_on = req.args.get("from").and_then(Value::as_str);
+        self.upgrade_component(
+            g,
+            &bundle,
+            compute_bundle.as_deref(),
+            migrate.as_deref(),
+            judged_on,
+        )
+        .await
     }
 
     /// Run a call wherever the app's leader is.
