@@ -47,7 +47,10 @@ export interface WatchViewOptions<T> {
    * (an `AppError`); the watch carries on with the next change.
    */
   onError?: (error: unknown) => void;
-  /** At most one answer per interval, in ms (the node clamps it to 250 ms–10 s; default 1 s). */
+  /**
+   * A longer interval than the app's, in ms. The app sets how often a view's watches get a
+   * new answer (its `watchIntervalMs`, default 1 s); this can only slow it, up to 10 s.
+   */
   intervalMs?: number;
   /** Ends the watch, as {@link WatchHandle.close} does. */
   signal?: AbortSignal;

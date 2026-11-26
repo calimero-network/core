@@ -137,7 +137,7 @@ export interface UseViewOptions extends ViewOptions {
    * being read once.
    */
   live?: boolean;
-  /** With `live`: at most one update per interval, in ms (the node clamps it to 250 ms–10 s). */
+  /** With `live`: a longer interval than the app's, in ms; it can only slow updates (up to 10 s). */
   intervalMs?: number;
 }
 

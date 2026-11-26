@@ -158,7 +158,7 @@ ac.abort(); // ends the stream within a few hundred milliseconds
 
 ## Live views
 
-A view the app marks `#[app::view(subscribable)]` can be watched: its answer arrives at once, then again whenever what it read changes, at most once per `intervalMs` (250 ms to 10 s, default 1 s). Every watch of an app shares one stream, which reconnects and re-adds its watches on its own.
+A view the app marks `#[app::view(subscribable)]` can be watched: its answer arrives at once, then again whenever what it read changes, at most once per the interval the app sets (`#[app::view(subscribable(interval = "500ms"))]`, 250 ms to 10 s, default 1 s). `intervalMs` can only make it slower. Every watch of an app shares one stream, which reconnects and re-adds its watches on its own.
 
 ```ts
 const watch = client.watchView<string | null>(app, 'get', { key: 'a' }, {
