@@ -22,6 +22,11 @@ const CATALOG: &str = "com.test.catalog";
 /// A signed single-service `.mpk` of `package@version`, its WASM tagged so each release ships
 /// its own, declaring `lineage: pinned` when `pinned`.
 fn release(package: &str, version: &str, pinned: bool) -> Vec<u8> {
+    release_using(package, version, pinned, &Value::Null)
+}
+
+/// [`release`] whose manifest declares `uses`, when not null.
+fn release_using(package: &str, version: &str, pinned: bool, uses: &Value) -> Vec<u8> {
     use sha2::Digest;
     let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
     let wasm = tagged(&format!("{package}@{version}"));
@@ -35,6 +40,9 @@ fn release(package: &str, version: &str, pinned: bool) -> Vec<u8> {
     });
     if pinned {
         manifest["lineage"] = json!("pinned");
+    }
+    if !uses.is_null() {
+        manifest["uses"] = uses.clone();
     }
     calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -338,5 +346,55 @@ async fn concurrent_upgrades_leave_the_group_on_the_recorded_bundle() {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert_eq!(group, Some(record), "round {round}");
+    }
+}
+
+/// A unit's upgrade is refused before the passkey when it would move a pinned member to an
+/// older release, so the instance never moves without its member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_never_moves_without_its_pinned_member() {
+    const NOTES: &str = "com.test.notes";
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let org = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    let uses = |kv: &str| json!({ "kv": { "package": SEALED, "range": "^1", "version": kv } });
+    for (package, version, pinned, u) in [
+        (SEALED, "1.0.0", true, Value::Null),
+        (SEALED, "1.1.0", true, Value::Null),
+        (NOTES, "1.0.0", false, uses("1.1.0")),
+        (NOTES, "2.0.0", false, uses("1.0.0")),
+    ] {
+        let _ok = alice
+            .packages()
+            .upload(release_using(package, version, pinned, &u), Some(&org))
+            .await
+            .unwrap_or_else(|e| panic!("{package}@{version}: {e}"));
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": NOTES, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = s(&made["appId"]);
+    let kv = s(&made["links"]["kv"]);
+    let before = assertions(&pk);
+    let e = alice
+        .apps()
+        .upgrade_unit(&notes, "2.0.0", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("LINEAGE_OLDER_RELEASE"), "{e}");
+    assert_eq!(assertions(&pk), before, "refused before the passkey");
+    for (app, version) in [(&notes, "1.0.0"), (&kv, "1.1.0")] {
+        let record = alice.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
     }
 }

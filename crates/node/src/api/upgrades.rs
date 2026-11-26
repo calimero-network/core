@@ -1763,6 +1763,23 @@ pub(crate) async fn upgrade_unit(
 /// very unit (`upgrade-approvals` with `unit`). Asked before the passkey, by the route
 /// and the consent page alike.
 pub(crate) async fn unit_gate(node: &Node, plan: &UnitPlan, account: &str) -> Result<(), ApiError> {
+    // Every part at once: a member refused after its instance moved would split the unit.
+    node.sys(|s| {
+        s.within_lineage(&plan.app, Some(&plan.target))?;
+        plan.members.iter().try_for_each(|m| {
+            let Some(t) = plan.targets.get(&m.app_id) else {
+                return Ok(());
+            };
+            let to = PackageRef {
+                package: t.package.clone(),
+                version: t.version.clone(),
+                service: None,
+                compute: false,
+            };
+            s.within_lineage(m, Some(&to))
+        })
+    })
+    .map_err(crate::node::rejected)?;
     unclassified_gate(node, &plan.app, Some(&plan.target)).await?;
     let class = class_of(node, &plan.app.app_id, Some(&plan.target), true).await;
     let now = now_secs();
