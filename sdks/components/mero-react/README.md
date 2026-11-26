@@ -145,7 +145,8 @@ Every read hook returns `{ data, loading, error, failure, refetch }`. Every acti
 | --- | --- |
 | `useApp(appId?)` | `{ appId, app, call, view, loading, error, failure, refetch }`. `call` and `view` are bound to the app and throw. |
 | `useExecute(appId?, opts?)` | `{ execute, call, loading, error, failure }`. `execute(method, args?, { idempotencyKey?, confirm? })` resolves the method's result; `call` resolves the whole `CallResult` (`index`, `events`). `confirm: true` answers `412 CONFIRM_REQUIRED` with the passkey (`callConfirmed`). |
-| `useView<T>(method, args?, { appId?, stale?, minIndex?, enabled? })` | `{ data: T, index, … }`. It reads again when the method or the arguments change. |
+| `useView<T>(method, args?, { appId?, stale?, minIndex?, enabled?, live?, intervalMs? })` | `{ data: T, index, ended, … }`. It reads again when the method or the arguments change. With `live`, a subscribable view is watched and `data` updates on its own. |
+| `useConnectionState(appId?)` | The app's watch stream: `idle`, `connecting`, `open` or `reconnecting`. |
 | `useSubscription(appIds?, callback, opts?)` | Calls `callback` with each `AppEvent` (`{ appId, id, index, seq, kind, data }`). |
 | `useAppAbi(appId?)` | The app's ABI. |
 

@@ -90,6 +90,51 @@ describe('Calimero 1.0 cluster', () => {
     expect(fresh.sessionToken).not.toBe(s.sessionToken);
   });
 
+  it('watches a subscribable view: a write on another node reaches the watcher', async () => {
+    const [alice, pk] = await person(0, 'alice-watch');
+    const bundle = await (await alice.packages.bundlePut({ body: new Uint8Array(readFileSync(KV_STORE_WASM)), contentType: 'application/wasm' })).hash;
+    const app = await (await alice.apps.create({ name: 'kv-watch', bundle })).appId;
+    const writer = client(2);
+    await writer.signIn(pk);
+
+    // Every view read the watcher makes: the answers must come from the stream, not from these.
+    let reads = 0;
+    const view = alice.apps.view.bind(alice.apps);
+    (alice.apps as { view: typeof view }).view = (...args: Parameters<typeof view>) => {
+      reads += 1;
+      return view(...args);
+    };
+
+    const answers: unknown[] = [];
+    let wake: () => void = () => undefined;
+    const next = () => new Promise<void>((resolve) => (wake = resolve));
+    const first = next();
+    const watch = alice.watchView(app, 'get', { key: 'a' }, {
+      onAnswer: (answer) => {
+        answers.push(answer);
+        wake();
+      },
+    });
+    await first;
+    expect(answers).toEqual([null]);
+
+    const changed = next();
+    const sent = Date.now();
+    await writer.apps.call({ app, method: 'set', args: { key: 'a', value: 'live' } });
+    await changed;
+    expect(answers.at(-1)).toBe('live');
+    expect(Date.now() - sent).toBeLessThan(3_000);
+    // The first answer came with the add and this one was pushed: no read.
+    expect(reads).toBe(0);
+
+    // A key the view does not read sends nothing.
+    await writer.apps.call({ app, method: 'set', args: { key: 'b', value: 'other' } });
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(answers).toEqual([null, 'live']);
+    expect(reads).toBe(0);
+    watch.close();
+  });
+
   it('organizations gate apps and removal cuts access off', async () => {
     const [alice, alicePk] = await person(0, 'alice-org');
     const [bob] = await person(1, 'bob-org');

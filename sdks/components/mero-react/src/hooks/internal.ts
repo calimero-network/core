@@ -52,7 +52,7 @@ export function confirmWith(passkey: PasskeyProvider): MethodOptions {
   return { confirm: passkeyConfirm(passkey) };
 }
 
-function toError(error: unknown): Error {
+export function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 

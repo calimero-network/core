@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppError, errorFrom, upgradeConsent, type NodeEvent } from '@calimero-network/mero-js';
@@ -38,6 +39,7 @@ import {
   useSubscription,
   useUploadBlob,
   useView,
+  useConnectionState,
 } from '../hooks';
 import { useMero } from '../context';
 import { memorySessionStore } from '../storage';
@@ -108,6 +110,145 @@ describe('calls and views', () => {
       await result.current.exec.execute('x');
     });
     expect(result.current.mero.isAuthenticated).toBe(false);
+  });
+
+  it('useView with live watches the view, updates on each answer and closes on unmount', async () => {
+    type Opts = { onAnswer: (a: unknown, i: number) => void; onEnded?: (r?: string) => void; onError?: (e: unknown) => void; intervalMs?: number };
+    const watched: { app: string; view: string; args: unknown; opts: Opts; close: ReturnType<typeof vi.fn> }[] = [];
+    const client = fakeClient({
+      watchView: vi.fn((app: string, view: string, args: unknown, opts: Opts) => {
+        const close = vi.fn();
+        watched.push({ app, view, args, opts, close });
+        return { close };
+      }),
+    });
+    const { result, rerender, unmount } = renderHook(
+      ({ key }) => useView<string>('get', { key }, { live: true, intervalMs: 500 }),
+      { wrapper: wrapper(client), initialProps: { key: 'a' } },
+    );
+    await waitFor(() => expect(watched).toHaveLength(1));
+    expect(watched[0]).toMatchObject({ app: 'app-1', view: 'get', args: { key: 'a' } });
+    expect(watched[0]!.opts.intervalMs).toBe(500);
+    expect(result.current.loading).toBe(true);
+    expect(client.apps.view).not.toHaveBeenCalled();
+
+    act(() => watched[0]!.opts.onAnswer('one', 3));
+    expect(result.current.data).toBe('one');
+    expect(result.current.index).toBe(3);
+    act(() => watched[0]!.opts.onAnswer('two', 4));
+    expect(result.current.data).toBe('two');
+
+    // An app error answer is the hook's error; the next answer clears it.
+    act(() => watched[0]!.opts.onError?.(new AppError('nope', { error: { code: 'NotFound' } })));
+    expect(result.current.error).toBeInstanceOf(AppError);
+    expect(result.current.data).toBe('two');
+    act(() => watched[0]!.opts.onAnswer('three', 5));
+    expect(result.current.error).toBeNull();
+
+    // Equal arguments keep the watch; new ones replace it.
+    rerender({ key: 'a' });
+    expect(watched).toHaveLength(1);
+    rerender({ key: 'b' });
+    await waitFor(() => expect(watched).toHaveLength(2));
+    expect(watched[0]!.close).toHaveBeenCalled();
+
+    act(() => watched[1]!.opts.onEnded?.('access-lost'));
+    expect(result.current.ended).toBe('access-lost');
+    unmount();
+    expect(watched[1]!.close).toHaveBeenCalled();
+  });
+
+  it('useView live keeps the newest answer when a refetch lands late or for old arguments', async () => {
+    type Opts = { onAnswer: (a: unknown, i: number) => void };
+    const watched: { args: unknown; opts: Opts }[] = [];
+    const reads: ((r: { index: number; result: unknown }) => void)[] = [];
+    const client = fakeClient(
+      {
+        watchView: vi.fn((_app: string, _view: string, args: unknown, opts: Opts) => {
+          watched.push({ args, opts });
+          return { close: vi.fn() };
+        }),
+      },
+      { apps: { view: vi.fn(() => new Promise((resolve) => reads.push(resolve))) } },
+    );
+    const { result, rerender } = renderHook(({ key }) => useView<string>('get', { key }, { live: true }), {
+      wrapper: wrapper(client),
+      initialProps: { key: 'a' },
+    });
+    await waitFor(() => expect(watched).toHaveLength(1));
+    act(() => watched[0]!.opts.onAnswer('a3', 3));
+
+    // A refetch that resolves after a newer live answer does not take it back.
+    let pending: Promise<void> | undefined;
+    act(() => {
+      pending = result.current.refetch();
+    });
+    act(() => watched[0]!.opts.onAnswer('a5', 5));
+    await act(async () => {
+      reads[0]!({ index: 4, result: 'a4' });
+      await pending;
+    });
+    expect(result.current.data).toBe('a5');
+    expect(result.current.index).toBe(5);
+
+    // A refetch of the old arguments that resolves after they changed is dropped.
+    act(() => {
+      pending = result.current.refetch();
+    });
+    rerender({ key: 'b' });
+    await waitFor(() => expect(watched).toHaveLength(2));
+    act(() => watched[1]!.opts.onAnswer('b1', 1));
+    await act(async () => {
+      reads[1]!({ index: 9, result: 'a9' });
+      await pending;
+    });
+    expect(result.current.data).toBe('b1');
+  });
+
+  it('useView live under StrictMode holds one open watch and closes it on unmount', async () => {
+    const open = new Set<number>();
+    let n = 0;
+    const client = fakeClient({
+      watchView: vi.fn(() => {
+        const id = ++n;
+        open.add(id);
+        return { close: () => open.delete(id) };
+      }),
+    });
+    const Wrapper = wrapper(client);
+    const { unmount } = renderHook(() => useView('get', { key: 'a' }, { live: true }), {
+      wrapper: ({ children }) => (
+        <StrictMode>
+          <Wrapper>{children}</Wrapper>
+        </StrictMode>
+      ),
+    });
+    await waitFor(() => expect(n).toBeGreaterThan(0));
+    expect(open.size).toBe(1);
+    unmount();
+    expect(open.size).toBe(0);
+  });
+
+  it('useConnectionState follows the app stream', async () => {
+    let listener: ((app: string, s: string) => void) | undefined;
+    const client = fakeClient({
+      watches: {
+        state: vi.fn(() => 'idle'),
+        onState: vi.fn((l: (app: string, s: string) => void) => {
+          listener = l;
+          return () => (listener = undefined);
+        }),
+      },
+    });
+    const { result, unmount } = renderHook(() => useConnectionState(), { wrapper: wrapper(client) });
+    expect(result.current).toBe('idle');
+    await waitFor(() => expect(listener).toBeDefined());
+    act(() => listener!('other-app', 'open'));
+    expect(result.current).toBe('idle');
+    act(() => listener!('app-1', 'reconnecting'));
+    expect(result.current).toBe('reconnecting');
+    unmount();
+    expect(listener).toBeUndefined();
   });
 
   it('useView reads, and reads again when the arguments change', async () => {
