@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class UpdateReasonType7Code(str, Enum):
-    UNCLASSIFIED = "unclassified"
+    PINSLINEAGE = "pinsLineage"
 
     def __str__(self) -> str:
         return str(self.value)

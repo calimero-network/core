@@ -13841,6 +13841,58 @@ fn an_updates_class_is_judged_against_the_log_and_recorded() {
     );
 }
 
+/// An upgrade into a release declaring `lineage: pinned` is red with `pinsLineage`, judged
+/// against the log, and pins the instance to the package and its signer: an older release
+/// is refused from then on, and a later release that declares nothing keeps the pin.
+#[test]
+fn an_upgrade_into_a_pinning_release_pins_the_instance() {
+    use super::cluster_version::Feature;
+    use super::{LINEAGE_OLDER_RELEASE, UPGRADE_CLASS_MISMATCH};
+    let mut m = classified();
+    m.state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.1")
+        .unwrap()
+        .lineage = calimero_bundle::Lineage::Pinned;
+    let pins = crate::types::UpgradeClass {
+        class: calimero_bundle::update::Class::Red,
+        reasons: vec![calimero_bundle::update::Reason::PinsLineage {
+            member: None,
+            package: "p".into(),
+        }],
+    };
+    assert_eq!(
+        m.run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10)),
+        Err(UPGRADE_CLASS_MISMATCH),
+        "the log shows the pin"
+    );
+    assert_eq!(m.state.apps["inst"].lineage, None);
+    let up = classified_upgrade("cora", "1.0.1", Some(pins), 10);
+    assert!(up.features().contains(&Feature::PinnedLineage));
+    let _ok = m.run_unproven(up).unwrap();
+    let pinned = Some(crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: m.state.packages["p"].signer_id.clone(),
+    });
+    assert_eq!(m.state.apps["inst"].lineage, pinned);
+    assert_eq!(
+        m.run_unproven(classified_upgrade("cora", "1.0.0", None, 11)),
+        Err(LINEAGE_OLDER_RELEASE)
+    );
+    let _ok = m
+        .run_unproven(classified_upgrade(
+            "cora",
+            "1.1.0",
+            Some(red(&["https://telemetry.example/"])),
+            12,
+        ))
+        .unwrap();
+    assert_eq!(m.state.apps["inst"].lineage, pinned, "nothing clears it");
+}
+
 /// An organization's update policy, and an app's own over it, are set by an owner or
 /// admin with their passkey over exactly that policy; the hold is a day to a week; an app
 /// follows its own, else its organization's, else the defaults (nothing on its own, one

@@ -592,7 +592,7 @@ public protocol APIProtocol: Sendable {
     func appUndo(_ input: Operations.AppUndo.Input) async throws -> Operations.AppUndo.Output
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -2906,7 +2906,7 @@ extension APIProtocol {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -14174,7 +14174,7 @@ public enum Components {
                 case destinations
             }
         }
-        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
+        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. `pinsLineage`: the part moves into a release of `package` declaring `lineage: pinned` from one that does not, so from then on it moves only to that package's newer releases by the same publisher.
         ///
         /// - Remark: Generated from `#/components/schemas/UpdateReason`.
         @frozen public enum UpdateReason: Codable, Hashable, Sendable {
@@ -14463,7 +14463,7 @@ public enum Components {
             public struct Case8Payload: Codable, Hashable, Sendable {
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/code`.
                 @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                    case unclassified = "unclassified"
+                    case pinsLineage = "pinsLineage"
                 }
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/code`.
                 public var code: Components.Schemas.UpdateReason.Case8Payload.CodePayload
@@ -14471,9 +14471,44 @@ public enum Components {
                 public var member: Swift.String?
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/package`.
                 public var package: Swift.String
-                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/version`.
-                public var version: Swift.String
                 /// Creates a new `Case8Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - package:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case8Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    package: Swift.String
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.package = package
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case package
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case8`.
+            case case8(Components.Schemas.UpdateReason.Case8Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case9`.
+            public struct Case9Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case9/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case unclassified = "unclassified"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case9/code`.
+                public var code: Components.Schemas.UpdateReason.Case9Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case9/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case9/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case9/version`.
+                public var version: Swift.String
+                /// Creates a new `Case9Payload`.
                 ///
                 /// - Parameters:
                 ///   - code:
@@ -14481,7 +14516,7 @@ public enum Components {
                 ///   - package:
                 ///   - version:
                 public init(
-                    code: Components.Schemas.UpdateReason.Case8Payload.CodePayload,
+                    code: Components.Schemas.UpdateReason.Case9Payload.CodePayload,
                     member: Swift.String? = nil,
                     package: Swift.String,
                     version: Swift.String
@@ -14498,8 +14533,8 @@ public enum Components {
                     case version
                 }
             }
-            /// - Remark: Generated from `#/components/schemas/UpdateReason/case8`.
-            case case8(Components.Schemas.UpdateReason.Case8Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case9`.
+            case case9(Components.Schemas.UpdateReason.Case9Payload)
             public init(from decoder: any Decoder) throws {
                 var errors: [any Error] = []
                 do {
@@ -14550,6 +14585,12 @@ public enum Components {
                 } catch {
                     errors.append(error)
                 }
+                do {
+                    self = .case9(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
                 throw Swift.DecodingError.failedToDecodeOneOfSchema(
                     type: Self.self,
                     codingPath: decoder.codingPath,
@@ -14573,6 +14614,8 @@ public enum Components {
                 case let .case7(value):
                     try value.encode(to: encoder)
                 case let .case8(value):
+                    try value.encode(to: encoder)
+                case let .case9(value):
                     try value.encode(to: encoder)
                 }
             }
@@ -31030,7 +31073,7 @@ public enum Operations {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///

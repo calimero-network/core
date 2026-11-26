@@ -19,13 +19,11 @@ class UpdateReasonType7:
         code (UpdateReasonType7Code):
         member (Union[None, str]):
         package (str):
-        version (str):
     """
 
     code: UpdateReasonType7Code
     member: Union[None, str]
     package: str
-    version: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -36,8 +34,6 @@ class UpdateReasonType7:
 
         package = self.package
 
-        version = self.version
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -45,7 +41,6 @@ class UpdateReasonType7:
                 "code": code,
                 "member": member,
                 "package": package,
-                "version": version,
             }
         )
 
@@ -65,13 +60,10 @@ class UpdateReasonType7:
 
         package = d.pop("package")
 
-        version = d.pop("version")
-
         update_reason_type_7 = cls(
             code=code,
             member=member,
             package=package,
-            version=version,
         )
 
         update_reason_type_7.additional_properties = d
