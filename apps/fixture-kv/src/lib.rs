@@ -664,8 +664,8 @@ impl Kv {
         Ok(found.items.into_iter().map(|f| f.record.id).collect())
     }
 
-    /// The value of `key`, or `null`.
-    #[app::view]
+    /// The value of `key`, or `null`. Watches of it run at most every 250 ms.
+    #[app::view(subscribable(interval = "250ms"))]
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
         Ok(self.entries.get(&key)?.map(|e| e.value))
     }
@@ -680,10 +680,34 @@ impl Kv {
     }
 
     /// Every entry (up to 1000).
-    #[app::view]
+    #[app::view(subscribable)]
     pub fn entries(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
         let page = self.entries.scan(FindOpts::default().limit(LIST_LIMIT))?;
         Ok(page.items.into_iter().map(|e| (e.key, e.value)).collect())
+    }
+
+    /// How many of the keys `p0` .. `p<n-1>` are set: `n` point reads, so a watch past the
+    /// node's read-set cap is refused.
+    #[app::view(subscribable)]
+    pub fn probe(&self, n: u32) -> app::Result<u32> {
+        let mut found = 0;
+        for i in 0..n {
+            if self.entries.get(&format!("p{i}"))?.is_some() {
+                found += 1;
+            }
+        }
+        Ok(found)
+    }
+
+    /// The caller's role in the app's org (`env::org_role`), or `null`: a view that reads
+    /// the directory, which a system change (a promotion, a removal) changes.
+    #[app::view(subscribable)]
+    pub fn my_role(&self) -> app::Result<Option<String>> {
+        let account = match env::caller() {
+            env::Caller::Account(a) | env::Caller::ApiKey { account: a, .. } => a,
+            _ => return Ok(None),
+        };
+        Ok(env::org_role(&account).map(|r| format!("{r:?}").to_lowercase()))
     }
 
     /// How many keys there are.

@@ -57,7 +57,7 @@ pub type PeerCaller = crate::node::PeerIdentity;
 /// whose proven key the claimed node's address attests (`x-calimero-node`
 /// names it); an anonymous session is refused. The cluster secret alone
 /// authorizes no data access: each route judges the caller.
-async fn peer(
+pub(super) async fn peer(
     node: &Node,
     headers: &HeaderMap,
     key: Option<Extension<calimero_sealed::PeerKey>>,
@@ -96,7 +96,7 @@ fn caller_may_hold(
 const NOT_APPROVED: &str = "the calling node's release is not approved for this app's data";
 
 /// [`caller_may_hold`] for an app named by id.
-async fn caller_may_hold_app(
+pub(super) async fn caller_may_hold_app(
     node: &Node,
     caller: &PeerCaller,
     app_id: &str,
@@ -1018,6 +1018,16 @@ struct InternalEvents {
     /// The account a component's events are filtered for; empty: anonymous.
     #[serde(default)]
     subscriber: String,
+    /// A watch stream for `holder` (base64url JSON of `watch::Holder`), resuming `stream`
+    /// after the entry `last` (`api::watches`).
+    #[serde(default)]
+    watch: bool,
+    #[serde(default)]
+    holder: String,
+    #[serde(default)]
+    stream: Option<String>,
+    #[serde(default)]
+    last: Option<u64>,
 }
 
 async fn internal_events(
@@ -1028,6 +1038,15 @@ async fn internal_events(
 ) -> Result<Response, ApiError> {
     let caller = peer(&node, &headers, key).await?;
     caller_may_hold_app(&node, &caller, &q.app).await?;
+    if q.watch {
+        let holder = super::watches::holder_from_param(&q.holder)?;
+        let stream =
+            super::watches::local_stream(&node, &q.app, holder, q.stream.as_deref(), q.last)?
+                .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response());
+    }
     let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
     let stream = local_events(&node, &q.app, q.from, subscriber, None)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;

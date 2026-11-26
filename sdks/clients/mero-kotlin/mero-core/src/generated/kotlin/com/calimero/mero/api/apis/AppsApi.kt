@@ -111,6 +111,8 @@ import com.calimero.mero.api.models.UploadStatus
 import com.calimero.mero.api.models.UploadView
 import com.calimero.mero.api.models.ViewResult
 import com.calimero.mero.api.models.ViewsRequest
+import com.calimero.mero.api.models.WatchAddRequest
+import com.calimero.mero.api.models.WatchAdded
 import com.calimero.mero.api.models.XcallsReport
 
 import kotlinx.serialization.SerialName
@@ -3739,9 +3741,12 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/events
      * An app&#39;s events as server-sent events
-     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience. With &#x60;watch&#x3D;true&#x60;, a watch stream instead: its first frame is &#x60;event: stream&#x60; with &#x60;{ stream }&#x60;, then &#x60;event: view-result&#x60; (&#x60;id: &lt;index&gt;:&lt;seq&gt;&#x60;, &#x60;{ sub, index, answer }&#x60;, or &#x60;{ sub, index, error }&#x60; for an app error) when a watched view&#39;s answer changed (the first change at once, then at most one per the watch&#39;s interval), &#x60;event: view-changed&#x60; (&#x60;{ sub, index }&#x60;) when the new answer is over 64 KiB (read it), and &#x60;event: watch-ended&#x60; (&#x60;{ sub, reason }&#x60;: &#x60;access-lost&#x60;, &#x60;view-refused&#x60; or &#x60;read-set-unbounded&#x60;) when a watch is dropped. &#x60;stream&#x60; with &#x60;last&#x60; (or &#x60;Last-Event-ID&#x60;) resumes a stream within 30 s: each watch touched after &#x60;last&#x60; is sent its current answer again; a stream that is gone comes back as a new one followed by &#x60;event: watch-reset&#x60; (&#x60;{}&#x60;), and its watches must be added again.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param from  (optional)
+     * @param watch  (optional)
+     * @param stream  (optional)
+     * @param last  (optional)
      * @return kotlin.String
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -3751,8 +3756,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun events(app: kotlin.String, from: kotlin.Long? = null) : kotlin.String = withContext(Dispatchers.IO) {
-        val localVarResponse = eventsWithHttpInfo(app = app, from = from)
+    suspend fun events(app: kotlin.String, from: kotlin.Long? = null, watch: kotlin.Boolean? = null, stream: kotlin.String? = null, last: kotlin.Long? = null) : kotlin.String = withContext(Dispatchers.IO) {
+        val localVarResponse = eventsWithHttpInfo(app = app, from = from, watch = watch, stream = stream, last = last)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.String
@@ -3772,17 +3777,20 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/events
      * An app&#39;s events as server-sent events
-     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience. With &#x60;watch&#x3D;true&#x60;, a watch stream instead: its first frame is &#x60;event: stream&#x60; with &#x60;{ stream }&#x60;, then &#x60;event: view-result&#x60; (&#x60;id: &lt;index&gt;:&lt;seq&gt;&#x60;, &#x60;{ sub, index, answer }&#x60;, or &#x60;{ sub, index, error }&#x60; for an app error) when a watched view&#39;s answer changed (the first change at once, then at most one per the watch&#39;s interval), &#x60;event: view-changed&#x60; (&#x60;{ sub, index }&#x60;) when the new answer is over 64 KiB (read it), and &#x60;event: watch-ended&#x60; (&#x60;{ sub, reason }&#x60;: &#x60;access-lost&#x60;, &#x60;view-refused&#x60; or &#x60;read-set-unbounded&#x60;) when a watch is dropped. &#x60;stream&#x60; with &#x60;last&#x60; (or &#x60;Last-Event-ID&#x60;) resumes a stream within 30 s: each watch touched after &#x60;last&#x60; is sent its current answer again; a stream that is gone comes back as a new one followed by &#x60;event: watch-reset&#x60; (&#x60;{}&#x60;), and its watches must be added again.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param from  (optional)
+     * @param watch  (optional)
+     * @param stream  (optional)
+     * @param last  (optional)
      * @return ApiResponse<kotlin.String?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun eventsWithHttpInfo(app: kotlin.String, from: kotlin.Long?) : ApiResponse<kotlin.String?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = eventsRequestConfig(app = app, from = from)
+    suspend fun eventsWithHttpInfo(app: kotlin.String, from: kotlin.Long?, watch: kotlin.Boolean?, stream: kotlin.String?, last: kotlin.Long?) : ApiResponse<kotlin.String?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = eventsRequestConfig(app = app, from = from, watch = watch, stream = stream, last = last)
 
         return@withContext request<Unit, kotlin.String>(
             localVariableConfig
@@ -3794,14 +3802,26 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      *
      * @param app 
      * @param from  (optional)
+     * @param watch  (optional)
+     * @param stream  (optional)
+     * @param last  (optional)
      * @return RequestConfig
      */
-    fun eventsRequestConfig(app: kotlin.String, from: kotlin.Long?) : RequestConfig<Unit> {
+    fun eventsRequestConfig(app: kotlin.String, from: kotlin.Long?, watch: kotlin.Boolean?, stream: kotlin.String?, last: kotlin.Long?) : RequestConfig<Unit> {
         val localVariableBody = null
         val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
             .apply {
                 if (from != null) {
                     put("from", listOf(from.toString()))
+                }
+                if (watch != null) {
+                    put("watch", listOf(watch.toString()))
+                }
+                if (stream != null) {
+                    put("stream", listOf(stream.toString()))
+                }
+                if (last != null) {
+                    put("last", listOf(last.toString()))
                 }
             }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
@@ -5897,6 +5917,159 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.POST,
             path = "/apps/{app}/views".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/watches
+     * Watch a subscribable view
+     * Runs &#x60;view&#x60; (a view the app&#39;s ABI marks &#x60;subscribable&#x60;) as the caller, with &#x60;/views&#x60;&#39; gate, records what it read and keeps it on &#x60;stream&#x60; (a watch stream of &#x60;/events?watch&#x3D;true&#x60;): the stream then carries this watch&#39;s new answer, &#x60;sub&#x60;, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. &#x60;index&#x60; is the app&#39;s last entry in the state it read and &#x60;answer&#x60; its answer. The view runs again at most once per the interval its app sets (&#x60;watchIntervalMs&#x60; in the ABI, default 1000); &#x60;intervalMs&#x60; can only lengthen it, up to 10000. A stream holds at most 64 watches and a node 2,048; &#x60;args&#x60; is at most 4 KiB.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @param watchAddRequest 
+     * @return WatchAdded
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun watchAdd(app: kotlin.String, watchAddRequest: WatchAddRequest) : WatchAdded = withContext(Dispatchers.IO) {
+        val localVarResponse = watchAddWithHttpInfo(app = app, watchAddRequest = watchAddRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as WatchAdded
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/watches
+     * Watch a subscribable view
+     * Runs &#x60;view&#x60; (a view the app&#39;s ABI marks &#x60;subscribable&#x60;) as the caller, with &#x60;/views&#x60;&#39; gate, records what it read and keeps it on &#x60;stream&#x60; (a watch stream of &#x60;/events?watch&#x3D;true&#x60;): the stream then carries this watch&#39;s new answer, &#x60;sub&#x60;, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. &#x60;index&#x60; is the app&#39;s last entry in the state it read and &#x60;answer&#x60; its answer. The view runs again at most once per the interval its app sets (&#x60;watchIntervalMs&#x60; in the ABI, default 1000); &#x60;intervalMs&#x60; can only lengthen it, up to 10000. A stream holds at most 64 watches and a node 2,048; &#x60;args&#x60; is at most 4 KiB.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @param watchAddRequest 
+     * @return ApiResponse<WatchAdded?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun watchAddWithHttpInfo(app: kotlin.String, watchAddRequest: WatchAddRequest) : ApiResponse<WatchAdded?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = watchAddRequestConfig(app = app, watchAddRequest = watchAddRequest)
+
+        return@withContext request<WatchAddRequest, WatchAdded>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation watchAdd
+     *
+     * @param app 
+     * @param watchAddRequest 
+     * @return RequestConfig
+     */
+    fun watchAddRequestConfig(app: kotlin.String, watchAddRequest: WatchAddRequest) : RequestConfig<WatchAddRequest> {
+        val localVariableBody = watchAddRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/watches".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /apps/{app}/watches/{sub}
+     * Stop watching a view
+     * Forgets watch &#x60;sub&#x60;, which the caller holds.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @param sub 
+     * @return kotlinx.serialization.json.JsonObject
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun watchRemove(app: kotlin.String, sub: kotlin.String) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = watchRemoveWithHttpInfo(app = app, sub = sub)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /apps/{app}/watches/{sub}
+     * Stop watching a view
+     * Forgets watch &#x60;sub&#x60;, which the caller holds.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @param sub 
+     * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun watchRemoveWithHttpInfo(app: kotlin.String, sub: kotlin.String) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = watchRemoveRequestConfig(app = app, sub = sub)
+
+        return@withContext request<Unit, kotlinx.serialization.json.JsonObject>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation watchRemove
+     *
+     * @param app 
+     * @param sub 
+     * @return RequestConfig
+     */
+    fun watchRemoveRequestConfig(app: kotlin.String, sub: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/apps/{app}/watches/{sub}".replace("{"+"app"+"}", encodeURIComponent(app.toString())).replace("{"+"sub"+"}", encodeURIComponent(sub.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

@@ -53,6 +53,7 @@ pub mod system;
 pub mod testing;
 pub mod types;
 pub mod usage;
+pub mod watch;
 
 pub use job_node::{run_job, JobConfig, RunningJob, RUNS_PER_JOB_NODE};
 pub use node::{Config, Node};

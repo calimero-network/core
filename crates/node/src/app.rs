@@ -12,6 +12,7 @@
 //! no-op on every replica alike.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use calimero_log::{Bytes, GroupState, Machine, StateTx};
 use serde::{Deserialize, Serialize};
@@ -270,10 +271,29 @@ impl AppState {
 /// Entities touched per entry, kept in memory for search to catch up from.
 pub const TOUCHED_RING: usize = 4096;
 
+/// Changes a slow watcher may fall behind by before it treats every watch as changed.
+pub const CHANGES_BUFFER: usize = 1024;
+
+/// What an applied entry changed in a component's storage, for watched views: the stored
+/// keys its diff wrote (none: it still moved the index and clock a view reads), or `None`
+/// for everything (a snapshot replaced the state, or a new bundle the code).
+#[derive(Clone, Debug)]
+pub struct Changed {
+    /// The entry (`AppState::last_index` once it applied).
+    pub index: u64,
+    pub keys: Option<Vec<Vec<u8>>>,
+    /// The entry changed what `blobs_info` answers for one of the app's blobs.
+    pub blobs: bool,
+}
+
 pub struct AppMachine {
     pub app_id: AppId,
     pub state: AppState,
     pub events_tx: broadcast::Sender<EventRecord>,
+    /// Every applied change to a component's storage, while anyone watches.
+    pub changes_tx: broadcast::Sender<Arc<Changed>>,
+    /// The stored keys the entry being applied wrote, for its [`Changed`].
+    pub changed_keys: Vec<Vec<u8>>,
     /// `(index, record keys)` of recent entries that touched any; empty after a
     /// restart or a snapshot, which makes search rebuild instead.
     pub touched: VecDeque<(u64, Vec<String>)>,
@@ -292,10 +312,13 @@ impl AppMachine {
     #[must_use]
     pub fn new(app_id: AppId) -> Self {
         let (events_tx, _) = broadcast::channel(1024);
+        let (changes_tx, _) = broadcast::channel(CHANGES_BUFFER);
         Self {
             app_id,
             state: AppState::default(),
             events_tx,
+            changes_tx,
+            changed_keys: Vec::new(),
             touched: VecDeque::new(),
             touched_since: u64::MAX,
             #[cfg(feature = "testing")]
@@ -532,11 +555,24 @@ impl Machine for AppMachine {
             Some(Kind::Wasmer) => false,
             None => crate::component::ComponentCmd::is_component(command),
         };
+        let blobs_before = self.state.component.blobs.visible_changes;
+        let bundle_before = self.state.bundle.clone();
+        self.changed_keys.clear();
         let out = if component {
             self.apply_component(tx, index, command)
         } else {
             Self::unsupported(index)
         };
+        let keys = std::mem::take(&mut self.changed_keys);
+        // Every entry that applies moves the index (and maybe the clock) a view reads, so
+        // each one is sent, once, with the keys it wrote; a new bundle changes every view.
+        if self.changes_tx.receiver_count() > 0 && !tx.failed() {
+            let _receivers = self.changes_tx.send(Arc::new(Changed {
+                index,
+                keys: (self.state.bundle == bundle_before).then_some(keys),
+                blobs: self.state.component.blobs.visible_changes != blobs_before,
+            }));
+        }
         if tx.failed() {
             // The group stops on this entry (`StateTx::fail`): it never applied.
             return out;
@@ -571,6 +607,14 @@ impl Machine for AppMachine {
         // What search knows to catch up from is gone with the old state.
         self.touched.clear();
         self.touched_since = u64::MAX;
+        // Watched views may have read anything that changed.
+        if self.changes_tx.receiver_count() > 0 {
+            let _receivers = self.changes_tx.send(Arc::new(Changed {
+                index: self.state.last_index,
+                keys: None,
+                blobs: true,
+            }));
+        }
         Ok(())
     }
 }

@@ -152,6 +152,8 @@ struct Registry {
     undecodable: [u64; LogKind::ALL.len()],
     /// The system state's serialized size when it was last checkpointed or restored.
     system_state_bytes: u64,
+    /// Live views' runs and answers, by [`LiveView`].
+    live_views: [u64; LiveView::ALL.len()],
     /// `(group, peer)` → the index at which this leader last found that
     /// replica's state digest different from its own ([`digest_compared`]).
     diverged: BTreeMap<(u64, u64), u64>,
@@ -257,6 +259,37 @@ pub fn undecodable_entry(log: LogKind) -> u64 {
     let n = &mut r.undecodable[log as usize];
     *n += 1;
     *n
+}
+
+/// What happened to a watched view due a run ([`crate::watch::Runs`]).
+#[derive(Clone, Copy, Debug)]
+pub enum LiveView {
+    /// The view ran.
+    Rerun,
+    /// Another watch's run of the same view, arguments and caller answered it.
+    Shared,
+    /// Its answer was the one the client holds: no frame.
+    Unchanged,
+    /// The node's per-second budget put the run off to a longer interval.
+    Deferred,
+}
+
+impl LiveView {
+    const ALL: [Self; 4] = [Self::Rerun, Self::Shared, Self::Unchanged, Self::Deferred];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Rerun => "rerun",
+            Self::Shared => "shared",
+            Self::Unchanged => "unchanged",
+            Self::Deferred => "deferred",
+        }
+    }
+}
+
+/// Count one [`LiveView`] outcome.
+pub fn live_view(what: LiveView) {
+    registry().live_views[what as usize] += 1;
 }
 
 /// Note the system state's serialized size: what its checkpoint row and its
@@ -510,6 +543,18 @@ pub fn render(out: &mut String) {
             out,
             "calimero_log_undecodable_entries_total{{log=\"{}\"}} {n}",
             log.label()
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_live_view_runs_total What happened to watched views due a run: rerun (the view ran), shared (another watch's run of the same view, arguments and caller answered it), unchanged (no frame: the client holds that answer), deferred (the node's per-second budget put it off).\n# TYPE calimero_live_view_runs_total counter"
+    );
+    for what in LiveView::ALL {
+        let _w = writeln!(
+            out,
+            "calimero_live_view_runs_total{{outcome=\"{}\"}} {}",
+            what.label(),
+            r.live_views[what as usize]
         );
     }
     let _w = writeln!(

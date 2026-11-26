@@ -25,7 +25,7 @@ use crate::fuel::{
     SEARCH_TOO_MANY,
 };
 use crate::overlay::{Cursor, Overlay};
-use crate::read_set::{table_records, CursorRead, ReadSet};
+use crate::read_set::{table_records, CursorRead, ReadSet, SystemRead};
 use crate::runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN, NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN,
@@ -333,6 +333,15 @@ impl HostCore {
     pub fn with_read_set(self) -> Self {
         *self.read_set.borrow_mut() = Some(ReadSet::default());
         self
+    }
+
+    /// Notes, while recording, what the run read besides its own state
+    /// ([`ReadSet::system_reads`], [`ReadSet::reads_blobs`], [`ReadSet::reads_clock`],
+    /// [`ReadSet::reads_caller`]).
+    fn note(&self, f: impl FnOnce(&mut ReadSet)) {
+        if let Some(set) = self.read_set.borrow_mut().as_mut() {
+            f(set);
+        }
     }
 
     fn give_up_read_set(&self, reason: &str) {
@@ -715,6 +724,7 @@ impl HostCore {
 
     #[must_use]
     pub fn caller(&self) -> &Caller {
+        self.note(ReadSet::caller);
         &self.inv.caller
     }
 
@@ -723,6 +733,7 @@ impl HostCore {
     /// person); none otherwise.
     #[must_use]
     pub fn via(&self) -> Option<&str> {
+        self.note(ReadSet::caller);
         self.via.as_deref()
     }
 
@@ -757,6 +768,7 @@ impl HostCore {
 
     #[must_use]
     pub fn app_owner(&self) -> String {
+        self.note(|s| s.system(SystemRead::App));
         match &self.inv.compute {
             Some(run) => run.owner.clone(),
             None => self.dir.app_owner(),
@@ -766,6 +778,7 @@ impl HostCore {
     /// The app linked under `name` (`context.linked`); none in a compute run.
     #[must_use]
     pub fn linked(&self, name: &str) -> Option<String> {
+        self.note(|s| s.system(SystemRead::App));
         if self.is_compute() {
             return None;
         }
@@ -775,6 +788,7 @@ impl HostCore {
     /// The app whose unit this one is a member of (`context.unit-of`); none in a compute run.
     #[must_use]
     pub fn unit_of(&self) -> Option<String> {
+        self.note(|s| s.system(SystemRead::App));
         if self.is_compute() {
             return None;
         }
@@ -786,11 +800,13 @@ impl HostCore {
     /// a compute run.
     #[must_use]
     pub fn grant_scope(&self) -> Option<String> {
+        self.note(ReadSet::caller);
         if self.is_compute() {
             return None;
         }
         match &self.inv.caller {
             Caller::Account(account) | Caller::ApiKey { account, .. } => {
+                self.note(|s| s.system(SystemRead::Grant(account.clone())));
                 self.dir.grant_scope(account)
             }
             _ => None,
@@ -799,6 +815,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org(&self) -> Option<String> {
+        self.note(|s| s.system(SystemRead::App));
         if self.is_compute() {
             return None;
         }
@@ -807,6 +824,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org_role(&self, account: &str) -> Option<OrgRole> {
+        self.note(|s| s.system(SystemRead::Role(account.to_owned())));
         if self.is_compute() {
             return None;
         }
@@ -824,6 +842,7 @@ impl HostCore {
 
     #[must_use]
     pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
+        self.note(|s| s.system(SystemRead::OrgsOf(account.to_owned())));
         if self.is_compute() {
             return Vec::new();
         }
@@ -832,12 +851,20 @@ impl HostCore {
 
     #[must_use]
     pub fn in_team(&self, account: &str, team: &str) -> bool {
+        self.note(|s| {
+            s.system(SystemRead::Team {
+                account: account.to_owned(),
+                team: team.to_owned(),
+            });
+        });
         !self.is_compute() && self.dir.in_team(account, team)
     }
 
     /// The log index the run reads at; a compute run has no log to read, so 0.
     #[must_use]
     pub fn applied_index(&self) -> u64 {
+        // It moves with every entry, as the clock does.
+        self.note(ReadSet::clock);
         if self.is_compute() {
             return 0;
         }
@@ -1341,6 +1368,7 @@ impl HostCore {
     /// A blob's metadata, if it is one of the app's blobs; `None` for any other id.
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
+        self.note(ReadSet::blobs);
         self.burn_bytes(id.len());
         self.may_use_blobs("blobs.info")?;
         let blob = parse_blob_id(id).and_then(|id| self.blobs.info(&id));
@@ -1579,11 +1607,13 @@ impl HostCore {
 
     #[must_use]
     pub fn wall_ms(&self) -> u64 {
+        self.note(ReadSet::clock);
         time::wall_ms(&self.inv)
     }
 
     #[must_use]
     pub fn monotonic_ns(&self) -> u64 {
+        self.note(ReadSet::clock);
         time::monotonic_ns(&self.inv)
     }
 

@@ -273,7 +273,7 @@ App instances (v1's contexts).
 ## call
 
 ```bash
-meroctl call -i INSTANCE METHOD [--args JSON] [--view [--min-index N]]
+meroctl call -i INSTANCE METHOD [--args JSON] [--view [--min-index N | --watch [--limit N]]]
              [--idempotency-key KEY] [--dev-passkey FILE]
 ```
 
@@ -284,6 +284,8 @@ meroctl call -i INSTANCE METHOD [--args JSON] [--view [--min-index N]]
 | `--args JSON` | `{}` | JSON arguments. |
 | `--view` | off | Read only (`POST /apps/{app}/views`): no write, answered by the leader. |
 | `--min-index N` | none | With `--view`: any replica that has applied index `N` may answer (a stale read). |
+| `--watch` | off | With `--view`, for a view the app marks `#[app::view(subscribable)]`: print it, then again (read at the notice's index) each time something it read changes, one JSON line each; `{"ended":true}` when the node drops the watch. |
+| `--limit N` | none | With `--watch`: stop after `N` re-reads. |
 | `--idempotency-key KEY` | none | Retries with the same key are answered once. |
 | `--dev-passkey FILE` | none | For a method that needs a passkey confirmation per call (development clusters). |
 

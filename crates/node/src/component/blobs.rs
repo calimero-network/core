@@ -141,6 +141,10 @@ pub struct BlobTable {
     floor: u32,
     /// The segments the sealed files list, by hash, to the file: rebuilt from the records on load.
     segments: HashMap<String, [u8; 32]>,
+    /// Counts the changes a view can see through `blobs_info` (a blob made or forgotten, or
+    /// its size, type or hash changed; not its reference count): live views that read a
+    /// blob's metadata run again when it moves.
+    pub visible_changes: u64,
 }
 
 impl BlobTable {
@@ -346,6 +350,7 @@ impl BlobTable {
             return false;
         };
         let _was = self.idle.remove(&(prev.idle_since_ms, *id));
+        self.visible_changes = self.visible_changes.wrapping_add(1);
         tx.delete_hidden(rows::CBLOB, id);
         let next = prev.epoch.checked_add(1).filter(|n| *n > self.floor);
         if let (None, Some(next)) = (&prev.file, next) {
@@ -410,6 +415,14 @@ impl BlobTable {
         match serde_json::to_vec(&record) {
             Ok(v) => tx.put_hidden(rows::CBLOB, &id, &v),
             Err(e) => tx.fail(e),
+        }
+        let visible = self.records.get(&id).is_none_or(|p| {
+            p.size != record.size
+                || p.mime != record.mime
+                || p.file.as_ref().map(|f| &f.sha256) != record.file.as_ref().map(|f| &f.sha256)
+        });
+        if visible {
+            self.visible_changes = self.visible_changes.wrapping_add(1);
         }
         self.unindex_segments(&id);
         self.index_segments(&id, &record);

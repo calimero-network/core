@@ -626,12 +626,12 @@ extension CalimeroClient {
 
         /// An app's events as server-sent events: `GET /apps/{app}/events` (`events`).
         ///
-        /// Committed events from index `from`, then live ones, each to its audience.
+        /// Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result` (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a watched view's answer changed (the first change at once, then at most one per the watch's interval), `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event: watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is sent its current answer again; a stream that is gone comes back as a new one followed by `event: watch-reset` (`{}`), and its watches must be added again.
         ///
         /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
         @discardableResult
-        public func events(app: Swift.String, from: Swift.Int64? = nil) async throws -> HTTPBody {
-            let input = Operations.Events.Input(path: .init(app: app), query: .init(from: from))
+        public func events(app: Swift.String, from: Swift.Int64? = nil, watch: Swift.Bool? = nil, stream: Swift.String? = nil, last: Swift.Int64? = nil) async throws -> HTTPBody {
+            let input = Operations.Events.Input(path: .init(app: app), query: .init(from: from, watch: watch, stream: stream, last: last))
             return try await client.perform { api in
                 try await api.events(input).ok.body.textEventStream
             }
@@ -979,6 +979,32 @@ extension CalimeroClient {
             let input = Operations.Views.Input(path: .init(app: app), body: .json(.init(method: method, args: args, consistency: consistency, minIndex: minIndex)))
             return try await client.perform(retry: true) { api in
                 try await api.views(input).ok.body.json
+            }
+        }
+
+        /// Watch a subscribable view: `POST /apps/{app}/watches` (`watch_add`).
+        ///
+        /// Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. `index` is the app's last entry in the state it read and `answer` its answer. The view runs again at most once per the interval its app sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+        ///
+        /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+        @discardableResult
+        public func watchAdd(app: Swift.String, stream: Swift.String, view: Swift.String, args: OpenAPIRuntime.OpenAPIValueContainer? = nil, intervalMs: Swift.Int64? = nil) async throws -> Components.Schemas.WatchAdded {
+            let input = Operations.WatchAdd.Input(path: .init(app: app), body: .json(.init(stream: stream, view: view, args: args, intervalMs: intervalMs)))
+            return try await client.perform { api in
+                try await api.watchAdd(input).ok.body.json
+            }
+        }
+
+        /// Stop watching a view: `DELETE /apps/{app}/watches/{sub}` (`watch_remove`).
+        ///
+        /// Forgets watch `sub`, which the caller holds.
+        ///
+        /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+        @discardableResult
+        public func watchRemove(app: Swift.String, sub: Swift.String) async throws -> OpenAPIRuntime.OpenAPIObjectContainer {
+            let input = Operations.WatchRemove.Input(path: .init(app: app, sub: sub))
+            return try await client.perform { api in
+                try await api.watchRemove(input).ok.body.json
             }
         }
     }

@@ -25,6 +25,7 @@ use calimero_app_host::{
 };
 use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
+use calimero_app_host::{SystemRead, MAX_SYSTEM_READS};
 use calimero_app_host::{MAX_XCALLS, XCALL_BAD_TARGET, XCALL_TOO_MANY};
 use serde_json::json;
 
@@ -677,6 +678,81 @@ fn a_view_records_what_it_read() {
     assert!(out.read_set.is_none());
 }
 
+/// A view's read set names each system fact it read (and only those), the clock, blobs and
+/// the caller apart: state reads alone name none of them.
+#[test]
+fn a_view_records_which_system_facts_it_read() {
+    let state = base(&[(b"a", b"1")]);
+    let finish = |host: HostCore| {
+        host.finish(Status::Ok, Vec::new(), Usage::default())
+            .read_set
+            .unwrap()
+    };
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.storage_get(b"a");
+    let set = finish(host);
+    assert!(!set.reads_system());
+    assert!(!set.reads_clock() && !set.reads_blobs() && !set.reads_caller());
+
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.org();
+    let _ = host.org_role("ada");
+    let _ = host.in_team("bob", "t");
+    let _ = host.orgs_of("cy");
+    let set = finish(host);
+    let reads: Vec<_> = set.system_reads().unwrap().iter().cloned().collect();
+    assert_eq!(
+        reads,
+        vec![
+            SystemRead::App,
+            SystemRead::Role("ada".into()),
+            SystemRead::OrgsOf("cy".into()),
+            SystemRead::Team {
+                account: "bob".into(),
+                team: "t".into()
+            },
+        ]
+    );
+    assert!(!set.reads_caller());
+
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.grant_scope();
+    let _ = host.wall_ms();
+    let set = finish(host);
+    assert!(set.reads_caller() && set.reads_clock());
+    assert_eq!(
+        set.system_reads()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![SystemRead::Grant("ada".into())]
+    );
+
+    // Past the cap the set reads "anything in the system", not a cut-down list.
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    for i in 0..=MAX_SYSTEM_READS {
+        let _ = host.org_role(&i.to_string());
+    }
+    let set = finish(host);
+    assert!(set.reads_system());
+    assert!(set.system_reads().is_none());
+}
+
+/// The log index a view reads at moves with every entry the app applies, as its clock does:
+/// a view that read it is re-run on every entry, never left answering an old index.
+#[test]
+fn a_view_that_reads_the_applied_index_follows_every_entry() {
+    let state = base(&[(b"a", b"1")]);
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let _ = host.applied_index();
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.reads_clock());
+}
+
 /// A cursor read to its end covers its whole range, even when the view never closed it.
 #[test]
 fn an_exhausted_cursor_covers_its_range() {
@@ -691,6 +767,68 @@ fn an_exhausted_cursor_covers_its_range() {
         .unwrap();
     assert!(set.touches_key(&stored_key(GENERATION, b"c")));
     assert!(!set.touches_key(&stored_key(GENERATION, b"d")));
+}
+
+/// A reverse cursor closed early covers from the last key it returned to its end; an
+/// empty range read to its end covers the whole range, so the first key written into it
+/// touches the view; a range's end is never in it.
+#[test]
+fn reverse_and_empty_scans_cover_what_the_view_saw() {
+    let state = base(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3")]);
+    let touched =
+        |set: &calimero_app_host::ReadSet, k: &[u8]| set.touches_key(&stored_key(GENERATION, k));
+
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"a", b"d", true).unwrap();
+    let batch = host.range_next(cursor, 2).unwrap();
+    assert_eq!(batch[1].0, b"b".to_vec());
+    host.range_close(cursor);
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(touched(&set, b"b") && touched(&set, b"bz") && touched(&set, b"cz"));
+    assert!(!touched(&set, b"a") && !touched(&set, b"az") && !touched(&set, b"d"));
+
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"m", b"p", false).unwrap();
+    assert!(host.range_next(cursor, 10).unwrap().is_empty());
+    host.range_close(cursor);
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(touched(&set, b"m") && touched(&set, b"o"));
+    assert!(!touched(&set, b"l") && !touched(&set, b"p"));
+
+    // A cursor opened and dropped without a batch read nothing.
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"a", b"d", false).unwrap();
+    assert!(host.range_next(cursor, 0).unwrap().is_empty());
+    host.range_close(cursor);
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.ranges().is_empty());
+}
+
+/// Past a cap mid-run the set gives up for good: later reads do not make it bounded again,
+/// and reading another app's view gives up too.
+#[test]
+fn a_read_set_that_gives_up_stays_unbounded() {
+    let state = base(&[(b"a", b"1")]);
+    let host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    for i in 0..=calimero_app_host::MAX_READ_SET_KEYS as u32 {
+        let _ = host.storage_get(&i.to_be_bytes());
+    }
+    let _ = host.storage_get(b"a");
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.unbounded().is_some());
+    assert!(set.keys().is_empty());
 }
 
 #[test]

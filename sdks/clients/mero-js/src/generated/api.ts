@@ -311,7 +311,7 @@ export interface paths {
         };
         /**
          * An app's events as server-sent events
-         * @description Committed events from index `from`, then live ones, each to its audience.
+         * @description Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result` (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a watched view's answer changed (the first change at once, then at most one per the watch's interval), `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event: watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is sent its current answer again; a stream that is gone comes back as a new one followed by `event: watch-reset` (`{}`), and its watches must be added again.
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
@@ -1355,6 +1355,50 @@ export interface paths {
          */
         post: operations["views"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app}/watches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Watch a subscribable view
+         * @description Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. `index` is the app's last entry in the state it read and `answer` its answer. The view runs again at most once per the interval its app sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.
+         *
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+         */
+        post: operations["watch_add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app}/watches/{sub}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Stop watching a view
+         * @description Forgets watch `sub`, which the caller holds.
+         *
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+         */
+        delete: operations["watch_remove"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5373,6 +5417,14 @@ export interface components {
             result: unknown;
             receipt: components["schemas"]["Receipt"];
         };
+        /** @description `POST /apps/{app}/watches`: the watch's id, which the stream's frames name, the app's last entry in the state the view read (a `last` to resume from) and the view's answer. */
+        WatchAdded: {
+            sub: string;
+            /** Format: int64 */
+            index: number;
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            answer: unknown;
+        };
         /** @description `GET /apps/{app}/xcalls`: messages waiting, and those never delivered. */
         XcallsReport: {
             /** Format: int64 */
@@ -8423,6 +8475,9 @@ export interface operations {
         parameters: {
             query?: {
                 from?: number;
+                watch?: boolean;
+                stream?: string;
+                last?: number;
             };
             header?: never;
             path: {
@@ -8432,7 +8487,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Server-sent events: each committed event the caller is in the audience of. */
+            /** @description Server-sent events: each committed event the caller is in the audience of, or a watch stream's notices. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12305,6 +12360,161 @@ export interface operations {
             };
             /** @description `NOT_CAUGHT_UP`; `TIMEOUT`. `details` of `TIMEOUT`: a `RetryAfter`. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    watch_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    stream: string;
+                    view: string;
+                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                    args?: unknown;
+                    /** Format: int64 */
+                    intervalMs?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchAdded"];
+                };
+            };
+            /** @description `NOT_A_VIEW`; `NOT_SUBSCRIBABLE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNKNOWN_STREAM` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `ARGS_TOO_LARGE` */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `APP_ERROR`; `READ_SET_UNBOUNDED`; `TRAP`. `details` of `APP_ERROR`: a `AppError`, `TRAP`: a `Trap`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `TOO_MANY_WATCHES` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `TIMEOUT`. `details` of `TIMEOUT`: a `RetryAfter`. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    watch_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNKNOWN_WATCH` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -74,3 +74,4 @@ mod slow_compile;
 mod slow_disk;
 mod upgrade_keys;
 mod upgrade_replay;
+mod watches;

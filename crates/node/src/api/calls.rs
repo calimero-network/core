@@ -298,6 +298,15 @@ async fn views(
 pub(super) struct EventsQuery {
     #[serde(default)]
     from: u64,
+    /// A watch stream (`api::watches`) instead of the app's events.
+    #[serde(default)]
+    watch: bool,
+    /// The watch stream to resume.
+    #[serde(default)]
+    stream: Option<String>,
+    /// The index of the last notice seen, for a client that cannot set `Last-Event-ID`.
+    #[serde(default)]
+    last: Option<u64>,
 }
 
 /// The most event streams one node serves at once.
@@ -339,6 +348,13 @@ async fn events(
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
+    if q.watch {
+        let last = q
+            .last
+            .or_else(|| super::watches::last_event_index(&headers));
+        return super::watches::watch_events(&node, &app, &p, q.stream.as_deref(), last, slot)
+            .await;
+    }
     if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone(), Some(p.clone()))
     {
         let stream = stream.map(move |e| {

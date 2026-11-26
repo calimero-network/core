@@ -435,6 +435,17 @@ struct Ran {
     blobs: Vec<Blob>,
     /// Keeps the node's budget for `blobs` until the run's entry is proposed or refused.
     _pending: Option<Arc<PendingBytes>>,
+    /// What a view read, when its run recorded it (`RunExtras::read_set`).
+    read_set: Option<calimero_app_host::ReadSet>,
+}
+
+/// A view run on this replica ([`Node::view_component`]).
+pub(crate) struct ViewRun {
+    pub answer: ViewAnswer,
+    /// What it read, when recorded.
+    pub read_set: Option<calimero_app_host::ReadSet>,
+    /// The app's last entry (`AppState::last_index`) in the state it read.
+    pub last_entry: u64,
 }
 
 impl Node {
@@ -1007,7 +1018,13 @@ impl Node {
                     Some((http, connectors)) => host.with_http(http).with_connectors(connectors),
                     None => host,
                 };
+                let host = if extras.read_set {
+                    host.with_read_set()
+                } else {
+                    host
+                };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
+                let read_set = out.read_set.take();
                 print_app_logs(app_id, kind, &method, &out.logs);
                 let mut blobs: Vec<Blob> = out.new_files.iter_mut().flat_map(blobs_of).collect();
                 // A blob the app already holds (or that another publish of this run made) is
@@ -1036,12 +1053,14 @@ impl Node {
                     outcome,
                     blobs,
                     _pending: Some(pending),
+                    read_set,
                 }
             }
             Err(e) => Ran {
                 outcome: Outcome::trap(TrapKind::Fault, &e.to_string()),
                 blobs: Vec::new(),
                 _pending: None,
+                read_set: None,
             },
         }
     }
@@ -1296,6 +1315,7 @@ impl Node {
                                 outcome: Outcome::trap(TrapKind::Fault, why),
                                 blobs: Vec::new(),
                                 _pending: None,
+                                read_set: None,
                             },
                         };
                         let outcome = ran.outcome;
@@ -1553,6 +1573,7 @@ impl Node {
                                 via: None,
                                 secrets,
                                 searches: None,
+                                read_set: false,
                             },
                         );
                         let outcome = ran.outcome;
@@ -1747,6 +1768,7 @@ impl Node {
                                 },
                                 blobs: Vec::new(),
                                 _pending: None,
+                                read_set: None,
                             }
                         } else {
                             let started = Instant::now();
@@ -1788,6 +1810,7 @@ impl Node {
                                     via: req.via.clone(),
                                     secrets,
                                     searches: None,
+                                    read_set: false,
                                 },
                             );
                             ran_for = Some(started.elapsed());
@@ -2316,14 +2339,39 @@ impl Node {
                 timeout: false,
             });
         }
+        Ok(self.view_component(g, req, searches, false).await?.answer)
+    }
+
+    /// A view of a component on this replica, as of what it has applied. With `record`,
+    /// the run's read set comes back too (a watched view), with the app's last entry the
+    /// state it read includes.
+    pub(crate) async fn view_component(
+        &self,
+        g: &Group<AppMachine>,
+        req: &ViewRequest,
+        searches: Option<&calimero_app_host::SearchBudget>,
+        record: bool,
+    ) -> Result<ViewRun, ApiError> {
         let bundle = g
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
         abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        if record
+            && !prepared
+                .abi
+                .methods
+                .get(&req.method)
+                .is_some_and(|m| m.subscribable)
+        {
+            return Err(ApiError::bad_request(
+                "NOT_SUBSCRIBABLE",
+                &format!("{} is not a subscribable view", req.method),
+            ));
+        }
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
-        let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
+        let (bundle_now, state, applied, ts_ms, search, last_entry) = g.read_local(|m, applied| {
             (
                 m.component_bundle(),
                 (m.view(), m.blob_view()),
@@ -2331,6 +2379,7 @@ impl Node {
                 m.state.component.head.last_ts_ms,
                 self.component_search
                     .for_view(&prepared.abi.search, m, applied),
+                m.state.last_index,
             )
         });
         if bundle_now.as_deref() != Some(bundle.as_str()) {
@@ -2378,25 +2427,30 @@ impl Node {
                         via,
                         secrets: crate::component::InstanceSecrets::new(),
                         searches,
+                        read_set: record,
                     },
                     search,
                 )
-                .outcome
             })
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+        let (out, read_set) = (out.outcome, out.read_set);
         self.usage.ran(&meter, run);
         crate::metrics::wasm_run(InvocationKind::View, run.wall);
         if !out.is_retryable() {
             self.usage.called(&meter, RunKind::View);
         }
-        Ok(ViewAnswer {
-            index: applied,
-            timeout: out.is_retryable(),
-            status: out.status,
-            result: out.result,
-            error: out.error,
+        Ok(ViewRun {
+            answer: ViewAnswer {
+                index: applied,
+                timeout: out.is_retryable(),
+                status: out.status,
+                result: out.result,
+                error: out.error,
+            },
+            read_set,
+            last_entry,
         })
     }
 
@@ -3187,6 +3241,8 @@ struct RunExtras {
     /// (its caller's), shared with the run and the views its own xcalls reach; `None` is a
     /// fresh request (`MAX_SEARCHES_PER_RUN`).
     searches: Option<calimero_app_host::SearchBudget>,
+    /// Record what the run reads (a watched view's read set).
+    read_set: bool,
 }
 
 /// How long a call, timer or delivery waits for one outbound response: within the

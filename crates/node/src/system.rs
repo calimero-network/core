@@ -27,6 +27,7 @@ mod apps;
 pub mod cluster_version;
 mod compute;
 mod deployments;
+pub mod effects;
 mod fleet;
 mod orgs;
 mod packages;
@@ -7858,6 +7859,8 @@ pub struct SystemMachine {
     /// messages of every app group ([`routing`]); dropped whenever `state`
     /// changes through [`Machine::apply`] or [`Machine::restore`].
     routing: routing::Routing,
+    /// What each applied entry may change for live views ([`effects`]), while anyone watches.
+    pub effects: effects::EffectsTx,
 }
 
 impl SystemMachine {
@@ -8095,10 +8098,16 @@ impl Machine for SystemMachine {
         // Whatever the entry changes, what was derived from the state goes.
         self.routing.forget();
         match serde_json::from_slice::<SystemCmd>(command) {
-            Ok(cmd) => match self.run(cmd) {
-                Ok(v) => ok(v),
-                Err(e) => err(&e),
-            },
+            Ok(cmd) => {
+                let effect = effects::effect_of(&cmd);
+                match self.run(cmd) {
+                    Ok(v) => {
+                        self.effects.send(index, effect);
+                        ok(v)
+                    }
+                    Err(e) => err(&e),
+                }
+            }
             Err(e) => {
                 // A feature gate keeps every entry within what each node
                 // applies (`cluster_version`): one that does not decode here
@@ -8138,6 +8147,7 @@ impl Machine for SystemMachine {
         };
         crate::metrics::system_state_bytes(data.len());
         self.routing.forget();
+        self.effects.send(self.index, effects::SysEffect::All);
         Ok(())
     }
 }

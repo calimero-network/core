@@ -23,6 +23,7 @@ pub mod recovery;
 mod route;
 pub mod transport;
 pub mod visitor;
+mod watch;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
 pub use files::ExportedFile;
@@ -30,6 +31,7 @@ pub use generated::{routes, types};
 pub use route::OperatorSigner;
 pub use transport::{Body, Credential, Request, Transport};
 use types::ReplicaAttestation;
+pub use watch::{Watch, WatchAdded, WatchNotice, WatchStream};
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]

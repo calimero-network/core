@@ -770,6 +770,9 @@ from .version_deadline import VersionDeadline
 from .view_result import ViewResult
 from .views_body import ViewsBody
 from .views_body_consistency import ViewsBodyConsistency
+from .watch_add_body import WatchAddBody
+from .watch_added import WatchAdded
+from .watch_remove_response_200 import WatchRemoveResponse200
 from .xcalls_report import XcallsReport
 
 __all__ = (
@@ -1487,5 +1490,8 @@ __all__ = (
     "ViewResult",
     "ViewsBody",
     "ViewsBodyConsistency",
+    "WatchAddBody",
+    "WatchAdded",
+    "WatchRemoveResponse200",
     "XcallsReport",
 )

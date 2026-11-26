@@ -28,6 +28,38 @@ pub struct ReadSet {
     /// Bytes of `ranges`' bounds.
     range_bytes: usize,
     unbounded: Option<String>,
+    /// The facts of the system log the run read (org, roles, teams, grants, links): a
+    /// system entry re-runs the view only when it may change one of them.
+    system: BTreeSet<SystemRead>,
+    /// The run read more system facts than [`MAX_SYSTEM_READS`]: every system entry that may
+    /// change anything a view reads re-runs it.
+    system_any: bool,
+    /// The run read a blob's metadata: the app's entries that change its blobs re-run it.
+    reads_blobs: bool,
+    /// The run read the clock, which a view sees as the timestamp of the entry it read at:
+    /// every entry the app applies re-runs it.
+    reads_clock: bool,
+    /// The run read who called it (`caller`, `via`, a grant's scope): its answer is the
+    /// caller's own, never shared with another caller's watch.
+    reads_caller: bool,
+}
+
+/// System facts one read set names at most; past it the set reads "anything in the system".
+pub const MAX_SYSTEM_READS: usize = 64;
+
+/// One fact of the system log a view read through the host.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SystemRead {
+    /// The app itself: its org, owner, links and unit.
+    App,
+    /// `account`'s role in the app's org.
+    Role(String),
+    /// The orgs `account` is in, with its role in each.
+    OrgsOf(String),
+    /// Whether `account` is in `team` (of the app's org).
+    Team { account: String, team: String },
+    /// The scope of `account`'s grant on the app.
+    Grant(String),
 }
 
 impl ReadSet {
@@ -35,6 +67,61 @@ impl ReadSet {
     #[must_use]
     pub fn unbounded(&self) -> Option<&str> {
         self.unbounded.as_deref()
+    }
+
+    /// Whether the run read anything of the system log.
+    #[must_use]
+    pub fn reads_system(&self) -> bool {
+        self.system_any || !self.system.is_empty()
+    }
+
+    /// The system facts the run read; `None`: more than [`MAX_SYSTEM_READS`], so any.
+    #[must_use]
+    pub fn system_reads(&self) -> Option<&BTreeSet<SystemRead>> {
+        (!self.system_any).then_some(&self.system)
+    }
+
+    /// Whether the run read a blob's metadata.
+    #[must_use]
+    pub fn reads_blobs(&self) -> bool {
+        self.reads_blobs
+    }
+
+    /// Whether the run read the clock.
+    #[must_use]
+    pub fn reads_clock(&self) -> bool {
+        self.reads_clock
+    }
+
+    /// Whether the run read who called it.
+    #[must_use]
+    pub fn reads_caller(&self) -> bool {
+        self.reads_caller
+    }
+
+    /// Records a fact of the system log read.
+    pub(crate) fn system(&mut self, read: SystemRead) {
+        if self.system_any || self.system.contains(&read) {
+            return;
+        }
+        if self.system.len() >= MAX_SYSTEM_READS {
+            self.system.clear();
+            self.system_any = true;
+            return;
+        }
+        let _new = self.system.insert(read);
+    }
+
+    pub(crate) fn blobs(&mut self) {
+        self.reads_blobs = true;
+    }
+
+    pub(crate) fn clock(&mut self) {
+        self.reads_clock = true;
+    }
+
+    pub(crate) fn caller(&mut self) {
+        self.reads_caller = true;
     }
 
     /// The keys got, as stored keys.
@@ -309,5 +396,23 @@ mod tests {
         let mut index = meta[..meta.len() - 3].to_vec();
         index.extend_from_slice(&[b'i', 0x00, 0x00]);
         assert!(!set.touches_key(&index));
+    }
+
+    #[test]
+    fn a_table_name_with_a_nul_is_escaped_as_the_sdk_encodes_it() {
+        let (start, end) = table_records(1, "a\0b");
+        let mut want = 1u64.to_be_bytes().to_vec();
+        want.extend_from_slice(&[
+            0x30, b'a', 0x00, 0xFF, b'b', 0x00, 0x00, 0x30, b'r', 0x00, 0x00,
+        ]);
+        assert_eq!(start, want);
+        let mut set = ReadSet::default();
+        set.range(start.clone(), end);
+        let mut record = start;
+        record.extend_from_slice(&[0x30, b'k', 0x00, 0x00]);
+        assert!(set.touches_key(&record));
+        // Table "a"'s records end its name where "a\0b" escapes the nul.
+        let (a, _) = table_records(1, "a");
+        assert!(!set.touches_key(&a));
     }
 }

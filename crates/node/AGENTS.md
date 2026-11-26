@@ -99,7 +99,15 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
 - **HTTP API**: `api.rs` (router, `principal`, `gate`, shared helpers), `api/<area>.rs` (one per
   area, each with its `routes()`), `api/openapi.rs` (`docs/public/openapi.json`),
   `error.rs`, `metrics.rs`, `consent_page.rs` and `consent_page/`, `app_host.rs` (frontends),
-  `origins.rs`, `presence.rs`.
+  `origins.rs`, `presence.rs`, `watch.rs` with `api/watches.rs` (live views: watch streams
+  on `/apps/{app}/events?watch=true`, each watch's read set checked against every applied
+  diff through `AppMachine::changes_tx`, and a view that read the directory
+  re-run only on an applied system entry that may change a fact it read (`system/effects.rs` classifies each command; an unclassified one touches every such view), a clock reader on every app entry and a blob reader on a blob change; watches of the same view, arguments and caller share one run per state, at most `MAX_CONCURRENT_RERUNS` at once and `MAX_RERUNS_PER_SEC` a second, past which a watch waits a longer interval; the holder is judged on each system entry that is not a token refresh and
+  before each frame; the new answer is pushed as `view-result` (first change at once, then
+  at most once per the watch's interval (the view's `watchIntervalMs`, default 1 s; a
+  client's `intervalMs` can only lengthen it, `watch::interval_of`), skipped when its hash
+  is unchanged, a bare
+  `view-changed` over `MAX_PUSHED_ANSWER_BYTES`)).
 - **Packages and releases**: `packages.rs`, `packages/pipelines.rs`, `runtime.rs`,
   `node/runtime.rs`, `report.rs`, `egress.rs`.
 - **Upgrades**: `node/cluster_version.rs`, `node/auto_updates.rs`, `node/restore_points.rs`,

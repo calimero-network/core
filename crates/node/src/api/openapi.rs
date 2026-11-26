@@ -1198,6 +1198,12 @@ fn components() -> Vec<Component> {
         )
         .of::<super::calls::ViewResult>(),
         component(
+            "WatchAdded",
+            "`POST /apps/{app}/watches`: the watch's id, which the stream's frames name, the app's last entry in the state the view read (a `last` to resume from) and the view's answer.",
+            "{ sub: string, index: uint, answer: any }",
+        )
+        .of::<super::watches::WatchAdded>(),
+        component(
             "XcallsReport",
             "`GET /apps/{app}/xcalls`: messages waiting, and those never delivered.",
             "{ pending: uint, deadLetters: #DeadLetter[] }",
@@ -2610,10 +2616,19 @@ fn operations() -> Vec<Op> {
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/events", "events", AppAccess, "An app's events as server-sent events")
-            .about("Committed events from index `from`, then live ones, each to its audience.")
-            .query::<super::EventsQuery>("{ from?: uint }")
-            .events("each committed event the caller is in the audience of")
+            .about("Committed events from index `from`, then live ones, each to its audience. With `watch=true`, a watch stream instead: its first frame is `event: stream` with `{ stream }`, then `event: view-result` (`id: <index>:<seq>`, `{ sub, index, answer }`, or `{ sub, index, error }` for an app error) when a watched view's answer changed (the first change at once, then at most one per the watch's interval), `event: view-changed` (`{ sub, index }`) when the new answer is over 64 KiB (read it), and `event: watch-ended` (`{ sub, reason }`: `access-lost`, `view-refused` or `read-set-unbounded`) when a watch is dropped. `stream` with `last` (or `Last-Event-ID`) resumes a stream within 30 s: each watch touched after `last` is sent its current answer again; a stream that is gone comes back as a new one followed by `event: watch-reset` (`{}`), and its watches must be added again.")
+            .query::<super::EventsQuery>("{ from?: uint, watch?: bool, stream?: string, last?: uint }")
+            .events("each committed event the caller is in the audience of, or a watch stream's notices")
             .errors(&[(429, "RATE_LIMITED"), (503, "UNAVAILABLE")]),
+        post("/apps/{app}/watches", "watch_add", AppAccess, "Watch a subscribable view")
+            .about("Runs `view` (a view the app's ABI marks `subscribable`) as the caller, with `/views`' gate, records what it read and keeps it on `stream` (a watch stream of `/events?watch=true`): the stream then carries this watch's new answer, `sub`, when an entry that writes what it read (or, for a view that read the directory or the clock, a system change) changes it. `index` is the app's last entry in the state it read and `answer` its answer. The view runs again at most once per the interval its app sets (`watchIntervalMs` in the ABI, default 1000); `intervalMs` can only lengthen it, up to 10000. A stream holds at most 64 watches and a node 2,048; `args` is at most 4 KiB.")
+            .json::<super::watches::WatchBody>("{ stream: string, view: string, args?: any, intervalMs?: uint }")
+            .ok("#WatchAdded")
+            .errors(&[(400, "NOT_A_VIEW"), (400, "NOT_SUBSCRIBABLE"), (404, "UNKNOWN_STREAM"), (413, "ARGS_TOO_LARGE"), (422, "READ_SET_UNBOUNDED"), (422, "APP_ERROR"), (422, "TRAP"), (429, "TOO_MANY_WATCHES"), (503, "TIMEOUT")]),
+        delete("/apps/{app}/watches/{sub}", "watch_remove", AppAccess, "Stop watching a view")
+            .about("Forgets watch `sub`, which the caller holds.")
+            .ok("{}")
+            .errors(&[(404, "UNKNOWN_WATCH")]),
         post("/apps/{app}/upgrade", "app_upgrade", AccountHolder, "Upgrade an app instance")
             .about("To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.")
             .json::<super::UpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, confirm?: #Confirm, migrate?: string }")
