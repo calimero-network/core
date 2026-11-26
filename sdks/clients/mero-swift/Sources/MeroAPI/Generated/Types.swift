@@ -6565,14 +6565,12 @@ public enum Components {
                 case replicas
             }
         }
-        /// What `POST /apps` answers: the new instance, its context id, its group and replicas, whether its release ships a compute component, and the apps it created with it by name.
+        /// What `POST /apps` answers: the new instance, its app group and replicas, whether its release ships a compute component, and the apps it created with it by name.
         ///
         /// - Remark: Generated from `#/components/schemas/AppCreated`.
         public struct AppCreated: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/AppCreated/appId`.
             public var appId: Swift.String
-            /// - Remark: Generated from `#/components/schemas/AppCreated/contextId`.
-            public var contextId: Swift.String
             /// - Remark: Generated from `#/components/schemas/AppCreated/group`.
             public var group: Swift.Int64
             /// - Remark: Generated from `#/components/schemas/AppCreated/replicas`.
@@ -6603,21 +6601,18 @@ public enum Components {
             ///
             /// - Parameters:
             ///   - appId:
-            ///   - contextId:
             ///   - group:
             ///   - replicas:
             ///   - compute:
             ///   - links:
             public init(
                 appId: Swift.String,
-                contextId: Swift.String,
                 group: Swift.Int64,
                 replicas: [Swift.Int64],
                 compute: Swift.Bool,
                 links: Components.Schemas.AppCreated.LinksPayload
             ) {
                 self.appId = appId
-                self.contextId = contextId
                 self.group = group
                 self.replicas = replicas
                 self.compute = compute
@@ -6625,7 +6620,6 @@ public enum Components {
             }
             public enum CodingKeys: String, CodingKey {
                 case appId
-                case contextId
                 case group
                 case replicas
                 case compute
@@ -15054,7 +15048,7 @@ public enum Components {
                 case targets
             }
         }
-        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
+        /// An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
         ///
         /// - Remark: Generated from `#/components/schemas/App`.
         public struct App: Codable, Hashable, Sendable {
@@ -16488,27 +16482,21 @@ public enum Components {
                 public var appId: Swift.String
                 /// - Remark: Generated from `#/components/schemas/TeamView/AppsPayload/name`.
                 public var name: Swift.String
-                /// - Remark: Generated from `#/components/schemas/TeamView/AppsPayload/contextId`.
-                public var contextId: Swift.String
                 /// Creates a new `AppsPayloadPayload`.
                 ///
                 /// - Parameters:
                 ///   - appId:
                 ///   - name:
-                ///   - contextId:
                 public init(
                     appId: Swift.String,
-                    name: Swift.String,
-                    contextId: Swift.String
+                    name: Swift.String
                 ) {
                     self.appId = appId
                     self.name = name
-                    self.contextId = contextId
                 }
                 public enum CodingKeys: String, CodingKey {
                     case appId
                     case name
-                    case contextId
                 }
             }
             /// - Remark: Generated from `#/components/schemas/TeamView/apps`.

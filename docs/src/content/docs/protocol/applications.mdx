@@ -209,7 +209,7 @@ always recorded `installedBy`, so each is visible by the rules above from the
 first start of this version.
 
 :::caution[What stays shared]
-Package names are one namespace per cluster: installing a release of a name
+Package names are shared by the whole cluster: installing a release of a name
 another publisher's key pinned is refused with that key named, so the name's
 existence shows. A frontend is served to anyone who asks for its origin (a
 page loads before anyone signs in), so a package's frontend, its releases'
@@ -460,7 +460,7 @@ A release with pipelines also needs `409 CLUSTER_NOT_UPGRADED` cleared.
 
 #### Release reads
 
-- `GET /packages/{package}/{version}/pipelines` answers `{ name: { hash, worstCaseFuel, modules, pipeline } }` (`meroctl app pipelines`).
+- `GET /packages/{package}/{version}/pipelines` answers `{ name: { hash, worstCaseFuel, modules, pipeline } }` (`meroctl package pipelines`).
 - `GET /packages/{package}/{version}/capabilities` answers the release's card before any app of it exists, to whoever sees the release.
   A session bound to the package sees what its account does, and every release only for a record from before `visibility` (`SystemState::sees_release_from`).
   It is read through `consent_page::release_capabilities`; its first eight keys match `consent_page::diff::side`, and `abi` is the embedded `calimero:abi` verbatim.

@@ -8,6 +8,9 @@ on:
     paths:
       - 'docs/**'
       - '.github/workflows/docs-site.yml'
+      # The upgrade coverage matrix is written from the deep cases at build time.
+      - 'crates/node/tests/fault/upgrade_deep.py'
+      - 'crates/node/tests/fault/upgrade_cases/**'
   workflow_dispatch:
 
 permissions:

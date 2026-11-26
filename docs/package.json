@@ -5,11 +5,15 @@
   "type": "module",
   "description": "Calimero Core documentation site (Astro Starlight).",
   "scripts": {
+    "generate": "python3 -I ../crates/node/tests/fault/upgrade_deep.py --write-matrix src/generated/upgrade-matrix.md",
+    "predev": "npm run generate",
     "dev": "astro dev",
+    "prestart": "npm run generate",
     "start": "astro dev",
+    "prebuild": "npm run generate",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro build && node scripts/check-links.mjs"
+    "check": "npm run build && node scripts/check-links.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.41.3",

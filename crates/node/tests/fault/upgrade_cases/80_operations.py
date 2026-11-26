@@ -11,6 +11,7 @@ from pathlib import Path
 
 from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, ops, ops_text,
                           person, refused, same_decisions, same_read, scrub, signed_ops, snap, subset, until)
+from upgrade_deep import not_covered
 from rv2 import HttpError
 from upgrade_path import case
 
@@ -463,3 +464,19 @@ class JobNodeAttestation(DeepCase):
             return json.loads(outcome)
 
         eq(until("the run ends", ended, 240)["status"], "done", "the run on the old job node")
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
+            "`AppRecord::egress_off`, `SetEgress`)",
+            "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
+            "cluster is recreated rather than rolled, and no release before it has the switch to seed. "
+            "`tests/it/egress.rs` covers the switch, its refusals and the consent page on one build")
+
+not_covered("Governance", "A release deadline that passes while a cluster rolls (`SystemState::retired`: the old nodes are "
+            "placed no new app mid-roll)",
+            "a deadline is judged at the command's own time, so the granted run sets a passed one on the old nodes' own "
+            "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
+            "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
+            "(`cluster.rs`) covers retired nodes on one build")

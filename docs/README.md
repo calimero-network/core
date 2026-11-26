@@ -21,6 +21,10 @@ npm run build    # static output in dist/
 npm run check    # astro build + internal link check (what CI runs)
 ```
 
+`dev`, `start` and `build` first run `npm run generate` (needs `python3`), which writes
+`src/generated/upgrade-matrix.md` (gitignored) from `crates/node/tests/fault/upgrade_cases/`:
+the coverage matrix on Contribute > Testing. Edit the cases, never that file.
+
 ## Layout
 
 Pages live in `src/content/docs/`, split by audience track — **Cloud** (overview,

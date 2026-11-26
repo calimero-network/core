@@ -143,7 +143,7 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Approve URL prefixes an application's publisher may call out to from
+    /// Approve URL prefixes a package's publisher may call out to from
     /// the organization's instances (the owner's, where the owner holds outbound approvals).
     Outbound {
         #[arg(value_name = "ORG")]
@@ -340,7 +340,7 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
     Ok(match cmd {
         NamespaceCmd::Create { name } => to_json(&orgs.create(&name, None, None).await?)?,
         NamespaceCmd::Get { namespace } => to_json(&org(env, &namespace).await?)?,
-        NamespaceCmd::List => json!({ "namespaces": env.client.auth().me().await?.orgs }),
+        NamespaceCmd::List => json!({ "orgs": env.client.auth().me().await?.orgs }),
         NamespaceCmd::Delete {
             namespace,
             dev_passkey,
@@ -383,7 +383,7 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             to_json(&out?)?
         }
         NamespaceCmd::Groups { namespace } => {
-            json!({ "groups": org(env, &namespace).await?.teams })
+            json!({ "teams": org(env, &namespace).await?.teams })
         }
         NamespaceCmd::CreateGroup {
             namespace,

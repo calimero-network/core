@@ -1,6 +1,6 @@
 ---
 title: Build your first app
-description: A guided path from an empty crate to a running Calimero app - state, methods, events and errors, tests on the real engine, a component, a context on a local cluster, and a second person using it.
+description: A guided path from an empty crate to a running Calimero app - state, methods, events and errors, tests on the real engine, a component, an app instance on a local cluster, and a second person using it.
 sidebar:
   order: 2.5
 ---
@@ -11,8 +11,8 @@ import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astr
 
 This tutorial walks one path from nothing to a running key-value app on the
 component SDK (`calimero-sdk`): you write a small Rust crate, test it on the
-real engine, build it into a `calimero:app` component, create a context (an app
-instance) from it on a local cluster, call its methods, and share it with a
+real engine, build it into a `calimero:app` component, create an app instance
+from it on a local cluster, call its methods, and share it with a
 second person, checking the output at each step.
 
 The app is a smaller cousin of core's [`apps/kv-store`](/build/examples/#start-here):
@@ -63,7 +63,7 @@ a `Counter`, the two state types most apps start from.
    ```
 
    `login` signs up when the file does not exist yet and saves the session.
-   Her first context, naming no organization, comes with a new one of her own;
+   Her first instance, naming no organization, comes with a new one of her own;
    later ones go there unless she names another. See
    [Run local nodes](/contribute/development/#run-local-nodes).
 
@@ -334,7 +334,7 @@ the node reads to dispatch and gate calls ([App interface](/build/app-abi/)).
 
 <Steps>
 
-1. **Create a context** from it. On a development cluster `--path` uploads a
+1. **Create an instance** from it. On a development cluster `--path` uploads a
    raw `.wasm` (a real cluster installs signed `.mpk` packages, see
    [Packaging & signing](/build/packaging-signing/)); `init` runs as you:
 
@@ -390,28 +390,28 @@ the node reads to dispatch and gate calls ([App interface](/build/app-abi/)).
 
 ## 7. Make it multi-user
 
-A context belongs to an organization, and the organization decides who reaches
-it. Create one, create the context in it, and invite a second person:
+An instance belongs to an organization, and the organization decides who reaches
+it. Create one, create the instance in it, and invite a second person:
 
 <Steps>
 
-1. **Create an organization** and a context in it. `org create` answers
+1. **Create an organization** and an instance in it. `org create` answers
    the new organization's id as `orgId`:
 
    ```sh
-   meroctl namespace create acme
+   meroctl org create acme
    meroctl instance create --name team-kv --path kv_store.wasm \
-     --namespace <org-id> --alias team-kv
+     --org <org-id> --alias team-kv
    ```
 
-   A context created in an organization is reached by every member (access
+   An instance created in an organization is reached by every member (access
    `org`, the default there).
 
 2. **Invite** a member. An invite is approved with your passkey, so pass the
    file on a development cluster; the answer carries the invitation `token`:
 
    ```sh
-   meroctl namespace invite <org-id> --role member --dev-passkey ./dev-passkey.json
+   meroctl org invite <org-id> --role member --dev-passkey ./dev-passkey.json
    ```
 
 3. **Join** as the second person: a second account, with its own passkey file,
@@ -421,14 +421,14 @@ it. Create one, create the context in it, and invite a second person:
    ```sh
    meroctl --home ./bob node add local http://127.0.0.1:2501/ --allow-mock
    meroctl --home ./bob login --dev-passkey ./bob-passkey.json --name bob
-   meroctl --home ./bob namespace join <token>
+   meroctl --home ./bob org join <token>
    ```
 
 4. **Write as one, read as the other**. Aliases are per account, so bob names
-   the context by its id (`meroctl instance get team-kv` shows it):
+   the instance by its id (`meroctl instance get team-kv` shows it):
 
    ```sh
-   meroctl --home ./bob call -i <context-id> set --args '{"key": "from", "value": "bob"}'
+   meroctl --home ./bob call -i <app-id> set --args '{"key": "from", "value": "bob"}'
    meroctl call -i team-kv get --args '{"key": "from"}' --view
    ```
 
@@ -440,7 +440,7 @@ it. Create one, create the context in it, and invite a second person:
 
 Both people wrote and read the same state, each with their own passkey,
 through any node of the cluster. The organization decides who reaches the
-context; what each member may change inside it is the app's own code and its
+instance; what each member may change inside it is the app's own code and its
 [access control](/build/guides/access-control/). See
 [Organizations, teams & access](/protocol/organizations/).
 
@@ -471,5 +471,5 @@ You have the full loop: write, test, build, create, call, share. From here:
 <LinkCard
   title="How-to guides"
   href="/build/guides/"
-  description="Task-focused recipes: events, blobs, access control, cross-context calls, and more."
+  description="Task-focused recipes: events, blobs, access control, cross-app calls, and more."
 />

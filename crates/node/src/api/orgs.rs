@@ -842,7 +842,6 @@ pub(super) fn team_view(
         .map(|a| TeamAppView {
             app_id: a.app_id.clone(),
             name: a.name.clone(),
-            context_id: hex::encode(sha256(a.app_id.as_bytes())),
         })
         .collect();
     Some(TeamView {
@@ -893,7 +892,6 @@ pub(super) struct TeamMemberView {
 pub(super) struct TeamAppView {
     app_id: String,
     name: String,
-    context_id: String,
 }
 
 async fn team_get(

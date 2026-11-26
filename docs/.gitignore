@@ -2,3 +2,5 @@ node_modules/
 dist/
 .astro/
 .DS_Store
+# Written by the build from crates/node/tests/fault/upgrade_cases (upgrade_deep.py --write-matrix).
+src/generated/
