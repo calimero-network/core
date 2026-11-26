@@ -9133,6 +9133,7 @@ fn create_deployment(id: &str, owner: super::Deployer, actor: &str) -> SystemCmd
         actor: actor.into(),
         at: 10,
         consent: serde_json::Value::Null,
+        deployment_needs_recovery: false,
     }
 }
 
@@ -9217,6 +9218,7 @@ fn deployments_are_their_managers_and_keep_what_they_offer() {
         actor: "alice".into(),
         at: 10,
         consent: serde_json::Value::Null,
+        deployment_needs_recovery: false,
     };
     assert!(m.run_unproven(bad_name).is_err());
     assert!(m
@@ -9578,6 +9580,7 @@ fn deployment_changes_carry_their_managers_consent() {
             actor: actor.into(),
             at: 10,
             consent,
+            deployment_needs_recovery: false,
         };
     assert!(m
         .run(create("d".into(), "alice", serde_json::Value::Null))
@@ -11050,6 +11053,7 @@ fn set_key(key: Option<String>, actor: &str, consent: serde_json::Value) -> Syst
         at: 10,
         actor: actor.into(),
         consent,
+        deployment_needs_recovery: false,
     }
 }
 
@@ -14615,6 +14619,106 @@ fn an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one()
         .last_upgrade
         .as_ref()
         .is_some_and(|u| !u.ok));
+}
+
+/// From the cluster version that brings `Feature::DeploymentNeedsRecovery`, or an entry
+/// judged by it, an organization owns a deployment only with a recovery key: it creates
+/// one only holding a key, and cannot remove the key while it owns one, though it may
+/// rotate it. An account's deployment needs none, and an entry logged before applies as it did.
+#[test]
+fn an_organization_owns_a_deployment_only_with_a_recovery_key() {
+    use super::{Deployer, Deployments, RECOVERY_KEY_REQUIRED};
+    let mut m = deploying(Deployments::Open);
+    let org = || Deployer::Org("org".into());
+    let needing = |mut cmd: SystemCmd| {
+        if let SystemCmd::CreateDeployment {
+            deployment_needs_recovery,
+            ..
+        }
+        | SystemCmd::SetRecoveryKey {
+            deployment_needs_recovery,
+            ..
+        } = &mut cmd
+        {
+            *deployment_needs_recovery = true;
+        }
+        cmd
+    };
+
+    // Logged before the rule: an organization without a key creates one, and removes a key.
+    let _ok = m
+        .run_unproven(create_deployment("before", org(), "carol"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    let _ok = m.run_unproven(set_key(None, "alice", Value::Null)).unwrap();
+    // An entry judged by the rule is refused below the version too.
+    assert_eq!(
+        m.run_unproven(needing(create_deployment("flagged", org(), "carol")))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(needing(set_key(None, "alice", Value::Null)))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m.run_unproven(set_key(None, "alice", Value::Null)).unwrap();
+
+    let rc38 = "1.0.0-rc.38";
+    register(&mut m, 1, "replica");
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: rc38.into(),
+            nodes: [(1, rc38.to_owned())].into(),
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(create_deployment("after", org(), "carol"))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    // An account's deployment needs no key.
+    let _ok = m
+        .run_unproven(create_deployment(
+            "mine",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment("after", org(), "carol"))
+        .unwrap();
+    // Owning one: the key rotates but is not removed; a member is told only that the key is
+    // the owner's, never whether the organization owns a deployment.
+    assert_eq!(
+        m.run_unproven(set_key(None, "carol", Value::Null))
+            .unwrap_err(),
+        super::OWNER_ONLY_RECOVERY
+    );
+    assert_eq!(
+        m.run_unproven(set_key(None, "alice", Value::Null))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&[7; 32])), "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.state.orgs["org"]
+            .recovery
+            .as_ref()
+            .map(|r| r.public_key.clone()),
+        Some(public(&[7; 32]))
+    );
 }
 
 /// `inst` with a member `kv` of package `q` on 0.1.0, under the automatic policy:

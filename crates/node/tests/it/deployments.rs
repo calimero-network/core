@@ -199,6 +199,17 @@ async fn org(owner: &Client, name: &str) -> String {
         .to_owned()
 }
 
+/// `owner` gives `org` the recovery key of `seed`: an organization owns a deployment only
+/// with one.
+async fn recoverable(owner: &Client, pk: &mut SoftAuthenticator, org: &str, seed: [u8; 32]) {
+    let key = calimero_identity::recovery::recovery_public(&seed);
+    let _ok = owner
+        .orgs()
+        .recovery_set(org, Some(Some(&key)), Some(pk))
+        .await
+        .unwrap();
+}
+
 /// `who` joins `org` as a member, invited by `admin`.
 async fn join(admin: &Client, admin_pk: &mut SoftAuthenticator, org: &str, who: &Client) {
     let token = admin
@@ -293,6 +304,65 @@ async fn instance(
 
 fn forbidden(e: &calimero_client::Error) {
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}
+
+/// An organization creates a deployment only holding a recovery key, so a lost passkey
+/// never locks its deployment, and keeps the key while it owns one: rotating it is
+/// allowed, removing it is not. An account's deployment needs none. Each refusal comes
+/// before the passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_organization_deploys_only_holding_a_recovery_key() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let acme = org(&alice, "Acme").await;
+    let refused = |e: calimero_client::Error| {
+        assert_eq!(e.code(), Some("RECOVERY_KEY_REQUIRED"), "{e}");
+    };
+
+    refused(
+        alice
+            .deployments()
+            .create("acme", typed(json!({ "org": acme })), None)
+            .await
+            .unwrap_err(),
+    );
+    let _mine = deploy(
+        &alice,
+        &mut alice_pk,
+        "mine",
+        json!({ "account": alice_id }),
+    )
+    .await;
+
+    recoverable(&alice, &mut alice_pk, &acme, [5; 32]).await;
+    let d = deploy(&alice, &mut alice_pk, "acme", json!({ "org": acme })).await;
+    refused(
+        alice
+            .orgs()
+            .recovery_set(&acme, Some(None), None)
+            .await
+            .unwrap_err(),
+    );
+    recoverable(&alice, &mut alice_pk, &acme, [6; 32]).await;
+    let o = alice.orgs().get(&acme).await.map(wire).unwrap();
+    assert_eq!(
+        o["recovery"]["publicKey"],
+        json!(calimero_identity::recovery::recovery_public(&[6; 32])),
+        "{o}"
+    );
+
+    // Once it owns none, the key may go.
+    let _ok = alice
+        .deployments()
+        .delete(&d, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let _ok = alice
+        .orgs()
+        .recovery_set(&acme, Some(None), Some(&mut alice_pk))
+        .await
+        .unwrap();
 }
 
 /// An account owns a deployment it alone changes; an organization owns one
@@ -427,6 +497,7 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     join(&alice, &mut alice_pk, &acme, &bob).await;
     join(&alice, &mut alice_pk, &acme, &carol).await;
     set_caps(&alice, &mut alice_pk, &acme, &carol_id, MANAGE_APPLICATION).await;
+    recoverable(&alice, &mut alice_pk, &acme, [3; 32]).await;
     // carol needs to see the release to offer it: alice installs it for Acme too.
     let _ok = alice
         .packages()
@@ -1560,6 +1631,7 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
         .upload(release("com.test.board", "1.0.0"), Some(&dev_b))
         .await
         .unwrap();
+    recoverable(&dave, &mut dave_pk, &dev_b, [4; 32]).await;
     let da = deploy(
         &alice,
         &mut alice_pk,

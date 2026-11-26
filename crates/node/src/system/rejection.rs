@@ -83,11 +83,13 @@ pub enum RejectionKind {
     UndoNotAsNamed,
     /// `409 UNDO_RELEASE_GONE`: [`super::UNDO_RELEASE_GONE`].
     UndoReleaseGone,
+    /// `409 RECOVERY_KEY_REQUIRED`: [`super::RECOVERY_KEY_REQUIRED`].
+    RecoveryKeyRequired,
 }
 
 impl RejectionKind {
     /// Every kind, for reading one back from its code.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Rejected,
         Self::QuotaExceeded,
         Self::ReleaseDeadline,
@@ -122,6 +124,7 @@ impl RejectionKind {
         Self::UndoStale,
         Self::UndoNotAsNamed,
         Self::UndoReleaseGone,
+        Self::RecoveryKeyRequired,
     ];
 
     /// The code the API answers it with, and `apply`'s answer carries.
@@ -162,6 +165,7 @@ impl RejectionKind {
             Self::UndoStale => "UNDO_STALE",
             Self::UndoNotAsNamed => "UNDO_NOT_AS_NAMED",
             Self::UndoReleaseGone => "UNDO_RELEASE_GONE",
+            Self::RecoveryKeyRequired => "RECOVERY_KEY_REQUIRED",
         }
     }
 
@@ -199,7 +203,8 @@ impl RejectionKind {
             | Self::UndoWindowPassed
             | Self::UndoStale
             | Self::UndoNotAsNamed
-            | Self::UndoReleaseGone => 409,
+            | Self::UndoReleaseGone
+            | Self::RecoveryKeyRequired => 409,
         }
     }
 
@@ -383,7 +388,7 @@ mod tests {
     /// `node::rejected` answered for it when it matched the message.
     #[test]
     fn each_named_refusal_keeps_its_status_and_code() {
-        let named: [(&Rejection, u16, &str); 29] = [
+        let named: [(&Rejection, u16, &str); 30] = [
             (&system::NOT_A_DEPLOYER, 403, "DEPLOY_NOT_GRANTED"),
             (&system::PERSONAL_ORG_EXISTS, 409, "PERSONAL_ORG_EXISTS"),
             (&system::GUESTS_NOT_ALLOWED, 409, "GUESTS_NOT_ALLOWED"),
@@ -425,6 +430,7 @@ mod tests {
             (&system::UNDO_STALE, 409, "UNDO_STALE"),
             (&system::UNDO_NOT_AS_NAMED, 409, "UNDO_NOT_AS_NAMED"),
             (&system::UNDO_RELEASE_GONE, 409, "UNDO_RELEASE_GONE"),
+            (&system::RECOVERY_KEY_REQUIRED, 409, "RECOVERY_KEY_REQUIRED"),
         ];
         for (refused, status, code) in named {
             let api = crate::node::rejected(refused);

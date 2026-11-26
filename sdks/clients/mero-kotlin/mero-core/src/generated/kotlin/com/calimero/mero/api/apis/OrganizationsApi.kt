@@ -2985,7 +2985,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/recovery
      * Set the organization&#39;s recovery key
-     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param recoveryKeyBody 
      * @return kotlinx.serialization.json.JsonObject
@@ -3018,7 +3018,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/recovery
      * Set the organization&#39;s recovery key
-     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param recoveryKeyBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>

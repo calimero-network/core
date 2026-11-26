@@ -55,6 +55,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 412:
         response_412 = Error.from_dict(response.json())
 
@@ -91,7 +96,9 @@ def sync_detailed(
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -128,7 +135,9 @@ def sync(
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -160,7 +169,9 @@ async def asyncio_detailed(
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -195,7 +206,9 @@ async def asyncio(
 
      A named set of releases an owner (an account or organization) offers for others to instantiate.
     Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no
-    apps domain).
+    apps domain). An organization owns a deployment only holding a recovery key (`POST
+    /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the
+    step-up from cluster version 1.0.0-rc.38.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

@@ -1561,6 +1561,14 @@ impl DeployerGrant {
     }
 }
 
+/// Why an organization without a recovery key may not own a deployment, nor remove its key
+/// while it owns one ([`SystemState::keeps_recoverable`]); the API answers it `409
+/// RECOVERY_KEY_REQUIRED` (`node::rejected`).
+pub const RECOVERY_KEY_REQUIRED: Rejection = Rejection::new(
+    RejectionKind::RecoveryKeyRequired,
+    "an organization that owns a deployment holds a recovery key, so a lost passkey never locks the deployment: set one first, and rotate it rather than remove it",
+);
+
 /// What an install is refused with where deployments are granted and the
 /// installer holds no live grant; the API answers it `403
 /// DEPLOY_NOT_GRANTED` (`node::rejected`).
@@ -2850,6 +2858,32 @@ impl SystemState {
             Deployer::Account(a) => a == account,
             Deployer::Org(o) => self.manages_apps(o, account, None),
         }
+    }
+
+    /// Whether the recovery rule judges an entry: its `flag` says so, or the logged version
+    /// brings [`cluster_version::Feature::DeploymentNeedsRecovery`].
+    #[must_use]
+    pub fn recovery_rule(&self, flag: bool) -> bool {
+        flag || self.cluster_brings(cluster_version::Feature::DeploymentNeedsRecovery)
+    }
+
+    /// Whether `owner` may own a deployment under the recovery rule (`flag` as in
+    /// [`Self::recovery_rule`]): an organization holds a recovery key, so a lost passkey
+    /// never locks its deployments; an account always may.
+    #[must_use]
+    pub fn keeps_recoverable(&self, owner: &Deployer, flag: bool) -> bool {
+        let Deployer::Org(o) = owner else {
+            return true;
+        };
+        !self.recovery_rule(flag) || self.orgs.get(o).is_some_and(|o| o.recovery.is_some())
+    }
+
+    /// Whether `org`'s recovery key may be removed under the recovery rule (`flag` as in
+    /// [`Self::recovery_rule`]): not while it owns a deployment.
+    #[must_use]
+    pub fn may_remove_recovery(&self, org: &str, flag: bool) -> bool {
+        let owner = Deployer::Org(org.to_owned());
+        !self.recovery_rule(flag) || !self.deployments.values().any(|d| d.owner == owner)
     }
 
     /// `owner`'s kind (`account` or `org`) and its name, `None` once it is gone.
@@ -6875,6 +6909,10 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// An organization owns a deployment only with a recovery key
+        /// ([`SystemState::keeps_recoverable`]); absent in an earlier entry.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deployment_needs_recovery: bool,
     },
     /// Offer `package@version`, installed already, as `app` in `deployment`,
     /// adding the entry or moving it to another release of its package
@@ -7452,6 +7490,10 @@ pub enum SystemCmd {
         at: u64,
         actor: AccountId,
         consent: Value,
+        /// The key of an organization that owns a deployment is not removed
+        /// ([`SystemState::keeps_recoverable`]); absent in an earlier entry.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deployment_needs_recovery: bool,
     },
     /// Start handing `org` to `account`: `signature` is the recovery key's
     /// ([`calimero_identity::recovery::sign_recovery`]) over `org`, `account`

@@ -433,6 +433,12 @@ async fn recovery_set(
             )
         })?;
     }
+    // Only a removal is judged by the rule; a rotation asks no node anything.
+    let needs_recovery =
+        body.public_key.is_none() && super::deployments::deployment_needs_recovery(&node).await;
+    if body.public_key.is_none() && !node.sys(|s| s.may_remove_recovery(&org, needs_recovery)) {
+        return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+    }
     let args = json!({ "publicKey": body.public_key });
     let consent = org_consent(&node, &p, &org, "__set_recovery_key", &args, body.confirm).await?;
     let _ok = node
@@ -442,6 +448,7 @@ async fn recovery_set(
             at: recovery_now(&node),
             actor,
             consent,
+            deployment_needs_recovery: needs_recovery,
         })
         .await?;
     Ok(Json(json!({})))

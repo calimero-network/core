@@ -515,6 +515,15 @@ pub(super) struct CustomerApp {
     version: String,
 }
 
+/// Whether every node judges the recovery rule
+/// ([`crate::system::cluster_version::Feature::DeploymentNeedsRecovery`]): the API then sets
+/// its flag and refuses first what apply would.
+pub(super) async fn deployment_needs_recovery(node: &Node) -> bool {
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentNeedsRecovery])
+        .await
+        .is_ok()
+}
+
 /// Create a deployment of `owner` (the caller's own account, or an
 /// organization where it holds `MANAGE_APPLICATION` org-wide), with a passkey
 /// assertion over `cluster / __create_deployment / { name, owner }` (a `412`
@@ -534,6 +543,12 @@ async fn deployment_create(
         ));
     }
     node.refuse_undeployable(&account).await?;
+    // Only an organization's deployment is judged by the rule.
+    let needs_recovery =
+        matches!(body.owner, Deployer::Org(_)) && deployment_needs_recovery(&node).await;
+    if !node.sys(|s| s.keeps_recoverable(&body.owner, needs_recovery)) {
+        return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+    }
     let consent = consent(
         &node,
         &p,
@@ -557,6 +572,7 @@ async fn deployment_create(
             actor: account,
             at: now_secs(),
             consent,
+            deployment_needs_recovery: needs_recovery,
         })
         .await?;
     // Its frontend host, `app_host::deployment_label`, for the resolver.

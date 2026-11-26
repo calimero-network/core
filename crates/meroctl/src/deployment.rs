@@ -29,7 +29,8 @@ pub enum DeploymentCmd {
         deployment: String,
     },
     /// Create a deployment, owned by this account or by an organization
-    /// where it holds `MANAGE_APPLICATION`. Approved with a passkey.
+    /// where it holds `MANAGE_APPLICATION` and which holds a recovery key
+    /// (`POST /orgs/{org}/recovery`). Approved with a passkey.
     Create {
         /// The name customers see.
         name: String,

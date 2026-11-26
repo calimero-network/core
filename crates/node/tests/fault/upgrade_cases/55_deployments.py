@@ -11,6 +11,8 @@ import tarfile
 import urllib.parse
 from pathlib import Path
 
+import ed25519_sign
+from rv2 import b64url
 from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
                           signed_ops, subset, until)
 from upgrade_path import case
@@ -241,6 +243,48 @@ class DeploymentNamedToCustomers(DeepCase):
         cass = person(w, "cass")
         s["apps"].append(cass.raw("post", "apps", {"name": "named-2", "deployment": s["deployment"],
                                                    "package": OFFERED, "org": s["org"]})["appId"])
+        self.check(w, s)
+
+
+def _recovery_key(seed: bytes) -> str:
+    return b64url(ed25519_sign.public_key(seed))
+
+
+@case
+class DeploymentNeedsRecovery(DeepCase):
+    name = "deployment-needs-recovery"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = "an organization with a recovery key, and a deployment it owns"
+    verifies = ("the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns "
+                "the deployment, before the passkey; on the new release rotating it succeeds, and another "
+                "organization without a key is refused a deployment")
+
+    def populate(self, w):
+        ruth = person(w, "ruth")
+        org = new_org(ruth, "Recoverable Deployer Org")
+        ruth.raw("post", f"orgs/{org}/recovery", {"publicKey": _recovery_key(b"\x11" * 32)})
+        d = ruth.raw("post", "deployments", {"name": "ruth-labs", "owner": {"org": org}})["id"]
+        return {"org": org, "deployment": d, "key": _recovery_key(b"\x11" * 32)}
+
+    def check(self, w, s):
+        ruth = person(w, "ruth")
+        eq((ruth.get(f"orgs/{s['org']}").get("recovery") or {}).get("publicKey"), s["key"],
+           "the deploying organization's recovery key")
+        eq(ruth.get(f"deployments/{s['deployment']}").get("owner", {}).get("kind"), "org", "the org's deployment")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": None},
+                                                         approve=False),
+                "removing the recovery key of an organization that owns a deployment")
+
+    def exercise(self, w, s):
+        ruth = person(w, "ruth")
+        s["key"] = _recovery_key(b"\x12" * 32)
+        ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": s["key"]})
+        bare = new_org(ruth, "Keyless Deployer Org")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", "deployments", {"name": "keyless",
+                                                                                 "owner": {"org": bare}},
+                                                         approve=False),
+                "a deployment of an organization without a recovery key")
         self.check(w, s)
 
 

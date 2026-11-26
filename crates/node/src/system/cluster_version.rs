@@ -241,10 +241,15 @@ pub enum Feature {
     /// and admins (`SystemState::may_set_backup_key`), as `OwnerApprovedUpgrades` made
     /// upgrades theirs. No entry changes shape.
     BackupKeyApprovers,
+    /// `CreateDeployment` and `SetRecoveryKey` with `deployment_needs_recovery`: an
+    /// organization owns a deployment only with a recovery key, and keeps it while it does
+    /// (`SystemState::keeps_recoverable`). An earlier release ignores the field. Apply also
+    /// reads the logged version, so an entry before it replays as it applied.
+    DeploymentNeedsRecovery,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 54] = [
+pub const FEATURES: [Feature; 55] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -299,6 +304,7 @@ pub const FEATURES: [Feature; 54] = [
     Feature::HeldTeamGrants,
     Feature::InviteCreatorStanding,
     Feature::BackupKeyApprovers,
+    Feature::DeploymentNeedsRecovery,
 ];
 
 impl Feature {
@@ -360,6 +366,7 @@ impl Feature {
             Self::HeldTeamGrants => "heldTeamGrants",
             Self::InviteCreatorStanding => "inviteCreatorStanding",
             Self::BackupKeyApprovers => "backupKeyApprovers",
+            Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
         }
     }
 
@@ -431,7 +438,8 @@ impl Feature {
             | Self::KeyFollowUps
             | Self::HeldTeamGrants
             | Self::InviteCreatorStanding
-            | Self::BackupKeyApprovers => "1.0.0-rc.38",
+            | Self::BackupKeyApprovers
+            | Self::DeploymentNeedsRecovery => "1.0.0-rc.38",
         }
     }
 }
@@ -793,6 +801,14 @@ impl SystemCmd {
                 vec![Feature::DeploymentSecrets]
             }
             Self::SetPools { .. } => vec![Feature::ComputePools],
+            Self::CreateDeployment {
+                deployment_needs_recovery: true,
+                ..
+            }
+            | Self::SetRecoveryKey {
+                deployment_needs_recovery: true,
+                ..
+            } => vec![Feature::DeploymentNeedsRecovery],
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -1300,6 +1316,9 @@ mod tests {
             Feature::KeyFollowUps => entry(json!({ "op": "createApiKey", "hash": "h",
                 "record": { "keyId": "k", "account": "a", "label": "", "expiresAt": 1 },
                 "then": [{ "app": "app", "method": "setAccess", "argsHash": "h" }] })),
+            Feature::DeploymentNeedsRecovery => entry(json!({ "op": "createDeployment",
+                "id": "d", "name": "acme", "owner": { "org": "org" }, "actor": "alice", "at": 1,
+                "deployment_needs_recovery": true })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1555,6 +1574,26 @@ mod tests {
         let entry = serde_json::to_value(&plain).unwrap();
         assert!(serde_json::from_value::<Rc14ScopeApp>(entry).is_ok());
         assert!(super::scope_app_features(Some(&[plain])).is_empty());
+    }
+
+    /// Both commands the recovery rule judges carry it as a feature once their flag is set,
+    /// and neither does without it.
+    #[test]
+    fn the_recovery_rule_is_a_feature_of_both_commands_it_judges() {
+        let key = |flag| SystemCmd::SetRecoveryKey {
+            org: "org".into(),
+            public_key: None,
+            at: 1,
+            actor: "alice".into(),
+            consent: Value::Null,
+            deployment_needs_recovery: flag,
+        };
+        assert_eq!(key(true).features(), [Feature::DeploymentNeedsRecovery]);
+        assert_eq!(key(false).features(), []);
+        assert_eq!(
+            uses(Feature::DeploymentNeedsRecovery).features(),
+            [Feature::DeploymentNeedsRecovery]
+        );
     }
 
     /// While an older node replicates the system log, no feature newer than
@@ -1912,10 +1951,18 @@ mod tests {
         for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.38's (who may use a release, a key with follow-ups) waits past rc.37, which was cut without it: a
+        // rc.38's (who may use a release, a key with follow-ups, an organization owns a
+        // deployment only with a recovery key) waits past rc.37, which was cut without it: a
         // cluster on the published rc.37 logs rc.37 and still refuses it, as an rc.37 node
         // would refuse the key (it rebuilds the statement without `then`).
-        assert_eq!(rc38, [Feature::PrivateReleases, Feature::KeyFollowUps]);
+        assert_eq!(
+            rc38,
+            [
+                Feature::PrivateReleases,
+                Feature::KeyFollowUps,
+                Feature::DeploymentNeedsRecovery
+            ]
+        );
         for n in &mut nodes {
             n.release = RC37;
         }
