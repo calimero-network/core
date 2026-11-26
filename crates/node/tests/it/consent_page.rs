@@ -581,6 +581,9 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "minRuntimeVersion": { "from": "0.1.0", "to": "0.1.0" },
         },
     });
+    // Neither release declares a connector (kept out of the literal: `json!`'s recursion limit).
+    let mut expected = expected;
+    expected["upgrade"]["connectors"] = json!({ "added": [], "removed": [], "kept": [] });
     assert_eq!(
         snapshot,
         expected,

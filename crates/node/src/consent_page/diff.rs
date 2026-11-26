@@ -496,6 +496,40 @@ mod tests {
         assert_eq!(card["uses"]["inference"]["mode"], json!("create"));
     }
 
+    /// An upgrade's sheet names each connector operation and limit value the target adds or
+    /// drops, so a new Stripe operation or OpenAI model is approved knowingly.
+    #[test]
+    fn the_sheet_names_connector_operations_and_values_a_release_adds() {
+        let from = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+            "connectors": { "stripe": { "operations": ["retrievePaymentIntent"] } },
+        }));
+        let to = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "2.0.0", "minRuntimeVersion": "0.1.0",
+            "connectors": {
+                "stripe": {
+                    "operations": ["createPaymentIntent", "retrievePaymentIntent"],
+                    "metadata": ["order_id"],
+                },
+                "openai": { "operations": ["chatCompletion"], "model": ["gpt-4o-mini"] },
+            },
+        }));
+        let sheet = capability_sheet(&side("1.0.0", &from, None), &side("2.0.0", &to, None));
+        assert_eq!(
+            sheet["connectors"],
+            json!({
+                "added": [
+                    "openai.chatCompletion",
+                    "openai.model=gpt-4o-mini",
+                    "stripe.createPaymentIntent",
+                    "stripe.metadata=order_id",
+                ],
+                "removed": [],
+                "kept": ["stripe.retrievePaymentIntent"],
+            })
+        );
+    }
+
     /// The fixture pair: 1.0.0 calls one host and has one alias; 2.0.0 calls
     /// a second host, moves its frontend, adds an alias, a confirmed method, a
     /// public view, an event and a timer, changes a timer's period, drops a

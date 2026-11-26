@@ -147,7 +147,7 @@ async fn a_guest_calls_a_declared_connector_operation_end_to_end() {
     let (_c, alice, mut pk, org, app) = instance().await;
     let charge = json!({ "amount": 2000, "currency": "usd", "metadata": { "order_id": "A-17" } });
 
-    let waiting = connect(
+    let unapproved = connect(
         &alice,
         &app,
         "stripe",
@@ -155,9 +155,9 @@ async fn a_guest_calls_a_declared_connector_operation_end_to_end() {
         charge.clone(),
     )
     .await;
-    assert!(
-        waiting.starts_with("refused: AwaitingApproval: https://api.stripe.com/v1/payment_intents"),
-        "{waiting}"
+    assert_eq!(
+        unapproved,
+        "refused: NotApproved: https://api.stripe.com/v1/payment_intents is not approved for this app"
     );
 
     approve(&alice, &mut pk, &org).await;
