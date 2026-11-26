@@ -2950,13 +2950,15 @@ impl Node {
     /// Switch a component app to another component, code only, on this node, the
     /// app group's leader. A named migration is refused (`MigrationsNotSupported`):
     /// a migration rebuilds the state, and this node runs code-only upgrades. Who may
-    /// upgrade was judged by the API.
+    /// upgrade was judged by the API, on the group running `judged_on`: if it has moved
+    /// since (another upgrade got there first), it is refused (`BundleMoved`).
     pub(super) async fn upgrade_component(
         &self,
         g: &Group<AppMachine>,
         bundle: &str,
         compute_bundle: Option<&str>,
         migrate: Option<&str>,
+        judged_on: Option<&str>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
             index: g.applied(),
@@ -2979,6 +2981,16 @@ impl Node {
         };
         let p = g
             .propose_led(|m, _, _| {
+                // `base_index` holds this to the state read here, so a race retries into it.
+                let runs = m.state.bundle.as_deref();
+                if judged_on.is_some_and(|j| runs.is_some_and(|r| r != j)) {
+                    let mut refused = crate::component::host_answer(m.state.last_index, false, "");
+                    refused.error = json!({
+                        "code": "BundleMoved",
+                        "fields": { "message": "the app moved to other code since this upgrade was judged" },
+                    });
+                    return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
+                }
                 let is_result = |name: &String| {
                     target
                         .abi

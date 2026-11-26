@@ -548,7 +548,7 @@ async fn run_upgrade(
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
-    let refusal = node.sys(|s| {
+    let judge_upgrade = |s: &crate::system::SystemState| -> Option<ApiError> {
         let a = s.apps.get(&app_id)?;
         if who.auto {
             if let Err(why) = s.auto_update_allows(
@@ -602,6 +602,11 @@ async fn run_upgrade(
         }
         s.stalled_for_release(to, &a.org, begun)
             .map(|stall| crate::node::stalled(&stall))
+    };
+    // The bundle judged is the one the group must still run when it switches (`BundleMoved`).
+    let (refusal, judged_on) = node.sys(|s| {
+        let judged_on = s.apps.get(&app_id).map(|a| a.bundle.clone());
+        (judge_upgrade(s), judged_on)
     });
     // Every replica's node must run the runtime the target needs, or the
     // replicas below it could not run the app once it moved.
@@ -659,7 +664,7 @@ async fn run_upgrade(
         node.call(&CallRequest::host(
             app_id.clone(),
             "__upgrade",
-            json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate }),
+            json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate, "from": judged_on }),
             who.caller.clone(),
         ))
         .await
