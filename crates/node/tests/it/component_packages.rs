@@ -23,6 +23,14 @@ use common::{
 use serde_json::{json, Value};
 
 /// A signed single-service `.mpk`, the shape `meroctl app pack` signs.
+/// An app's replicas sorted by id: these tests check which nodes hold an app,
+/// not the order, which `placement::order_for_leader` rotates to spread the
+/// initial leader across apps.
+fn sorted(mut replicas: Vec<u64>) -> Vec<u64> {
+    replicas.sort_unstable();
+    replicas
+}
+
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     mpk_with(package, version, wasm, None, key)
 }
@@ -1499,9 +1507,14 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
             .unwrap();
         apps.push(created["appId"].as_str().unwrap().to_owned());
     }
-    assert_eq!(node.app(&apps[0]).await.unwrap().replicas, vec![1, 2, 3]);
+    // Sorted: these check which nodes hold each app, not the order, which
+    // `placement::order_for_leader` rotates to spread the initial leader.
     assert_eq!(
-        node.app(&apps[1]).await.unwrap().replicas,
+        sorted(node.app(&apps[0]).await.unwrap().replicas),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        sorted(node.app(&apps[1]).await.unwrap().replicas),
         vec![1, 2, 4],
         "the least-loaded node holds the second app"
     );
@@ -1604,7 +1617,10 @@ async fn placement_and_moves_keep_an_app_off_nodes_below_its_runtime() {
         .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
-    assert_eq!(node.app(&app).await.unwrap().replicas, vec![1, 2, 3]);
+    assert_eq!(
+        sorted(node.app(&app).await.unwrap().replicas),
+        vec![1, 2, 3]
+    );
 
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
@@ -1621,5 +1637,8 @@ async fn placement_and_moves_keep_an_app_off_nodes_below_its_runtime() {
         json!([{ "node": 4, "runtime": OLD_RUNTIME }]),
         "{e:?}"
     );
-    assert_eq!(node.app(&app).await.unwrap().replicas, vec![1, 2, 3]);
+    assert_eq!(
+        sorted(node.app(&app).await.unwrap().replicas),
+        vec![1, 2, 3]
+    );
 }
