@@ -1203,11 +1203,13 @@ impl Apps<'_> {
         stream: &str,
         view: &str,
         args: Option<Value>,
+        interval_ms: Option<u64>,
     ) -> Result<WatchAdded> {
         let mut fields = Map::new();
         route::put(&mut fields, "stream", &stream)?;
         route::put(&mut fields, "view", &view)?;
         route::put_some(&mut fields, "args", args)?;
+        route::put_some(&mut fields, "intervalMs", interval_ms)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,

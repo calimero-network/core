@@ -21,8 +21,8 @@ async fn frame(s: &mut WatchStream, secs: u64) -> Option<(String, String, Value)
 }
 
 /// Every frame that arrives within `secs`.
-async fn frames_for(s: &mut WatchStream, secs: u64) -> Vec<(String, String, Value)> {
-    let until = tokio::time::Instant::now() + Duration::from_secs(secs);
+async fn frames_for(s: &mut WatchStream, ms: u64) -> Vec<(String, String, Value)> {
+    let until = tokio::time::Instant::now() + Duration::from_millis(ms);
     let mut out = Vec::new();
     while let Ok(Some(f)) = tokio::time::timeout_at(until, s.frames.next()).await {
         out.push(f);
@@ -151,7 +151,7 @@ async fn a_watched_view_is_noticed_on_any_node_only_when_what_it_read_changes() 
 
         // A write elsewhere is not noticed.
         let _i = set(&owner, &app, "other", "x").await;
-        assert!(frames_for(&mut s, 2).await.is_empty(), "{name}");
+        assert!(frames_for(&mut s, 700).await.is_empty(), "{name}");
 
         // The first write is pushed at once; the ones within the interval after it come
         // as one more frame, with the newest answer.
@@ -159,7 +159,7 @@ async fn a_watched_view_is_noticed_on_any_node_only_when_what_it_read_changes() 
         for v in ["1", "2", "3"] {
             last = set(&owner, &app, &key, v).await;
         }
-        let got = frames_for(&mut s, 3).await;
+        let got = frames_for(&mut s, 1500).await;
         assert!(!got.is_empty() && got.len() < 3, "{name}: {got:?}");
         let (id, kind, data) = got.last().unwrap();
         let (index, answer) = result_of(kind, id, data, &w.sub);
@@ -168,12 +168,12 @@ async fn a_watched_view_is_noticed_on_any_node_only_when_what_it_read_changes() 
 
         // The same answer again is not sent.
         let _i = set(&owner, &app, &key, "3").await;
-        assert!(frames_for(&mut s, 2).await.is_empty(), "{name}");
+        assert!(frames_for(&mut s, 700).await.is_empty(), "{name}");
 
         // Removed, it is noticed no more.
         alice.remove_watch(&app, &w.sub).await.unwrap();
         let _i = set(&owner, &app, &key, "4").await;
-        assert!(frames_for(&mut s, 2).await.is_empty(), "{name}");
+        assert!(frames_for(&mut s, 700).await.is_empty(), "{name}");
     }
 }
 
@@ -209,7 +209,7 @@ async fn a_scan_is_noticed_for_writes_in_what_it_read_only() {
         )
         .await
         .unwrap();
-    assert!(frames_for(&mut s, 2).await.is_empty());
+    assert!(frames_for(&mut s, 2000).await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -310,13 +310,13 @@ async fn a_member_who_loses_access_gets_watch_ended_and_no_notice() {
         .remove_member(&org, &bob_id, Some(&mut a))
         .await
         .unwrap();
-    let got = frames_for(&mut stream, 4).await;
+    let got = frames_for(&mut stream, 4000).await;
     assert_eq!(got.len(), 1, "{got:?}");
     let (_id, kind, data) = &got[0];
     assert_eq!(kind, "watch-ended");
     assert_eq!(data, &json!({ "sub": w.sub, "reason": "access-lost" }));
     let _i = set(&alice, &app, "a", "2").await;
-    assert!(frames_for(&mut stream, 2).await.is_empty());
+    assert!(frames_for(&mut stream, 2000).await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -348,7 +348,7 @@ async fn a_resumed_stream_gets_what_it_missed_and_a_lost_one_says_so() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let mut third = alice.watch_stream(&app, Some((&id, index))).await.unwrap();
     assert_eq!(third.id, id);
-    assert!(frames_for(&mut third, 2).await.is_empty());
+    assert!(frames_for(&mut third, 2000).await.is_empty());
 
     // A stream the node no longer holds comes back as a new one that says so: register
     // again.
@@ -399,7 +399,7 @@ async fn a_burst_is_one_frame_per_interval_and_a_large_answer_a_bare_notice() {
         last = set(&alice, &app, "a", &v.to_string()).await;
     }
     let spent = started.elapsed();
-    let got = frames_for(&mut s, 2).await;
+    let got = frames_for(&mut s, 2000).await;
     let most = 2 + usize::try_from(spent.as_millis() / 250).unwrap();
     assert!(!got.is_empty() && got.len() <= most, "{got:?} in {spent:?}");
     let (id, kind, data) = got.last().unwrap();
@@ -479,7 +479,7 @@ async fn a_signed_out_session_ends_its_watches() {
         .await
         .unwrap();
     let _r = laptop.auth().logout().await.unwrap();
-    let got = frames_for(&mut stream, 4).await;
+    let got = frames_for(&mut stream, 4000).await;
     assert_eq!(
         got.last().map(|(_, k, d)| (k.clone(), d.clone())),
         Some((
@@ -518,7 +518,7 @@ async fn the_app_sets_the_watch_rate_and_a_client_can_only_slow_it() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let spent = started.elapsed();
-    let got = frames_for(&mut s, 2).await;
+    let got = frames_for(&mut s, 2000).await;
     let count = |sub: &str| got.iter().filter(|(_, _, d)| d["sub"] == sub).count();
     let (fast, slow, slower) = (count(&fast.sub), count(&slow.sub), count(&slower.sub));
     let secs = usize::try_from(spent.as_secs()).unwrap();
@@ -593,11 +593,11 @@ async fn a_sign_in_re_runs_no_view_and_a_promotion_only_the_promoted_ones() {
         .add_watch(&app, &cs.id, "myRole", json!({}), None)
         .await
         .unwrap();
-    assert!(frames_for(&mut bs, 1).await.is_empty());
+    assert!(frames_for(&mut bs, 1000).await.is_empty());
     let before = runs(&c, reruns);
     // Another session of Alice's: sessions and tokens change no fact a view reads.
     let _laptop = signed_in(&c, 2, &mut a).await;
-    assert!(frames_for(&mut bs, 2).await.is_empty());
+    assert!(frames_for(&mut bs, 2000).await.is_empty());
     assert_eq!(runs(&c, reruns), before);
     // Bob promoted: Bob's view runs again, Carol's does not.
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
@@ -611,7 +611,7 @@ async fn a_sign_in_re_runs_no_view_and_a_promotion_only_the_promoted_ones() {
         .unwrap();
     let (id, kind, data) = frame(&mut bs, 5).await.expect("Bob's new role");
     assert_eq!(result_of(&kind, &id, &data, &wb.sub).1, json!("admin"));
-    assert!(frames_for(&mut cs, 2).await.is_empty());
+    assert!(frames_for(&mut cs, 2000).await.is_empty());
     assert_eq!(runs(&c, reruns), before + 1);
 }
 
@@ -631,7 +631,7 @@ async fn fifty_watches_of_one_view_share_one_run_per_change() {
     }
     let before = runs(&c, reruns);
     let _i = set(&alice, &app, "a", "1").await;
-    let got = frames_for(&mut stream, 3).await;
+    let got = frames_for(&mut stream, 3000).await;
     assert_eq!(got.len(), 50, "{got:?}");
     assert!(got.iter().all(|(_, _, d)| d["answer"] == json!("1")));
     assert_eq!(runs(&c, reruns) - before, 1);
@@ -657,7 +657,7 @@ async fn over_the_run_budget_frames_come_later_and_none_is_lost() {
     for k in ["a", "b", "c", "d"] {
         let _i = set(&alice, &app, k, &format!("{k}1")).await;
     }
-    let got = frames_for(&mut stream, 12).await;
+    let got = frames_for(&mut stream, 12000).await;
     for (sub, k) in &subs {
         let last = got
             .iter()

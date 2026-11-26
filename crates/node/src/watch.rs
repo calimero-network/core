@@ -695,7 +695,7 @@ impl Watches {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A new stream, or `None` past [`crate::api::MAX_EVENT_STREAMS`] streams held.
+    /// A new stream, or `None` past `MAX_EVENT_STREAMS` streams held.
     #[must_use]
     pub fn open(&self, id: String, app: String, holder: Holder) -> Option<Arc<WatchStream>> {
         let mut streams = self.streams();

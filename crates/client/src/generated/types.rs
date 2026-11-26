@@ -2247,11 +2247,13 @@ pub struct ViewResult {
     pub extra: Map<String, Value>,
 }
 
-/// `POST /apps/{app}/watches`: the watch's id, which the stream's notices name, and the log index the view read at.
+/// `POST /apps/{app}/watches`: the watch's id, which the stream's frames name, the app's last entry in the state the view read (a `last` to resume from) and the view's answer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WatchAdded {
     pub sub: String,
     pub index: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub answer: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
