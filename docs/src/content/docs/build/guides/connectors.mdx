@@ -43,13 +43,52 @@ an operation and passes JSON; the node builds the HTTP request.
   connector's secret name once attached; a raw request to the connector's host
   is there as `refused`.
 
-<Aside type="caution" title="What ships so far">
-The node's connector framework and the two connectors below ship first. The
-manifest's `connectors` key, its consent-page and update-diff rows, and the
-guest call (`connector.call` in `calimero:app`, with a typed SDK wrapper) are
-the next step of [#5349](https://github.com/calimero-network/core/issues/5349);
-the examples below show the shape they take.
-</Aside>
+## Declare and call
+
+A release declares the connectors it calls in its signed manifest, under
+`connectors`: for each, the `operations` it may call and the values each of the
+connector's limits allows (`metadata` keys for Stripe, `model`s for OpenAI). With
+`meroctl app pack`, write them in the crate's `Cargo.toml`:
+
+```toml
+[package.metadata.calimero.connectors.stripe]
+operations = ["createPaymentIntent", "retrievePaymentIntent"]
+metadata = ["order_id"]
+
+[package.metadata.calimero.connectors.openai]
+operations = ["chatCompletion"]
+model = ["gpt-4o-mini"]
+```
+
+The node refuses the release at install (`400 BAD_CONNECTORS`) for a connector it
+does not have, an operation the connector does not have, or a limit no declared
+operation takes; at most 8 connectors, 32 operations each, 64 values per limit.
+
+The guest calls one through `calimero:app/connector` (WIT 0.5.8), in Rust
+`calimero_sdk::connector::call` (or `call_raw` with the input already JSON).
+Like [outbound HTTP](/build/guides/outbound/), from an action, a call, a timer or
+an xcall delivery, never a view or `init`; each call counts as one of the run's 8
+outbound requests, and a logged run's entry records it (as `CONNECTOR
+connector:<name>/<operation>`, the input and the answer), so no replay calls
+again. Any refusal comes back as `Connector { message }`. In the SDK's test
+harness, `TestApp::mock_connector` answers a connector's calls.
+
+```mermaid
+sequenceDiagram
+  participant G as App guest
+  participant N as Node (connector)
+  participant S as api.stripe.com
+  G->>N: connector.call("stripe", "createPaymentIntent", {amount, currency, metadata})
+  N->>N: declared? approved? egress on? fields typed and allowed?
+  N->>S: POST /v1/payment_intents + bound key
+  S-->>N: the full PaymentIntent
+  N-->>G: only id, status, amount, currency, customer, client_secret, metadata
+```
+
+The consent page lists the declared operations and values beside the hosts, and
+approving the release's manifest approves the connectors' operation prefixes
+(`https://api.stripe.com/v1/payment_intents`) with its `outbound` ones; an update
+that adds an operation or a value says so.
 
 ## The credential
 
@@ -57,7 +96,9 @@ A connector attaches its key itself, through a credential binding of its own:
 the secret it names (`STRIPE_SECRET_KEY`, `OPENAI_API_KEY`), in
 `authorization` as `Bearer {}`, on the connector's host. The value is the
 instance owner's, its deployment's or the operator's (whose binding must list
-that host), as for any [secret](/protocol/secrets/). The app never names,
+that host), as for any [secret](/protocol/secrets/): a release that declares a
+connector declares its secret name too, so the owner sets it as
+`app_secret_set` sets any other. The app never names,
 places or reads it, and a call carries the connector's binding alone, never
 one the release declares for its raw requests. A call with no value for it is
 refused (`secret STRIPE_SECRET_KEY has no value for this app`) rather than
@@ -138,8 +179,8 @@ let answer = connector::call(
 // {"content":"…","usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}
 ```
 
-The models are the owner's choice, not the app's: a model outside the owner's
-list is refused, and with no list every call is.
+The models are the release's `model` list, shown on the consent page and
+approved with it: a model outside it is refused, and with no list every call is.
 
 ## Limits
 

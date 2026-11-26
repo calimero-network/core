@@ -56,6 +56,12 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Packages", "A guest calling a first-party connector a release declares (`connector.call`, WIT 0.5.8; "
+     "`BundleManifest::connectors`, `PackageVersion::connectors`)",
+     "a call reaches `api.stripe.com` or `api.openai.com`, which a deep run's cluster cannot reach and a release "
+     "`merod` has no in-process answer for (`[outbound.testing] connectors` is a test build's), and no release before "
+     "it has the call to seed; a release recorded without `connectors` reads as one declaring none. "
+     "`tests/it/connectors.rs` covers the call end to end and its refusals on one build"),
     ("Packages", "A passkey sign-in completed from a registered origin (a session bound to the package and naming it)",
      "the harness's passkeys are the dev passkey's, which holds a credential under the cluster's rp-id only, and an "
      "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "

@@ -7,6 +7,8 @@
 //!
 //! - **outbound prefixes**: what the app may call out to once approved
 //!   (`calimero-outbound`);
+//! - **connectors**: the first-party connector operations it may call, and the values
+//!   each connector's limits allow (`connector.operation`, `connector.limit=value`);
 //! - **frontend origin and aliases**: an added origin is a new place a
 //!   sign-in callback is trusted to land (highlighted as `newLoginOrigins`);
 //! - **interfaces** the bundle uses and exports;
@@ -60,6 +62,7 @@ pub fn capability_sheet(from: &Side<'_>, to: &Side<'_>) -> Value {
             from.manifest.outbound.iter().cloned().collect(),
             to.manifest.outbound.iter().cloned().collect(),
         ),
+        "connectors": set_diff(connectors(from.manifest), connectors(to.manifest)),
         "secrets": secrets(from.manifest, to.manifest),
         "uses": uses(from.manifest, to.manifest),
         "frontend": frontend(from.manifest, to.manifest),
@@ -180,6 +183,23 @@ fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
 }
 
 /// `{ added, removed, kept }` from `before` to `after`, each sorted.
+/// What a release declares of the node's connectors, one item each:
+/// `connector.operation` and `connector.limit=value`.
+fn connectors(m: &BundleManifest) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (name, c) in m.connectors.iter().flatten() {
+        for op in &c.operations {
+            let _ = out.insert(format!("{name}.{op}"));
+        }
+        for (limit, values) in &c.limits {
+            for v in values {
+                let _ = out.insert(format!("{name}.{limit}={v}"));
+            }
+        }
+    }
+    out
+}
+
 fn set_diff(before: BTreeSet<String>, after: BTreeSet<String>) -> Value {
     json!({
         "added": after.difference(&before).collect::<Vec<_>>(),
@@ -527,7 +547,7 @@ mod tests {
                 "sweep": { "kind": "timer", "every": "1h", "allowSystem": true },
             },
             "events": { "Changed": { "id": "string" }, "Wiped": null },
-            "world": "calimero:app@0.5.7",
+            "world": "calimero:app@0.5.8",
         });
         let sheet = capability_sheet(
             &side("1.0.0", &from, Some(&a)),

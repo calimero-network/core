@@ -23,7 +23,7 @@ use calimero_app_host::{
     TimerCtx, Usage,
 };
 use calimero_app_host::{entry_bytes, EntryIds, EntryOf, ENTRY_TOO_LARGE, MAX_ENTRY_BYTES};
-use calimero_app_host::{ActionHost, ActionStart, HttpHost};
+use calimero_app_host::{ActionHost, ActionStart, ConnectorHost, HttpHost};
 use calimero_primitives::search::{SearchMode as IndexMode, SearchOrder, SearchRequest};
 use calimero_search::records::{record_prefix, TableSearch, GENERATION_PREFIX};
 use serde_json::Value;
@@ -257,6 +257,8 @@ pub struct TestApp {
     forwarding: Option<HostCaller>,
     next_action: u64,
     http: BTreeMap<String, HttpHandler>,
+    /// `mock_connector`'s handlers, by connector.
+    connectors: BTreeMap<String, ConnectorHandler>,
     /// `mock_app`'s handlers: the other apps synchronous xcalls reach.
     apps: BTreeMap<String, AppHandler>,
     /// Set while an action's sub-calls run: `allow(action)` methods are reachable.
@@ -473,6 +475,24 @@ impl HttpHost for HarnessHttp {
     }
 }
 
+/// What `mock_connector` answers a connector's calls with: the operation and the JSON input
+/// in, the JSON answer or the node's refusal out.
+pub type ConnectorHandler = Arc<dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync>;
+
+/// `mock_connector`'s handlers, by connector.
+struct HarnessConnectors(BTreeMap<String, ConnectorHandler>);
+
+impl ConnectorHost for HarnessConnectors {
+    fn call(&self, connector: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String> {
+        let handler = self
+            .0
+            .get(connector)
+            .ok_or_else(|| format!("no mock for connector {connector} (t.mock_connector)"))?;
+        let input: Value = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+        handler(operation, &input).map(|v| v.to_string().into_bytes())
+    }
+}
+
 /// An xcall a logged run sent, as the platform would deliver it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SentXcall {
@@ -538,6 +558,7 @@ impl TestApp {
             forwarding: None,
             next_action: 0,
             http: BTreeMap::new(),
+            connectors: BTreeMap::new(),
             apps: BTreeMap::new(),
             in_action: false,
             files: MemoryFiles::default(),
@@ -836,6 +857,20 @@ impl TestApp {
         let _prev = self.http.insert(host.to_owned(), Arc::new(handler));
     }
 
+    /// Answers the app's connector calls (`connector::call`) to `connector` with `handler`,
+    /// given the operation and the JSON input; a call to a connector without one fails in
+    /// the run (`Connector`). The node's own checks (the release's declared connectors and
+    /// operations, the operation's typed fields, egress, the key) are the node's.
+    pub fn mock_connector(
+        &mut self,
+        connector: &str,
+        handler: impl Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static,
+    ) {
+        let _prev = self
+            .connectors
+            .insert(connector.to_owned(), Arc::new(handler));
+    }
+
     /// Answers the app's synchronous xcalls (`env::xcall_call`, `env::xcall_view`, typed
     /// clients) to `app`
     /// with `handler`; one to an app without a handler fails in the run. The target's own
@@ -883,6 +918,7 @@ impl TestApp {
         };
         let (engine, prepared) = (self.engine, self.prepared.clone());
         let http = Arc::new(HarnessHttp(self.http.clone()));
+        let connectors = Arc::new(HarnessConnectors(self.connectors.clone()));
         let apps = Arc::new(HarnessApps::new(self.apps.clone(), None));
         let dir = Arc::new(HarnessDir(self.org.clone()));
         // The action lends the harness to its own sub-calls while it runs.
@@ -898,6 +934,7 @@ impl TestApp {
                 &prepared,
                 host.with_action(runner)
                     .with_http(http)
+                    .with_connectors(connectors)
                     .with_xcall_host(apps),
                 Budget::action(),
             ),
@@ -957,6 +994,7 @@ impl TestApp {
             forwarding: None,
             next_action: 0,
             http: BTreeMap::new(),
+            connectors: BTreeMap::new(),
             apps: BTreeMap::new(),
             in_action: false,
             files: MemoryFiles::default(),
@@ -1112,6 +1150,7 @@ impl TestApp {
         .with_search(search)
         .with_xcall_host(Arc::new(HarnessApps::new(self.apps.clone(), forward.clone())))
         .with_http(Arc::new(HarnessHttp(self.http.clone())))
+        .with_connectors(Arc::new(HarnessConnectors(self.connectors.clone())))
         .with_files(Arc::new(self.files.clone()));
         let budget = if is_view {
             Budget::view()

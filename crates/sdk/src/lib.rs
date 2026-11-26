@@ -30,6 +30,7 @@ pub mod blob;
 pub mod collections;
 mod commons;
 pub mod compute;
+pub mod connector;
 pub mod encoding;
 pub mod env;
 pub mod error;

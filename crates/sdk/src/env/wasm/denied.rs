@@ -109,3 +109,11 @@ pub fn fetch(
 ) -> std::result::Result<crate::action::Response, String> {
     denied()
 }
+
+pub fn connector_call(
+    _connector: &str,
+    _operation: &str,
+    _input: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    denied()
+}

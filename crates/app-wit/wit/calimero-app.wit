@@ -1,4 +1,4 @@
-package calimero:app@0.5.7;
+package calimero:app@0.5.8;
 
 interface types {
   type account-id = string;
@@ -171,6 +171,19 @@ interface xcall {
   batch: func(requests: list<request>) -> list<result<list<u8>, string>>;
 }
 
+// A first-party connector of the node (0.5.8): the node, not the app, builds the HTTP request
+// to a service that matters (Stripe, an OpenAI-compatible API) from one operation the
+// release's signed manifest declares (`connectors`), attaches its credential and returns only
+// the operation's declared fields. `input` and the answer are JSON; the error is the node's
+// refusal (an undeclared connector or operation, a field the operation does not take, egress
+// off, no key bound) or the service's status and error code. Like `wasi:http`: actions,
+// calls, timers and xcall deliveries (a logged run records the call and its answer in its
+// entry, so no replay calls again); never views, init or migrations. Each call counts as
+// one of the run's outbound requests.
+interface connector {
+  call: func(connector: string, operation: string, input: list<u8>) -> result<list<u8>, string>;
+}
+
 // Available only while handling kind = action
 interface action {
   key: func() -> string;                                                    // this action run's idempotency key
@@ -189,6 +202,7 @@ world app {
   import xcall;
   import action;
   import runs;
+  import connector;
 
   // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship, each served by the host
   // (https://calimero-network.github.io/core/protocol/execution/#what-the-host-offers-a-cloud-run).

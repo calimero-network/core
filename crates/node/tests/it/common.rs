@@ -531,6 +531,7 @@ fn mpk_build(
             .map(|(name, yaml)| artifact(name, yaml.as_bytes()))
             .collect(),
         signature: None,
+        connectors: None,
     };
     if named_service {
         manifest.services = Some(vec![calimero_bundle::BundleService {

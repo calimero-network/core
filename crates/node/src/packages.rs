@@ -433,6 +433,15 @@ impl Node {
         manifest
             .check_uses()
             .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
+        manifest
+            .check_connectors()
+            .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
+        for (name, declared) in manifest.connectors.iter().flatten() {
+            calimero_outbound::check_grant(&calimero_outbound::ConnectorGrant::declared(
+                name, declared,
+            ))
+            .map_err(|e| ApiError::bad_request("BAD_CONNECTORS", &e.to_string()))?;
+        }
         let upgrades = manifest.upgrades.unwrap_or_default();
         let in_order = self.sys(|s| {
             s.packages
@@ -618,6 +627,7 @@ impl Node {
                 metadata,
                 outbound: manifest.outbound.clone(),
                 secrets: manifest.secrets.clone().unwrap_or_default(),
+                connectors: manifest.connectors.clone().unwrap_or_default(),
                 uses: manifest
                     .uses
                     .iter()

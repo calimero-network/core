@@ -245,7 +245,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             if gated && newest.is_none() {
                 return Err("no such package".into());
             }
-            let declared = newest.map(|v| v.outbound.clone()).unwrap_or_default();
+            let declared = newest
+                .map(PackageVersion::approvable_prefixes)
+                .unwrap_or_default();
             let operator = s.governance().outbound == Authority::Operator;
             if operator != (scope == ReleaseScope::Cluster) {
                 return Err(if operator {

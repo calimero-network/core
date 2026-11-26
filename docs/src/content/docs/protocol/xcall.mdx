@@ -133,7 +133,7 @@ call. A delivered xcall makes no synchronous call.
 
 **Concurrency.** The SDK runs an `async fn` method with a small executor of its
 own: it polls the method until every future it awaits waits on an xcall, then
-sends those xcalls to the node in one `xcall.batch` (WIT `calimero:app@0.5.7`)
+sends those xcalls to the node in one `xcall.batch` (WIT `calimero:app@0.5.8`)
 and polls again with the answers. Futures awaited one after another make one
 batch each; futures awaited together (`app::join!(a, b)`, `app::join_all(v)`)
 are in one batch, which the node runs at once:

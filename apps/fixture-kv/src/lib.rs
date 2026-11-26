@@ -579,6 +579,33 @@ impl Kv {
         Ok(())
     }
 
+    /// Calls `operation` of the node's connector `connector` with the JSON `input`, from a
+    /// call (a logged run): the answer's JSON, or `refused: <message>` when the node refused
+    /// it or the service answered an error, so a test reads both.
+    pub fn connect(
+        &mut self,
+        connector: String,
+        operation: String,
+        input: String,
+    ) -> app::Result<String> {
+        Ok(
+            match calimero_sdk::connector::call_raw(&connector, &operation, input.as_bytes()) {
+                Ok(answer) => String::from_utf8_lossy(&answer).into_owned(),
+                Err(e) => format!(
+                    "refused: {}",
+                    e.fields["message"].as_str().unwrap_or_default()
+                ),
+            },
+        )
+    }
+
+    /// [`Self::connect`] from a view, which may not call a connector: the run traps.
+    #[app::view]
+    pub fn connect_in_view(&self, connector: String) -> app::Result<String> {
+        calimero_sdk::connector::call_raw(&connector, "createPaymentIntent", b"{}")
+            .map(|a| String::from_utf8_lossy(&a).into_owned())
+    }
+
     /// An action that fails at once with an app error.
     #[app::action]
     pub fn explode(_ctx: &mut ActionCtx) -> app::Result<()> {

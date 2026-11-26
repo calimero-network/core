@@ -98,6 +98,7 @@ fn release_of(
         services: None,
         pipelines: Vec::new(),
         signature: None,
+        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();

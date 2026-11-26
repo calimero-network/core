@@ -2,6 +2,7 @@
 
 use crate::bindings::calimero::app::action;
 use crate::bindings::calimero::app::blobs;
+use crate::bindings::calimero::app::connector;
 use crate::bindings::calimero::app::context;
 use crate::bindings::calimero::app::events;
 use crate::bindings::calimero::app::search;
@@ -183,6 +184,14 @@ pub fn action_view(method: &str, args: &[u8]) -> std::result::Result<Vec<u8>, St
 
 pub fn action_call(method: &str, args: &[u8]) -> std::result::Result<Vec<u8>, String> {
     action::call(method, args)
+}
+
+pub fn connector_call(
+    name: &str,
+    operation: &str,
+    input: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    connector::call(name, operation, input)
 }
 
 /// One request over `wasi:http`: the body written and finished before `handle`, the
