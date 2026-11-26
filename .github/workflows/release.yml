@@ -436,22 +436,24 @@ jobs:
 
           cargo install --git https://github.com/calimero-network/cargo-workspaces --rev 9b079f98de701b7d4c30d86ca5bf555a9a2a3928 cargo-workspaces # v0.3.0
 
-          # Retry: crates.io index lag can make the next crate fail to resolve a just-published prerelease
-          # dependency; cargo-workspaces skips already-published crates, so a retry resumes where it failed.
-          publish() {
-            cargo ws publish --yes --allow-dirty --force '*' \
-              --no-verify \
-              --no-git-tag --no-git-commit --no-git-push
-          }
+          cargo ws version --yes --force '*' --no-git-tag --no-git-commit --no-git-push
+
+          # Versions are set once: a publish that versions again finds nothing to bump and publishes nothing.
+          # --from-git publishes the tree as it is and skips crates already on crates.io, so a retry resumes.
           for attempt in 1 2 3 4 5; do
-            if publish; then
+            if cargo ws publish --from-git --yes --allow-dirty --no-verify --no-git-tag --no-git-commit --no-git-push; then
               exit 0
             fi
-            echo "::warning::cargo ws publish attempt ${attempt} failed (likely crates.io index lag); retrying in 60s"
+            echo "::warning::cargo ws publish attempt ${attempt} failed; retrying in 60s"
             sleep 60
           done
           echo "::error::cargo ws publish failed after 5 attempts"
           exit 1
+
+      - name: Every publishable crate is on crates.io at the release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 scripts/check-publishable-crates.py --published "$VERSION"
 
   # The amd64 image, built and saved for `E2E on the merod image` before anything is
   # pushed: a release publishes only an image whose merod passed the smoke e2e.
