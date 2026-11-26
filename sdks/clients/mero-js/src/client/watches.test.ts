@@ -183,6 +183,20 @@ describe('ViewWatches', () => {
     expect(seen).toEqual(['get@1', 'a4', 'a6']);
   });
 
+  it('resumes a stream that sent no frame yet from the index its watches were added at', async () => {
+    const host = new StandIn();
+    const watches = new ViewWatches(host, noSleep);
+    watches.watch('app', 'get', {}, { onAnswer: () => undefined });
+    await settle();
+    host.conn.push('stream', { stream: 's1' });
+    await settle();
+    // A frame sent after the add may have been lost with the connection: the node sends
+    // again what changed after the index the add answered.
+    host.conn.end();
+    await settle();
+    expect(host.conn.query).toMatchObject({ watch: true, stream: 's1', last: 1 });
+  });
+
   it('adds every watch again on a new stream id or a watch-reset', async () => {
     const host = new StandIn();
     const watches = new ViewWatches(host, noSleep);

@@ -85,6 +85,11 @@ class AppStream {
   private readonly bySub = new Map<string, Entry>();
   private stream: string | undefined;
   private last: number | undefined;
+  /**
+   * The lowest index a watch was added at on this stream: what a resume names before any
+   * frame arrived, so a frame lost with the connection is sent again.
+   */
+  private floor: number | undefined;
   private abort: AbortController | undefined;
   private running = false;
   state: WatchConnectionState = 'idle';
@@ -127,7 +132,7 @@ class AppStream {
         this.setState(this.stream ? 'reconnecting' : 'connecting');
         try {
           const frames = this.host.transport.events(`apps/${encodeURIComponent(this.app)}/events`, {
-            query: { watch: true, stream: this.stream, last: this.stream ? this.last : undefined },
+            query: { watch: true, stream: this.stream, last: this.stream ? (this.last ?? this.floor) : undefined },
             signal: this.abort.signal,
           });
           for await (const frame of frames) {
@@ -148,6 +153,7 @@ class AppStream {
       this.abort = undefined;
       this.stream = undefined;
       this.last = undefined;
+      this.floor = undefined;
       this.bySub.clear();
       this.setState('idle');
     }
@@ -167,6 +173,7 @@ class AppStream {
         if (!resumed) {
           // A new stream holds none of our watches: add every one again.
           this.last = undefined;
+          this.floor = undefined;
           this.bySub.clear();
           for (const entry of this.entries) {
             entry.sub = undefined;
@@ -201,6 +208,7 @@ class AppStream {
       case 'watch-reset':
         this.stream = undefined;
         this.last = undefined;
+        this.floor = undefined;
         return 'reset';
       default:
         return undefined;
@@ -224,6 +232,7 @@ class AppStream {
       }
       entry.sub = added.sub;
       this.bySub.set(added.sub, entry);
+      if (Number.isFinite(added.index)) this.floor = Math.min(this.floor ?? added.index, added.index);
       // `index` is the app's last applied entry, the one the stream's frames carry.
       this.deliver(entry, added.answer, added.index);
     } catch (error) {
