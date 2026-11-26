@@ -109,7 +109,7 @@ The full walk-through, with the JavaScript and Python clients, is the
 | Ship | `app signer new`, `app pack [--key K] [--previous OLD]`, `app sign`, `app inspect`, `app publish [--org ORG]` |
 | Run locally | `local up\|down\|status [--local]` (Docker by default), `local dev`, `local test`, `local compute run` |
 | Cloud | `cloud login`, `cloud orgs`, `cloud clusters list\|create`, `cloud use CLUSTER`, `cloud compute pipeline\|logs` |
-| Use a node | `app install`, `context`, `call`, `blob`, `file`, `namespace` (organizations), `group` (teams), `account`, `attest`, `ops` |
+| Use a node | `package` (installed packages), `instance` (app instances), `call`, `blob`, `file`, `org` (organizations), `team` (teams), `account`, `attest`, `ops` |
 
 Every command and flag: [meroctl reference](https://calimero-network.github.io/core/operate/meroctl/).
 

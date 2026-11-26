@@ -157,18 +157,18 @@ with `details` when there is more to say (for example `leaderUrl` with
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
-| `POST /packages?org=` | installer | Upload a signed `.mpk`, private to `org` (else the caller's only organization; in none, to the accounts that install it). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk [--org ORG]` |
-| `POST /packages/install` | installer | `{ package, version, org? }` from the registry, for `org` (else the caller's only organization); public when the registry serves it to anyone, else private to that organization (in none, to the accounts that install it) | `app install P@V [--org ORG]` |
-| `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `app list` |
-| `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `app get`, `app versions`, `app get-latest-version` |
-| `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `app uninstall` |
-| `DELETE /packages/{package}/{version}` | account holder | Uninstall one version | `app uninstall --version` |
-| `GET /packages/{package}/{version}/pipelines` | signed in | The pipelines the release registers: per name `hash`, `worstCaseFuel`, the `modules` they pin and the canonical `pipeline`; `404` for a release the caller may not see | `app pipelines` |
+| `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `package install --path X.wasm` |
+| `POST /packages?org=` | installer | Upload a signed `.mpk`, private to `org` (else the caller's only organization; in none, to the accounts that install it). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `package install --path X.mpk [--org ORG]` |
+| `POST /packages/install` | installer | `{ package, version, org? }` from the registry, for `org` (else the caller's only organization); public when the registry serves it to anyone, else private to that organization (in none, to the accounts that install it) | `package install P@V [--org ORG]` |
+| `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `package list` |
+| `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `package get`, `package versions`, `package get-latest-version` |
+| `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `package uninstall` |
+| `DELETE /packages/{package}/{version}` | account holder | Uninstall one version | `package uninstall --version` |
+| `GET /packages/{package}/{version}/pipelines` | signed in | The pipelines the release registers: per name `hash`, `worstCaseFuel`, the `modules` they pin and the canonical `pipeline`; `404` for a release the caller may not see | `package pipelines` |
 | `GET /packages/{package}/{version}/capabilities` | signed in | What a release is and may do, before any app of it exists: `package`, `version`, `service`, `bundle` (the service WASM's hash), `mpk`, `manifestHash`, `signer`, `name`, `author`, the sorted `outbound` prefixes and the embedded `abi` (`null` when none), and over the release and the apps its `uses` would create, `destinations` (empty: no data leaves Calimero; an external endpoint, a TEE included, is listed like any other) and `members` (both `null` while such a release is not installed); `?service=<name>` picks the service (default: the release's only one; `400 NO_SUCH_SERVICE` for an unknown name, or none on a release with several; `400 BAD_REQUEST` for an over-long name); `404` for a release the caller may not see; a session bound to the package sees what its account sees | - |
-| `GET /package-origins/{package}` | signed in | The web origins the package's manager registered (`origin`, `rpId`, `addedBy`, `addedAt`, `served`) | `app origins list` |
-| `POST /package-origins/{package}` | account holder | `{ origin, rpId?, served?, confirm? }`: register an origin whose pages sign people in to the package (`served: true`: the cluster also serves its frontend there, a custom domain); the package's manager, `412` first ([Registered origins](/protocol/identities/#registered-origins)) | `app origins add` |
-| `DELETE /package-origins/{package}` | account holder | `{ origin, confirm? }`: remove one; the sessions opened there end. `412` first | `app origins remove` |
+| `GET /package-origins/{package}` | signed in | The web origins the package's manager registered (`origin`, `rpId`, `addedBy`, `addedAt`, `served`) | `package origins list` |
+| `POST /package-origins/{package}` | account holder | `{ origin, rpId?, served?, confirm? }`: register an origin whose pages sign people in to the package (`served: true`: the cluster also serves its frontend there, a custom domain); the package's manager, `412` first ([Registered origins](/protocol/identities/#registered-origins)) | `package origins add` |
+| `DELETE /package-origins/{package}` | account holder | `{ origin, confirm? }`: remove one; the sessions opened there end. `412` first | `package origins remove` |
 | `POST /orgs/{org}/publishers` | account holder | `{ signerId, publicKey, signature, confirm? }`: bind a package signing key to the organization (the key's signature over the binding, an `APPROVE_RELEASES` holder's passkey, `412` first), so its `MANAGE_APPLICATION` holders upgrade the apps of packages that declare `upgrades: publisher` | |
 | `GET /publishers/{signer}` | signed in | `{ bound, generation }`: whether a signing key (`did:key`) is bound on this cluster, never to which organization, and the generation the next binding signs | |
 
@@ -177,13 +177,13 @@ artifact digest, `minRuntimeVersion`, the package's pinned signer (the first
 release's wins) and that each service's WASM compiles. A node that later runs
 the release fetches and verifies it again.
 
-## Apps (contexts)
+## Apps (app instances)
 
 `{app}` is an app id or its context id (`hex(SHA-256(app_id))`).
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, newOrg?: { name }, grants?, initArgs?, metadata? }` → `{ appId, contextId, group, replicas, compute }`. The organization is the release's `instanceOrg` choice: `org`, the caller's only one, or a new one made with it (`newOrg`; [Where an instance goes](/protocol/organizations/#where-an-instance-goes)); `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
+| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, newOrg?: { name }, grants?, initArgs?, metadata? }` → `{ appId, group, replicas, compute, links }`. The organization is the release's `instanceOrg` choice: `org`, the caller's only one, or a new one made with it (`newOrg`; [Where an instance goes](/protocol/organizations/#where-an-instance-goes)); `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
 | `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `instance list` |
 | `GET /apps/{app}` | signed in or anyone | One app | `instance get` |
 | `DELETE /apps/{app}` | account holder | Delete (owner or org admin) | `instance delete` |

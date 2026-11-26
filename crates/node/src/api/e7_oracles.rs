@@ -120,7 +120,7 @@ fn app_answers_answer_as_before() {
         ],
     }));
     writes_as_before::<super::apps::AppCreated>(&json!({
-        "appId": "a1", "contextId": "ab", "group": 3, "replicas": [1, 2],
+        "appId": "a1", "group": 3, "replicas": [1, 2],
         "compute": true, "links": { "kv": "a2" },
     }));
     writes_as_before::<super::apps::AppList>(&json!({ "apps": [{

@@ -233,7 +233,7 @@ hold node-level steps a harness cannot run. A file is an object:
   "steps": [
     { "type": "create_org", "account": "alice", "org_name": "Blobs", "outputs": { "org": "orgId" } },
     { "type": "deploy", "account": "alice", "org": "{{org}}",
-      "wasm": "{{env.CORE_WASM_DIR}}/kv_store.wasm", "outputs": { "app": "contextId" } },
+      "wasm": "{{env.CORE_WASM_DIR}}/kv_store.wasm", "outputs": { "app": "appId" } },
     { "type": "upload_blob", "account": "bob", "app": "{{app}}", "file_path": "static/test.txt",
       "outputs": { "blob": "blob_id" } },
     { "type": "download_blob", "account": "alice", "app": "{{app}}", "blob_id": "{{blob}}",
@@ -290,7 +290,7 @@ Step types (fields as in merobox; each acting step names an `account`, or an
 
 | Area | Steps |
 | --- | --- |
-| Apps | `deploy` (`wasm` or `package` + `version`/`service`; `org`, `access`, `init_args`, `confirm_methods` (ignored: a component declares its own), `app_name`) answers `appId`, `contextId`, `bundle`, `memberPublicKey`; `upload_bundle` (`hash`); `create_app`; `upgrade_app` (`version`/`package`/`bundle`/`migrate`, approved with the account's passkey when the node asks); `delete_app`; `migration_status` (`apps`) |
+| Apps | `deploy` (`wasm` or `package` + `version`/`service`; `org`, `access`, `init_args`, `confirm_methods` (ignored: a component declares its own), `app_name`) answers `appId`, its context id (for scenario files written for v1), `bundle`, `memberPublicKey`; `upload_bundle` (`hash`); `create_app`; `upgrade_app` (`version`/`package`/`bundle`/`migrate`, approved with the account's passkey when the node asks); `delete_app`; `migration_status` (`apps`) |
 | Packages | `install_package` (`mpk`: published to the cluster's registry, then `POST /packages/install`; answers `package`, `version`), `packages`, `uninstall_package` |
 | Calls | `call` (`args`, `confirm`, `idempotency_key`), `view` (`stale`, `min_index`), `wait_for` (`equals`/`contains`, `timeout`, `interval`), `events` (`from`, `count`, `timeout`) |
 | Accounts | `whoami` (adds `publicKey`), `add_device` (another passkey on the account; `device` then acts as it), `create_api_key` |

@@ -85,7 +85,7 @@ meroctl app build apps/notes --out app.wasm
 meroctl app pack --wasm app.wasm --frontend dist \
   --package com.example.notes --app-version 1.0.0 --key my-signing-key.json \
   --out dist-mpk/com.example.notes-1.0.0.mpk
-meroctl app install --path dist-mpk/com.example.notes-1.0.0.mpk   # a development cluster
+meroctl package install --path dist-mpk/com.example.notes-1.0.0.mpk   # a development cluster
 ```
 
 At install the node refuses a frontend whose paths are not canonical paths
@@ -287,9 +287,9 @@ first) with their passkey:
   browsers reach it once Calimero Cloud holds its certificate and route.
 
 ```bash
-meroctl app origins add com.example.notes https://notes.example.com --served
-meroctl app origins list com.example.notes
-meroctl app origins remove com.example.notes https://notes.example.com
+meroctl package origins add com.example.notes https://notes.example.com --served
+meroctl package origins list com.example.notes
+meroctl package origins remove com.example.notes https://notes.example.com
 ```
 
 ```ts

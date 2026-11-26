@@ -2,10 +2,11 @@
 //!
 //! v1's command tree over the node's API. Every request goes through the
 //! attested, sealed client the SDKs use (`calimero-client`): the node's
-//! quote is checked before anything is sent. Where v1 had an "application"
-//! this has a signed package (`app`); a context is an app instance
-//! (`instance`); a namespace is an organization (`org`); a group is one
-//! of its teams (`team`); an identity is an account with passkeys
+//! quote is checked before anything is sent. The names are the glossary's:
+//! `app` makes and ships an app's signed package (v1's application),
+//! `package` handles the ones installed on the cluster; a context is an app
+//! instance (`instance`); a namespace is an organization (`org`); a group is
+//! one of its teams (`team`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
 //!
 //! Spec: [meroctl CLI reference](https://calimero-network.github.io/core/operate/meroctl/).
@@ -61,7 +62,7 @@ use env::{
         meroctl app new my-app\n  \
         meroctl node add local http://127.0.0.1:2501 --allow-mock\n  \
         meroctl --node local login --dev-passkey ./dev-passkey.json\n  \
-        meroctl --node local app install --path ./kv-store.mpk\n  \
+        meroctl --node local package install --path ./kv-store.mpk\n  \
         meroctl --node local instance create --package com.example.kv --name notes\n  \
         meroctl --node local call --instance notes set --args '{\"key\":\"a\",\"value\":\"1\"}'\n  \
         meroctl --node local app release --version 1.4.0\n  \
@@ -109,6 +110,11 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// A subcommand still parsed under an old spelling, but out of the help.
+fn hidden(cmd: clap::Command) -> clap::Command {
+    cmd.hide(true)
+}
+
 fn default_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -143,11 +149,26 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<AttestCmd>,
     },
-    /// Signed packages (v1's applications): make one (new, build, codegen,
-    /// abi), ship it (key, pack, sign, inspect, publish), and install, list,
-    /// uninstall, watch it on the node. Also `meroctl package`.
-    #[command(subcommand, alias = "package")]
+    /// Make an app and ship its signed package (v1's application): new,
+    /// build, codegen, abi, uses, signer, pack, sign, inspect, publish,
+    /// check, release. No node, but for `release` and `check --against VERSION`.
+    #[command(
+        subcommand,
+        mut_subcommand("install", hidden),
+        mut_subcommand("list", hidden),
+        mut_subcommand("get", hidden),
+        mut_subcommand("versions", hidden),
+        mut_subcommand("get-latest-version", hidden),
+        mut_subcommand("pipelines", hidden),
+        mut_subcommand("uninstall", hidden),
+        mut_subcommand("watch", hidden),
+        mut_subcommand("origins", hidden)
+    )]
     App(app::AppCmd),
+    /// The packages installed on the cluster: install, list, get, versions,
+    /// pipelines, uninstall, watch (push a build), origins.
+    #[command(subcommand)]
+    Package(app::PackageCmd),
     /// App instances (v1's contexts): create, list, get, update, delete, aliases, access.
     #[command(subcommand, name = "instance")]
     Context(context::ContextCmd),
@@ -349,6 +370,14 @@ fn old_spellings(args: &[String]) -> Vec<(&'static str, &'static str)> {
             found.push(("upgrade-namespace", "upgrade-org"))
         }
         (Some("dev"), Some("new")) => found.push(("meroctl dev new", "meroctl app new")),
+        // `package` made and shipped packages too while it was `app`'s alias.
+        (
+            Some("package"),
+            Some(
+                "new" | "build" | "codegen" | "abi" | "uses" | "signer" | "pack" | "sign"
+                | "inspect" | "publish" | "check" | "release",
+            ),
+        ) => found.push(("meroctl package", "meroctl app")),
         _ => {}
     }
     let has = |flag: &str| {
@@ -551,6 +580,7 @@ async fn main() -> eyre::Result<()> {
             })
         }
         Cmd::App(cmd) => app::run(cmd, &env).await?,
+        Cmd::Package(cmd) => app::run_package(cmd, &env).await?,
         Cmd::Context(cmd) => context::run(cmd, &env).await?,
         Cmd::Call {
             context,
@@ -657,19 +687,21 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// No help a user can see calls an app instance a context (its name before
-    /// 1.0.0-rc.26), an organization a namespace or a team a group (before
-    /// 1.0.0-rc.29): every visible command's help, the examples included. The
-    /// answer's `contextId` aside.
+    /// No help a user can see (command names, flags, value names, text, the
+    /// examples) uses a word the glossary retired: an app instance is not a
+    /// context, an organization not a namespace, a team not a group (a Raft
+    /// group is), a signed package not an application. Spec:
+    /// [Glossary](https://calimero-network.github.io/core/protocol/glossary/#retired-words)
     #[test]
-    fn help_says_instance_org_and_team() {
+    fn help_uses_the_glossary_words() {
         fn walk(cmd: &mut clap::Command, path: &str, found: &mut Vec<String>) {
             let help = cmd.render_long_help().to_string();
             for line in help.lines() {
                 let l = line.to_lowercase();
-                let old_instance = l.contains("context")
-                    && !l.contains("v1's contexts")
-                    && !l.contains("contextid");
+                let old_instance = l.contains("context") && !l.contains("v1's contexts");
+                let old_package = l.contains("application")
+                    && !l.contains("v1's application")
+                    && !l.contains("application/");
                 // `org` and `team`, not v1's `namespace` and `group` (a Raft
                 // group is another thing, named so).
                 let old_org = !l.contains("v1's")
@@ -677,7 +709,7 @@ mod tests {
                         || (l.contains("group")
                             && !l.contains("raft group")
                             && !l.contains("system group")));
-                if old_instance || old_org {
+                if old_instance || old_org || old_package {
                     found.push(format!("{path}: {}", line.trim()));
                 }
             }
@@ -695,7 +727,7 @@ mod tests {
         walk(&mut cmd, "meroctl", &mut found);
         assert!(
             found.is_empty(),
-            "help still says context, namespace or group:\n{}",
+            "help still says context, namespace, group or application:\n{}",
             found.join("\n")
         );
     }
@@ -732,7 +764,9 @@ mod tests {
             ],
             &["meroctl", "registry", "get", "com.example.kv@1.0.0"],
             &["meroctl", "registry", "login"],
-            &["meroctl", "app", "install", "com.example.kv"],
+            &["meroctl", "package", "install", "com.example.kv"],
+            &["meroctl", "package", "list"],
+            &["meroctl", "package", "versions", "com.example.kv"],
             &["meroctl", "cloud", "compute", "logs", "a", "r"],
             &["meroctl", "cloud", "compute", "pipeline", "runs", "a"],
             &[
@@ -830,6 +864,8 @@ mod tests {
             "meroctl team subgroups o t",
             "meroctl instance create --name kv --package p --namespace o",
             "meroctl ops upgrade-namespace o --package p --version 1",
+            "meroctl package build",
+            "meroctl package pack --wasm a.wasm",
         ] {
             let args: Vec<String> = line.split(' ').map(str::to_owned).collect();
             assert!(Cli::try_parse_from(&args).is_err(), "{line} still parses");
@@ -902,14 +938,53 @@ mod tests {
             "meroctl --node local org teams o",
             "meroctl attest app kv",
             "meroctl app new my-app",
+            "meroctl package install com.example.kv",
+            "meroctl app install com.example.kv",
         ] {
             assert_eq!(found(current), [], "{current}");
         }
     }
 
-    /// `package` is `app`: `meroctl package origins ...` reaches the same commands.
+    /// `meroctl package` handles installed packages; under `app` the same
+    /// commands still parse (scripts written before), but its help does not
+    /// list them: `app` makes and ships an app.
     #[test]
-    fn package_is_app() {
+    fn package_commands_are_packages_and_hidden_under_app() {
+        let mut cli = Cli::command();
+        cli.build();
+        let package = cli.find_subcommand("package").expect("package");
+        let names: Vec<String> = package
+            .get_subcommands()
+            .map(|c| c.get_name().to_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "install"), "{names:?}");
+        let app = cli.find_subcommand("app").expect("app");
+        for name in &names {
+            let under_app = app
+                .find_subcommand(name)
+                .unwrap_or_else(|| panic!("`app {name}` no longer parses"));
+            assert!(
+                under_app.is_hide_set(),
+                "`app {name}` is listed in app's help"
+            );
+            assert!(
+                !package.find_subcommand(name).expect(name).is_hide_set(),
+                "`package {name}` is hidden"
+            );
+        }
+        // And nothing `app` lists is a package command.
+        for c in app.get_subcommands().filter(|c| !c.is_hide_set()) {
+            assert!(
+                !names.iter().any(|n| n == c.get_name()),
+                "`app {}` is listed under app",
+                c.get_name()
+            );
+        }
+    }
+
+    /// `meroctl package origins ...`, and `app origins ...` as before.
+    #[test]
+    fn package_origins_parse_under_both_names() {
         for args in [
             &["meroctl", "package", "origins", "list", "com.example.kv"][..],
             &[

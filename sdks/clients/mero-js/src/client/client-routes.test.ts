@@ -661,7 +661,7 @@ describe('app teams, the invite list and team default capabilities', () => {
       defaultCapabilities: 2,
       members: [{ account: 'acc-1', role: 'lead', capabilities: 6 }],
       children: [],
-      apps: [{ appId: 'a-1', name: 'chat', contextId: 'ab' }],
+      apps: [{ appId: 'a-1', name: 'chat' }],
       myRole: 'lead',
       member: true,
     };

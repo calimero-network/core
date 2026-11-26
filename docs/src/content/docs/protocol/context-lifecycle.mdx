@@ -33,7 +33,7 @@ lives in the system group; its state lives only on its replicas.
     { from: 3, to: 3, label: 'reconcile: start the group; first replica forms it' },
     { from: 3, to: 3, label: 'leader runs init(initArgs), appends Init' },
     { from: 1, to: 3, label: 'poll: init applied? (internal/app-ready)', dashed: true },
-    { from: 1, to: 0, label: '{ appId, contextId, group, replicas } or 422 INIT_FAILED', dashed: true },
+    { from: 1, to: 0, label: '{ appId, group, replicas } or 422 INIT_FAILED', dashed: true },
   ]}
 />
 
@@ -69,7 +69,7 @@ package-bound session:
    first replica in the list forms it with all replicas as voters.
 5. **Init.** The group's first leader runs `init` with `initArgs` as the owner
    and appends the `Init` entry. The create request waits for it (up to 30
-   seconds) and answers `{ appId, contextId, group, replicas }`, or
+   seconds) and answers `{ appId, group, replicas, compute, links }`, or
    `422 INIT_FAILED` with the app's error, recorded on the instance
    (`AppState::init_error`) rather than leaving a dead app.
 

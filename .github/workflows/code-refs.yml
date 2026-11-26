@@ -4,6 +4,8 @@ name: Code references
 # a page and heading that exist, a path exists, and no file gains a bare tag (D20,
 # "review finding F6") or a bare #issue (scripts/check-code-refs.py). Runs when
 # either side moves: the code that cites, or the docs page whose heading it cites.
+# Also: the API document and the docs use the glossary's words, none it retired
+# (scripts/check-vocabulary.py).
 on:
   pull_request:
     paths:
@@ -14,6 +16,10 @@ on:
       - 'docs/astro.config.mjs'
       - 'scripts/check-code-refs.*'
       - 'scripts/tests/check-code-refs-test.py'
+      - 'docs/public/openapi.json'
+      - 'README.md'
+      - 'scripts/check-vocabulary.py'
+      - 'scripts/tests/check-vocabulary-test.py'
       - '.github/workflows/code-refs.yml'
   push:
     branches: [master]
@@ -38,3 +44,7 @@ jobs:
         run: python3 scripts/tests/check-code-refs-test.py
       - name: Check code references
         run: python3 scripts/check-code-refs.py
+      - name: Test the vocabulary check
+        run: python3 -I scripts/tests/check-vocabulary-test.py
+      - name: The API document and the docs use the glossary's words
+        run: python3 -I scripts/check-vocabulary.py
