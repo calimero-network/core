@@ -29166,10 +29166,529 @@
         ],
         "description": "`GET /apps/{app}/pipeline-runs`: the app's recent pipeline runs, newest first."
       },
+      "PipelineCaller": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "account"
+                ]
+              },
+              "account": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "account"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "apiKey"
+                ]
+              },
+              "key": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "key",
+              "account"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "public"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "app"
+                ]
+              },
+              "app": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "app"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "visitor"
+                ]
+              },
+              "link": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "link",
+              "key"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "description": "Who started a pipeline run."
+      },
+      "PipelineRunCost": {
+        "type": "object",
+        "properties": {
+          "maxCost": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "priceVersion": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "table": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "fuelPerVcpuSecond": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "vcpuSecond": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "gibSecond": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "connectorGib": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "storageGibMonth": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "egressGib": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "version",
+              "fuelPerVcpuSecond",
+              "vcpuSecond",
+              "gibSecond",
+              "connectorGib",
+              "storageGibMonth",
+              "egressGib"
+            ]
+          },
+          "worstCase": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          }
+        },
+        "required": [
+          "maxCost",
+          "priceVersion",
+          "table",
+          "worstCase"
+        ],
+        "description": "The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings."
+      },
+      "PipelineRunOutput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "A file a pipeline step made: its size and hash only to those who handle the app's files."
+      },
+      "PipelineRunStep": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed",
+              "skipped",
+              "upstreamFailed",
+              "cancelled"
+            ]
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resultsTooLarge": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fan": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "items": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "batch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "allowed": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "total",
+              "items",
+              "batch",
+              "allowed"
+            ]
+          },
+          "finished": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failedItems": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cachedCount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cachedItems": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cachedKeys": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "cost": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "capped": {
+            "type": "boolean"
+          },
+          "legacyItems": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineRunOutput"
+            }
+          },
+          "result": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
+          "results": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+            }
+          }
+        },
+        "required": [
+          "status",
+          "resultsTooLarge",
+          "reason",
+          "fan",
+          "finished",
+          "failedItems",
+          "cachedItems",
+          "cached"
+        ],
+        "description": "One step of a pipeline run. `runs`, `outputs`, `result` and `results` come only with one run (`GET /apps/{app}/pipeline-runs/{run}`), not in the list; `result` and `results` are `null` to those who may not handle the app's files. `cost` is a decimal string, under a cost cap."
+      },
       "PipelineRunView": {
         "type": "object",
-        "additionalProperties": true,
-        "description": "A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped for the reader (results and file hashes only to those who handle the app's files). Its keys follow the record's, so the document leaves it open."
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "pipeline": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "computeBundle": {
+            "type": "string"
+          },
+          "modules": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "owner": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "inputFiles": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "sha256": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "size",
+                "sha256"
+              ]
+            }
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "caller": {
+            "$ref": "#/components/schemas/PipelineCaller"
+          },
+          "payer": {
+            "type": "string"
+          },
+          "startTsMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "succeededWithFailures",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "cancelRequested": {
+            "type": "boolean"
+          },
+          "failFast": {
+            "type": "boolean"
+          },
+          "stopping": {
+            "type": "boolean"
+          },
+          "steps": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PipelineRunStep"
+            }
+          },
+          "endTsMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost": {
+            "$ref": "#/components/schemas/PipelineRunCost"
+          },
+          "costSoFar": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "retryOf": {
+            "type": "string"
+          },
+          "limits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "fuel": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "memoryMib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "wallSecs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "fuel",
+                "memoryMib",
+                "wallSecs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "pipeline",
+          "version",
+          "hash",
+          "computeBundle",
+          "owner",
+          "inputs",
+          "params",
+          "caller",
+          "payer",
+          "startTsMs",
+          "state",
+          "cancelRequested",
+          "failFast",
+          "stopping",
+          "steps",
+          "endTsMs"
+        ],
+        "description": "A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap."
       },
       "PipelineStarted": {
         "type": "object",

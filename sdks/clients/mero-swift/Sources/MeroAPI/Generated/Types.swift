@@ -7841,24 +7841,701 @@ public enum Components {
                 case runs
             }
         }
-        /// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped for the reader (results and file hashes only to those who handle the app's files). Its keys follow the record's, so the document leaves it open.
+        /// Who started a pipeline run.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineCaller`.
+        @frozen public enum PipelineCaller: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCaller/PipelineCallerAccount`.
+            case account(Components.Schemas.PipelineCallerAccount)
+            /// - Remark: Generated from `#/components/schemas/PipelineCaller/PipelineCallerApiKey`.
+            case apiKey(Components.Schemas.PipelineCallerApiKey)
+            /// - Remark: Generated from `#/components/schemas/PipelineCaller/PipelineCallerApp`.
+            case app(Components.Schemas.PipelineCallerApp)
+            /// - Remark: Generated from `#/components/schemas/PipelineCaller/PipelineCallerPublic`.
+            case _public(Components.Schemas.PipelineCallerPublic)
+            /// - Remark: Generated from `#/components/schemas/PipelineCaller/PipelineCallerSystem`.
+            case system(Components.Schemas.PipelineCallerSystem)
+            /// - Remark: Generated from `#/components/schemas/PipelineCaller/PipelineCallerVisitor`.
+            case visitor(Components.Schemas.PipelineCallerVisitor)
+            public enum CodingKeys: String, CodingKey {
+                case kind
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                let discriminator = try container.decode(
+                    Swift.String.self,
+                    forKey: .kind
+                )
+                switch discriminator {
+                case "account":
+                    self = .account(try .init(from: decoder))
+                case "apiKey":
+                    self = .apiKey(try .init(from: decoder))
+                case "app":
+                    self = .app(try .init(from: decoder))
+                case "public":
+                    self = ._public(try .init(from: decoder))
+                case "system":
+                    self = .system(try .init(from: decoder))
+                case "visitor":
+                    self = .visitor(try .init(from: decoder))
+                default:
+                    throw Swift.DecodingError.unknownOneOfDiscriminator(
+                        discriminatorKey: CodingKeys.kind,
+                        discriminatorValue: discriminator,
+                        codingPath: decoder.codingPath
+                    )
+                }
+            }
+            public func encode(to encoder: any Encoder) throws {
+                switch self {
+                case let .account(value):
+                    try value.encode(to: encoder)
+                case let .apiKey(value):
+                    try value.encode(to: encoder)
+                case let .app(value):
+                    try value.encode(to: encoder)
+                case let ._public(value):
+                    try value.encode(to: encoder)
+                case let .system(value):
+                    try value.encode(to: encoder)
+                case let .visitor(value):
+                    try value.encode(to: encoder)
+                }
+            }
+        }
+        /// The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineRunCost`.
+        public struct PipelineRunCost: Codable, Hashable, Sendable {
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/PipelineRunCost/maxCost`.
+            public var maxCost: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunCost/priceVersion`.
+            public var priceVersion: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table`.
+            public struct TablePayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/version`.
+                public var version: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/fuelPerVcpuSecond`.
+                public var fuelPerVcpuSecond: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/vcpuSecond`.
+                public var vcpuSecond: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/gibSecond`.
+                public var gibSecond: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/connectorGib`.
+                public var connectorGib: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/storageGibMonth`.
+                public var storageGibMonth: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table/egressGib`.
+                public var egressGib: Swift.Int64
+                /// Creates a new `TablePayload`.
+                ///
+                /// - Parameters:
+                ///   - version:
+                ///   - fuelPerVcpuSecond:
+                ///   - vcpuSecond:
+                ///   - gibSecond:
+                ///   - connectorGib:
+                ///   - storageGibMonth:
+                ///   - egressGib:
+                public init(
+                    version: Swift.Int64,
+                    fuelPerVcpuSecond: Swift.Int64,
+                    vcpuSecond: Swift.Int64,
+                    gibSecond: Swift.Int64,
+                    connectorGib: Swift.Int64,
+                    storageGibMonth: Swift.Int64,
+                    egressGib: Swift.Int64
+                ) {
+                    self.version = version
+                    self.fuelPerVcpuSecond = fuelPerVcpuSecond
+                    self.vcpuSecond = vcpuSecond
+                    self.gibSecond = gibSecond
+                    self.connectorGib = connectorGib
+                    self.storageGibMonth = storageGibMonth
+                    self.egressGib = egressGib
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case version
+                    case fuelPerVcpuSecond
+                    case vcpuSecond
+                    case gibSecond
+                    case connectorGib
+                    case storageGibMonth
+                    case egressGib
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunCost/table`.
+            public var table: Components.Schemas.PipelineRunCost.TablePayload
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/PipelineRunCost/worstCase`.
+            public var worstCase: Swift.String
+            /// Creates a new `PipelineRunCost`.
+            ///
+            /// - Parameters:
+            ///   - maxCost: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - priceVersion:
+            ///   - table:
+            ///   - worstCase: an unsigned 64-bit integer as a decimal string (D20)
+            public init(
+                maxCost: Swift.String,
+                priceVersion: Swift.Int64,
+                table: Components.Schemas.PipelineRunCost.TablePayload,
+                worstCase: Swift.String
+            ) {
+                self.maxCost = maxCost
+                self.priceVersion = priceVersion
+                self.table = table
+                self.worstCase = worstCase
+            }
+            public enum CodingKeys: String, CodingKey {
+                case maxCost
+                case priceVersion
+                case table
+                case worstCase
+            }
+        }
+        /// A file a pipeline step made: its size and hash only to those who handle the app's files.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineRunOutput`.
+        public struct PipelineRunOutput: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineRunOutput/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunOutput/size`.
+            public var size: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunOutput/sha256`.
+            public var sha256: Swift.String?
+            /// Creates a new `PipelineRunOutput`.
+            ///
+            /// - Parameters:
+            ///   - id:
+            ///   - size:
+            ///   - sha256:
+            public init(
+                id: Swift.String,
+                size: Swift.Int64? = nil,
+                sha256: Swift.String? = nil
+            ) {
+                self.id = id
+                self.size = size
+                self.sha256 = sha256
+            }
+            public enum CodingKeys: String, CodingKey {
+                case id
+                case size
+                case sha256
+            }
+        }
+        /// One step of a pipeline run. `runs`, `outputs`, `result` and `results` come only with one run (`GET /apps/{app}/pipeline-runs/{run}`), not in the list; `result` and `results` are `null` to those who may not handle the app's files. `cost` is a decimal string, under a cost cap.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineRunStep`.
+        public struct PipelineRunStep: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/status`.
+            @frozen public enum StatusPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case pending = "pending"
+                case running = "running"
+                case succeeded = "succeeded"
+                case failed = "failed"
+                case skipped = "skipped"
+                case upstreamFailed = "upstreamFailed"
+                case cancelled = "cancelled"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/status`.
+            public var status: Components.Schemas.PipelineRunStep.StatusPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/runs`.
+            public var runs: [Swift.String]?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/resultsTooLarge`.
+            public var resultsTooLarge: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/reason`.
+            public var reason: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/fan`.
+            public struct FanPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/PipelineRunStep/fan/total`.
+                public var total: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunStep/fan/items`.
+                public var items: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunStep/fan/batch`.
+                public var batch: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/PipelineRunStep/fan/allowed`.
+                public var allowed: Swift.Int64
+                /// Creates a new `FanPayload`.
+                ///
+                /// - Parameters:
+                ///   - total:
+                ///   - items:
+                ///   - batch:
+                ///   - allowed:
+                public init(
+                    total: Swift.Int64,
+                    items: Swift.Int64,
+                    batch: Swift.Int64,
+                    allowed: Swift.Int64
+                ) {
+                    self.total = total
+                    self.items = items
+                    self.batch = batch
+                    self.allowed = allowed
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case total
+                    case items
+                    case batch
+                    case allowed
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/fan`.
+            public var fan: Components.Schemas.PipelineRunStep.FanPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/finished`.
+            public var finished: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/failedItems`.
+            public var failedItems: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cachedCount`.
+            public var cachedCount: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cachedItems`.
+            public var cachedItems: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cachedKeys`.
+            public struct CachedKeysPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `CachedKeysPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cachedKeys`.
+            public var cachedKeys: Components.Schemas.PipelineRunStep.CachedKeysPayload?
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cost`.
+            public var cost: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/capped`.
+            public var capped: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/legacyItems`.
+            public var legacyItems: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/cached`.
+            public var cached: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/outputs`.
+            public var outputs: [Components.Schemas.PipelineRunOutput]?
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/result`.
+            public var result: OpenAPIRuntime.OpenAPIValueContainer?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunStep/results`.
+            public var results: [OpenAPIRuntime.OpenAPIValueContainer]?
+            /// Creates a new `PipelineRunStep`.
+            ///
+            /// - Parameters:
+            ///   - status:
+            ///   - runs:
+            ///   - resultsTooLarge:
+            ///   - reason:
+            ///   - fan:
+            ///   - finished:
+            ///   - failedItems:
+            ///   - cachedCount:
+            ///   - cachedItems:
+            ///   - cachedKeys:
+            ///   - cost: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - capped:
+            ///   - legacyItems:
+            ///   - cached:
+            ///   - outputs:
+            ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - results:
+            public init(
+                status: Components.Schemas.PipelineRunStep.StatusPayload,
+                runs: [Swift.String]? = nil,
+                resultsTooLarge: Swift.Bool,
+                reason: Swift.String? = nil,
+                fan: Components.Schemas.PipelineRunStep.FanPayload,
+                finished: Swift.Int64,
+                failedItems: Swift.Int64,
+                cachedCount: Swift.Int64? = nil,
+                cachedItems: Swift.Int64,
+                cachedKeys: Components.Schemas.PipelineRunStep.CachedKeysPayload? = nil,
+                cost: Swift.String? = nil,
+                capped: Swift.Bool? = nil,
+                legacyItems: Swift.Int64? = nil,
+                cached: Swift.Bool,
+                outputs: [Components.Schemas.PipelineRunOutput]? = nil,
+                result: OpenAPIRuntime.OpenAPIValueContainer? = nil,
+                results: [OpenAPIRuntime.OpenAPIValueContainer]? = nil
+            ) {
+                self.status = status
+                self.runs = runs
+                self.resultsTooLarge = resultsTooLarge
+                self.reason = reason
+                self.fan = fan
+                self.finished = finished
+                self.failedItems = failedItems
+                self.cachedCount = cachedCount
+                self.cachedItems = cachedItems
+                self.cachedKeys = cachedKeys
+                self.cost = cost
+                self.capped = capped
+                self.legacyItems = legacyItems
+                self.cached = cached
+                self.outputs = outputs
+                self.result = result
+                self.results = results
+            }
+            public enum CodingKeys: String, CodingKey {
+                case status
+                case runs
+                case resultsTooLarge
+                case reason
+                case fan
+                case finished
+                case failedItems
+                case cachedCount
+                case cachedItems
+                case cachedKeys
+                case cost
+                case capped
+                case legacyItems
+                case cached
+                case outputs
+                case result
+                case results
+            }
+        }
+        /// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap.
         ///
         /// - Remark: Generated from `#/components/schemas/PipelineRunView`.
         public struct PipelineRunView: Codable, Hashable, Sendable {
-            /// A container of undocumented properties.
-            public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/pipeline`.
+            public var pipeline: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/hash`.
+            public var hash: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/computeBundle`.
+            public var computeBundle: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/modules`.
+            public struct ModulesPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `ModulesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/modules`.
+            public var modules: Components.Schemas.PipelineRunView.ModulesPayload?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/owner`.
+            public var owner: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputs`.
+            public struct InputsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: [Swift.String]]
+                /// Creates a new `InputsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: [Swift.String]] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputs`.
+            public var inputs: Components.Schemas.PipelineRunView.InputsPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputFiles`.
+            public struct InputFilesPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputFiles/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputFiles/additionalProperties/id`.
+                    public var id: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputFiles/additionalProperties/size`.
+                    public var size: Swift.Int64
+                    /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputFiles/additionalProperties/sha256`.
+                    public var sha256: Swift.String
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - id:
+                    ///   - size:
+                    ///   - sha256:
+                    public init(
+                        id: Swift.String,
+                        size: Swift.Int64,
+                        sha256: Swift.String
+                    ) {
+                        self.id = id
+                        self.size = size
+                        self.sha256 = sha256
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case id
+                        case size
+                        case sha256
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.PipelineRunView.InputFilesPayload.AdditionalPropertiesPayload]
+                /// Creates a new `InputFilesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.PipelineRunView.InputFilesPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/inputFiles`.
+            public var inputFiles: Components.Schemas.PipelineRunView.InputFilesPayload?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/params`.
+            public struct ParamsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
+                /// Creates a new `ParamsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/params`.
+            public var params: Components.Schemas.PipelineRunView.ParamsPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/caller`.
+            public var caller: Components.Schemas.PipelineCaller
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/payer`.
+            public var payer: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/startTsMs`.
+            public var startTsMs: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/state`.
+            @frozen public enum StatePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case running = "running"
+                case succeeded = "succeeded"
+                case succeededWithFailures = "succeededWithFailures"
+                case failed = "failed"
+                case cancelled = "cancelled"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/state`.
+            public var state: Components.Schemas.PipelineRunView.StatePayload
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/cancelRequested`.
+            public var cancelRequested: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/failFast`.
+            public var failFast: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/stopping`.
+            public var stopping: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/steps`.
+            public struct StepsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.PipelineRunStep]
+                /// Creates a new `StepsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.PipelineRunStep] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/steps`.
+            public var steps: Components.Schemas.PipelineRunView.StepsPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/endTsMs`.
+            public var endTsMs: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/cost`.
+            public var cost: Components.Schemas.PipelineRunCost?
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/costSoFar`.
+            public var costSoFar: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/retryOf`.
+            public var retryOf: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits`.
+            public struct LimitsPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits/additionalProperties/fuel`.
+                    public var fuel: Swift.Int64?
+                    /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits/additionalProperties/memoryMib`.
+                    public var memoryMib: Swift.Int64?
+                    /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits/additionalProperties/wallSecs`.
+                    public var wallSecs: Swift.Int64?
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - fuel:
+                    ///   - memoryMib:
+                    ///   - wallSecs:
+                    public init(
+                        fuel: Swift.Int64? = nil,
+                        memoryMib: Swift.Int64? = nil,
+                        wallSecs: Swift.Int64? = nil
+                    ) {
+                        self.fuel = fuel
+                        self.memoryMib = memoryMib
+                        self.wallSecs = wallSecs
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case fuel
+                        case memoryMib
+                        case wallSecs
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.PipelineRunView.LimitsPayload.AdditionalPropertiesPayload]
+                /// Creates a new `LimitsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.PipelineRunView.LimitsPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits`.
+            public var limits: Components.Schemas.PipelineRunView.LimitsPayload?
             /// Creates a new `PipelineRunView`.
             ///
             /// - Parameters:
-            ///   - additionalProperties: A container of undocumented properties.
-            public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
-                self.additionalProperties = additionalProperties
+            ///   - id:
+            ///   - pipeline:
+            ///   - version:
+            ///   - hash:
+            ///   - computeBundle:
+            ///   - modules:
+            ///   - owner:
+            ///   - inputs:
+            ///   - inputFiles:
+            ///   - params:
+            ///   - caller:
+            ///   - payer:
+            ///   - startTsMs:
+            ///   - state:
+            ///   - cancelRequested:
+            ///   - failFast:
+            ///   - stopping:
+            ///   - steps:
+            ///   - endTsMs:
+            ///   - cost:
+            ///   - costSoFar: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - retryOf:
+            ///   - limits:
+            public init(
+                id: Swift.String,
+                pipeline: Swift.String,
+                version: Swift.String,
+                hash: Swift.String,
+                computeBundle: Swift.String,
+                modules: Components.Schemas.PipelineRunView.ModulesPayload? = nil,
+                owner: Swift.String,
+                inputs: Components.Schemas.PipelineRunView.InputsPayload,
+                inputFiles: Components.Schemas.PipelineRunView.InputFilesPayload? = nil,
+                params: Components.Schemas.PipelineRunView.ParamsPayload,
+                caller: Components.Schemas.PipelineCaller,
+                payer: Swift.String,
+                startTsMs: Swift.Int64,
+                state: Components.Schemas.PipelineRunView.StatePayload,
+                cancelRequested: Swift.Bool,
+                failFast: Swift.Bool,
+                stopping: Swift.Bool,
+                steps: Components.Schemas.PipelineRunView.StepsPayload,
+                endTsMs: Swift.Int64? = nil,
+                cost: Components.Schemas.PipelineRunCost? = nil,
+                costSoFar: Swift.String? = nil,
+                retryOf: Swift.String? = nil,
+                limits: Components.Schemas.PipelineRunView.LimitsPayload? = nil
+            ) {
+                self.id = id
+                self.pipeline = pipeline
+                self.version = version
+                self.hash = hash
+                self.computeBundle = computeBundle
+                self.modules = modules
+                self.owner = owner
+                self.inputs = inputs
+                self.inputFiles = inputFiles
+                self.params = params
+                self.caller = caller
+                self.payer = payer
+                self.startTsMs = startTsMs
+                self.state = state
+                self.cancelRequested = cancelRequested
+                self.failFast = failFast
+                self.stopping = stopping
+                self.steps = steps
+                self.endTsMs = endTsMs
+                self.cost = cost
+                self.costSoFar = costSoFar
+                self.retryOf = retryOf
+                self.limits = limits
             }
-            public init(from decoder: any Decoder) throws {
-                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-            }
-            public func encode(to encoder: any Encoder) throws {
-                try encoder.encodeAdditionalProperties(additionalProperties)
+            public enum CodingKeys: String, CodingKey {
+                case id
+                case pipeline
+                case version
+                case hash
+                case computeBundle
+                case modules
+                case owner
+                case inputs
+                case inputFiles
+                case params
+                case caller
+                case payer
+                case startTsMs
+                case state
+                case cancelRequested
+                case failFast
+                case stopping
+                case steps
+                case endTsMs
+                case cost
+                case costSoFar
+                case retryOf
+                case limits
             }
         }
         /// What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap, and the run it retries.
@@ -17301,6 +17978,164 @@ public enum Components {
             }
             public enum CodingKeys: String, CodingKey {
                 case confirm
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/PipelineCallerAccount`.
+        public struct PipelineCallerAccount: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerAccount/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case account = "account"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerAccount/kind`.
+            public var kind: Components.Schemas.PipelineCallerAccount.KindPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerAccount/account`.
+            public var account: Swift.String
+            /// Creates a new `PipelineCallerAccount`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - account:
+            public init(
+                kind: Components.Schemas.PipelineCallerAccount.KindPayload,
+                account: Swift.String
+            ) {
+                self.kind = kind
+                self.account = account
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case account
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/PipelineCallerApiKey`.
+        public struct PipelineCallerApiKey: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApiKey/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case apiKey = "apiKey"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApiKey/kind`.
+            public var kind: Components.Schemas.PipelineCallerApiKey.KindPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApiKey/key`.
+            public var key: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApiKey/account`.
+            public var account: Swift.String
+            /// Creates a new `PipelineCallerApiKey`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - key:
+            ///   - account:
+            public init(
+                kind: Components.Schemas.PipelineCallerApiKey.KindPayload,
+                key: Swift.String,
+                account: Swift.String
+            ) {
+                self.kind = kind
+                self.key = key
+                self.account = account
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case key
+                case account
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/PipelineCallerPublic`.
+        public struct PipelineCallerPublic: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerPublic/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case _public = "public"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerPublic/kind`.
+            public var kind: Components.Schemas.PipelineCallerPublic.KindPayload
+            /// Creates a new `PipelineCallerPublic`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            public init(kind: Components.Schemas.PipelineCallerPublic.KindPayload) {
+                self.kind = kind
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/PipelineCallerApp`.
+        public struct PipelineCallerApp: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApp/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case app = "app"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApp/kind`.
+            public var kind: Components.Schemas.PipelineCallerApp.KindPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerApp/app`.
+            public var app: Swift.String
+            /// Creates a new `PipelineCallerApp`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - app:
+            public init(
+                kind: Components.Schemas.PipelineCallerApp.KindPayload,
+                app: Swift.String
+            ) {
+                self.kind = kind
+                self.app = app
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case app
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/PipelineCallerSystem`.
+        public struct PipelineCallerSystem: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerSystem/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case system = "system"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerSystem/kind`.
+            public var kind: Components.Schemas.PipelineCallerSystem.KindPayload
+            /// Creates a new `PipelineCallerSystem`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            public init(kind: Components.Schemas.PipelineCallerSystem.KindPayload) {
+                self.kind = kind
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/PipelineCallerVisitor`.
+        public struct PipelineCallerVisitor: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerVisitor/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case visitor = "visitor"
+            }
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerVisitor/kind`.
+            public var kind: Components.Schemas.PipelineCallerVisitor.KindPayload
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerVisitor/link`.
+            public var link: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineCallerVisitor/key`.
+            public var key: Swift.String
+            /// Creates a new `PipelineCallerVisitor`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - link:
+            ///   - key:
+            public init(
+                kind: Components.Schemas.PipelineCallerVisitor.KindPayload,
+                link: Swift.String,
+                key: Swift.String
+            ) {
+                self.kind = kind
+                self.link = link
+                self.key = key
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case link
+                case key
             }
         }
         /// - Remark: Generated from `#/components/schemas/GrantOrg`.

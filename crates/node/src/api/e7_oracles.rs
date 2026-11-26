@@ -226,9 +226,12 @@ fn pipeline_and_file_answers_answer_as_before() {
     writes_as_before::<super::pipelines::PipelineStarted>(
         &json!({ "run": "r", "worstCase": "9", "retryOf": "q" }),
     );
-    writes_as_before::<super::pipelines::PipelineRunList>(
-        &json!({ "runs": [{ "run": "r", "state": "running", "steps": {} }] }),
-    );
+    writes_as_before::<super::pipelines::PipelineRunList>(&json!({ "runs": [{
+            "id": "r", "pipeline": "p", "version": "1", "hash": "h", "computeBundle": "b",
+            "owner": "o", "inputs": {}, "params": {}, "caller": { "kind": "system" },
+            "payer": "p", "startTsMs": 1, "state": "running", "cancelRequested": false,
+            "failFast": false, "stopping": false, "steps": {}, "endTsMs": null,
+        }] }));
     writes_as_before::<super::pipelines::PipelineCancelled>(&json!({ "run": "r" }));
     writes_as_before::<crate::node::SignedPipelineReceipt>(
         &json!({ "receipt": { "v": 1 }, "node": 1, "signature": "ab" }),
