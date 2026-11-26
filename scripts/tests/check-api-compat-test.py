@@ -199,6 +199,22 @@ case(
     ),
     [],
 )
+WIT_UNRELEASED = WIT_ADDED.replace("0.5.1", "0.5.2")
+case(
+    "a WIT back to the release's withdraws a patch no release shipped",
+    c.compare(tree(wit=WIT_UNRELEASED), tree(), released=tree()),
+    [],
+)
+case(
+    "a WIT that is not the release's still needs its version",
+    len(c.compare(tree(wit=WIT_UNRELEASED), tree(wit=WIT_REMOVED.replace("0.5.2", "0.5.1")), released=tree())),
+    1,
+)
+case(
+    "without the release to compare, going back still fails",
+    len(c.compare(tree(wit=WIT_UNRELEASED), tree())),
+    1,
+)
 case("an ABI version dropped fails", len(c.compare(tree(abi=(1, 2)), tree(abi=(2,), sdk_abi=2))), 1)
 case("a new ABI version kept beside the old passes", c.compare(tree(), tree(abi=(1, 2), sdk_abi=2)), [])
 case("the SDK's ABI must be one the host supports", len(c.compare(tree(), tree(sdk_abi=2))), 1)
