@@ -314,7 +314,7 @@ async fn connector_calls_outside_the_declaration_are_refused() {
     let _off = alice
         .transport()
         .confirmed(
-            Request::new(Method::POST, &format!("apps/{app}/egress"))
+            Request::new(Method::POST, format!("apps/{app}/egress"))
                 .json(json!({ "egress": false })),
             &mut pk,
         )
