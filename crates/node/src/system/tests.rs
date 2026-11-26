@@ -2364,7 +2364,7 @@ fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
     assert_eq!(m.state.refresh[&hash].account, "alice");
 }
 
-/// Review finding B1: every sign-in's proof stayed in `used_proofs` for good, so
+/// Every sign-in's proof stayed in `used_proofs` for good, so
 /// the system state (one snapshot row) only grew. From the `ExpireProofs` mark
 /// on, a sign-in's proof is forgotten once the session it opened expires (at an
 /// entry's own time, never a clock), and a sign-in whose session expired by
@@ -3094,7 +3094,7 @@ fn a_create_org_entry_from_before_takes_any_name() {
 /// The status a client sees for a refusal comes from what the log refused it
 /// for, never from its wording: a quota refusal worded otherwise is still
 /// `429 QUOTA_EXCEEDED`, and a refusal of another kind whose wording happens
-/// to start like a quota's is still `400 REJECTED` (review finding E4).
+/// to start like a quota's is still `400 REJECTED`.
 #[test]
 fn a_refusals_status_comes_from_its_kind_not_its_wording() {
     let (mut m, _alice, _bob, _carol) = proven_cluster();
@@ -12978,9 +12978,9 @@ fn an_offer_that_no_longer_serves_moves_no_instance_from_the_version_that_brings
     );
 }
 
-/// C8's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
-/// member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and destinations
-/// (green), `p@1.1.0` adds a telemetry host (red).
+/// The update-classification fixture: `publishing`'s customer `cust` (cora its owner, eve
+/// an admin, dan a member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and
+/// destinations (green), `p@1.1.0` adds a telemetry host (red).
 fn classified() -> SystemMachine {
     let (_key, signer) = publisher_key(41);
     let mut m = publishing(&signer, "owner");
@@ -13443,10 +13443,10 @@ fn a_first_approval_of_a_release_its_approver_may_not_use_is_refused() {
 
 // ------------------------------------------------------- updates on their own, undo
 
-/// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
-/// member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1 and 2. No release sends
-/// data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and `1.0.2` (`b3` again) are
-/// green, `1.1.0` (`b2`) adds a telemetry host.
+/// The fixture of updates on their own and undo: `publishing`'s customer `cust` (cora its
+/// owner, eve an admin, dan a member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1
+/// and 2. No release sends data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and
+/// `1.0.2` (`b3` again) are green, `1.1.0` (`b2`) adds a telemetry host.
 fn auto_fixture() -> SystemMachine {
     let (_key, signer) = publisher_key(43);
     let mut m = publishing(&signer, "owner");
@@ -15509,7 +15509,7 @@ fn team_default(pk: &mut Soft, team: &str, capabilities: u32, actor: &str) -> Sy
     }
 }
 
-/// Review finding: a member holding `MANAGE_MEMBERS` (org-wide, which
+/// Regression: a member holding `MANAGE_MEMBERS` (org-wide, which
 /// `Org::may` falls back to on a team without a row) wrote their own row into
 /// a restricted team they could not see, with `MANAGE_APPLICATION` there, and
 /// so managed its apps and could open them to `anyone`. From the logged
@@ -15635,7 +15635,7 @@ fn bobs_invite(m: &mut SystemMachine, token: &str, role: &str, teams: &[&str]) {
         .created_by = "bob".into();
 }
 
-/// Review finding: an organization invite clamped its capabilities to what
+/// Regression: an organization invite clamped its capabilities to what
 /// its creator holds at redemption, but not its role or teams, and removing
 /// a member left their invites, so an admin about to be removed minted an
 /// admin invite and came back as admin with it. From the logged version that
@@ -15709,7 +15709,7 @@ fn a_removed_or_demoted_creators_invite_gives_nothing() {
     assert!(m.state.orgs["org"].in_team("carol", "t"));
 }
 
-/// Review finding: an organization's backup key, which every app of it is
+/// Regression: an organization's backup key, which every app of it is
 /// backed up to in full, was set by any member holding `MANAGE_APPLICATION`
 /// organization-wide, though only its owner and admins upgrade its apps. From
 /// the logged version that brings `backupKeyApprovers`, it is set only by
@@ -15765,4 +15765,79 @@ fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
         .insert("bob".into(), OrgRole::Admin);
     let _ok = set(&mut m, &mut bob, "bob").unwrap();
     assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+}
+
+/// Security review, the instance-invite side of `inviteCreatorStanding`: an instance invite
+/// was judged only by its token, so a manager who lost the instance (demoted, removed) still
+/// named people on it through an invite made before. From the logged version that brings the
+/// rule, an instance invite names nobody once its creator no longer manages the instance's
+/// grants; an entry logged before replays as it applied.
+#[test]
+fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_instance() {
+    use super::cluster_version::Feature;
+
+    // Bob, an admin of `org`, mints an invite to Alice's instance `oa` of it; Carol is a
+    // member, so redeeming names her on it.
+    let made_by_bob = |version: Option<&str>| {
+        let (mut m, ..) = cluster_at(version);
+        let mut oa = m.state.apps["app"].clone();
+        oa.app_id = "oa".into();
+        oa.org = "org".into();
+        let _prev = m.state.apps.insert("oa".into(), oa);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("bob".into(), OrgRole::Admin);
+        let _prev = o.members.insert("carol".into(), OrgRole::Member);
+        for token in ["inv_bob", "inv_alice"] {
+            let _ok = m
+                .run_unproven(SystemCmd::CreateAppInvite {
+                    invite_key: crate::proof::invite_key(token),
+                    invite: crate::types::AppInvite {
+                        app: "oa".into(),
+                        expires_at: 1_000,
+                        uses_left: 3,
+                        created_by: String::new(),
+                        created_at: 10,
+                        scope: None,
+                    },
+                    actor: if token == "inv_bob" { "bob" } else { "alice" }.into(),
+                    consent: Value::Null,
+                })
+                .unwrap();
+        }
+        // Then Bob is demoted: he no longer manages the instance.
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Member);
+        assert!(!m.state.manages_grants(&m.state.apps["oa"], "bob"));
+        m
+    };
+    let redeem = |token: &str, who: &str| SystemCmd::RedeemAppInvite {
+        invite_key: crate::proof::invite_key(token),
+        account: who.into(),
+        now: 20,
+        signature: crate::proof::sign_invite_redeem(token, who, 20),
+    };
+
+    // Before the version, his invite still names Carol, as an earlier release applied it.
+    let mut m = made_by_bob(None);
+    let _ok = m.run(redeem("inv_bob", "carol")).unwrap();
+    assert!(m.state.apps["oa"].access.names("carol"));
+
+    // From it, his invite names nobody and spends no use; the owner's still works.
+    let mut m = made_by_bob(Some(Feature::InviteCreatorStanding.since()));
+    assert_eq!(
+        m.run(redeem("inv_bob", "carol")).unwrap_err(),
+        INVITE_CREATOR_LACKS
+    );
+    assert!(!m.state.apps["oa"].access.names("carol"));
+    assert_eq!(
+        m.state.app_invites[&crate::proof::invite_key("inv_bob")].uses_left,
+        3
+    );
+    let _ok = m.run(redeem("inv_alice", "carol")).unwrap();
+    assert!(m.state.apps["oa"].access.names("carol"));
 }

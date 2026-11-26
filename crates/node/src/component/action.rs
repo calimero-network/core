@@ -1,15 +1,16 @@
-//! A component app's actions (D12, D17, D22, D27, D40): durable runs outside the log.
+//! A component app's actions: durable runs outside the log
+//! ([Actions](https://calimero-network.github.io/core/protocol/execution/#actions-component-apps)).
 //!
-//! - **Started** (D17): a client's call of an `#[app::action]` method, or `start-action`
+//! - **Started**: a client's call of an `#[app::action]` method, or `start-action`
 //!   in a call or a timer, puts the action on the entry's outcome (`Outcome::actions`); when
 //!   the entry applies, the action is recorded as pending (host rows `rows::CACT ‖ id`,
 //!   `ActionsHead::pending`), with its caller and start time.
 //! - **Run**: the app's leader runs pending actions in a bounded worker pool
 //!   (`Node::run_actions`), outside the serial log, as `kind = action` with the starter's
-//!   caller (D13), a 10 s budget, storage off, views and calls through the node, and
-//!   outbound HTTP through the outbound gate (S9). A new leader resumes every pending action
+//!   caller, a 10 s budget, storage off, views and calls through the node, and
+//!   outbound HTTP through the outbound gate. A new leader resumes every pending action
 //!   with the same key.
-//! - **Ended** (D22): `componentActionEnd` records each attempt that timed out (retried
+//! - **Ended**: `componentActionEnd` records each attempt that timed out (retried
 //!   with backoff, [`MAX_ATTEMPTS`] in all) and the final end: done, or failed with a
 //!   reason, which also sends an `ActionFailed` event to the starter and runs the app's
 //!   `onActionFailed`, if it has one. An app error, a fault or out-of-fuel fails at once.
@@ -25,7 +26,7 @@ use crate::types::Caller;
 
 /// Pending actions one app keeps; an action started past it fails at once.
 pub const MAX_PENDING_ACTIONS: usize = 1_000;
-/// Attempts an action gets before it fails for good (D22).
+/// Attempts an action gets before it fails for good.
 pub const MAX_ATTEMPTS: u32 = 5;
 /// Actions one node runs at once, across its apps.
 pub const MAX_ACTION_WORKERS: usize = 8;
@@ -49,9 +50,9 @@ pub struct ActionRecord {
     pub id: String,
     pub method: String,
     pub args: Value,
-    /// Who started it: its runs and calls act as them (D13).
+    /// Who started it: its runs and calls act as them.
     pub caller: Caller,
-    /// The entry timestamp it was started at: its monotonic clock (D19).
+    /// The entry timestamp it was started at: its monotonic clock.
     pub started_ms: u64,
     /// Attempts that timed out so far.
     #[serde(default)]

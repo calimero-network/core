@@ -8,15 +8,15 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.invite_create_body import InviteCreateBody
-from ...models.invite_create_response_200 import InviteCreateResponse200
+from ...models.invite_body import InviteBody
+from ...models.invite_made import InviteMade
 from typing import cast
 
 
 def _get_kwargs(
     org: str,
     *,
-    body: InviteCreateBody,
+    body: InviteBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, InviteCreateResponse200]]:
+) -> Optional[Union[Error, InviteMade]]:
     if response.status_code == 200:
-        response_200 = InviteCreateResponse200.from_dict(response.json())
+        response_200 = InviteMade.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, InviteCreateResponse200]]:
+) -> Response[Union[Error, InviteMade]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -94,8 +94,8 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: InviteCreateBody,
-) -> Response[Union[Error, InviteCreateResponse200]]:
+    body: InviteBody,
+) -> Response[Union[Error, InviteMade]]:
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
@@ -108,14 +108,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (InviteCreateBody):
+        body (InviteBody): The request body of `POST /orgs/{org}/invites`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, InviteCreateResponse200]]
+        Response[Union[Error, InviteMade]]
     """
 
     kwargs = _get_kwargs(
@@ -134,8 +134,8 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: InviteCreateBody,
-) -> Optional[Union[Error, InviteCreateResponse200]]:
+    body: InviteBody,
+) -> Optional[Union[Error, InviteMade]]:
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
@@ -148,14 +148,14 @@ def sync(
 
     Args:
         org (str):
-        body (InviteCreateBody):
+        body (InviteBody): The request body of `POST /orgs/{org}/invites`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, InviteCreateResponse200]
+        Union[Error, InviteMade]
     """
 
     return sync_detailed(
@@ -169,8 +169,8 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: InviteCreateBody,
-) -> Response[Union[Error, InviteCreateResponse200]]:
+    body: InviteBody,
+) -> Response[Union[Error, InviteMade]]:
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
@@ -183,14 +183,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (InviteCreateBody):
+        body (InviteBody): The request body of `POST /orgs/{org}/invites`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, InviteCreateResponse200]]
+        Response[Union[Error, InviteMade]]
     """
 
     kwargs = _get_kwargs(
@@ -207,8 +207,8 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: InviteCreateBody,
-) -> Optional[Union[Error, InviteCreateResponse200]]:
+    body: InviteBody,
+) -> Optional[Union[Error, InviteMade]]:
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
@@ -221,14 +221,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (InviteCreateBody):
+        body (InviteBody): The request body of `POST /orgs/{org}/invites`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, InviteCreateResponse200]
+        Union[Error, InviteMade]
     """
 
     return (

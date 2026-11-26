@@ -99,7 +99,9 @@ the request verifies the release (`Node::verify_release`):
    needs](/protocol/upgrades/#the-runtime-a-release-needs)).
 3. The package's **pinned signer**: the first release of a package pins its
    publisher key (`did:key`); a release signed by any other key is refused.
-4. Each service's WASM compiles.
+4. Each service's WASM compiles, imports nothing outside the `calimero:app`
+   world ([What the host offers](/protocol/execution/#what-the-host-offers-a-cloud-run)),
+   and carries an ABI of a supported `abiVersion`; otherwise `400 BAD_BUNDLE`.
 5. A registry install got the package and version it asked for.
 6. No WASM it ships (a service or a compute component) ships in a release of
    another package signed by another key (`409`): a WASM belongs to one
@@ -237,7 +239,10 @@ prefixes, and have no pinned signer.
 The node reads the ABI a component embeds (its `calimero:abi` section) for what
 it acts on: which methods are views and confirm methods, whom each method admits
 (accounts, API keys, other apps, the system), its timers, and the tables search
-indexes. A method the ABI does not name is refused (default-deny).
+indexes. A method the ABI does not name is refused (default-deny). These facts
+are trusted because they are part of the component's bytes, which a release's
+publisher signs, so an operator cannot mark a method public or a view a
+write ([App interface](/build/app-abi/)).
 
 ## Frontends
 
@@ -292,8 +297,6 @@ A cluster label made for another cluster answers `404`.
 
 ### Deployment hosts
 
-The front does not route these yet; cluster hosts are what it routes.
-
 Every deployment has a host of its own too, `{dlabel}.D`, where the dlabel is
 52 lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
 `SHA-256("calimero.app-host.deployment.v1\0" ‖ id)` and `id` is the
@@ -331,9 +334,46 @@ serves it (every path above, the same content security policy, `/.well-known/cal
 before any node route. Unlike the package's host, it is a registered origin: a
 passkey ceremony there runs under the domain's own rp-id, never the
 cluster's, and opens a session bound to the package that names the origin;
-removing it ends the site and those sessions together. TLS for the name ends
-inside the TD with a certificate Calimero Cloud orders for the node's attested
-key; the end-to-end design is `docs/specs/custom-domains.md`.
+removing it ends the site and those sessions together, as does uninstalling
+the package's last release.
+
+- **Which requests.** A `Host` of the name alone, or with port 443, names
+  `https://{name}`; on a `--dev` node a `localhost` name with its port names
+  `http://{name}:{port}` (`app_host::served_origin_of`). Another port, a name
+  under D, or a node's own API host is never a served site, so the request
+  reaches the node's routes.
+- **What is refused.** Only on a node with `--apps-domain` (`400 NOT_SERVING`);
+  never a name under D or under the cluster's rp-id; 4 per package and 64 per
+  cluster (`MAX_SERVED_ORIGINS_PER_PACKAGE`, `MAX_SERVED_ORIGINS`). Adding one
+  needs every replica, voter and learner on a release that reads the flag
+  (`409 CLUSTER_NOT_UPGRADED`): an older node would drop `served` and hold the
+  origin unserved, not serving the site but still admitting its ceremonies. The
+  API and `SystemState::add_package_origin` judge the same rules, so a command
+  any node proposes is judged alike on every node. The full list is in
+  [Registered origins](/protocol/identities/#registered-origins).
+- **Certificates.** merod holds none: TLS for the name ends in front of it, as
+  for D. `GET /ops/served-origins` lists every served origin's host by its
+  package's label, never the package's name, for whatever orders the
+  certificates and routes the name ([The operator](/protocol/operator/)).
+- **One cluster's record.** Each cluster's log holds its own origins, so the
+  same origin may be registered on another cluster; which cluster a browser
+  reaches is decided by the name's DNS and the front, not by either log.
+
+**Why a flag on a registered origin.** Everything a custom domain needs once
+the bytes arrive (who may add and remove it, ceremonies under its rp-id, CORS,
+binding sessions to the package and ending them on removal) is a registered
+origin's already. A separate record would duplicate all of it, and the same
+name could then be held twice, by two packages or under two rp-ids. One map
+keyed by origin gives one answer to who holds `https://kv.example.com`, so a
+held origin keeps its `served` and its rp-id: changing either is refused
+(`409 ORIGIN_TAKEN` for `served`; remove it first). The consent names `served: true` so that a
+consent to the plain origin, signed by a client that never knew the flag,
+cannot be replayed to make the name served.
+
+A custom domain's sessions are only as safe as its DNS: whoever controls the
+name can serve their own page there and use its passkeys, though only for
+that package. On the package's host, that trust rests on the apps domain's
+DNS alone.
 
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its

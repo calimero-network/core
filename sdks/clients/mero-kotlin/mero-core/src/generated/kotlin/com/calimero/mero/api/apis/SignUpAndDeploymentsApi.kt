@@ -27,34 +27,35 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
+import com.calimero.mero.api.models.AppOffered
+import com.calimero.mero.api.models.AppWithdrawn
 import com.calimero.mero.api.models.ConfirmOnly
-import com.calimero.mero.api.models.DeployerGrant200Response
-import com.calimero.mero.api.models.DeployerGrantRequest
-import com.calimero.mero.api.models.DeployerList200Response
-import com.calimero.mero.api.models.DeployerRevoke200Response
-import com.calimero.mero.api.models.DeploymentCreate200Response
-import com.calimero.mero.api.models.DeploymentCreateRequest
-import com.calimero.mero.api.models.DeploymentDelete200Response
-import com.calimero.mero.api.models.DeploymentGet200Response
-import com.calimero.mero.api.models.DeploymentList200Response
-import com.calimero.mero.api.models.DeploymentOffer200Response
-import com.calimero.mero.api.models.DeploymentOfferRequest
-import com.calimero.mero.api.models.DeploymentOrgs200Response
-import com.calimero.mero.api.models.DeploymentSecretClear200Response
-import com.calimero.mero.api.models.DeploymentSecretSet200Response
-import com.calimero.mero.api.models.DeploymentSecretSetRequest
-import com.calimero.mero.api.models.DeploymentSecrets200Response
-import com.calimero.mero.api.models.DeploymentTransferAccept200Response
+import com.calimero.mero.api.models.DeployerBody
+import com.calimero.mero.api.models.DeployerGranted
+import com.calimero.mero.api.models.DeployerList
+import com.calimero.mero.api.models.DeployerRevoked
+import com.calimero.mero.api.models.DeploymentAccepted
+import com.calimero.mero.api.models.DeploymentBody
+import com.calimero.mero.api.models.DeploymentCreated
+import com.calimero.mero.api.models.DeploymentDeleted
+import com.calimero.mero.api.models.DeploymentList
+import com.calimero.mero.api.models.DeploymentOffered
+import com.calimero.mero.api.models.DeploymentOrgs
+import com.calimero.mero.api.models.DeploymentSecretBody
+import com.calimero.mero.api.models.DeploymentSecretCleared
+import com.calimero.mero.api.models.DeploymentSecretSet
+import com.calimero.mero.api.models.DeploymentSecrets
 import com.calimero.mero.api.models.DeploymentTransferAcceptRequest
-import com.calimero.mero.api.models.DeploymentTransferCancel200Response
-import com.calimero.mero.api.models.DeploymentTransferOffer200Response
+import com.calimero.mero.api.models.DeploymentTransferCancelled
 import com.calimero.mero.api.models.DeploymentTransferOfferRequest
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
-import com.calimero.mero.api.models.SignUpInviteCreate200Response
+import com.calimero.mero.api.models.OfferBody
+import com.calimero.mero.api.models.PublicDeployment
 import com.calimero.mero.api.models.SignUpInviteCreateRequest
-import com.calimero.mero.api.models.SignUpInviteList200Response
-import com.calimero.mero.api.models.SignUpPublic200Response
+import com.calimero.mero.api.models.SignUpInviteList
+import com.calimero.mero.api.models.SignUpInviteMade
+import com.calimero.mero.api.models.SignUpPublic
 import com.calimero.mero.api.models.SignUpSet
 import com.calimero.mero.api.models.SignUpSetRequest
 
@@ -90,8 +91,8 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * POST /deployers
      * Grant a deployer
      * The cluster&#39;s owner, with a passkey.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param deployerGrantRequest 
-     * @return DeployerGrant200Response
+     * @param deployerBody 
+     * @return DeployerGranted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -100,11 +101,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deployerGrant(deployerGrantRequest: DeployerGrantRequest) : DeployerGrant200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = deployerGrantWithHttpInfo(deployerGrantRequest = deployerGrantRequest)
+    suspend fun deployerGrant(deployerBody: DeployerBody) : DeployerGranted = withContext(Dispatchers.IO) {
+        val localVarResponse = deployerGrantWithHttpInfo(deployerBody = deployerBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerGrant200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerGranted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -122,17 +123,17 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * POST /deployers
      * Grant a deployer
      * The cluster&#39;s owner, with a passkey.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param deployerGrantRequest 
-     * @return ApiResponse<DeployerGrant200Response?>
+     * @param deployerBody 
+     * @return ApiResponse<DeployerGranted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deployerGrantWithHttpInfo(deployerGrantRequest: DeployerGrantRequest) : ApiResponse<DeployerGrant200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = deployerGrantRequestConfig(deployerGrantRequest = deployerGrantRequest)
+    suspend fun deployerGrantWithHttpInfo(deployerBody: DeployerBody) : ApiResponse<DeployerGranted?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deployerGrantRequestConfig(deployerBody = deployerBody)
 
-        return@withContext request<DeployerGrantRequest, DeployerGrant200Response>(
+        return@withContext request<DeployerBody, DeployerGranted>(
             localVariableConfig
         )
     }
@@ -140,11 +141,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * To obtain the request config of the operation deployerGrant
      *
-     * @param deployerGrantRequest 
+     * @param deployerBody 
      * @return RequestConfig
      */
-    fun deployerGrantRequestConfig(deployerGrantRequest: DeployerGrantRequest) : RequestConfig<DeployerGrantRequest> {
-        val localVariableBody = deployerGrantRequest
+    fun deployerGrantRequestConfig(deployerBody: DeployerBody) : RequestConfig<DeployerBody> {
+        val localVariableBody = deployerBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -164,7 +165,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /deployers
      * The deployers
      * The operator, or the cluster&#39;s owner: the deployments and deployers governance, the owner (&#x60;null&#x60; until named), and every grant (&#x60;until&#x60; RFC 3339 and &#x60;untilSecs&#x60;, &#x60;null&#x60; for none; &#x60;grantedAt&#x60; RFC 3339; &#x60;deployer&#x60; &#x60;null&#x60; for a key it cannot read).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return DeployerList200Response
+     * @return DeployerList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -173,11 +174,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deployerList() : DeployerList200Response = withContext(Dispatchers.IO) {
+    suspend fun deployerList() : DeployerList = withContext(Dispatchers.IO) {
         val localVarResponse = deployerListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -195,16 +196,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /deployers
      * The deployers
      * The operator, or the cluster&#39;s owner: the deployments and deployers governance, the owner (&#x60;null&#x60; until named), and every grant (&#x60;until&#x60; RFC 3339 and &#x60;untilSecs&#x60;, &#x60;null&#x60; for none; &#x60;grantedAt&#x60; RFC 3339; &#x60;deployer&#x60; &#x60;null&#x60; for a key it cannot read).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<DeployerList200Response?>
+     * @return ApiResponse<DeployerList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deployerListWithHttpInfo() : ApiResponse<DeployerList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deployerListWithHttpInfo() : ApiResponse<DeployerList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deployerListRequestConfig()
 
-        return@withContext request<Unit, DeployerList200Response>(
+        return@withContext request<Unit, DeployerList>(
             localVariableConfig
         )
     }
@@ -236,7 +237,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param key 
      * @param confirmOnly May be absent. (optional)
-     * @return DeployerRevoke200Response
+     * @return DeployerRevoked
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -245,11 +246,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deployerRevoke(key: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeployerRevoke200Response = withContext(Dispatchers.IO) {
+    suspend fun deployerRevoke(key: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeployerRevoked = withContext(Dispatchers.IO) {
         val localVarResponse = deployerRevokeWithHttpInfo(key = key, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerRevoke200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeployerRevoked
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -269,16 +270,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param key 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<DeployerRevoke200Response?>
+     * @return ApiResponse<DeployerRevoked?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deployerRevokeWithHttpInfo(key: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeployerRevoke200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deployerRevokeWithHttpInfo(key: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeployerRevoked?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deployerRevokeRequestConfig(key = key, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, DeployerRevoke200Response>(
+        return@withContext request<ConfirmOnly, DeployerRevoked>(
             localVariableConfig
         )
     }
@@ -311,8 +312,8 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * POST /deployments
      * Create a deployment
      * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (&#x60;null&#x60; on a node with no apps domain). An organization owns a deployment only holding a recovery key (&#x60;POST /orgs/{org}/recovery&#x60;), so a lost passkey never locks it: &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param deploymentCreateRequest 
-     * @return DeploymentCreate200Response
+     * @param deploymentBody 
+     * @return DeploymentCreated
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -321,11 +322,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentCreate(deploymentCreateRequest: DeploymentCreateRequest) : DeploymentCreate200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = deploymentCreateWithHttpInfo(deploymentCreateRequest = deploymentCreateRequest)
+    suspend fun deploymentCreate(deploymentBody: DeploymentBody) : DeploymentCreated = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentCreateWithHttpInfo(deploymentBody = deploymentBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentCreated
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -343,17 +344,17 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * POST /deployments
      * Create a deployment
      * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (&#x60;null&#x60; on a node with no apps domain). An organization owns a deployment only holding a recovery key (&#x60;POST /orgs/{org}/recovery&#x60;), so a lost passkey never locks it: &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param deploymentCreateRequest 
-     * @return ApiResponse<DeploymentCreate200Response?>
+     * @param deploymentBody 
+     * @return ApiResponse<DeploymentCreated?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentCreateWithHttpInfo(deploymentCreateRequest: DeploymentCreateRequest) : ApiResponse<DeploymentCreate200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = deploymentCreateRequestConfig(deploymentCreateRequest = deploymentCreateRequest)
+    suspend fun deploymentCreateWithHttpInfo(deploymentBody: DeploymentBody) : ApiResponse<DeploymentCreated?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentCreateRequestConfig(deploymentBody = deploymentBody)
 
-        return@withContext request<DeploymentCreateRequest, DeploymentCreate200Response>(
+        return@withContext request<DeploymentBody, DeploymentCreated>(
             localVariableConfig
         )
     }
@@ -361,11 +362,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * To obtain the request config of the operation deploymentCreate
      *
-     * @param deploymentCreateRequest 
+     * @param deploymentBody 
      * @return RequestConfig
      */
-    fun deploymentCreateRequestConfig(deploymentCreateRequest: DeploymentCreateRequest) : RequestConfig<DeploymentCreateRequest> {
-        val localVariableBody = deploymentCreateRequest
+    fun deploymentCreateRequestConfig(deploymentBody: DeploymentBody) : RequestConfig<DeploymentBody> {
+        val localVariableBody = deploymentBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -387,7 +388,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param confirmOnly May be absent. (optional)
-     * @return DeploymentDelete200Response
+     * @return DeploymentDeleted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -396,11 +397,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentDelete(id: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentDelete(id: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentDeleted = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentDeleteWithHttpInfo(id = id, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentDeleted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -420,16 +421,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<DeploymentDelete200Response?>
+     * @return ApiResponse<DeploymentDeleted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentDeleteWithHttpInfo(id: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentDeleteWithHttpInfo(id: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentDeleted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentDeleteRequestConfig(id = id, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, DeploymentDelete200Response>(
+        return@withContext request<ConfirmOnly, DeploymentDeleted>(
             localVariableConfig
         )
     }
@@ -463,7 +464,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * One deployment
      * As anyone may read it: its name, its owner&#39;s kind and name (&#x60;null&#x60; when unknown), and the releases it offers; never its managers or customers.  **Who:** signed in (a session or an API key).
      * @param id 
-     * @return DeploymentGet200Response
+     * @return PublicDeployment
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -472,11 +473,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentGet(id: kotlin.String) : DeploymentGet200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentGet(id: kotlin.String) : PublicDeployment = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentGetWithHttpInfo(id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentGet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PublicDeployment
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -495,16 +496,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * One deployment
      * As anyone may read it: its name, its owner&#39;s kind and name (&#x60;null&#x60; when unknown), and the releases it offers; never its managers or customers.  **Who:** signed in (a session or an API key).
      * @param id 
-     * @return ApiResponse<DeploymentGet200Response?>
+     * @return ApiResponse<PublicDeployment?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentGetWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentGet200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentGetWithHttpInfo(id: kotlin.String) : ApiResponse<PublicDeployment?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentGetRequestConfig(id = id)
 
-        return@withContext request<Unit, DeploymentGet200Response>(
+        return@withContext request<Unit, PublicDeployment>(
             localVariableConfig
         )
     }
@@ -535,7 +536,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /deployments
      * Deployments
      * The deployments the caller manages, and in &#x60;offered&#x60; those offered to an owner it acts for, waiting for its acceptance (&#x60;POST /deployments/{id}/transfer/accept&#x60;).  **Who:** signed in (a session or an API key).
-     * @return DeploymentList200Response
+     * @return DeploymentList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -544,11 +545,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentList() : DeploymentList200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentList() : DeploymentList = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -566,16 +567,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /deployments
      * Deployments
      * The deployments the caller manages, and in &#x60;offered&#x60; those offered to an owner it acts for, waiting for its acceptance (&#x60;POST /deployments/{id}/transfer/accept&#x60;).  **Who:** signed in (a session or an API key).
-     * @return ApiResponse<DeploymentList200Response?>
+     * @return ApiResponse<DeploymentList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentListWithHttpInfo() : ApiResponse<DeploymentList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentListWithHttpInfo() : ApiResponse<DeploymentList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentListRequestConfig()
 
-        return@withContext request<Unit, DeploymentList200Response>(
+        return@withContext request<Unit, DeploymentList>(
             localVariableConfig
         )
     }
@@ -606,8 +607,8 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Offer a release in a deployment
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
-     * @param deploymentOfferRequest 
-     * @return DeploymentOffer200Response
+     * @param offerBody 
+     * @return AppOffered
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -616,11 +617,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentOffer(id: kotlin.String, deploymentOfferRequest: DeploymentOfferRequest) : DeploymentOffer200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = deploymentOfferWithHttpInfo(id = id, deploymentOfferRequest = deploymentOfferRequest)
+    suspend fun deploymentOffer(id: kotlin.String, offerBody: OfferBody) : AppOffered = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentOfferWithHttpInfo(id = id, offerBody = offerBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOffer200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppOffered
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -639,17 +640,17 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Offer a release in a deployment
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
-     * @param deploymentOfferRequest 
-     * @return ApiResponse<DeploymentOffer200Response?>
+     * @param offerBody 
+     * @return ApiResponse<AppOffered?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentOfferWithHttpInfo(id: kotlin.String, deploymentOfferRequest: DeploymentOfferRequest) : ApiResponse<DeploymentOffer200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = deploymentOfferRequestConfig(id = id, deploymentOfferRequest = deploymentOfferRequest)
+    suspend fun deploymentOfferWithHttpInfo(id: kotlin.String, offerBody: OfferBody) : ApiResponse<AppOffered?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentOfferRequestConfig(id = id, offerBody = offerBody)
 
-        return@withContext request<DeploymentOfferRequest, DeploymentOffer200Response>(
+        return@withContext request<OfferBody, AppOffered>(
             localVariableConfig
         )
     }
@@ -658,11 +659,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * To obtain the request config of the operation deploymentOffer
      *
      * @param id 
-     * @param deploymentOfferRequest 
+     * @param offerBody 
      * @return RequestConfig
      */
-    fun deploymentOfferRequestConfig(id: kotlin.String, deploymentOfferRequest: DeploymentOfferRequest) : RequestConfig<DeploymentOfferRequest> {
-        val localVariableBody = deploymentOfferRequest
+    fun deploymentOfferRequestConfig(id: kotlin.String, offerBody: OfferBody) : RequestConfig<OfferBody> {
+        val localVariableBody = offerBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -683,7 +684,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * The organizations a deployment serves
      * For its managers: each organization with instances from it, its name (&#x60;null&#x60; when unknown), member counts (&#x60;activeMembers30d&#x60;: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (&#x60;outsideOrgs&#x60;). Never who the members are.  **Who:** signed in (a session or an API key).
      * @param id 
-     * @return DeploymentOrgs200Response
+     * @return DeploymentOrgs
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -692,11 +693,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentOrgs(id: kotlin.String) : DeploymentOrgs200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentOrgs(id: kotlin.String) : DeploymentOrgs = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentOrgsWithHttpInfo(id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOrgs200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOrgs
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -715,16 +716,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * The organizations a deployment serves
      * For its managers: each organization with instances from it, its name (&#x60;null&#x60; when unknown), member counts (&#x60;activeMembers30d&#x60;: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (&#x60;outsideOrgs&#x60;). Never who the members are.  **Who:** signed in (a session or an API key).
      * @param id 
-     * @return ApiResponse<DeploymentOrgs200Response?>
+     * @return ApiResponse<DeploymentOrgs?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentOrgsWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentOrgs200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentOrgsWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentOrgs?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentOrgsRequestConfig(id = id)
 
-        return@withContext request<Unit, DeploymentOrgs200Response>(
+        return@withContext request<Unit, DeploymentOrgs>(
             localVariableConfig
         )
     }
@@ -758,7 +759,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * @param id 
      * @param name 
      * @param confirmOnly May be absent. (optional)
-     * @return DeploymentSecretClear200Response
+     * @return DeploymentSecretCleared
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -767,11 +768,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentSecretClear(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentSecretClear200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentSecretClear(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentSecretCleared = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentSecretClearWithHttpInfo(id = id, name = name, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecretClear200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecretCleared
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -792,16 +793,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * @param id 
      * @param name 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<DeploymentSecretClear200Response?>
+     * @return ApiResponse<DeploymentSecretCleared?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentSecretClearWithHttpInfo(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentSecretClear200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentSecretClearWithHttpInfo(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentSecretCleared?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentSecretClearRequestConfig(id = id, name = name, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, DeploymentSecretClear200Response>(
+        return@withContext request<ConfirmOnly, DeploymentSecretCleared>(
             localVariableConfig
         )
     }
@@ -837,8 +838,8 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Every instance created from the deployment uses it unless the instance set its own (&#x60;app_secret_set&#x60;), and only where the secret&#39;s binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator&#39;s. Kept in the system group&#39;s state, sealed, never shown again (&#x60;deployment_secrets&#x60; answers its fingerprint) and out of every app&#39;s reach. A manager of the deployment, with a step-up over &#x60;deployment:{id} / __set_secret / { name, fingerprint }&#x60;: the value is never in the consent. &#x60;404 UNDECLARED_SECRET&#x60; unless a release the deployment offers declares the name, or a release one of those references in its signed &#x60;uses&#x60; (an installed release of the package inside the reference&#39;s range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and &#x60;_&#x60; and a value of 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); at most 16 per deployment (&#x60;429 QUOTA_EXCEEDED&#x60;); &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.32.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param name 
-     * @param deploymentSecretSetRequest 
-     * @return DeploymentSecretSet200Response
+     * @param deploymentSecretBody 
+     * @return DeploymentSecretSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -847,11 +848,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentSecretSet(id: kotlin.String, name: kotlin.String, deploymentSecretSetRequest: DeploymentSecretSetRequest) : DeploymentSecretSet200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = deploymentSecretSetWithHttpInfo(id = id, name = name, deploymentSecretSetRequest = deploymentSecretSetRequest)
+    suspend fun deploymentSecretSet(id: kotlin.String, name: kotlin.String, deploymentSecretBody: DeploymentSecretBody) : DeploymentSecretSet = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentSecretSetWithHttpInfo(id = id, name = name, deploymentSecretBody = deploymentSecretBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecretSet200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecretSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -871,17 +872,17 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Every instance created from the deployment uses it unless the instance set its own (&#x60;app_secret_set&#x60;), and only where the secret&#39;s binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator&#39;s. Kept in the system group&#39;s state, sealed, never shown again (&#x60;deployment_secrets&#x60; answers its fingerprint) and out of every app&#39;s reach. A manager of the deployment, with a step-up over &#x60;deployment:{id} / __set_secret / { name, fingerprint }&#x60;: the value is never in the consent. &#x60;404 UNDECLARED_SECRET&#x60; unless a release the deployment offers declares the name, or a release one of those references in its signed &#x60;uses&#x60; (an installed release of the package inside the reference&#39;s range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and &#x60;_&#x60; and a value of 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); at most 16 per deployment (&#x60;429 QUOTA_EXCEEDED&#x60;); &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.32.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param name 
-     * @param deploymentSecretSetRequest 
-     * @return ApiResponse<DeploymentSecretSet200Response?>
+     * @param deploymentSecretBody 
+     * @return ApiResponse<DeploymentSecretSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentSecretSetWithHttpInfo(id: kotlin.String, name: kotlin.String, deploymentSecretSetRequest: DeploymentSecretSetRequest) : ApiResponse<DeploymentSecretSet200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = deploymentSecretSetRequestConfig(id = id, name = name, deploymentSecretSetRequest = deploymentSecretSetRequest)
+    suspend fun deploymentSecretSetWithHttpInfo(id: kotlin.String, name: kotlin.String, deploymentSecretBody: DeploymentSecretBody) : ApiResponse<DeploymentSecretSet?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentSecretSetRequestConfig(id = id, name = name, deploymentSecretBody = deploymentSecretBody)
 
-        return@withContext request<DeploymentSecretSetRequest, DeploymentSecretSet200Response>(
+        return@withContext request<DeploymentSecretBody, DeploymentSecretSet>(
             localVariableConfig
         )
     }
@@ -891,11 +892,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      *
      * @param id 
      * @param name 
-     * @param deploymentSecretSetRequest 
+     * @param deploymentSecretBody 
      * @return RequestConfig
      */
-    fun deploymentSecretSetRequestConfig(id: kotlin.String, name: kotlin.String, deploymentSecretSetRequest: DeploymentSecretSetRequest) : RequestConfig<DeploymentSecretSetRequest> {
-        val localVariableBody = deploymentSecretSetRequest
+    fun deploymentSecretSetRequestConfig(id: kotlin.String, name: kotlin.String, deploymentSecretBody: DeploymentSecretBody) : RequestConfig<DeploymentSecretBody> {
+        val localVariableBody = deploymentSecretBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -916,7 +917,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * A deployment&#39;s secrets
      * For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (&#x60;uses&#x60;, for the apps it creates), and every one it holds a value of. Each row names the deployment&#39;s apps whose release declares it or references one that does (&#x60;apps&#x60;, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (&#x60;declaredBy&#x60;) and &#x60;set&#x60;; a set one adds its &#x60;fingerprint&#x60; (the first 16 hex digits of the value&#39;s SHA-256), &#x60;setBy&#x60; (&#x60;account:&lt;id&gt;&#x60;) and &#x60;setAt&#x60; (Unix seconds). Never a value.  **Who:** signed in (a session or an API key).
      * @param id 
-     * @return DeploymentSecrets200Response
+     * @return DeploymentSecrets
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -925,11 +926,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentSecrets(id: kotlin.String) : DeploymentSecrets200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentSecrets(id: kotlin.String) : DeploymentSecrets = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentSecretsWithHttpInfo(id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecrets200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecrets
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -948,16 +949,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * A deployment&#39;s secrets
      * For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (&#x60;uses&#x60;, for the apps it creates), and every one it holds a value of. Each row names the deployment&#39;s apps whose release declares it or references one that does (&#x60;apps&#x60;, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (&#x60;declaredBy&#x60;) and &#x60;set&#x60;; a set one adds its &#x60;fingerprint&#x60; (the first 16 hex digits of the value&#39;s SHA-256), &#x60;setBy&#x60; (&#x60;account:&lt;id&gt;&#x60;) and &#x60;setAt&#x60; (Unix seconds). Never a value.  **Who:** signed in (a session or an API key).
      * @param id 
-     * @return ApiResponse<DeploymentSecrets200Response?>
+     * @return ApiResponse<DeploymentSecrets?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentSecretsWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentSecrets200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentSecretsWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentSecrets?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentSecretsRequestConfig(id = id)
 
-        return@withContext request<Unit, DeploymentSecrets200Response>(
+        return@withContext request<Unit, DeploymentSecrets>(
             localVariableConfig
         )
     }
@@ -990,7 +991,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * A manager of &#x60;to&#x60; (the account itself, or &#x60;MANAGE_APPLICATION&#x60; org-wide in the organization) accepts the offer to &#x60;to&#x60;, with a step-up over &#x60;deployment:{id} / __accept_deployment / { to, offeredAt }&#x60; (the offer it accepts): &#x60;to&#x60; becomes the owner, and the deployment&#39;s offers and customers&#39; instances stay with it. The previous owner&#39;s secret values are dropped (&#x60;secretsDropped&#x60; names them): the new owner sets its own. Until a person approves an update of a customer&#39;s instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: &#x60;404 NO_TRANSFER&#x60; when it is not offered to &#x60;to&#x60;, &#x60;409 TRANSFER_STALE&#x60; once whoever offered it may no longer hand it over, &#x60;409 TRANSFER_LAPSED&#x60; 7 days after the offer, &#x60;403 DEPLOY_NOT_GRANTED&#x60; where deployments are granted and &#x60;to&#x60; holds no live deployer grant of its own, &#x60;409 RECOVERY_KEY_REQUIRED&#x60; for an organization without a recovery key, &#x60;429&#x60; past the receiver&#39;s 16 deployments. Each customer&#39;s next update sheet names the new owner.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param deploymentTransferAcceptRequest 
-     * @return DeploymentTransferAccept200Response
+     * @return DeploymentAccepted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -999,11 +1000,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentTransferAccept(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : DeploymentTransferAccept200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentTransferAccept(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : DeploymentAccepted = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentTransferAcceptWithHttpInfo(id = id, deploymentTransferAcceptRequest = deploymentTransferAcceptRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentTransferAccept200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentAccepted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1023,16 +1024,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * A manager of &#x60;to&#x60; (the account itself, or &#x60;MANAGE_APPLICATION&#x60; org-wide in the organization) accepts the offer to &#x60;to&#x60;, with a step-up over &#x60;deployment:{id} / __accept_deployment / { to, offeredAt }&#x60; (the offer it accepts): &#x60;to&#x60; becomes the owner, and the deployment&#39;s offers and customers&#39; instances stay with it. The previous owner&#39;s secret values are dropped (&#x60;secretsDropped&#x60; names them): the new owner sets its own. Until a person approves an update of a customer&#39;s instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: &#x60;404 NO_TRANSFER&#x60; when it is not offered to &#x60;to&#x60;, &#x60;409 TRANSFER_STALE&#x60; once whoever offered it may no longer hand it over, &#x60;409 TRANSFER_LAPSED&#x60; 7 days after the offer, &#x60;403 DEPLOY_NOT_GRANTED&#x60; where deployments are granted and &#x60;to&#x60; holds no live deployer grant of its own, &#x60;409 RECOVERY_KEY_REQUIRED&#x60; for an organization without a recovery key, &#x60;429&#x60; past the receiver&#39;s 16 deployments. Each customer&#39;s next update sheet names the new owner.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param deploymentTransferAcceptRequest 
-     * @return ApiResponse<DeploymentTransferAccept200Response?>
+     * @return ApiResponse<DeploymentAccepted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentTransferAcceptWithHttpInfo(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : ApiResponse<DeploymentTransferAccept200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentTransferAcceptWithHttpInfo(id: kotlin.String, deploymentTransferAcceptRequest: DeploymentTransferAcceptRequest) : ApiResponse<DeploymentAccepted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentTransferAcceptRequestConfig(id = id, deploymentTransferAcceptRequest = deploymentTransferAcceptRequest)
 
-        return@withContext request<DeploymentTransferAcceptRequest, DeploymentTransferAccept200Response>(
+        return@withContext request<DeploymentTransferAcceptRequest, DeploymentAccepted>(
             localVariableConfig
         )
     }
@@ -1067,7 +1068,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over &#x60;deployment:{id} / __cancel_deployment_transfer / {}&#x60;. &#x60;404 NO_TRANSFER&#x60; when none waits.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param confirmOnly May be absent. (optional)
-     * @return DeploymentTransferCancel200Response
+     * @return DeploymentTransferCancelled
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1076,11 +1077,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentTransferCancel(id: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentTransferCancel200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentTransferCancel(id: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentTransferCancelled = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentTransferCancelWithHttpInfo(id = id, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentTransferCancel200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentTransferCancelled
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1100,16 +1101,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over &#x60;deployment:{id} / __cancel_deployment_transfer / {}&#x60;. &#x60;404 NO_TRANSFER&#x60; when none waits.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<DeploymentTransferCancel200Response?>
+     * @return ApiResponse<DeploymentTransferCancelled?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentTransferCancelWithHttpInfo(id: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentTransferCancel200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentTransferCancelWithHttpInfo(id: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentTransferCancelled?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentTransferCancelRequestConfig(id = id, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, DeploymentTransferCancel200Response>(
+        return@withContext request<ConfirmOnly, DeploymentTransferCancelled>(
             localVariableConfig
         )
     }
@@ -1144,7 +1145,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * The deployment&#39;s owner account, or an owner or admin of its organization (managing it, &#x60;MANAGE_APPLICATION&#x60;, is not enough: &#x60;403&#x60;), offers it to &#x60;to&#x60;, another account or organization, with a step-up over &#x60;deployment:{id} / __offer_deployment / { to }&#x60;. It changes hands only when a manager of &#x60;to&#x60; accepts within 7 days. One offer waits at a time: &#x60;409 TRANSFER_PENDING&#x60; until it is cancelled or lapses. &#x60;400 SAME_OWNER&#x60; for its own owner, &#x60;404&#x60; for an unknown receiver. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param deploymentTransferOfferRequest 
-     * @return DeploymentTransferOffer200Response
+     * @return DeploymentOffered
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1153,11 +1154,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentTransferOffer(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : DeploymentTransferOffer200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentTransferOffer(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : DeploymentOffered = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentTransferOfferWithHttpInfo(id = id, deploymentTransferOfferRequest = deploymentTransferOfferRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentTransferOffer200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOffered
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1177,16 +1178,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * The deployment&#39;s owner account, or an owner or admin of its organization (managing it, &#x60;MANAGE_APPLICATION&#x60;, is not enough: &#x60;403&#x60;), offers it to &#x60;to&#x60;, another account or organization, with a step-up over &#x60;deployment:{id} / __offer_deployment / { to }&#x60;. It changes hands only when a manager of &#x60;to&#x60; accepts within 7 days. One offer waits at a time: &#x60;409 TRANSFER_PENDING&#x60; until it is cancelled or lapses. &#x60;400 SAME_OWNER&#x60; for its own owner, &#x60;404&#x60; for an unknown receiver. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param id 
      * @param deploymentTransferOfferRequest 
-     * @return ApiResponse<DeploymentTransferOffer200Response?>
+     * @return ApiResponse<DeploymentOffered?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentTransferOfferWithHttpInfo(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : ApiResponse<DeploymentTransferOffer200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentTransferOfferWithHttpInfo(id: kotlin.String, deploymentTransferOfferRequest: DeploymentTransferOfferRequest) : ApiResponse<DeploymentOffered?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentTransferOfferRequestConfig(id = id, deploymentTransferOfferRequest = deploymentTransferOfferRequest)
 
-        return@withContext request<DeploymentTransferOfferRequest, DeploymentTransferOffer200Response>(
+        return@withContext request<DeploymentTransferOfferRequest, DeploymentOffered>(
             localVariableConfig
         )
     }
@@ -1222,7 +1223,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * @param id 
      * @param app 
      * @param confirmOnly May be absent. (optional)
-     * @return DeploymentOffer200Response
+     * @return AppWithdrawn
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1231,11 +1232,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentWithdraw(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentOffer200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentWithdraw(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly? = null) : AppWithdrawn = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentWithdrawWithHttpInfo(id = id, app = app, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOffer200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppWithdrawn
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1256,16 +1257,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * @param id 
      * @param app 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<DeploymentOffer200Response?>
+     * @return ApiResponse<AppWithdrawn?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentWithdrawWithHttpInfo(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentOffer200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentWithdrawWithHttpInfo(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<AppWithdrawn?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentWithdrawRequestConfig(id = id, app = app, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, DeploymentOffer200Response>(
+        return@withContext request<ConfirmOnly, AppWithdrawn>(
             localVariableConfig
         )
     }
@@ -1300,7 +1301,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Issue a cluster sign-up invite
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param signUpInviteCreateRequest 
-     * @return SignUpInviteCreate200Response
+     * @return SignUpInviteMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1309,11 +1310,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun signUpInviteCreate(signUpInviteCreateRequest: SignUpInviteCreateRequest) : SignUpInviteCreate200Response = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteCreate(signUpInviteCreateRequest: SignUpInviteCreateRequest) : SignUpInviteMade = withContext(Dispatchers.IO) {
         val localVarResponse = signUpInviteCreateWithHttpInfo(signUpInviteCreateRequest = signUpInviteCreateRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1332,16 +1333,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * Issue a cluster sign-up invite
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param signUpInviteCreateRequest 
-     * @return ApiResponse<SignUpInviteCreate200Response?>
+     * @return ApiResponse<SignUpInviteMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun signUpInviteCreateWithHttpInfo(signUpInviteCreateRequest: SignUpInviteCreateRequest) : ApiResponse<SignUpInviteCreate200Response?> = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteCreateWithHttpInfo(signUpInviteCreateRequest: SignUpInviteCreateRequest) : ApiResponse<SignUpInviteMade?> = withContext(Dispatchers.IO) {
         val localVariableConfig = signUpInviteCreateRequestConfig(signUpInviteCreateRequest = signUpInviteCreateRequest)
 
-        return@withContext request<SignUpInviteCreateRequest, SignUpInviteCreate200Response>(
+        return@withContext request<SignUpInviteCreateRequest, SignUpInviteMade>(
             localVariableConfig
         )
     }
@@ -1373,7 +1374,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up/invites
      * Cluster sign-up invites
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return SignUpInviteList200Response
+     * @return SignUpInviteList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1382,11 +1383,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun signUpInviteList() : SignUpInviteList200Response = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteList() : SignUpInviteList = withContext(Dispatchers.IO) {
         val localVarResponse = signUpInviteListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpInviteList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1404,16 +1405,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up/invites
      * Cluster sign-up invites
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
-     * @return ApiResponse<SignUpInviteList200Response?>
+     * @return ApiResponse<SignUpInviteList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun signUpInviteListWithHttpInfo() : ApiResponse<SignUpInviteList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun signUpInviteListWithHttpInfo() : ApiResponse<SignUpInviteList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = signUpInviteListRequestConfig()
 
-        return@withContext request<Unit, SignUpInviteList200Response>(
+        return@withContext request<Unit, SignUpInviteList>(
             localVariableConfig
         )
     }
@@ -1520,7 +1521,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up
      * The sign-up policy
      * Who may create an account here, the cluster&#39;s name and the tag a sign-in uses to pick the person&#39;s passkey for it.  **Who:** anyone.
-     * @return SignUpPublic200Response
+     * @return SignUpPublic
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1529,11 +1530,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun signUpPublic() : SignUpPublic200Response = withContext(Dispatchers.IO) {
+    suspend fun signUpPublic() : SignUpPublic = withContext(Dispatchers.IO) {
         val localVarResponse = signUpPublicWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpPublic200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as SignUpPublic
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1551,16 +1552,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * GET /sign-up
      * The sign-up policy
      * Who may create an account here, the cluster&#39;s name and the tag a sign-in uses to pick the person&#39;s passkey for it.  **Who:** anyone.
-     * @return ApiResponse<SignUpPublic200Response?>
+     * @return ApiResponse<SignUpPublic?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun signUpPublicWithHttpInfo() : ApiResponse<SignUpPublic200Response?> = withContext(Dispatchers.IO) {
+    suspend fun signUpPublicWithHttpInfo() : ApiResponse<SignUpPublic?> = withContext(Dispatchers.IO) {
         val localVariableConfig = signUpPublicRequestConfig()
 
-        return@withContext request<Unit, SignUpPublic200Response>(
+        return@withContext request<Unit, SignUpPublic>(
             localVariableConfig
         )
     }

@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_attestation_response_200 import AppAttestationResponse200
+from ...models.app_attestations import AppAttestations
 from ...models.error import Error
 from typing import cast
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppAttestationResponse200, Error]]:
+) -> Optional[Union[AppAttestations, Error]]:
     if response.status_code == 200:
-        response_200 = AppAttestationResponse200.from_dict(response.json())
+        response_200 = AppAttestations.from_dict(response.json())
 
         return response_200
 
@@ -61,7 +61,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppAttestationResponse200, Error]]:
+) -> Response[Union[AppAttestations, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,7 +75,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     nonce: str,
-) -> Response[Union[AppAttestationResponse200, Error]]:
+) -> Response[Union[AppAttestations, Error]]:
     """Every replica's receipt-key attestation
 
      Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be
@@ -94,7 +94,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppAttestationResponse200, Error]]
+        Response[Union[AppAttestations, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -114,7 +114,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     nonce: str,
-) -> Optional[Union[AppAttestationResponse200, Error]]:
+) -> Optional[Union[AppAttestations, Error]]:
     """Every replica's receipt-key attestation
 
      Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be
@@ -133,7 +133,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppAttestationResponse200, Error]
+        Union[AppAttestations, Error]
     """
 
     return sync_detailed(
@@ -148,7 +148,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     nonce: str,
-) -> Response[Union[AppAttestationResponse200, Error]]:
+) -> Response[Union[AppAttestations, Error]]:
     """Every replica's receipt-key attestation
 
      Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be
@@ -167,7 +167,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppAttestationResponse200, Error]]
+        Response[Union[AppAttestations, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -185,7 +185,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     nonce: str,
-) -> Optional[Union[AppAttestationResponse200, Error]]:
+) -> Optional[Union[AppAttestations, Error]]:
     """Every replica's receipt-key attestation
 
      Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be
@@ -204,7 +204,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppAttestationResponse200, Error]
+        Union[AppAttestations, Error]
     """
 
     return (

@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.backup_written import BackupWritten
 from ...models.error import Error
-from ...models.ops_backup_response_200 import OpsBackupResponse200
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -36,9 +36,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsBackupResponse200]]:
+) -> Optional[Union[BackupWritten, Error]]:
     if response.status_code == 200:
-        response_200 = OpsBackupResponse200.from_dict(response.json())
+        response_200 = BackupWritten.from_dict(response.json())
 
         return response_200
 
@@ -60,7 +60,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsBackupResponse200]]:
+) -> Response[Union[BackupWritten, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -73,7 +73,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     all_: Union[Unset, bool] = UNSET,
-) -> Response[Union[Error, OpsBackupResponse200]]:
+) -> Response[Union[BackupWritten, Error]]:
     """Snapshot the apps this node leads
 
      Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a
@@ -90,7 +90,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsBackupResponse200]]
+        Response[Union[BackupWritten, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -108,7 +108,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     all_: Union[Unset, bool] = UNSET,
-) -> Optional[Union[Error, OpsBackupResponse200]]:
+) -> Optional[Union[BackupWritten, Error]]:
     """Snapshot the apps this node leads
 
      Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a
@@ -125,7 +125,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsBackupResponse200]
+        Union[BackupWritten, Error]
     """
 
     return sync_detailed(
@@ -138,7 +138,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     all_: Union[Unset, bool] = UNSET,
-) -> Response[Union[Error, OpsBackupResponse200]]:
+) -> Response[Union[BackupWritten, Error]]:
     """Snapshot the apps this node leads
 
      Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a
@@ -155,7 +155,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsBackupResponse200]]
+        Response[Union[BackupWritten, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -171,7 +171,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     all_: Union[Unset, bool] = UNSET,
-) -> Optional[Union[Error, OpsBackupResponse200]]:
+) -> Optional[Union[BackupWritten, Error]]:
     """Snapshot the apps this node leads
 
      Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a
@@ -188,7 +188,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsBackupResponse200]
+        Union[BackupWritten, Error]
     """
 
     return (

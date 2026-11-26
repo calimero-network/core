@@ -171,13 +171,6 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
 12. **An app's log pins what it runs.** The bundle and compute component a run uses are the ones
     its group's own log names (`ComponentHead`), never the system record, which another log moves.
 
-## Not done yet
-
-- Keys per app from mero-kms, and the rollback epoch in the attested KMS evidence (phase 1 of
-  `docs/specs/rollback-protection.md`).
-- An automatic update that moves a unit's members, and a restore point kept on more than one
-  node.
-
 ## Commands
 
 ```bash

@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.team_delete_body import TeamDeleteBody
-from ...models.team_delete_response_200 import TeamDeleteResponse200
+from ...models.team_deleted import TeamDeleted
 from typing import cast
 
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, TeamDeleteResponse200]]:
+) -> Optional[Union[Error, TeamDeleted]]:
     if response.status_code == 200:
-        response_200 = TeamDeleteResponse200.from_dict(response.json())
+        response_200 = TeamDeleted.from_dict(response.json())
 
         return response_200
 
@@ -88,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, TeamDeleteResponse200]]:
+) -> Response[Union[Error, TeamDeleted]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -103,7 +103,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: TeamDeleteBody,
-) -> Response[Union[Error, TeamDeleteResponse200]]:
+) -> Response[Union[Error, TeamDeleted]]:
     """Delete a team
 
      With the teams below it. The instances only those teams admit (each of whose team grants goes, with
@@ -123,14 +123,15 @@ def sync_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamDeleteBody):
+        body (TeamDeleteBody): `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances
+            only the team admits stay, and the passkey confirmation after the `412`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, TeamDeleteResponse200]]
+        Response[Union[Error, TeamDeleted]]
     """
 
     kwargs = _get_kwargs(
@@ -152,7 +153,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: TeamDeleteBody,
-) -> Optional[Union[Error, TeamDeleteResponse200]]:
+) -> Optional[Union[Error, TeamDeleted]]:
     """Delete a team
 
      With the teams below it. The instances only those teams admit (each of whose team grants goes, with
@@ -172,14 +173,15 @@ def sync(
     Args:
         org (str):
         team (str):
-        body (TeamDeleteBody):
+        body (TeamDeleteBody): `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances
+            only the team admits stay, and the passkey confirmation after the `412`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, TeamDeleteResponse200]
+        Union[Error, TeamDeleted]
     """
 
     return sync_detailed(
@@ -196,7 +198,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: TeamDeleteBody,
-) -> Response[Union[Error, TeamDeleteResponse200]]:
+) -> Response[Union[Error, TeamDeleted]]:
     """Delete a team
 
      With the teams below it. The instances only those teams admit (each of whose team grants goes, with
@@ -216,14 +218,15 @@ async def asyncio_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamDeleteBody):
+        body (TeamDeleteBody): `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances
+            only the team admits stay, and the passkey confirmation after the `412`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, TeamDeleteResponse200]]
+        Response[Union[Error, TeamDeleted]]
     """
 
     kwargs = _get_kwargs(
@@ -243,7 +246,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: TeamDeleteBody,
-) -> Optional[Union[Error, TeamDeleteResponse200]]:
+) -> Optional[Union[Error, TeamDeleted]]:
     """Delete a team
 
      With the teams below it. The instances only those teams admit (each of whose team grants goes, with
@@ -263,14 +266,15 @@ async def asyncio(
     Args:
         org (str):
         team (str):
-        body (TeamDeleteBody):
+        body (TeamDeleteBody): `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances
+            only the team admits stay, and the passkey confirmation after the `412`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, TeamDeleteResponse200]
+        Union[Error, TeamDeleted]
     """
 
     return (

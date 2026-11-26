@@ -23,7 +23,7 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.DeploymentAppsInner
+import com.calimero.mero.api.models.DeploymentOffer
 import com.calimero.mero.api.models.DeploymentTransfer
 import com.calimero.mero.api.models.DeploymentTransferred
 
@@ -61,7 +61,7 @@ data class Deployment (
     val owner: com.calimero.mero.Deployer,
 
     @SerialName(value = "apps")
-    val apps: kotlin.collections.List<DeploymentAppsInner>,
+    val apps: kotlin.collections.List<DeploymentOffer>,
 
     @SerialName(value = "createdBy")
     val createdBy: kotlin.String,
@@ -70,10 +70,10 @@ data class Deployment (
     val createdAt: kotlin.String,
 
     @SerialName(value = "transfer")
-    val transfer: DeploymentTransfer? = null,
+    val transfer: DeploymentTransfer?,
 
     @SerialName(value = "transferred")
-    val transferred: DeploymentTransferred? = null
+    val transferred: DeploymentTransferred?
 
 ) {
 

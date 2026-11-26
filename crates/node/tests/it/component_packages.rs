@@ -1002,6 +1002,7 @@ async fn reading_a_compute_components_caps_compiles_nothing() {
             )
             .await
             .unwrap();
+        let checked = serde_json::to_value(checked).unwrap();
         assert_eq!(checked["ok"], true, "{checked}");
         assert_eq!(checked["worstCaseFuel"], "20001000000", "{checked}");
     }

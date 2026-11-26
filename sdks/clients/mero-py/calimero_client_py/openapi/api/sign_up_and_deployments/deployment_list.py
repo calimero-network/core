@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.deployment_list_response_200 import DeploymentListResponse200
+from ...models.deployment_list import DeploymentList
 from ...models.error import Error
 from typing import cast
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentListResponse200, Error]]:
+) -> Optional[Union[DeploymentList, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentListResponse200.from_dict(response.json())
+        response_200 = DeploymentList.from_dict(response.json())
 
         return response_200
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentListResponse200, Error]]:
+) -> Response[Union[DeploymentList, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,7 +60,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[DeploymentListResponse200, Error]]:
+) -> Response[Union[DeploymentList, Error]]:
     """Deployments
 
      The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
@@ -73,7 +73,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentListResponse200, Error]]
+        Response[Union[DeploymentList, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -88,7 +88,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[DeploymentListResponse200, Error]]:
+) -> Optional[Union[DeploymentList, Error]]:
     """Deployments
 
      The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
@@ -101,7 +101,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentListResponse200, Error]
+        Union[DeploymentList, Error]
     """
 
     return sync_detailed(
@@ -112,7 +112,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[DeploymentListResponse200, Error]]:
+) -> Response[Union[DeploymentList, Error]]:
     """Deployments
 
      The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
@@ -125,7 +125,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentListResponse200, Error]]
+        Response[Union[DeploymentList, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -138,7 +138,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[DeploymentListResponse200, Error]]:
+) -> Optional[Union[DeploymentList, Error]]:
     """Deployments
 
      The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting
@@ -151,7 +151,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentListResponse200, Error]
+        Union[DeploymentList, Error]
     """
 
     return (

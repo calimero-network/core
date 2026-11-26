@@ -36,8 +36,41 @@ mod routing;
 mod sign_up;
 mod updates;
 
-pub use approvals::{egress_args, ApprovedReleases, Deadlines, OutboundApproved, ReleaseDeadline};
-pub use packages::Uninstalled;
+pub use accounts::SessionsRevoked;
+pub use approvals::{
+    egress_args, ApprovedReleases, Deadlines, EgressSet, OutboundApproved, VersionDeadline,
+};
+pub use deployments::{
+    AppOffered, AppWithdrawn, ClusterOwnerNamed, DeployerGranted, DeployerRevoked,
+    DeploymentAccepted, DeploymentDeleted, DeploymentMade, DeploymentOffered,
+    DeploymentSecretCleared, DeploymentSecretSet, DeploymentTransferCancelled, GovernanceSet,
+};
+pub use orgs::{
+    InviteRedeemed, OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted,
+};
+pub use packages::{PublisherBound, Uninstalled};
+pub use recovery::{RecoveryFinished, RecoveryStarted};
+
+/// What `ScopeApps` answers: the organization's mode after, and each package's app team.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppTeamsScoped {
+    pub mode: crate::types::OrgMode,
+    pub teams: Vec<ScopedTeam>,
+}
+
+/// One package's app team in [`AppTeamsScoped`]: whether it was made, the instances moved onto
+/// it, the rows added, how it is joined now and how many lost it by a close.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedTeam {
+    pub package: String,
+    pub team_id: TeamId,
+    pub created: bool,
+    pub apps: Vec<AppId>,
+    pub added: usize,
+    pub join: Option<TeamJoin>,
+    pub dropped: usize,
+}
 pub use rejection::{Rejection, RejectionKind};
 pub use sign_up::InviteKeyAnswer;
 pub use updates::PolicyView;
@@ -52,7 +85,7 @@ pub struct Quotas {
     pub max_orgs_per_account: u32,
     /// Accounts the cluster takes in all: where sign-up is open
     /// ([`Governance::sign_up`]), this is what keeps it from growing without
-    /// bound (Xil's review, issue 12).
+    /// bound.
     pub max_accounts: u32,
     /// Plaintext bytes of the files an organization's apps hold (a personal
     /// organization's too).
@@ -62,21 +95,21 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
-    /// Fuel a developer's apps may burn per UTC day, summed over its component apps
-    /// (Q20, D76, D78); 0 (the default) is no limit. The developer is the one usage
-    /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
+    /// Fuel a developer's apps may burn per UTC day, summed over its component apps;
+    /// 0 (the default) is no limit. The developer is the one usage
+    /// is billed to (`usage::developer`): the owner of the deployment an app
     /// was created from, else the app's organization or owner. Over it, a client's
     /// call or an xcall delivery to any of the developer's apps is refused before it
     /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
     /// count. Checked where the call runs, against the apps' usage books, not at
-    /// apply: those live in the app groups. A decimal string in JSON (D20); a number
+    /// apply: those live in the app groups. A decimal string in JSON; a number
     /// is refused. Written only once every node runs a release that knows it
     /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_developer_per_day: u64,
 }
 
-/// A `u64` as a decimal string in JSON (D20): digits only, no sign, no leading zero.
+/// A `u64` as a decimal string in JSON: digits only, no sign, no leading zero.
 /// A JSON number is refused, so a client never sends a cap a JavaScript number has
 /// already rounded.
 mod decimal_u64 {
@@ -737,7 +770,7 @@ pub struct SystemState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub delegations: BTreeMap<AccountId, BTreeMap<AppId, BTreeMap<AppId, Vec<String>>>>,
     /// Account recoveries under way, by account: the passkey the start
-    /// logged and when it may finish (`docs/specs/account-recovery.md`). At
+    /// logged and when it may finish ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)). At
     /// most one per account. Left out when empty, as `recovery_keys`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub account_recoveries: BTreeMap<AccountId, crate::types::PendingAccountRecovery>,
@@ -3962,8 +3995,8 @@ impl SystemState {
         }
     }
 
-    /// Whether `actor`, not `app`'s owner, may change its access to `to`
-    /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
+    /// Whether `actor`, not `app`'s owner, may change its access to `to`:
+    /// someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
     /// each team its grants name, organization-wide for grants with no team
     /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
@@ -4582,15 +4615,15 @@ impl SystemState {
                 None => {}
             }
             let join = o.teams.get(&team_id).map(|t| t.join);
-            report.push(json!({
-                "package": plan.package,
-                "teamId": team_id,
-                "created": created,
-                "apps": plan.instances,
-                "added": added,
-                "join": join,
-                "dropped": dropped,
-            }));
+            report.push(ScopedTeam {
+                package: plan.package.clone(),
+                team_id: team_id.clone(),
+                created,
+                apps: plan.instances.clone(),
+                added,
+                join,
+                dropped,
+            });
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
                     a.access = a.access.onto_team(team_id.clone());
@@ -4630,7 +4663,10 @@ impl SystemState {
             .orgs
             .get(org)
             .map_or(crate::types::OrgMode::Legacy, Org::mode);
-        Ok(json!({ "mode": mode, "teams": report }))
+        Ok(json!(AppTeamsScoped {
+            mode,
+            teams: report
+        }))
     }
 
     /// [`SystemCmd::MoveApp`], judged and applied as one step: every rule is
@@ -4942,14 +4978,14 @@ impl SystemState {
                 revoked = before - self.invites.len();
             }
         }
-        Ok(json!({
-            "appId": app_id,
-            "from": from,
-            "org": to_org,
-            "grants": access,
-            "created": created,
-            "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
-            "revokedInvites": revoked,
+        Ok(json!(AppMoved {
+            app_id: app_id.to_owned(),
+            from,
+            org: to_org.to_owned(),
+            grants: access,
+            created,
+            added: joins.into_iter().map(|(m, _)| m).collect(),
+            revoked_invites: revoked as u64,
         }))
     }
 
@@ -5074,11 +5110,11 @@ impl SystemState {
 
     /// The deadlines as the read APIs show them, oldest release first.
     #[must_use]
-    pub fn deadlines_json(&self) -> Vec<ReleaseDeadline> {
+    pub fn deadlines_json(&self) -> Vec<VersionDeadline> {
         let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
         out.sort_by(|a, b| compare_versions(a.0, b.0));
         out.into_iter()
-            .map(|(r, after)| ReleaseDeadline {
+            .map(|(r, after)| VersionDeadline {
                 version: r.clone(),
                 after: rfc3339(*after),
                 after_secs: *after,
@@ -5318,7 +5354,7 @@ impl SystemState {
     }
 
     /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
-    /// `audience` by `emitter` (R9): it must still reach the app, and be in the
+    /// `audience` by `emitter`: it must still reach the app, and be in the
     /// audience as the system state stands at this moment, so a removed member
     /// stops receiving at once.
     #[must_use]
@@ -6046,6 +6082,20 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
 /// What a person consents to when moving an app to another organization
 /// (`<app> / __move`).
 #[must_use]
+/// What `POST /apps/{app}/move` answers: where the app went, its access there, whether an app
+/// team was made, the accounts brought in and the invites revoked.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMoved {
+    app_id: String,
+    from: String,
+    org: String,
+    grants: crate::types::Access,
+    created: bool,
+    added: Vec<String>,
+    revoked_invites: u64,
+}
+
 pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }
@@ -7395,7 +7445,7 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// The capabilities members hold unless set for them: organization-wide
-    /// (`team: None`), or everyone in `team` on top of their own (G6).
+    /// (`team: None`), or everyone in `team` on top of their own.
     SetDefaultCapabilities {
         org: OrgId,
         /// Absent in entries from before, which set the organization's.
@@ -7541,7 +7591,7 @@ pub enum SystemCmd {
         now: u64,
         signature: String,
     },
-    /// Give apps their own access lists in one step (G3): for each package
+    /// Give apps their own access lists in one step: for each package
     /// named (absent: every package with an instance an `org` grant admits
     /// here), find or make its app team ([`crate::types::Team::app_package`]),
     /// give every person who reaches its instances now a row there, and give
@@ -8006,5 +8056,7 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod queue_tests;
 
+#[cfg(test)]
+mod answer_tests;
 #[cfg(test)]
 mod tests;

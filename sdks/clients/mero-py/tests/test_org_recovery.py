@@ -1,5 +1,5 @@
 """
-Organization recovery through CloudClient (core `docs/specs/org-recovery.md`):
+Organization recovery through CloudClient ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)):
 the owner sets a recovery key, an account holding the seed starts a recovery
 that waits 72 hours, the owner can cancel it, a wrong seed and a non-owner are
 refused, and rotating the key makes the old seed useless. Waiting out the

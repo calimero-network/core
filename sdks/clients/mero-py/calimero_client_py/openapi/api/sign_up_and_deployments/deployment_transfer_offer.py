@@ -7,10 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.deployment_offered import DeploymentOffered
 from ...models.deployment_transfer_offer_body import DeploymentTransferOfferBody
-from ...models.deployment_transfer_offer_response_200 import (
-    DeploymentTransferOfferResponse200,
-)
 from ...models.error import Error
 from typing import cast
 
@@ -39,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentTransferOfferResponse200, Error]]:
+) -> Optional[Union[DeploymentOffered, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentTransferOfferResponse200.from_dict(response.json())
+        response_200 = DeploymentOffered.from_dict(response.json())
 
         return response_200
 
@@ -88,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentTransferOfferResponse200, Error]]:
+) -> Response[Union[DeploymentOffered, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -102,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferOfferBody,
-) -> Response[Union[DeploymentTransferOfferResponse200, Error]]:
+) -> Response[Union[DeploymentOffered, Error]]:
     """Offer a deployment to another owner
 
      The deployment's owner account, or an owner or admin of its organization (managing it,
@@ -125,7 +123,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentTransferOfferResponse200, Error]]
+        Response[Union[DeploymentOffered, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -145,7 +143,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferOfferBody,
-) -> Optional[Union[DeploymentTransferOfferResponse200, Error]]:
+) -> Optional[Union[DeploymentOffered, Error]]:
     """Offer a deployment to another owner
 
      The deployment's owner account, or an owner or admin of its organization (managing it,
@@ -168,7 +166,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentTransferOfferResponse200, Error]
+        Union[DeploymentOffered, Error]
     """
 
     return sync_detailed(
@@ -183,7 +181,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferOfferBody,
-) -> Response[Union[DeploymentTransferOfferResponse200, Error]]:
+) -> Response[Union[DeploymentOffered, Error]]:
     """Offer a deployment to another owner
 
      The deployment's owner account, or an owner or admin of its organization (managing it,
@@ -206,7 +204,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentTransferOfferResponse200, Error]]
+        Response[Union[DeploymentOffered, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -224,7 +222,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferOfferBody,
-) -> Optional[Union[DeploymentTransferOfferResponse200, Error]]:
+) -> Optional[Union[DeploymentOffered, Error]]:
     """Offer a deployment to another owner
 
      The deployment's owner account, or an owner or admin of its organization (managing it,
@@ -247,7 +245,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentTransferOfferResponse200, Error]
+        Union[DeploymentOffered, Error]
     """
 
     return (

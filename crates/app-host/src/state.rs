@@ -1,4 +1,4 @@
-//! Read access to committed app state (D46) and the generation-prefixed key layout (D39).
+//! Read access to committed app state and the generation-prefixed key layout.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -9,7 +9,8 @@ pub type KeyValue = (Vec<u8>, Vec<u8>);
 /// Lower and upper bounds of a key range.
 pub(crate) type KeyBounds<'k> = (Bound<&'k [u8]>, Bound<&'k [u8]>);
 
-/// The generation every app uses in this milestone; rebuilds allocate new ones (D38, D39).
+/// The generation every app uses: migrations are not enabled, so no rebuild allocates
+/// another.
 pub const GENERATION: u64 = 0;
 
 /// The stored key of a key: 8-byte big-endian generation ‖ key.

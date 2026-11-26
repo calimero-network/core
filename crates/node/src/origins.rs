@@ -22,7 +22,7 @@
 //! origin's: its own rp-id, sessions bound to the package and naming the
 //! origin, removal ending them. Its consent says so
 //! (`{ origin, rpId, served: true }`), so a consent to a plain origin never
-//! makes one served. Design: `docs/specs/custom-domains.md`.
+//! makes one served. Design: [Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -327,7 +327,11 @@ impl SystemState {
             return Err("that origin is not registered for this package".into());
         }
         let _gone = self.package_origins.remove(origin);
-        Ok(json!({ "package": package, "origin": origin, "removed": true }))
+        Ok(json!(OriginRemoved {
+            package: package.to_owned(),
+            origin: origin.to_owned(),
+            removed: true,
+        }))
     }
 
     /// Forget the origins of a package no longer installed, so whoever
@@ -335,6 +339,14 @@ impl SystemState {
     pub(crate) fn forget_origins(&mut self, package: &str) {
         self.package_origins.retain(|_, o| o.package != package);
     }
+}
+
+/// What removing an origin answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OriginRemoved {
+    pub package: String,
+    pub origin: String,
+    pub removed: bool,
 }
 
 /// A registration as the API answers it (`#PackageOrigin`).

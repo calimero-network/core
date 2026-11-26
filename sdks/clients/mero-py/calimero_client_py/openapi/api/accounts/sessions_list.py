@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.sessions_list_response_200 import SessionsListResponse200
+from ...models.session_list import SessionList
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, SessionsListResponse200]]:
+) -> Optional[Union[Error, SessionList]]:
     if response.status_code == 200:
-        response_200 = SessionsListResponse200.from_dict(response.json())
+        response_200 = SessionList.from_dict(response.json())
 
         return response_200
 
@@ -53,7 +53,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, SessionsListResponse200]]:
+) -> Response[Union[Error, SessionList]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, SessionsListResponse200]]:
+) -> Response[Union[Error, SessionList]]:
     """The account's live sessions
 
      Latest active first, at most 256. `openedAt` (Unix seconds) is `null` for a session opened before
@@ -78,7 +78,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, SessionsListResponse200]]
+        Response[Union[Error, SessionList]]
     """
 
     kwargs = _get_kwargs()
@@ -93,7 +93,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, SessionsListResponse200]]:
+) -> Optional[Union[Error, SessionList]]:
     """The account's live sessions
 
      Latest active first, at most 256. `openedAt` (Unix seconds) is `null` for a session opened before
@@ -106,7 +106,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, SessionsListResponse200]
+        Union[Error, SessionList]
     """
 
     return sync_detailed(
@@ -117,7 +117,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, SessionsListResponse200]]:
+) -> Response[Union[Error, SessionList]]:
     """The account's live sessions
 
      Latest active first, at most 256. `openedAt` (Unix seconds) is `null` for a session opened before
@@ -130,7 +130,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, SessionsListResponse200]]
+        Response[Union[Error, SessionList]]
     """
 
     kwargs = _get_kwargs()
@@ -143,7 +143,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, SessionsListResponse200]]:
+) -> Optional[Union[Error, SessionList]]:
     """The account's live sessions
 
      Latest active first, at most 256. `openedAt` (Unix seconds) is `null` for a session opened before
@@ -156,7 +156,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, SessionsListResponse200]
+        Union[Error, SessionList]
     """
 
     return (

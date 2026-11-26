@@ -9,7 +9,7 @@ from ..types import UNSET, Unset
 from typing import cast
 
 if TYPE_CHECKING:
-    from ..models.deadlines_deadlines_item import DeadlinesDeadlinesItem
+    from ..models.version_deadline import VersionDeadline
 
 
 T = TypeVar("T", bound="Deadlines")
@@ -20,14 +20,14 @@ class Deadlines:
     """Every release deadline after the change, oldest release first (`after` RFC 3339, `afterSecs` Unix seconds).
 
     Attributes:
-        deadlines (list['DeadlinesDeadlinesItem']):
+        deadlines (list['VersionDeadline']):
     """
 
-    deadlines: list["DeadlinesDeadlinesItem"]
+    deadlines: list["VersionDeadline"]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.deadlines_deadlines_item import DeadlinesDeadlinesItem
+        from ..models.version_deadline import VersionDeadline
 
         deadlines = []
         for deadlines_item_data in self.deadlines:
@@ -46,13 +46,13 @@ class Deadlines:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.deadlines_deadlines_item import DeadlinesDeadlinesItem
+        from ..models.version_deadline import VersionDeadline
 
         d = dict(src_dict)
         deadlines = []
         _deadlines = d.pop("deadlines")
         for deadlines_item_data in _deadlines:
-            deadlines_item = DeadlinesDeadlinesItem.from_dict(deadlines_item_data)
+            deadlines_item = VersionDeadline.from_dict(deadlines_item_data)
 
             deadlines.append(deadlines_item)
 

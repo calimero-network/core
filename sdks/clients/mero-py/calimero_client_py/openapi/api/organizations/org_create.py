@@ -8,14 +8,14 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.org_create_body import OrgCreateBody
-from ...models.org_create_response_200 import OrgCreateResponse200
+from ...models.org_body import OrgBody
+from ...models.org_created import OrgCreated
 from typing import cast
 
 
 def _get_kwargs(
     *,
-    body: OrgCreateBody,
+    body: OrgBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgCreateResponse200]]:
+) -> Optional[Union[Error, OrgCreated]]:
     if response.status_code == 200:
-        response_200 = OrgCreateResponse200.from_dict(response.json())
+        response_200 = OrgCreated.from_dict(response.json())
 
         return response_200
 
@@ -78,7 +78,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgCreateResponse200]]:
+) -> Response[Union[Error, OrgCreated]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -90,8 +90,8 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-    body: OrgCreateBody,
-) -> Response[Union[Error, OrgCreateResponse200]]:
+    body: OrgBody,
+) -> Response[Union[Error, OrgCreated]]:
     """Create an organization
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
@@ -103,14 +103,14 @@ def sync_detailed(
     **Who:** a passkey session (an API key is refused).
 
     Args:
-        body (OrgCreateBody):
+        body (OrgBody): The request body of `POST /orgs`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgCreateResponse200]]
+        Response[Union[Error, OrgCreated]]
     """
 
     kwargs = _get_kwargs(
@@ -127,8 +127,8 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-    body: OrgCreateBody,
-) -> Optional[Union[Error, OrgCreateResponse200]]:
+    body: OrgBody,
+) -> Optional[Union[Error, OrgCreated]]:
     """Create an organization
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
@@ -140,14 +140,14 @@ def sync(
     **Who:** a passkey session (an API key is refused).
 
     Args:
-        body (OrgCreateBody):
+        body (OrgBody): The request body of `POST /orgs`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgCreateResponse200]
+        Union[Error, OrgCreated]
     """
 
     return sync_detailed(
@@ -159,8 +159,8 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-    body: OrgCreateBody,
-) -> Response[Union[Error, OrgCreateResponse200]]:
+    body: OrgBody,
+) -> Response[Union[Error, OrgCreated]]:
     """Create an organization
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
@@ -172,14 +172,14 @@ async def asyncio_detailed(
     **Who:** a passkey session (an API key is refused).
 
     Args:
-        body (OrgCreateBody):
+        body (OrgBody): The request body of `POST /orgs`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgCreateResponse200]]
+        Response[Union[Error, OrgCreated]]
     """
 
     kwargs = _get_kwargs(
@@ -194,8 +194,8 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-    body: OrgCreateBody,
-) -> Optional[Union[Error, OrgCreateResponse200]]:
+    body: OrgBody,
+) -> Optional[Union[Error, OrgCreated]]:
     """Create an organization
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
@@ -207,14 +207,14 @@ async def asyncio(
     **Who:** a passkey session (an API key is refused).
 
     Args:
-        body (OrgCreateBody):
+        body (OrgBody): The request body of `POST /orgs`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgCreateResponse200]
+        Union[Error, OrgCreated]
     """
 
     return (

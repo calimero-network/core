@@ -21,7 +21,8 @@ use calimero_app_downloader::{AppRequest, AppSource};
 use calimero_app_host::{Abi, MethodKind};
 use calimero_bundle::VerifiedBundle;
 use reqwest::StatusCode;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::compile::Engine;
@@ -311,7 +312,7 @@ impl Node {
         version: &str,
         actor: &str,
         org: Option<&str>,
-    ) -> Result<Value, ApiError> {
+    ) -> Result<PackageInstalled, ApiError> {
         self.refuse_undeployable(actor).await?;
         let org = self.install_org(actor, org).await?;
         // Before the fetch, judged by the key the package is pinned to (none
@@ -375,7 +376,7 @@ impl Node {
         mpk: Arc<[u8]>,
         actor: &str,
         org: Option<&str>,
-    ) -> Result<Value, ApiError> {
+    ) -> Result<PackageInstalled, ApiError> {
         self.refuse_undeployable(actor).await?;
         let org = self.install_org(actor, org).await?;
         let verified = self
@@ -649,7 +650,7 @@ impl Node {
         &self,
         mut v: Verified,
         upload: Option<Arc<[u8]>>,
-    ) -> Result<Value, ApiError> {
+    ) -> Result<PackageInstalled, ApiError> {
         // An older node drops `uses`: they are recorded once every node keeps them, and an
         // install of the same release after that fills them in. The release installs either
         // way, as it did before they were kept.
@@ -722,12 +723,12 @@ impl Node {
                 release: v.release,
             })
             .await?;
-        Ok(json!({
-            "package": v.package,
-            "version": version,
-            "signerId": v.signer_id,
-            "services": services,
-        }))
+        Ok(PackageInstalled {
+            package: v.package,
+            version,
+            signer_id: v.signer_id,
+            services,
+        })
     }
 
     /// The release `app` runs ([`SystemState::running_release`]): the one its
@@ -973,4 +974,14 @@ pub(crate) fn no_such_service(
             format!("{package}@{version} has no service {key}")
         },
     )
+}
+
+/// A release installed: its package, version, pinned signer and services (name to bundle hash).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageInstalled {
+    pub package: String,
+    pub version: String,
+    pub signer_id: String,
+    pub services: BTreeMap<String, String>,
 }

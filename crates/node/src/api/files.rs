@@ -6,19 +6,71 @@
 )]
 use super::*;
 
-fn blob_json(id: &[u8; 32], size: u64) -> Value {
-    json!({
-        "blobId": calimero_primitives::blobs::BlobId::from(*id).to_string(),
-        "id": hex::encode(id),
-        "size": size,
-    })
+fn blob_json(id: &[u8; 32], size: u64) -> BlobView {
+    BlobView {
+        blob_id: calimero_primitives::blobs::BlobId::from(*id).to_string(),
+        id: hex::encode(id),
+        size,
+    }
 }
 
 /// A sealed file as the routes show it: its plaintext size and SHA-256, never its key.
-fn file_json(id: &[u8; 32], size: u64, sha256: &[u8; 32]) -> Value {
-    let mut out = blob_json(id, size);
-    out["sha256"] = json!(hex::encode(sha256));
-    out
+fn file_json(id: &[u8; 32], size: u64, sha256: &[u8; 32]) -> FileView {
+    FileView {
+        blob: blob_json(id, size),
+        sha256: hex::encode(sha256),
+    }
+}
+
+/// A blob of an app: its id (base58 `blobId` and hex `id`) and size.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BlobView {
+    blob_id: String,
+    id: String,
+    size: u64,
+}
+
+/// A sealed file of an app: its ids, plaintext size and SHA-256 (hex), never its key.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct FileView {
+    #[serde(flatten)]
+    blob: BlobView,
+    sha256: String,
+}
+
+/// A blob stored, and the index of the app's log entry that holds it.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct BlobStored {
+    #[serde(flatten)]
+    blob: BlobView,
+    index: u64,
+}
+
+/// A sealed file stored, and the index of the app's log entry that holds it.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct FileStored {
+    #[serde(flatten)]
+    file: FileView,
+    index: u64,
+}
+
+/// `GET /apps/{app}/blobs`.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct BlobList {
+    blobs: Vec<BlobView>,
+}
+
+/// `GET /apps/{app}/files`.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct FileList {
+    files: Vec<FileView>,
+}
+
+/// A change logged on the app: the index of its entry.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct Logged {
+    index: u64,
 }
 
 /// Refuses `raw` when it is one of the component `app`'s sealed files: only its code reads
@@ -56,7 +108,7 @@ async fn blob_upload(
     Path(app_id): Path<String>,
     Query(q): Query<BlobUploadQuery>,
     body: axum::body::Bytes,
-) -> ApiResult {
+) -> ApiResult<Json<BlobStored>> {
     if q.sealed.is_some() {
         return Err(ApiError::bad_request(
             "USE_FILES_API",
@@ -100,12 +152,13 @@ async fn blob_upload(
     node.unpin_on_leader(pin).await;
     let (id, a) = stored?;
     let raw = parse_blob_id(&id)?;
-    let mut out = blob_json(&raw, size);
-    out["index"] = json!(a.index);
-    Ok(Json(out))
+    Ok(Json(BlobStored {
+        blob: blob_json(&raw, size),
+        index: a.index,
+    }))
 }
 
-/// A component holds a bounded number of blobs and files (R8).
+/// A component holds a bounded number of blobs and files (`MAX_COMPONENT_BLOBS`).
 async fn refuse_full_app(node: &Node, app: &crate::types::AppRecord) -> Result<(), ApiError> {
     let stats = node.storage_stats(app).await?;
     if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
@@ -137,7 +190,7 @@ fn blob_mime(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(mime.to_owned())
 }
 
-/// `?grant=` on a download: a component's run handed it out (R8).
+/// `?grant=` on a download: a component's run handed it out.
 #[derive(Deserialize)]
 pub(super) struct BlobGrant {
     grant: Option<String>,
@@ -211,15 +264,15 @@ async fn blob_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<BlobList>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
     let stats = node.storage_stats_strong(&app).await?;
-    let blobs: Vec<Value> = (stats.blobs.iter())
+    let blobs = (stats.blobs.iter())
         .map(|(id, size)| blob_json(id, *size))
         .collect();
-    Ok(Json(json!({ "blobs": blobs })))
+    Ok(Json(BlobList { blobs }))
 }
 
 /// One blob's size; 404 if the app has no such blob.
@@ -227,7 +280,7 @@ async fn blob_info(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, id)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<BlobView>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
@@ -279,12 +332,13 @@ pub(super) async fn files_gate(
 }
 
 /// A file a node committed, as the routes answer it.
-fn uploaded_json(up: &crate::node::Uploaded) -> Result<Value, ApiError> {
+fn uploaded_json(up: &crate::node::Uploaded) -> Result<FileStored, ApiError> {
     let sha256 = <[u8; 32]>::try_from(up.mark.sha256.0.as_slice())
         .map_err(|_| ApiError::internal("bad file mark"))?;
-    let mut out = file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256);
-    out["index"] = json!(up.index);
-    Ok(out)
+    Ok(FileStored {
+        file: file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256),
+        index: up.index,
+    })
 }
 
 /// Upload a file of up to one part (16 MiB): the body is its bytes, sealed under a key of its own.
@@ -293,7 +347,7 @@ async fn files_upload(
     headers: HeaderMap,
     Path(app_id): Path<String>,
     body: axum::body::Bytes,
-) -> ApiResult {
+) -> ApiResult<Json<FileStored>> {
     let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
     refuse_full_app(&node, &app).await?;
     let up = node.upload_file(&app, body, &account).await?;
@@ -305,13 +359,13 @@ async fn files_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<FileList>> {
     let (app, _account) = files_gate(&node, &headers, &app_id, false).await?;
     let stats = node.storage_stats_strong(&app).await?;
-    let files: Vec<Value> = (stats.files.iter())
+    let files = (stats.files.iter())
         .map(|(id, size, h)| file_json(id, *size, h))
         .collect();
-    Ok(Json(json!({ "files": files })))
+    Ok(Json(FileList { files }))
 }
 
 /// One file's size and plaintext SHA-256; 404 if the app has no such file.
@@ -319,7 +373,7 @@ async fn file_info(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, id)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<FileView>> {
     let (app, _account) = files_gate(&node, &headers, &app_id, false).await?;
     let raw = parse_blob_id(&id)?;
     let stats = node.storage_stats_strong(&app).await?;
@@ -382,7 +436,7 @@ async fn upload_complete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, upload)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<FileStored>> {
     let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
     let op = crate::node::UploadOp::Complete { upload };
     let up = node.upload_op(&app, &account, op).await?;
@@ -408,7 +462,7 @@ async fn blob_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, id)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<Logged>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
@@ -435,7 +489,7 @@ async fn blob_delete(
         })
         .await?;
     node.collect_blob(&raw).await;
-    Ok(Json(json!({ "index": a.index })))
+    Ok(Json(Logged { index: a.index }))
 }
 
 /// Revoke the grants made so far for one of the app's published blobs: its owner's or an org
@@ -444,7 +498,7 @@ async fn blob_revoke(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, id)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<Logged>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
@@ -468,7 +522,7 @@ async fn blob_revoke(
     if a.status != Status::Ok {
         return Err(ApiError::not_found("no such published blob in this app"));
     }
-    Ok(Json(json!({ "index": a.index })))
+    Ok(Json(Logged { index: a.index }))
 }
 
 /// This area's routes, merged into [`super::router`].

@@ -8,9 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.confirm_only import ConfirmOnly
-from ...models.deployment_transfer_cancel_response_200 import (
-    DeploymentTransferCancelResponse200,
-)
+from ...models.deployment_transfer_cancelled import DeploymentTransferCancelled
 from ...models.error import Error
 from typing import cast
 
@@ -39,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentTransferCancelResponse200, Error]]:
+) -> Optional[Union[DeploymentTransferCancelled, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentTransferCancelResponse200.from_dict(response.json())
+        response_200 = DeploymentTransferCancelled.from_dict(response.json())
 
         return response_200
 
@@ -88,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentTransferCancelResponse200, Error]]:
+) -> Response[Union[DeploymentTransferCancelled, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -102,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[DeploymentTransferCancelResponse200, Error]]:
+) -> Response[Union[DeploymentTransferCancelled, Error]]:
     """Cancel the offer of a deployment
 
      A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over
@@ -122,7 +120,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentTransferCancelResponse200, Error]]
+        Response[Union[DeploymentTransferCancelled, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -142,7 +140,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[DeploymentTransferCancelResponse200, Error]]:
+) -> Optional[Union[DeploymentTransferCancelled, Error]]:
     """Cancel the offer of a deployment
 
      A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over
@@ -162,7 +160,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentTransferCancelResponse200, Error]
+        Union[DeploymentTransferCancelled, Error]
     """
 
     return sync_detailed(
@@ -177,7 +175,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Response[Union[DeploymentTransferCancelResponse200, Error]]:
+) -> Response[Union[DeploymentTransferCancelled, Error]]:
     """Cancel the offer of a deployment
 
      A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over
@@ -197,7 +195,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentTransferCancelResponse200, Error]]
+        Response[Union[DeploymentTransferCancelled, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -215,7 +213,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ConfirmOnly,
-) -> Optional[Union[DeploymentTransferCancelResponse200, Error]]:
+) -> Optional[Union[DeploymentTransferCancelled, Error]]:
     """Cancel the offer of a deployment
 
      A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over
@@ -235,7 +233,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentTransferCancelResponse200, Error]
+        Union[DeploymentTransferCancelled, Error]
     """
 
     return (

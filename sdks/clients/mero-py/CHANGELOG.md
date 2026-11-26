@@ -227,7 +227,7 @@ Migrating a call:
   `412` is raised; an empty team still deletes without one.
 
 - **feat: served origins (custom domains)** (core #4864,
-  `docs/specs/custom-domains.md`; needs a core release after 1.0.0-rc.10).
+  [Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains); needs a core release after 1.0.0-rc.10).
   `add_package_origin(..., served=True)` registers an origin the cluster also
   serves the package's frontend on; the body and the consent the passkey
   signs carry `served: true` only then (`{origin, rpId, served: true}`), so a
@@ -235,7 +235,7 @@ Migrating a call:
   refusals: `400 NOT_SERVING`, `409 CLUSTER_NOT_UPGRADED`, and the served
   limits as `429 QUOTA_EXCEEDED`. `ops_served_origins()` reads the
   operator's `GET /ops/served-origins`.
-- **feat: account recovery** (core #4844, `docs/specs/account-recovery.md`;
+- **feat: account recovery** ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery);
   needs a core release after 1.0.0-rc.10). `create_recovery_code(passkey)`,
   `remove_recovery_code(passkey)`, `start_account_recovery(code, passkey)`
   (signed out, with a new passkey), `cancel_account_recovery(passkey)` and
@@ -273,7 +273,7 @@ Migrating a call:
   `revoke_api_key(key_id, passkey)` now takes the account's passkey and
   answers the node's `412`. Refresh tokens and passkey counters carry their
   proofs on the node; nothing changes for the client there.
-- **feat: organization recovery** (core `docs/specs/org-recovery.md`):
+- **feat: organization recovery** ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)):
   `create_org(name, recovery_key=None)`, `set_recovery_key`,
   `start_recovery` (the seed signs locally), `cancel_recovery`,
   `finish_recovery`, and `CloudClient.new_recovery_seed`,

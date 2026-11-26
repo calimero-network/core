@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_served_response_200 import OpsServedResponse200
+from ...models.served_origins import ServedOrigins
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsServedResponse200]]:
+) -> Optional[Union[Error, ServedOrigins]]:
     if response.status_code == 200:
-        response_200 = OpsServedResponse200.from_dict(response.json())
+        response_200 = ServedOrigins.from_dict(response.json())
 
         return response_200
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsServedResponse200]]:
+) -> Response[Union[Error, ServedOrigins]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,7 +60,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsServedResponse200]]:
+) -> Response[Union[Error, ServedOrigins]]:
     """Custom domains to serve
 
      Every served origin a package's manager registered, by the package's label, never its name;
@@ -73,7 +73,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsServedResponse200]]
+        Response[Union[Error, ServedOrigins]]
     """
 
     kwargs = _get_kwargs()
@@ -88,7 +88,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsServedResponse200]]:
+) -> Optional[Union[Error, ServedOrigins]]:
     """Custom domains to serve
 
      Every served origin a package's manager registered, by the package's label, never its name;
@@ -101,7 +101,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsServedResponse200]
+        Union[Error, ServedOrigins]
     """
 
     return sync_detailed(
@@ -112,7 +112,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OpsServedResponse200]]:
+) -> Response[Union[Error, ServedOrigins]]:
     """Custom domains to serve
 
      Every served origin a package's manager registered, by the package's label, never its name;
@@ -125,7 +125,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsServedResponse200]]
+        Response[Union[Error, ServedOrigins]]
     """
 
     kwargs = _get_kwargs()
@@ -138,7 +138,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OpsServedResponse200]]:
+) -> Optional[Union[Error, ServedOrigins]]:
     """Custom domains to serve
 
      Every served origin a package's manager registered, by the package's label, never its name;
@@ -151,7 +151,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsServedResponse200]
+        Union[Error, ServedOrigins]
     """
 
     return (

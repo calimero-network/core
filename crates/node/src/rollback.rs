@@ -1,4 +1,4 @@
-//! Refusing a store older than mero-kms has seen (`docs/specs/rollback-protection.md`).
+//! Refusing a store older than mero-kms has seen ([Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)).
 //!
 //! mero-kms keeps, per node of a cluster, an entry `(generation, mark)`, and a
 //! cluster epoch (the number of rollbacks an operator forced). The node keeps
@@ -145,7 +145,7 @@ pub fn judge(node: NodeId, grant: Option<Grant>, record: Option<Record>) -> Verd
 }
 
 /// What the node reports of its counter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     /// The cluster epoch: rollbacks forced so far.

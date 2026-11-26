@@ -474,12 +474,12 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
 
-/// G4 (L4): the owner and admin checks a route makes after `gate` (`manages_app`,
-/// `may_handle_files`, `read_only_in`) judged the app record the handler read before
-/// `gate`'s read-index round, so on a follower behind they saw the owner and organization
-/// the record held then. Here Bob hands his app to Alice through the leader while the
-/// follower serving his next request has not applied it: he must not still read its
-/// xcalls (owner or admin only) as its owner.
+/// The owner and admin checks a route makes after `gate` (`manages_app`,
+/// `may_handle_files`, `read_only_in`) judge the app record as of `gate`'s read-index
+/// round, not a copy the handler read before it, so a follower behind never judges by the
+/// owner and organization the record held earlier. Here Bob hands his app to Alice
+/// through the leader while the follower serving his next request has not applied it:
+/// he must not still read its xcalls (owner or admin only) as its owner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer() {
     let c = ProxiedCluster::start().await;
@@ -553,7 +553,7 @@ async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfe
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
 }
 
-/// Review finding A3: `GET /attestation?app=` is in the clear and takes no
+/// `GET /attestation?app=` is in the clear and takes no
 /// credential, yet it bound any app's bundle hash, so anyone could learn that a
 /// private app exists and which release it runs (`404` against `200`). It now
 /// answers as an anonymous `GET /apps/{app}` does: an app reads exactly as an id
@@ -1132,7 +1132,7 @@ fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// Bugbot on #5210 ("lagging replica undercounts"): the node that took an upgrade's
+/// The node that took an upgrade's
 /// restore point may still host the app and be behind its group. What an undo would lose
 /// is then read from a majority of the app's replicas, the furthest counting, as where
 /// that node no longer hosts it, never from its own applied index alone: a write it has
@@ -1265,7 +1265,7 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
 }
 
 /// A credential that cannot be valid is refused before the request costs a
-/// read-index round on the system group, and is not held open (D4): junk, a
+/// read-index round on the system group, and is not held open: junk, a
 /// malformed API key, a visitor credential whose signature does not hold and a
 /// session token its issuer did not sign cost no round. A well-formed API key
 /// no account has costs at most one round and answers at once rather than

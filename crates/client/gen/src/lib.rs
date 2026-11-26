@@ -1,8 +1,8 @@
 //! Generates `calimero-client`'s route layer (`crates/client/src/generated/`)
 //! from the node's OpenAPI document (`docs/public/openapi.json`), the way
-//! mero-js (`scripts/gen-methods.mjs`), calimero-client-py
-//! (`scripts/generate_openapi_client.py`) and the Kotlin SDK
-//! (`codegen/facade.py`) generate theirs: one method per operation, grouped by
+//! mero-js (`sdks/clients/mero-js/scripts/gen-methods.mjs`), calimero-client-py
+//! (`sdks/clients/mero-py/scripts/generate_openapi_client.py`) and the Kotlin
+//! SDK (`sdks/clients/mero-kotlin/codegen/facade.py`) generate theirs: one method per operation, grouped by
 //! `x-calimero-group`, with the same names in snake case.
 //!
 //! - `types.rs`: the components and the operations' inline bodies and answers

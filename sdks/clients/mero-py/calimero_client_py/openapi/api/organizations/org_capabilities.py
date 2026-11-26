@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.capabilities_body import CapabilitiesBody
 from ...models.error import Error
-from ...models.org_capabilities_body import OrgCapabilitiesBody
 from ...models.org_capabilities_response_200 import OrgCapabilitiesResponse200
 from typing import cast
 
@@ -16,7 +16,7 @@ from typing import cast
 def _get_kwargs(
     org: str,
     *,
-    body: OrgCapabilitiesBody,
+    body: CapabilitiesBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -89,7 +89,7 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgCapabilitiesBody,
+    body: CapabilitiesBody,
 ) -> Response[Union[Error, OrgCapabilitiesResponse200]]:
     """Set capabilities
 
@@ -100,7 +100,7 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgCapabilitiesBody):
+        body (CapabilitiesBody): The request body of `POST /orgs/{org}/capabilities`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -126,7 +126,7 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgCapabilitiesBody,
+    body: CapabilitiesBody,
 ) -> Optional[Union[Error, OrgCapabilitiesResponse200]]:
     """Set capabilities
 
@@ -137,7 +137,7 @@ def sync(
 
     Args:
         org (str):
-        body (OrgCapabilitiesBody):
+        body (CapabilitiesBody): The request body of `POST /orgs/{org}/capabilities`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -158,7 +158,7 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgCapabilitiesBody,
+    body: CapabilitiesBody,
 ) -> Response[Union[Error, OrgCapabilitiesResponse200]]:
     """Set capabilities
 
@@ -169,7 +169,7 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgCapabilitiesBody):
+        body (CapabilitiesBody): The request body of `POST /orgs/{org}/capabilities`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -193,7 +193,7 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: OrgCapabilitiesBody,
+    body: CapabilitiesBody,
 ) -> Optional[Union[Error, OrgCapabilitiesResponse200]]:
     """Set capabilities
 
@@ -204,7 +204,7 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgCapabilitiesBody):
+        body (CapabilitiesBody): The request body of `POST /orgs/{org}/capabilities`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

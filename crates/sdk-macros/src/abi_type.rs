@@ -1,18 +1,18 @@
 //! `#[derive(AbiType)]`: a serde struct's or enum's JSON shape, for the ABI's `types`.
 //!
-//! The derive reads the `#[serde(..)]` attributes that change the JSON (`rename`,
-//! `rename_all`, `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
+//! The derive reads the `#[serde(..)]` attributes that change the JSON (`rename`, `rename_all`,
+//! `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
 //! `skip_serializing`, `skip_serializing_if`, `with`) and refuses the ones whose JSON it cannot
-//! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's D20
-//! helpers). A field that `skip_serializing_if` may leave out, or that `default` (on the field
-//! or the struct) lets a caller leave out, is optional in the shape.
+//! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's
+//! `calimero_sdk::json` helpers). A field that `skip_serializing_if` may leave out, or that
+//! `default` (on the field or the struct) lets a caller leave out, is optional in the shape.
 //!
-//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its D20 form (`#[serde(with =
-//! "calimero_sdk::json::u64_str")]`, ...: a decimal string, base64url), or, marked
-//! `#[abi(plain)]` (on the field, or on the type for every field), what plain serde writes: a
-//! JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to 2^53) and
-//! an array of numbers (`byte_list`), at any depth (`Vec<u64>` is `list<u64_number>`). Unmarked,
-//! it is refused (Ruling 27): the ABI's `u64` and `bytes` mean the strings.
+//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its string form
+//! (`#[serde(with = "calimero_sdk::json::u64_str")]`, ...: a decimal string, base64url), or,
+//! marked `#[abi(plain)]` (on the field, or on the type for every field), what plain serde
+//! writes: a JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to
+//! 2^53) and an array of numbers (`byte_list`), at any depth (`Vec<u64>` is
+//! `list<u64_number>`). Unmarked, it is refused: the ABI's `u64` and `bytes` mean the strings.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -230,7 +230,7 @@ fn plain(attrs: &[Attribute]) -> syn::Result<bool> {
     Ok(plain)
 }
 
-/// The SDK's D20 helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
+/// The SDK's JSON helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
 const D20: &[&str] = &[
     "u64_str",
     "i64_str",
@@ -585,7 +585,7 @@ mod tests {
             s,
             r#"{"fields":[["views","u64_number"],["deltas","list<i64_number>"],["shots","byte_list"],["peak","option<u64_number>"],["at","u64"]],"kind":"record"}"#
         );
-        // On the type: every field, a D20 `with` still winning; tuple fields too.
+        // On the type: every field, a `calimero_sdk::json` `with` still winning; tuple fields too.
         let s = shape(parse_quote! {
             #[abi(plain)]
             struct Plain {

@@ -7,10 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.deployment_accepted import DeploymentAccepted
 from ...models.deployment_transfer_accept_body import DeploymentTransferAcceptBody
-from ...models.deployment_transfer_accept_response_200 import (
-    DeploymentTransferAcceptResponse200,
-)
 from ...models.error import Error
 from typing import cast
 
@@ -39,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentTransferAcceptResponse200, Error]]:
+) -> Optional[Union[DeploymentAccepted, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentTransferAcceptResponse200.from_dict(response.json())
+        response_200 = DeploymentAccepted.from_dict(response.json())
 
         return response_200
 
@@ -93,7 +91,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentTransferAcceptResponse200, Error]]:
+) -> Response[Union[DeploymentAccepted, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -107,7 +105,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferAcceptBody,
-) -> Response[Union[DeploymentTransferAcceptResponse200, Error]]:
+) -> Response[Union[DeploymentAccepted, Error]]:
     """Accept a deployment offered to an owner
 
      A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts
@@ -135,7 +133,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentTransferAcceptResponse200, Error]]
+        Response[Union[DeploymentAccepted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -155,7 +153,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferAcceptBody,
-) -> Optional[Union[DeploymentTransferAcceptResponse200, Error]]:
+) -> Optional[Union[DeploymentAccepted, Error]]:
     """Accept a deployment offered to an owner
 
      A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts
@@ -183,7 +181,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentTransferAcceptResponse200, Error]
+        Union[DeploymentAccepted, Error]
     """
 
     return sync_detailed(
@@ -198,7 +196,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferAcceptBody,
-) -> Response[Union[DeploymentTransferAcceptResponse200, Error]]:
+) -> Response[Union[DeploymentAccepted, Error]]:
     """Accept a deployment offered to an owner
 
      A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts
@@ -226,7 +224,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentTransferAcceptResponse200, Error]]
+        Response[Union[DeploymentAccepted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -244,7 +242,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: DeploymentTransferAcceptBody,
-) -> Optional[Union[DeploymentTransferAcceptResponse200, Error]]:
+) -> Optional[Union[DeploymentAccepted, Error]]:
     """Accept a deployment offered to an owner
 
      A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts
@@ -272,7 +270,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentTransferAcceptResponse200, Error]
+        Union[DeploymentAccepted, Error]
     """
 
     return (

@@ -5161,6 +5161,7145 @@ public enum Servers {
 public enum Components {
     /// Types generated from the `#/components/schemas` section of the OpenAPI document.
     public enum Schemas {
+        /// The request body of `POST /orgs/{org}/all-apps`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AllAppsBody`.
+        public struct AllAppsBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AllAppsBody/account`.
+            public var account: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AllAppsBody/allApps`.
+            public var allApps: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AllAppsBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `AllAppsBody`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - allApps:
+            ///   - confirm:
+            public init(
+                account: Swift.String,
+                allApps: Swift.Bool,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.account = account
+                self.allApps = allApps
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case allApps
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.account = try container.decode(
+                    Swift.String.self,
+                    forKey: .account
+                )
+                self.allApps = try container.decode(
+                    Swift.Bool.self,
+                    forKey: .allApps
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "account",
+                    "allApps",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /auth/backup-key`, `POST /orgs/{org}/backup-key`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/BackupKeyBody`.
+        public struct BackupKeyBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/BackupKeyBody/publicKey`.
+            public var publicKey: Swift.String
+            /// - Remark: Generated from `#/components/schemas/BackupKeyBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `BackupKeyBody`.
+            ///
+            /// - Parameters:
+            ///   - publicKey:
+            ///   - confirm:
+            public init(
+                publicKey: Swift.String,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.publicKey = publicKey
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case publicKey
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.publicKey = try container.decode(
+                    Swift.String.self,
+                    forKey: .publicKey
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "publicKey",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/capabilities`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/CapabilitiesBody`.
+        public struct CapabilitiesBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/CapabilitiesBody/account`.
+            public var account: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/CapabilitiesBody/team`.
+            public var team: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/CapabilitiesBody/capabilities`.
+            public var capabilities: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/CapabilitiesBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `CapabilitiesBody`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - team:
+            ///   - capabilities:
+            ///   - confirm:
+            public init(
+                account: Swift.String? = nil,
+                team: Swift.String? = nil,
+                capabilities: Swift.Int64,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.account = account
+                self.team = team
+                self.capabilities = capabilities
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case team
+                case capabilities
+                case confirm
+            }
+        }
+        /// The request body of `POST /ops/deployers`, `POST /deployers`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeployerBody`.
+        public struct DeployerBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeployerBody/deployer`.
+            public var deployer: Components.Schemas.Deployer
+            /// - Remark: Generated from `#/components/schemas/DeployerBody/until`.
+            public var until: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/DeployerBody/operatorProof`.
+            public var operatorProof: Components.Schemas.OperatorProof?
+            /// - Remark: Generated from `#/components/schemas/DeployerBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `DeployerBody`.
+            ///
+            /// - Parameters:
+            ///   - deployer:
+            ///   - until:
+            ///   - operatorProof:
+            ///   - confirm:
+            public init(
+                deployer: Components.Schemas.Deployer,
+                until: Swift.String? = nil,
+                operatorProof: Components.Schemas.OperatorProof? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.deployer = deployer
+                self.until = until
+                self.operatorProof = operatorProof
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployer
+                case until
+                case operatorProof
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.deployer = try container.decode(
+                    Components.Schemas.Deployer.self,
+                    forKey: .deployer
+                )
+                self.until = try container.decodeIfPresent(
+                    Swift.String.self,
+                    forKey: .until
+                )
+                self.operatorProof = try container.decodeIfPresent(
+                    Components.Schemas.OperatorProof.self,
+                    forKey: .operatorProof
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "deployer",
+                    "until",
+                    "operatorProof",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /deployments`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentBody`.
+        public struct DeploymentBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentBody/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentBody/owner`.
+            public var owner: Components.Schemas.Deployer
+            /// - Remark: Generated from `#/components/schemas/DeploymentBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `DeploymentBody`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - owner:
+            ///   - confirm:
+            public init(
+                name: Swift.String,
+                owner: Components.Schemas.Deployer,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.name = name
+                self.owner = owner
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case owner
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.name = try container.decode(
+                    Swift.String.self,
+                    forKey: .name
+                )
+                self.owner = try container.decode(
+                    Components.Schemas.Deployer.self,
+                    forKey: .owner
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "name",
+                    "owner",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `PUT /deployments/{id}/secrets/{name}`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentSecretBody`.
+        public struct DeploymentSecretBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretBody/value`.
+            public var value: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `DeploymentSecretBody`.
+            ///
+            /// - Parameters:
+            ///   - value:
+            ///   - confirm:
+            public init(
+                value: Swift.String,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.value = value
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case value
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.value = try container.decode(
+                    Swift.String.self,
+                    forKey: .value
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "value",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/invites`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/InviteBody`.
+        public struct InviteBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/InviteBody/role`.
+            public var role: Components.Schemas.OrgRole
+            /// - Remark: Generated from `#/components/schemas/InviteBody/teams`.
+            public var teams: [Swift.String]?
+            /// - Remark: Generated from `#/components/schemas/InviteBody/ttlSecs`.
+            public var ttlSecs: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/InviteBody/uses`.
+            public var uses: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/InviteBody/allApps`.
+            public var allApps: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/InviteBody/capabilities`.
+            public var capabilities: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/InviteBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `InviteBody`.
+            ///
+            /// - Parameters:
+            ///   - role:
+            ///   - teams:
+            ///   - ttlSecs:
+            ///   - uses:
+            ///   - allApps:
+            ///   - capabilities:
+            ///   - confirm:
+            public init(
+                role: Components.Schemas.OrgRole,
+                teams: [Swift.String]? = nil,
+                ttlSecs: Swift.Int64? = nil,
+                uses: Swift.Int64? = nil,
+                allApps: Swift.Bool? = nil,
+                capabilities: Swift.Int64? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.role = role
+                self.teams = teams
+                self.ttlSecs = ttlSecs
+                self.uses = uses
+                self.allApps = allApps
+                self.capabilities = capabilities
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case role
+                case teams
+                case ttlSecs
+                case uses
+                case allApps
+                case capabilities
+                case confirm
+            }
+        }
+        /// The request body of `POST /orgs/{org}/members`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/MemberBody`.
+        public struct MemberBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/MemberBody/account`.
+            public var account: Swift.String
+            /// - Remark: Generated from `#/components/schemas/MemberBody/role`.
+            public var role: Components.Schemas.OrgRole
+            /// - Remark: Generated from `#/components/schemas/MemberBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `MemberBody`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - role:
+            ///   - confirm:
+            public init(
+                account: Swift.String,
+                role: Components.Schemas.OrgRole,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.account = account
+                self.role = role
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case role
+                case confirm
+            }
+        }
+        /// The request body of `POST /apps/{app}/metadata`, `POST /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/MetadataBody`.
+        public struct MetadataBody: Codable, Hashable, Sendable {
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/MetadataBody/metadata`.
+            public var metadata: OpenAPIRuntime.OpenAPIValueContainer
+            /// Creates a new `MetadataBody`.
+            ///
+            /// - Parameters:
+            ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(metadata: OpenAPIRuntime.OpenAPIValueContainer) {
+                self.metadata = metadata
+            }
+            public enum CodingKeys: String, CodingKey {
+                case metadata
+            }
+        }
+        /// The request body of `POST /deployments/{id}/apps`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OfferBody`.
+        public struct OfferBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OfferBody/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OfferBody/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OfferBody/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OfferBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `OfferBody`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - package:
+            ///   - version:
+            ///   - confirm:
+            public init(
+                app: Swift.String,
+                package: Swift.String,
+                version: Swift.String,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.app = app
+                self.package = package
+                self.version = version
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case package
+                case version
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.app = try container.decode(
+                    Swift.String.self,
+                    forKey: .app
+                )
+                self.package = try container.decode(
+                    Swift.String.self,
+                    forKey: .package
+                )
+                self.version = try container.decode(
+                    Swift.String.self,
+                    forKey: .version
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "app",
+                    "package",
+                    "version",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgBody`.
+        public struct OrgBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgBody/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgBody/recoveryKey`.
+            public var recoveryKey: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/OrgBody/capabilities`.
+            public var capabilities: Swift.Int64?
+            /// Creates a new `OrgBody`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - recoveryKey:
+            ///   - capabilities:
+            public init(
+                name: Swift.String,
+                recoveryKey: Swift.String? = nil,
+                capabilities: Swift.Int64? = nil
+            ) {
+                self.name = name
+                self.recoveryKey = recoveryKey
+                self.capabilities = capabilities
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case recoveryKey
+                case capabilities
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.name = try container.decode(
+                    Swift.String.self,
+                    forKey: .name
+                )
+                self.recoveryKey = try container.decodeIfPresent(
+                    Swift.String.self,
+                    forKey: .recoveryKey
+                )
+                self.capabilities = try container.decodeIfPresent(
+                    Swift.Int64.self,
+                    forKey: .capabilities
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "name",
+                    "recoveryKey",
+                    "capabilities"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/settings`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgSettingsBody`.
+        public struct OrgSettingsBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgSettingsBody/allowGuests`.
+            public var allowGuests: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/OrgSettingsBody/allowPublicLinks`.
+            public var allowPublicLinks: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/OrgSettingsBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `OrgSettingsBody`.
+            ///
+            /// - Parameters:
+            ///   - allowGuests:
+            ///   - allowPublicLinks:
+            ///   - confirm:
+            public init(
+                allowGuests: Swift.Bool? = nil,
+                allowPublicLinks: Swift.Bool? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.allowGuests = allowGuests
+                self.allowPublicLinks = allowPublicLinks
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case allowGuests
+                case allowPublicLinks
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.allowGuests = try container.decodeIfPresent(
+                    Swift.Bool.self,
+                    forKey: .allowGuests
+                )
+                self.allowPublicLinks = try container.decodeIfPresent(
+                    Swift.Bool.self,
+                    forKey: .allowPublicLinks
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "allowGuests",
+                    "allowPublicLinks",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/upgrade`, `POST /ops/orgs/{org}/upgrade`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody`.
+        public struct OrgUpgradeBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/team`.
+            public var team: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/cascade`.
+            public var cascade: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/migrate`.
+            public var migrate: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// - Remark: Generated from `#/components/schemas/OrgUpgradeBody/operatorProof`.
+            public var operatorProof: Components.Schemas.OperatorProof?
+            /// Creates a new `OrgUpgradeBody`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - version:
+            ///   - team:
+            ///   - cascade:
+            ///   - migrate:
+            ///   - confirm:
+            ///   - operatorProof:
+            public init(
+                package: Swift.String,
+                version: Swift.String,
+                team: Swift.String? = nil,
+                cascade: Swift.Bool? = nil,
+                migrate: Swift.String? = nil,
+                confirm: Components.Schemas.Confirm? = nil,
+                operatorProof: Components.Schemas.OperatorProof? = nil
+            ) {
+                self.package = package
+                self.version = version
+                self.team = team
+                self.cascade = cascade
+                self.migrate = migrate
+                self.confirm = confirm
+                self.operatorProof = operatorProof
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case version
+                case team
+                case cascade
+                case migrate
+                case confirm
+                case operatorProof
+            }
+        }
+        /// The request body of `POST /orgs/{org}/publishers`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublisherBody`.
+        public struct PublisherBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublisherBody/signerId`.
+            public var signerId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublisherBody/publicKey`.
+            public var publicKey: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublisherBody/signature`.
+            public var signature: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublisherBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `PublisherBody`.
+            ///
+            /// - Parameters:
+            ///   - signerId:
+            ///   - publicKey:
+            ///   - signature:
+            ///   - confirm:
+            public init(
+                signerId: Swift.String,
+                publicKey: Swift.String,
+                signature: Swift.String,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.signerId = signerId
+                self.publicKey = publicKey
+                self.signature = signature
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case signerId
+                case publicKey
+                case signature
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.signerId = try container.decode(
+                    Swift.String.self,
+                    forKey: .signerId
+                )
+                self.publicKey = try container.decode(
+                    Swift.String.self,
+                    forKey: .publicKey
+                )
+                self.signature = try container.decode(
+                    Swift.String.self,
+                    forKey: .signature
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "signerId",
+                    "publicKey",
+                    "signature",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/packages/{package}/upgrade`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublisherUpgradeBody`.
+        public struct PublisherUpgradeBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublisherUpgradeBody/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublisherUpgradeBody/migrate`.
+            public var migrate: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PublisherUpgradeBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `PublisherUpgradeBody`.
+            ///
+            /// - Parameters:
+            ///   - version:
+            ///   - migrate:
+            ///   - confirm:
+            public init(
+                version: Swift.String,
+                migrate: Swift.String? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.version = version
+                self.migrate = migrate
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case version
+                case migrate
+                case confirm
+            }
+        }
+        /// The request body of `POST /orgs/{org}/recovery`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RecoveryKeyBody`.
+        public struct RecoveryKeyBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RecoveryKeyBody/publicKey`.
+            public var publicKey: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/RecoveryKeyBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `RecoveryKeyBody`.
+            ///
+            /// - Parameters:
+            ///   - publicKey:
+            ///   - confirm:
+            public init(
+                publicKey: Swift.String? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.publicKey = publicKey
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case publicKey
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.publicKey = try container.decodeIfPresent(
+                    Swift.String.self,
+                    forKey: .publicKey
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "publicKey",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/recovery/start`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RecoveryStartBody`.
+        public struct RecoveryStartBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RecoveryStartBody/nonce`.
+            public var nonce: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RecoveryStartBody/signature`.
+            public var signature: Swift.String
+            /// Creates a new `RecoveryStartBody`.
+            ///
+            /// - Parameters:
+            ///   - nonce:
+            ///   - signature:
+            public init(
+                nonce: Swift.String,
+                signature: Swift.String
+            ) {
+                self.nonce = nonce
+                self.signature = signature
+            }
+            public enum CodingKeys: String, CodingKey {
+                case nonce
+                case signature
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.nonce = try container.decode(
+                    Swift.String.self,
+                    forKey: .nonce
+                )
+                self.signature = try container.decode(
+                    Swift.String.self,
+                    forKey: .signature
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "nonce",
+                    "signature"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/name`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RenameOrgBody`.
+        public struct RenameOrgBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RenameOrgBody/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RenameOrgBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `RenameOrgBody`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - confirm:
+            public init(
+                name: Swift.String,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.name = name
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.name = try container.decode(
+                    Swift.String.self,
+                    forKey: .name
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "name",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/app-teams`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ScopeAppsBody`.
+        public struct ScopeAppsBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload`.
+            public struct AppsPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload/name`.
+                public var name: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload/instances`.
+                public var instances: [Swift.String]?
+                /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload/join`.
+                public var join: Components.Schemas.TeamJoin?
+                /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload/keep`.
+                public var keep: [Swift.String]?
+                /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/AppsPayload/childTeams`.
+                public var childTeams: Swift.Bool?
+                /// Creates a new `AppsPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - package:
+                ///   - name:
+                ///   - instances:
+                ///   - join:
+                ///   - keep:
+                ///   - childTeams:
+                public init(
+                    package: Swift.String,
+                    name: Swift.String? = nil,
+                    instances: [Swift.String]? = nil,
+                    join: Components.Schemas.TeamJoin? = nil,
+                    keep: [Swift.String]? = nil,
+                    childTeams: Swift.Bool? = nil
+                ) {
+                    self.package = package
+                    self.name = name
+                    self.instances = instances
+                    self.join = join
+                    self.keep = keep
+                    self.childTeams = childTeams
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case package
+                    case name
+                    case instances
+                    case join
+                    case keep
+                    case childTeams
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/apps`.
+            public typealias AppsPayload = [Components.Schemas.ScopeAppsBody.AppsPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/apps`.
+            public var apps: Components.Schemas.ScopeAppsBody.AppsPayload?
+            /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/shared`.
+            public var shared: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/ScopeAppsBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `ScopeAppsBody`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            ///   - shared:
+            ///   - confirm:
+            public init(
+                apps: Components.Schemas.ScopeAppsBody.AppsPayload? = nil,
+                shared: Swift.Bool? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.apps = apps
+                self.shared = shared
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+                case shared
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.apps = try container.decodeIfPresent(
+                    Components.Schemas.ScopeAppsBody.AppsPayload.self,
+                    forKey: .apps
+                )
+                self.shared = try container.decodeIfPresent(
+                    Swift.Bool.self,
+                    forKey: .shared
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "apps",
+                    "shared",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/teams`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamBody`.
+        public struct TeamBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamBody/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/TeamBody/parent`.
+            public var parent: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/TeamBody/join`.
+            public var join: Components.Schemas.TeamJoin
+            /// Creates a new `TeamBody`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - parent:
+            ///   - join:
+            public init(
+                name: Swift.String,
+                parent: Swift.String? = nil,
+                join: Components.Schemas.TeamJoin
+            ) {
+                self.name = name
+                self.parent = parent
+                self.join = join
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case parent
+                case join
+            }
+        }
+        /// `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits stay, and the passkey confirmation after the `412`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamDeleteBody`.
+        public struct TeamDeleteBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamDeleteBody/keepApps`.
+            public var keepApps: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/TeamDeleteBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `TeamDeleteBody`.
+            ///
+            /// - Parameters:
+            ///   - keepApps:
+            ///   - confirm:
+            public init(
+                keepApps: Swift.Bool? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.keepApps = keepApps
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case keepApps
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.keepApps = try container.decodeIfPresent(
+                    Swift.Bool.self,
+                    forKey: .keepApps
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "keepApps",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `DELETE /orgs/{org}/members/{account}/teams`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamIdsBody`.
+        public struct TeamIdsBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamIdsBody/teams`.
+            public var teams: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/TeamIdsBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `TeamIdsBody`.
+            ///
+            /// - Parameters:
+            ///   - teams:
+            ///   - confirm:
+            public init(
+                teams: [Swift.String],
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.teams = teams
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case teams
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.teams = try container.decode(
+                    [Swift.String].self,
+                    forKey: .teams
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "teams",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/teams/{team}/members`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamMemberBody`.
+        public struct TeamMemberBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamMemberBody/account`.
+            public var account: Swift.String
+            /// - Remark: Generated from `#/components/schemas/TeamMemberBody/lead`.
+            public var lead: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/TeamMemberBody/role`.
+            public var role: Components.Schemas.TeamRole?
+            /// - Remark: Generated from `#/components/schemas/TeamMemberBody/capabilities`.
+            public var capabilities: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/TeamMemberBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `TeamMemberBody`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - lead:
+            ///   - role:
+            ///   - capabilities:
+            ///   - confirm:
+            public init(
+                account: Swift.String,
+                lead: Swift.Bool? = nil,
+                role: Components.Schemas.TeamRole? = nil,
+                capabilities: Swift.Int64? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.account = account
+                self.lead = lead
+                self.role = role
+                self.capabilities = capabilities
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case lead
+                case role
+                case capabilities
+                case confirm
+            }
+        }
+        /// The request body of `POST /orgs/{org}/members/{account}/teams`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamRowsBody`.
+        public struct TeamRowsBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamRowsBody/TeamsPayload`.
+            public struct TeamsPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/TeamRowsBody/TeamsPayload/team`.
+                public var team: Swift.String
+                /// - Remark: Generated from `#/components/schemas/TeamRowsBody/TeamsPayload/role`.
+                public var role: Components.Schemas.TeamRole?
+                /// - Remark: Generated from `#/components/schemas/TeamRowsBody/TeamsPayload/capabilities`.
+                public var capabilities: Swift.Int64?
+                /// Creates a new `TeamsPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - team:
+                ///   - role:
+                ///   - capabilities:
+                public init(
+                    team: Swift.String,
+                    role: Components.Schemas.TeamRole? = nil,
+                    capabilities: Swift.Int64? = nil
+                ) {
+                    self.team = team
+                    self.role = role
+                    self.capabilities = capabilities
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case team
+                    case role
+                    case capabilities
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/TeamRowsBody/teams`.
+            public typealias TeamsPayload = [Components.Schemas.TeamRowsBody.TeamsPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/TeamRowsBody/teams`.
+            public var teams: Components.Schemas.TeamRowsBody.TeamsPayload
+            /// - Remark: Generated from `#/components/schemas/TeamRowsBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `TeamRowsBody`.
+            ///
+            /// - Parameters:
+            ///   - teams:
+            ///   - confirm:
+            public init(
+                teams: Components.Schemas.TeamRowsBody.TeamsPayload,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.teams = teams
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case teams
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.teams = try container.decode(
+                    Components.Schemas.TeamRowsBody.TeamsPayload.self,
+                    forKey: .teams
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "teams",
+                    "confirm"
+                ])
+            }
+        }
+        /// The request body of `POST /orgs/{org}/teams/{team}`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamUpdateBody`.
+        public struct TeamUpdateBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamUpdateBody/name`.
+            public var name: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/TeamUpdateBody/join`.
+            public var join: Components.Schemas.TeamJoin?
+            /// - Remark: Generated from `#/components/schemas/TeamUpdateBody/parent`.
+            public var parent: Swift.String?
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/TeamUpdateBody/metadata`.
+            public var metadata: OpenAPIRuntime.OpenAPIValueContainer?
+            /// Creates a new `TeamUpdateBody`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - join:
+            ///   - parent:
+            ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                name: Swift.String? = nil,
+                join: Components.Schemas.TeamJoin? = nil,
+                parent: Swift.String? = nil,
+                metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil
+            ) {
+                self.name = name
+                self.join = join
+                self.parent = parent
+                self.metadata = metadata
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case join
+                case parent
+                case metadata
+            }
+        }
+        /// A policy to set at one scope; `null` drops it (an app then follows its organization's, an organization the defaults).
+        ///
+        /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody`.
+        public struct UpgradePolicyBody: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/policy`.
+            public struct PolicyPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/policy/autoApply`.
+                @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case never = "never"
+                    case noDestinations = "noDestinations"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/policy/autoApply`.
+                public var autoApply: Components.Schemas.UpgradePolicyBody.PolicyPayload.AutoApplyPayload?
+                /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/policy/holdHours`.
+                public var holdHours: Swift.Int64?
+                /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/policy/secondApprover`.
+                public var secondApprover: Swift.Bool?
+                /// Creates a new `PolicyPayload`.
+                ///
+                /// - Parameters:
+                ///   - autoApply:
+                ///   - holdHours:
+                ///   - secondApprover:
+                public init(
+                    autoApply: Components.Schemas.UpgradePolicyBody.PolicyPayload.AutoApplyPayload? = nil,
+                    holdHours: Swift.Int64? = nil,
+                    secondApprover: Swift.Bool? = nil
+                ) {
+                    self.autoApply = autoApply
+                    self.holdHours = holdHours
+                    self.secondApprover = secondApprover
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case autoApply
+                    case holdHours
+                    case secondApprover
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/policy`.
+            public var policy: Components.Schemas.UpgradePolicyBody.PolicyPayload?
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicyBody/confirm`.
+            public var confirm: Components.Schemas.Confirm?
+            /// Creates a new `UpgradePolicyBody`.
+            ///
+            /// - Parameters:
+            ///   - policy:
+            ///   - confirm:
+            public init(
+                policy: Components.Schemas.UpgradePolicyBody.PolicyPayload? = nil,
+                confirm: Components.Schemas.Confirm? = nil
+            ) {
+                self.policy = policy
+                self.confirm = confirm
+            }
+            public enum CodingKeys: String, CodingKey {
+                case policy
+                case confirm
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.policy = try container.decodeIfPresent(
+                    Components.Schemas.UpgradePolicyBody.PolicyPayload.self,
+                    forKey: .policy
+                )
+                self.confirm = try container.decodeIfPresent(
+                    Components.Schemas.Confirm.self,
+                    forKey: .confirm
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "policy",
+                    "confirm"
+                ])
+            }
+        }
+        /// One replica's receipt-key attestation, or the error fetching it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ReplicaAttestation`.
+        @frozen public enum ReplicaAttestation: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case1`.
+            public struct Case1Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case1/node`.
+                public var node: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case1/attestation`.
+                public var attestation: Components.Schemas.AttestationDoc
+                /// Creates a new `Case1Payload`.
+                ///
+                /// - Parameters:
+                ///   - node:
+                ///   - attestation:
+                public init(
+                    node: Swift.Int64,
+                    attestation: Components.Schemas.AttestationDoc
+                ) {
+                    self.node = node
+                    self.attestation = attestation
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case node
+                    case attestation
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case1`.
+            case case1(Components.Schemas.ReplicaAttestation.Case1Payload)
+            /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case2`.
+            public struct Case2Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case2/node`.
+                public var node: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case2/error`.
+                public var error: Swift.String
+                /// Creates a new `Case2Payload`.
+                ///
+                /// - Parameters:
+                ///   - node:
+                ///   - error:
+                public init(
+                    node: Swift.Int64,
+                    error: Swift.String
+                ) {
+                    self.node = node
+                    self.error = error
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case node
+                    case error
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ReplicaAttestation/case2`.
+            case case2(Components.Schemas.ReplicaAttestation.Case2Payload)
+            public init(from decoder: any Decoder) throws {
+                var errors: [any Error] = []
+                do {
+                    self = .case1(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case2(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                throw Swift.DecodingError.failedToDecodeOneOfSchema(
+                    type: Self.self,
+                    codingPath: decoder.codingPath,
+                    errors: errors
+                )
+            }
+            public func encode(to encoder: any Encoder) throws {
+                switch self {
+                case let .case1(value):
+                    try value.encode(to: encoder)
+                case let .case2(value):
+                    try value.encode(to: encoder)
+                }
+            }
+        }
+        /// How a release holds an app it references (`uses`): `create`, made with the instance and upgraded with it as one unit; `attach`, an app its owner already runs, linked.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UseMode`.
+        @frozen public enum UseMode: String, Codable, Hashable, Sendable, CaseIterable {
+            case create = "create"
+            case attach = "attach"
+        }
+        /// `GET /apps/{app}/abi`: the bundle the app group runs and the ABI it embeds (`null`: none).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppAbi`.
+        public struct AppAbi: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppAbi/bundle`.
+            public var bundle: Swift.String
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/AppAbi/abi`.
+            public var abi: OpenAPIRuntime.OpenAPIValueContainer?
+            /// Creates a new `AppAbi`.
+            ///
+            /// - Parameters:
+            ///   - bundle:
+            ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                bundle: Swift.String,
+                abi: OpenAPIRuntime.OpenAPIValueContainer? = nil
+            ) {
+                self.bundle = bundle
+                self.abi = abi
+            }
+            public enum CodingKeys: String, CodingKey {
+                case bundle
+                case abi
+            }
+        }
+        /// `GET /apps/{app}/attestation`: the app, the cluster each replica's quote must bind, and each replica's receipt-key attestation (or why it could not be fetched).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppAttestations`.
+        public struct AppAttestations: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppAttestations/appId`.
+            public var appId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppAttestations/cluster`.
+            public var cluster: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppAttestations/replicas`.
+            public var replicas: [Components.Schemas.ReplicaAttestation]
+            /// Creates a new `AppAttestations`.
+            ///
+            /// - Parameters:
+            ///   - appId:
+            ///   - cluster:
+            ///   - replicas:
+            public init(
+                appId: Swift.String,
+                cluster: Swift.String,
+                replicas: [Components.Schemas.ReplicaAttestation]
+            ) {
+                self.appId = appId
+                self.cluster = cluster
+                self.replicas = replicas
+            }
+            public enum CodingKeys: String, CodingKey {
+                case appId
+                case cluster
+                case replicas
+            }
+        }
+        /// What `POST /apps` answers: the new instance, its context id, its group and replicas, whether its release ships a compute component, and the apps it created with it by name.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppCreated`.
+        public struct AppCreated: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppCreated/appId`.
+            public var appId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppCreated/contextId`.
+            public var contextId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppCreated/group`.
+            public var group: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppCreated/replicas`.
+            public var replicas: [Swift.Int64]
+            /// - Remark: Generated from `#/components/schemas/AppCreated/compute`.
+            public var compute: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AppCreated/links`.
+            public struct LinksPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `LinksPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/AppCreated/links`.
+            public var links: Components.Schemas.AppCreated.LinksPayload
+            /// Creates a new `AppCreated`.
+            ///
+            /// - Parameters:
+            ///   - appId:
+            ///   - contextId:
+            ///   - group:
+            ///   - replicas:
+            ///   - compute:
+            ///   - links:
+            public init(
+                appId: Swift.String,
+                contextId: Swift.String,
+                group: Swift.Int64,
+                replicas: [Swift.Int64],
+                compute: Swift.Bool,
+                links: Components.Schemas.AppCreated.LinksPayload
+            ) {
+                self.appId = appId
+                self.contextId = contextId
+                self.group = group
+                self.replicas = replicas
+                self.compute = compute
+                self.links = links
+            }
+            public enum CodingKeys: String, CodingKey {
+                case appId
+                case contextId
+                case group
+                case replicas
+                case compute
+                case links
+            }
+        }
+        /// What `DELETE /apps/{app}` answers: the app, and the members of its unit that went with it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppDeleted`.
+        public struct AppDeleted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppDeleted/appId`.
+            public var appId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppDeleted/deleted`.
+            public var deleted: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AppDeleted/members`.
+            public var members: [Swift.String]
+            /// Creates a new `AppDeleted`.
+            ///
+            /// - Parameters:
+            ///   - appId:
+            ///   - deleted:
+            ///   - members:
+            public init(
+                appId: Swift.String,
+                deleted: Swift.Bool,
+                members: [Swift.String]
+            ) {
+                self.appId = appId
+                self.deleted = deleted
+                self.members = members
+            }
+            public enum CodingKeys: String, CodingKey {
+                case appId
+                case deleted
+                case members
+            }
+        }
+        /// An event a call emitted that the caller is in the audience of: its kind and data (the app's own value).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppEvent`.
+        public struct AppEvent: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppEvent/kind`.
+            public var kind: Swift.String
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/AppEvent/data`.
+            public var data: OpenAPIRuntime.OpenAPIValueContainer
+            /// Creates a new `AppEvent`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - data: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                kind: Swift.String,
+                data: OpenAPIRuntime.OpenAPIValueContainer
+            ) {
+                self.kind = kind
+                self.data = data
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case data
+            }
+        }
+        /// `GET /apps/{app}/invites`: the instance's invites.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppInviteList`.
+        public struct AppInviteList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppInviteList/invites`.
+            public var invites: [Components.Schemas.AppInviteView]
+            /// Creates a new `AppInviteList`.
+            ///
+            /// - Parameters:
+            ///   - invites:
+            public init(invites: [Components.Schemas.AppInviteView]) {
+                self.invites = invites
+            }
+            public enum CodingKeys: String, CodingKey {
+                case invites
+            }
+        }
+        /// What `POST /apps/{app}/invites` answers: the invite's token, shown once.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppInviteMade`.
+        public struct AppInviteMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppInviteMade/token`.
+            public var token: Swift.String
+            /// Creates a new `AppInviteMade`.
+            ///
+            /// - Parameters:
+            ///   - token:
+            public init(token: Swift.String) {
+                self.token = token
+            }
+            public enum CodingKeys: String, CodingKey {
+                case token
+            }
+        }
+        /// An instance invite: its key, uses left, expiry, maker and the grant scope it carries.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppInviteView`.
+        public struct AppInviteView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/inviteKey`.
+            public var inviteKey: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/usesLeft`.
+            public var usesLeft: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/expiresAt`.
+            public var expiresAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/expired`.
+            public var expired: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/createdBy`.
+            public var createdBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/createdAt`.
+            public var createdAt: Swift.Int64
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/AppInviteView/scope`.
+            public var scope: OpenAPIRuntime.OpenAPIValueContainer?
+            /// Creates a new `AppInviteView`.
+            ///
+            /// - Parameters:
+            ///   - inviteKey:
+            ///   - usesLeft:
+            ///   - expiresAt:
+            ///   - expired:
+            ///   - createdBy:
+            ///   - createdAt:
+            ///   - scope: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                inviteKey: Swift.String,
+                usesLeft: Swift.Int64,
+                expiresAt: Swift.Int64,
+                expired: Swift.Bool,
+                createdBy: Swift.String,
+                createdAt: Swift.Int64,
+                scope: OpenAPIRuntime.OpenAPIValueContainer? = nil
+            ) {
+                self.inviteKey = inviteKey
+                self.usesLeft = usesLeft
+                self.expiresAt = expiresAt
+                self.expired = expired
+                self.createdBy = createdBy
+                self.createdAt = createdAt
+                self.scope = scope
+            }
+            public enum CodingKeys: String, CodingKey {
+                case inviteKey
+                case usesLeft
+                case expiresAt
+                case expired
+                case createdBy
+                case createdAt
+                case scope
+            }
+        }
+        /// `GET /apps/{app}/links`: each reference of the release the instance runs and what is linked.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppLinkList`.
+        public struct AppLinkList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppLinkList/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppLinkList/links`.
+            public var links: [Components.Schemas.LinkRow]
+            /// Creates a new `AppLinkList`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - links:
+            public init(
+                app: Swift.String,
+                links: [Components.Schemas.LinkRow]
+            ) {
+                self.app = app
+                self.links = links
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case links
+            }
+        }
+        /// `GET /apps`: the instances the caller reaches.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppList`.
+        public struct AppList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppList/apps`.
+            public var apps: [Components.Schemas.AppEntry]
+            /// Creates a new `AppList`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            public init(apps: [Components.Schemas.AppEntry]) {
+                self.apps = apps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+            }
+        }
+        /// What `POST /apps/{app}/move` answers: where the app went, its access there, whether an app team was made, the accounts brought in and the invites revoked.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppMoved`.
+        public struct AppMoved: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppMoved/appId`.
+            public var appId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppMoved/from`.
+            public var from: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppMoved/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppMoved/grants`.
+            public var grants: [Components.Schemas.Grant]
+            /// - Remark: Generated from `#/components/schemas/AppMoved/created`.
+            public var created: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AppMoved/added`.
+            public var added: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/AppMoved/revokedInvites`.
+            public var revokedInvites: Swift.Int64
+            /// Creates a new `AppMoved`.
+            ///
+            /// - Parameters:
+            ///   - appId:
+            ///   - from:
+            ///   - org:
+            ///   - grants:
+            ///   - created:
+            ///   - added:
+            ///   - revokedInvites:
+            public init(
+                appId: Swift.String,
+                from: Swift.String,
+                org: Swift.String,
+                grants: [Components.Schemas.Grant],
+                created: Swift.Bool,
+                added: [Swift.String],
+                revokedInvites: Swift.Int64
+            ) {
+                self.appId = appId
+                self.from = from
+                self.org = org
+                self.grants = grants
+                self.created = created
+                self.added = added
+                self.revokedInvites = revokedInvites
+            }
+            public enum CodingKeys: String, CodingKey {
+                case appId
+                case from
+                case org
+                case grants
+                case created
+                case added
+                case revokedInvites
+            }
+        }
+        /// `GET /apps/{app}/openapi.json`: the app's OpenAPI document, generated from its ABI.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppOpenApi`.
+        public struct AppOpenApi: Codable, Hashable, Sendable {
+            /// A container of undocumented properties.
+            public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
+            /// Creates a new `AppOpenApi`.
+            ///
+            /// - Parameters:
+            ///   - additionalProperties: A container of undocumented properties.
+            public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
+                self.additionalProperties = additionalProperties
+            }
+            public init(from decoder: any Decoder) throws {
+                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+            }
+            public func encode(to encoder: any Encoder) throws {
+                try encoder.encodeAdditionalProperties(additionalProperties)
+            }
+        }
+        /// An app restored from a backup or a recovery file: its new group, the rows seeded, the backup it came from and the group's status once every replica holds it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppRestored`.
+        public struct AppRestored: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppRestored/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppRestored/group`.
+            public var group: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppRestored/rows`.
+            public var rows: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppRestored/backup`.
+            public struct BackupPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/AppRestored/backup/name`.
+                public var name: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/AppRestored/backup/index`.
+                public var index: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/AppRestored/backup/format`.
+                public var format: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/AppRestored/backup/merod`.
+                public var merod: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/AppRestored/backup/release`.
+                public var release: Swift.String?
+                /// Creates a new `BackupPayload`.
+                ///
+                /// - Parameters:
+                ///   - name:
+                ///   - index:
+                ///   - format:
+                ///   - merod:
+                ///   - release:
+                public init(
+                    name: Swift.String? = nil,
+                    index: Swift.Int64,
+                    format: Swift.Int64,
+                    merod: Swift.String? = nil,
+                    release: Swift.String? = nil
+                ) {
+                    self.name = name
+                    self.index = index
+                    self.format = format
+                    self.merod = merod
+                    self.release = release
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case name
+                    case index
+                    case format
+                    case merod
+                    case release
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/AppRestored/backup`.
+            public var backup: Components.Schemas.AppRestored.BackupPayload
+            /// - Remark: Generated from `#/components/schemas/AppRestored/status`.
+            public var status: Components.Schemas.GroupStatus
+            /// Creates a new `AppRestored`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - group:
+            ///   - rows:
+            ///   - backup:
+            ///   - status:
+            public init(
+                app: Swift.String,
+                group: Swift.Int64,
+                rows: Swift.Int64,
+                backup: Components.Schemas.AppRestored.BackupPayload,
+                status: Components.Schemas.GroupStatus
+            ) {
+                self.app = app
+                self.group = group
+                self.rows = rows
+                self.backup = backup
+                self.status = status
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case group
+                case rows
+                case backup
+                case status
+            }
+        }
+        /// `GET /apps/{app}/secrets`: each secret the release declares, by name.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppSecrets`.
+        public struct AppSecrets: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets`.
+            public struct SecretsPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/host`.
+                    public var host: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/paths`.
+                    public var paths: [Swift.String]
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/header`.
+                    public var header: Swift.String?
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/format`.
+                    public var format: Swift.String?
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/bodyField`.
+                    public var bodyField: Swift.String?
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/binding`.
+                    public var binding: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/description`.
+                    public var description: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/required`.
+                    public var required: Swift.Bool
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/source`.
+                    @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                        case app = "app"
+                        case deployment = "deployment"
+                        case cluster = "cluster"
+                    }
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/source`.
+                    public var source: Components.Schemas.AppSecrets.SecretsPayload.AdditionalPropertiesPayload.SourcePayload
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/fingerprint`.
+                    public var fingerprint: Swift.String?
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/setBy`.
+                    public var setBy: Swift.String?
+                    /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets/additionalProperties/setAt`.
+                    public var setAt: Swift.Int64?
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - host:
+                    ///   - paths:
+                    ///   - header:
+                    ///   - format:
+                    ///   - bodyField:
+                    ///   - binding:
+                    ///   - description:
+                    ///   - required:
+                    ///   - source:
+                    ///   - fingerprint:
+                    ///   - setBy:
+                    ///   - setAt:
+                    public init(
+                        host: Swift.String,
+                        paths: [Swift.String],
+                        header: Swift.String? = nil,
+                        format: Swift.String? = nil,
+                        bodyField: Swift.String? = nil,
+                        binding: Swift.String,
+                        description: Swift.String,
+                        required: Swift.Bool,
+                        source: Components.Schemas.AppSecrets.SecretsPayload.AdditionalPropertiesPayload.SourcePayload,
+                        fingerprint: Swift.String? = nil,
+                        setBy: Swift.String? = nil,
+                        setAt: Swift.Int64? = nil
+                    ) {
+                        self.host = host
+                        self.paths = paths
+                        self.header = header
+                        self.format = format
+                        self.bodyField = bodyField
+                        self.binding = binding
+                        self.description = description
+                        self.required = required
+                        self.source = source
+                        self.fingerprint = fingerprint
+                        self.setBy = setBy
+                        self.setAt = setAt
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case host
+                        case paths
+                        case header
+                        case format
+                        case bodyField
+                        case binding
+                        case description
+                        case required
+                        case source
+                        case fingerprint
+                        case setBy
+                        case setAt
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.AppSecrets.SecretsPayload.AdditionalPropertiesPayload]
+                /// Creates a new `SecretsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.AppSecrets.SecretsPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/AppSecrets/secrets`.
+            public var secrets: Components.Schemas.AppSecrets.SecretsPayload
+            /// Creates a new `AppSecrets`.
+            ///
+            /// - Parameters:
+            ///   - secrets:
+            public init(secrets: Components.Schemas.AppSecrets.SecretsPayload) {
+                self.secrets = secrets
+            }
+            public enum CodingKeys: String, CodingKey {
+                case secrets
+            }
+        }
+        /// `GET /apps/{app}/storage`: keys, bytes, blobs, and when it last committed a write (Unix seconds; `null` before its first).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppStorage`.
+        public struct AppStorage: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppStorage/keys`.
+            public var keys: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppStorage/bytes`.
+            public var bytes: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppStorage/blobs`.
+            public var blobs: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppStorage/blobBytes`.
+            public var blobBytes: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppStorage/lastWriteAt`.
+            public var lastWriteAt: Swift.Int64?
+            /// Creates a new `AppStorage`.
+            ///
+            /// - Parameters:
+            ///   - keys:
+            ///   - bytes:
+            ///   - blobs:
+            ///   - blobBytes:
+            ///   - lastWriteAt:
+            public init(
+                keys: Swift.Int64,
+                bytes: Swift.Int64,
+                blobs: Swift.Int64,
+                blobBytes: Swift.Int64,
+                lastWriteAt: Swift.Int64? = nil
+            ) {
+                self.keys = keys
+                self.bytes = bytes
+                self.blobs = blobs
+                self.blobBytes = blobBytes
+                self.lastWriteAt = lastWriteAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case keys
+                case bytes
+                case blobs
+                case blobBytes
+                case lastWriteAt
+            }
+        }
+        /// `GET /apps/{app}/usage`: today, and the 30 days before it, oldest first.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppUsage`.
+        public struct AppUsage: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppUsage/today`.
+            public var today: Components.Schemas.UsageDay
+            /// - Remark: Generated from `#/components/schemas/AppUsage/days`.
+            public var days: [Components.Schemas.UsageDay]
+            /// Creates a new `AppUsage`.
+            ///
+            /// - Parameters:
+            ///   - today:
+            ///   - days:
+            public init(
+                today: Components.Schemas.UsageDay,
+                days: [Components.Schemas.UsageDay]
+            ) {
+                self.today = today
+                self.days = days
+            }
+            public enum CodingKeys: String, CodingKey {
+                case today
+                case days
+            }
+        }
+        /// `POST /apps/{app}/upgrade-approvals`: the first approval logged.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ApprovalLogged`.
+        public struct ApprovalLogged: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ApprovalLogged/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ApprovalLogged/approval`.
+            public var approval: Components.Schemas.PendingApproval
+            /// Creates a new `ApprovalLogged`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - approval:
+            public init(
+                app: Swift.String,
+                approval: Components.Schemas.PendingApproval
+            ) {
+                self.app = app
+                self.approval = approval
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case approval
+            }
+        }
+        /// `GET /orgs/{org}/apps` and `GET /auth/apps`: a page of one approval scope's apps, with the scope's approved releases and the releases the cluster's nodes run.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppsReport`.
+        public struct AppsReport: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppsReport/scope`.
+            public var scope: Components.Schemas.AppScope
+            /// - Remark: Generated from `#/components/schemas/AppsReport/governance`.
+            public var governance: Components.Schemas.Governance
+            /// - Remark: Generated from `#/components/schemas/AppsReport/approvedReleases`.
+            public var approvedReleases: [Swift.String]?
+            /// - Remark: Generated from `#/components/schemas/AppsReport/clusterReleases`.
+            public var clusterReleases: [Components.Schemas.ClusterRelease]
+            /// - Remark: Generated from `#/components/schemas/AppsReport/apps`.
+            public var apps: [Components.Schemas.ReportApp]
+            /// - Remark: Generated from `#/components/schemas/AppsReport/next`.
+            public var next: Swift.String?
+            /// Creates a new `AppsReport`.
+            ///
+            /// - Parameters:
+            ///   - scope:
+            ///   - governance:
+            ///   - approvedReleases:
+            ///   - clusterReleases:
+            ///   - apps:
+            ///   - next:
+            public init(
+                scope: Components.Schemas.AppScope,
+                governance: Components.Schemas.Governance,
+                approvedReleases: [Swift.String]? = nil,
+                clusterReleases: [Components.Schemas.ClusterRelease],
+                apps: [Components.Schemas.ReportApp],
+                next: Swift.String? = nil
+            ) {
+                self.scope = scope
+                self.governance = governance
+                self.approvedReleases = approvedReleases
+                self.clusterReleases = clusterReleases
+                self.apps = apps
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case scope
+                case governance
+                case approvedReleases
+                case clusterReleases
+                case apps
+                case next
+            }
+        }
+        /// `GET /packages/{package}/{version}/capabilities`: a release's capability card (the release, its signer, outbound prefixes, secrets, `uses` and ABI, as the consent page shows each side of an upgrade), and where an instance of it could send data (`null`: a member release is not installed here).
+        ///
+        /// - Remark: Generated from `#/components/schemas/CapabilityCard`.
+        public struct CapabilityCard: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/service`.
+            public var service: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/bundle`.
+            public var bundle: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/mpk`.
+            public var mpk: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/manifestHash`.
+            public var manifestHash: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/signer`.
+            public var signer: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/name`.
+            public var name: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/author`.
+            public var author: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/outbound`.
+            public var outbound: [Swift.String]
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/secrets`.
+            public var secrets: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/secretBindings`.
+            public var secretBindings: [Swift.String]
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/uses`.
+            public var uses: OpenAPIRuntime.OpenAPIValueContainer
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/abi`.
+            public var abi: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/destinations`.
+            public var destinations: [Swift.String]?
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/members`.
+            public struct MembersPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.UnitMember]
+                /// Creates a new `MembersPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.UnitMember] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/CapabilityCard/members`.
+            public var members: Components.Schemas.CapabilityCard.MembersPayload?
+            /// Creates a new `CapabilityCard`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - version:
+            ///   - service:
+            ///   - bundle:
+            ///   - mpk:
+            ///   - manifestHash:
+            ///   - signer:
+            ///   - name:
+            ///   - author:
+            ///   - outbound:
+            ///   - secrets: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - secretBindings:
+            ///   - uses: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - destinations:
+            ///   - members:
+            public init(
+                package: Swift.String,
+                version: Swift.String,
+                service: Swift.String? = nil,
+                bundle: Swift.String,
+                mpk: Swift.String,
+                manifestHash: Swift.String,
+                signer: Swift.String,
+                name: Swift.String? = nil,
+                author: Swift.String? = nil,
+                outbound: [Swift.String],
+                secrets: OpenAPIRuntime.OpenAPIValueContainer,
+                secretBindings: [Swift.String],
+                uses: OpenAPIRuntime.OpenAPIValueContainer,
+                abi: OpenAPIRuntime.OpenAPIValueContainer,
+                destinations: [Swift.String]? = nil,
+                members: Components.Schemas.CapabilityCard.MembersPayload? = nil
+            ) {
+                self.package = package
+                self.version = version
+                self.service = service
+                self.bundle = bundle
+                self.mpk = mpk
+                self.manifestHash = manifestHash
+                self.signer = signer
+                self.name = name
+                self.author = author
+                self.outbound = outbound
+                self.secrets = secrets
+                self.secretBindings = secretBindings
+                self.uses = uses
+                self.abi = abi
+                self.destinations = destinations
+                self.members = members
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case version
+                case service
+                case bundle
+                case mpk
+                case manifestHash
+                case signer
+                case name
+                case author
+                case outbound
+                case secrets
+                case secretBindings
+                case uses
+                case abi
+                case destinations
+                case members
+            }
+        }
+        /// What `PUT /apps/{app}/delegations/{target}` answers: the methods the caller let `source` call on `target` as them.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DelegationMade`.
+        public struct DelegationMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DelegationMade/source`.
+            public var source: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DelegationMade/target`.
+            public var target: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DelegationMade/methods`.
+            public var methods: [Swift.String]
+            /// Creates a new `DelegationMade`.
+            ///
+            /// - Parameters:
+            ///   - source:
+            ///   - target:
+            ///   - methods:
+            public init(
+                source: Swift.String,
+                target: Swift.String,
+                methods: [Swift.String]
+            ) {
+                self.source = source
+                self.target = target
+                self.methods = methods
+            }
+            public enum CodingKeys: String, CodingKey {
+                case source
+                case target
+                case methods
+            }
+        }
+        /// `GET /apps/{app}/delegations`: what the caller lets `source` do as them, by target.
+        ///
+        /// - Remark: Generated from `#/components/schemas/Delegations`.
+        public struct Delegations: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Delegations/source`.
+            public var source: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Delegations/delegations`.
+            public struct DelegationsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: [Swift.String]]
+                /// Creates a new `DelegationsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: [Swift.String]] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Delegations/delegations`.
+            public var delegations: Components.Schemas.Delegations.DelegationsPayload
+            /// Creates a new `Delegations`.
+            ///
+            /// - Parameters:
+            ///   - source:
+            ///   - delegations:
+            public init(
+                source: Swift.String,
+                delegations: Components.Schemas.Delegations.DelegationsPayload
+            ) {
+                self.source = source
+                self.delegations = delegations
+            }
+            public enum CodingKeys: String, CodingKey {
+                case source
+                case delegations
+            }
+        }
+        /// `GET /apps/{app}/egress`: where the instance's unit may send data now (`destinations`, `members`), and whether its egress switch is on.
+        ///
+        /// - Remark: Generated from `#/components/schemas/EgressView`.
+        public struct EgressView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/EgressView/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/EgressView/destinations`.
+            public var destinations: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/EgressView/members`.
+            public struct MembersPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.UnitMember]
+                /// Creates a new `MembersPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.UnitMember] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/EgressView/members`.
+            public var members: Components.Schemas.EgressView.MembersPayload
+            /// - Remark: Generated from `#/components/schemas/EgressView/egress`.
+            @frozen public enum EgressPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case on = "on"
+                case off = "off"
+            }
+            /// - Remark: Generated from `#/components/schemas/EgressView/egress`.
+            public var egress: Components.Schemas.EgressView.EgressPayload
+            /// - Remark: Generated from `#/components/schemas/EgressView/offBy`.
+            @frozen public enum OffByPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case organization = "organization"
+                case instance = "instance"
+            }
+            /// - Remark: Generated from `#/components/schemas/EgressView/offBy`.
+            public var offBy: Components.Schemas.EgressView.OffByPayload?
+            /// - Remark: Generated from `#/components/schemas/EgressView/summary`.
+            public var summary: Swift.String?
+            /// Creates a new `EgressView`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - destinations:
+            ///   - members:
+            ///   - egress:
+            ///   - offBy:
+            ///   - summary:
+            public init(
+                app: Swift.String,
+                destinations: [Swift.String],
+                members: Components.Schemas.EgressView.MembersPayload,
+                egress: Components.Schemas.EgressView.EgressPayload,
+                offBy: Components.Schemas.EgressView.OffByPayload? = nil,
+                summary: Swift.String? = nil
+            ) {
+                self.app = app
+                self.destinations = destinations
+                self.members = members
+                self.egress = egress
+                self.offBy = offBy
+                self.summary = summary
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case destinations
+                case members
+                case egress
+                case offBy
+                case summary
+            }
+        }
+        /// What `POST /apps/{app}/files/{id}/export` answers: the file's size, plaintext SHA-256 and segments, and its data key wrapped to the recipient (`ephemeral`, `wrapped`).
+        ///
+        /// - Remark: Generated from `#/components/schemas/FileExport`.
+        public struct FileExport: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/FileExport/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileExport/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileExport/size`.
+            public var size: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/FileExport/sha256`.
+            public var sha256: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileExport/segments`.
+            public var segments: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/FileExport/ephemeral`.
+            public var ephemeral: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileExport/wrapped`.
+            public var wrapped: Swift.String
+            /// Creates a new `FileExport`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - id:
+            ///   - size:
+            ///   - sha256:
+            ///   - segments:
+            ///   - ephemeral:
+            ///   - wrapped:
+            public init(
+                app: Swift.String,
+                id: Swift.String,
+                size: Swift.Int64,
+                sha256: Swift.String,
+                segments: [Swift.String],
+                ephemeral: Swift.String,
+                wrapped: Swift.String
+            ) {
+                self.app = app
+                self.id = id
+                self.size = size
+                self.sha256 = sha256
+                self.segments = segments
+                self.ephemeral = ephemeral
+                self.wrapped = wrapped
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case id
+                case size
+                case sha256
+                case segments
+                case ephemeral
+                case wrapped
+            }
+        }
+        /// What `POST /recover/holder` answers: each app restored from the holder's files.
+        ///
+        /// - Remark: Generated from `#/components/schemas/HolderRecovered`.
+        public struct HolderRecovered: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/HolderRecovered/apps`.
+            public var apps: [Components.Schemas.AppRestored]
+            /// Creates a new `HolderRecovered`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            public init(apps: [Components.Schemas.AppRestored]) {
+                self.apps = apps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+            }
+        }
+        /// What a call (`/intents`) answers: the log index of its entry, the app's result, the events the caller receives, and the answering node's receipt.
+        ///
+        /// - Remark: Generated from `#/components/schemas/IntentResult`.
+        public struct IntentResult: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/IntentResult/index`.
+            public var index: Swift.Int64
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/IntentResult/result`.
+            public var result: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/IntentResult/events`.
+            public var events: [Components.Schemas.AppEvent]
+            /// - Remark: Generated from `#/components/schemas/IntentResult/receipt`.
+            public var receipt: Components.Schemas.Receipt
+            /// Creates a new `IntentResult`.
+            ///
+            /// - Parameters:
+            ///   - index:
+            ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - events:
+            ///   - receipt:
+            public init(
+                index: Swift.Int64,
+                result: OpenAPIRuntime.OpenAPIValueContainer,
+                events: [Components.Schemas.AppEvent],
+                receipt: Components.Schemas.Receipt
+            ) {
+                self.index = index
+                self.result = result
+                self.events = events
+                self.receipt = receipt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case index
+                case result
+                case events
+                case receipt
+            }
+        }
+        /// One link of an instance: the reference (`null` fields for one its release no longer names), the app linked, its release and whether it is in the reference's range (`null`: nothing linked).
+        ///
+        /// - Remark: Generated from `#/components/schemas/LinkRow`.
+        public struct LinkRow: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/LinkRow/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/LinkRow/package`.
+            public var package: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/LinkRow/range`.
+            public var range: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/LinkRow/mode`.
+            public var mode: Components.Schemas.UseMode?
+            /// - Remark: Generated from `#/components/schemas/LinkRow/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/LinkRow/version`.
+            public var version: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/LinkRow/inRange`.
+            public var inRange: Swift.Bool?
+            /// Creates a new `LinkRow`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - package:
+            ///   - range:
+            ///   - mode:
+            ///   - app:
+            ///   - version:
+            ///   - inRange:
+            public init(
+                name: Swift.String,
+                package: Swift.String? = nil,
+                range: Swift.String? = nil,
+                mode: Components.Schemas.UseMode? = nil,
+                app: Swift.String? = nil,
+                version: Swift.String? = nil,
+                inRange: Swift.Bool? = nil
+            ) {
+                self.name = name
+                self.package = package
+                self.range = range
+                self.mode = mode
+                self.app = app
+                self.version = version
+                self.inRange = inRange
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case package
+                case range
+                case mode
+                case app
+                case version
+                case inRange
+            }
+        }
+        /// A link as its list shows it: its key and terms, never a token.
+        ///
+        /// - Remark: Generated from `#/components/schemas/LinkView`.
+        public struct LinkView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/LinkView/link`.
+            public var link: Swift.String
+            /// - Remark: Generated from `#/components/schemas/LinkView/label`.
+            public var label: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/LinkView/expiresAt`.
+            public var expiresAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/LinkView/expired`.
+            public var expired: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/LinkView/ratePerMinute`.
+            public var ratePerMinute: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/LinkView/createdBy`.
+            public var createdBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/LinkView/createdAt`.
+            public var createdAt: Swift.Int64
+            /// Creates a new `LinkView`.
+            ///
+            /// - Parameters:
+            ///   - link:
+            ///   - label:
+            ///   - expiresAt:
+            ///   - expired:
+            ///   - ratePerMinute:
+            ///   - createdBy:
+            ///   - createdAt:
+            public init(
+                link: Swift.String,
+                label: Swift.String? = nil,
+                expiresAt: Swift.Int64? = nil,
+                expired: Swift.Bool,
+                ratePerMinute: Swift.Int64,
+                createdBy: Swift.String,
+                createdAt: Swift.Int64
+            ) {
+                self.link = link
+                self.label = label
+                self.expiresAt = expiresAt
+                self.expired = expired
+                self.ratePerMinute = ratePerMinute
+                self.createdBy = createdBy
+                self.createdAt = createdAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case link
+                case label
+                case expiresAt
+                case expired
+                case ratePerMinute
+                case createdBy
+                case createdAt
+            }
+        }
+        /// What `POST /apps/{app}/methods/{method}` answers: a call's answer, or a view's (no `events`), as the method is. The handler answers one of [`IntentResult`] and [`ViewResult`]; this is their schema together, for the API's document.
+        ///
+        /// - Remark: Generated from `#/components/schemas/MethodResult`.
+        public struct MethodResult: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/MethodResult/index`.
+            public var index: Swift.Int64
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/MethodResult/result`.
+            public var result: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/MethodResult/events`.
+            public var events: [Components.Schemas.AppEvent]?
+            /// - Remark: Generated from `#/components/schemas/MethodResult/receipt`.
+            public var receipt: Components.Schemas.Receipt
+            /// Creates a new `MethodResult`.
+            ///
+            /// - Parameters:
+            ///   - index:
+            ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - events:
+            ///   - receipt:
+            public init(
+                index: Swift.Int64,
+                result: OpenAPIRuntime.OpenAPIValueContainer,
+                events: [Components.Schemas.AppEvent]? = nil,
+                receipt: Components.Schemas.Receipt
+            ) {
+                self.index = index
+                self.result = result
+                self.events = events
+                self.receipt = receipt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case index
+                case result
+                case events
+                case receipt
+            }
+        }
+        /// `GET /ops/apps`: a page of what every app runs, for the operator.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OpsApps`.
+        public struct OpsApps: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OpsApps/fresh`.
+            public var fresh: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/OpsApps/governance`.
+            public var governance: Components.Schemas.Governance
+            /// - Remark: Generated from `#/components/schemas/OpsApps/apps`.
+            public var apps: [Components.Schemas.ReportApp]
+            /// - Remark: Generated from `#/components/schemas/OpsApps/next`.
+            public var next: Swift.String?
+            /// Creates a new `OpsApps`.
+            ///
+            /// - Parameters:
+            ///   - fresh:
+            ///   - governance:
+            ///   - apps:
+            ///   - next:
+            public init(
+                fresh: Swift.Bool,
+                governance: Components.Schemas.Governance,
+                apps: [Components.Schemas.ReportApp],
+                next: Swift.String? = nil
+            ) {
+                self.fresh = fresh
+                self.governance = governance
+                self.apps = apps
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case fresh
+                case governance
+                case apps
+                case next
+            }
+        }
+        /// `GET /ops/orgs`: a page of organizations and the releases approved to hold their apps.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OpsOrgs`.
+        public struct OpsOrgs: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OpsOrgs/fresh`.
+            public var fresh: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/OpsOrgs/governance`.
+            public var governance: Components.Schemas.Governance
+            /// - Remark: Generated from `#/components/schemas/OpsOrgs/OrgsPayload`.
+            public struct OrgsPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/OpsOrgs/OrgsPayload/org`.
+                public var org: Swift.String
+                /// - Remark: Generated from `#/components/schemas/OpsOrgs/OrgsPayload/approvedReleases`.
+                public var approvedReleases: [Swift.String]?
+                /// Creates a new `OrgsPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                ///   - approvedReleases:
+                public init(
+                    org: Swift.String,
+                    approvedReleases: [Swift.String]? = nil
+                ) {
+                    self.org = org
+                    self.approvedReleases = approvedReleases
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case org
+                    case approvedReleases
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/OpsOrgs/orgs`.
+            public typealias OrgsPayload = [Components.Schemas.OpsOrgs.OrgsPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/OpsOrgs/orgs`.
+            public var orgs: Components.Schemas.OpsOrgs.OrgsPayload
+            /// - Remark: Generated from `#/components/schemas/OpsOrgs/next`.
+            public var next: Swift.String?
+            /// Creates a new `OpsOrgs`.
+            ///
+            /// - Parameters:
+            ///   - fresh:
+            ///   - governance:
+            ///   - orgs:
+            ///   - next:
+            public init(
+                fresh: Swift.Bool,
+                governance: Components.Schemas.Governance,
+                orgs: Components.Schemas.OpsOrgs.OrgsPayload,
+                next: Swift.String? = nil
+            ) {
+                self.fresh = fresh
+                self.governance = governance
+                self.orgs = orgs
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case fresh
+                case governance
+                case orgs
+                case next
+            }
+        }
+        /// What `POST /apps/{app}/pipeline-runs/{run}/cancel` answers: the run cancelled.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineCancelled`.
+        public struct PipelineCancelled: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineCancelled/run`.
+            public var run: Swift.String
+            /// Creates a new `PipelineCancelled`.
+            ///
+            /// - Parameters:
+            ///   - run:
+            public init(run: Swift.String) {
+                self.run = run
+            }
+            public enum CodingKeys: String, CodingKey {
+                case run
+            }
+        }
+        /// `GET /apps/{app}/pipeline-runs`: the app's recent pipeline runs, newest first.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineRunList`.
+        public struct PipelineRunList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineRunList/runs`.
+            public var runs: [Components.Schemas.PipelineRunView]
+            /// Creates a new `PipelineRunList`.
+            ///
+            /// - Parameters:
+            ///   - runs:
+            public init(runs: [Components.Schemas.PipelineRunView]) {
+                self.runs = runs
+            }
+            public enum CodingKeys: String, CodingKey {
+                case runs
+            }
+        }
+        /// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped for the reader (results and file hashes only to those who handle the app's files). Its keys follow the record's, so the document leaves it open.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineRunView`.
+        public struct PipelineRunView: Codable, Hashable, Sendable {
+            /// A container of undocumented properties.
+            public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
+            /// Creates a new `PipelineRunView`.
+            ///
+            /// - Parameters:
+            ///   - additionalProperties: A container of undocumented properties.
+            public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
+                self.additionalProperties = additionalProperties
+            }
+            public init(from decoder: any Decoder) throws {
+                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+            }
+            public func encode(to encoder: any Encoder) throws {
+                try encoder.encodeAdditionalProperties(additionalProperties)
+            }
+        }
+        /// What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap, and the run it retries.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineStarted`.
+        public struct PipelineStarted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineStarted/run`.
+            public var run: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineStarted/worstCase`.
+            public var worstCase: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PipelineStarted/retryOf`.
+            public var retryOf: Swift.String?
+            /// Creates a new `PipelineStarted`.
+            ///
+            /// - Parameters:
+            ///   - run:
+            ///   - worstCase:
+            ///   - retryOf:
+            public init(
+                run: Swift.String,
+                worstCase: Swift.String? = nil,
+                retryOf: Swift.String? = nil
+            ) {
+                self.run = run
+                self.worstCase = worstCase
+                self.retryOf = retryOf
+            }
+            public enum CodingKeys: String, CodingKey {
+                case run
+                case worstCase
+                case retryOf
+            }
+        }
+        /// A change a stream reports: an author's new state, or `None` when they left.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PresenceDiff`.
+        public struct PresenceDiff: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PresenceDiff/account`.
+            public var account: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PresenceDiff/device`.
+            public var device: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PresenceDiff/state`.
+            public var state: Swift.String?
+            /// Creates a new `PresenceDiff`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - device:
+            ///   - state:
+            public init(
+                account: Swift.String,
+                device: Swift.String,
+                state: Swift.String? = nil
+            ) {
+                self.account = account
+                self.device = device
+                self.state = state
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case device
+                case state
+            }
+        }
+        /// `GET /apps/{app}/presence`: who is here, on which device, and their state (`null`: none set).
+        ///
+        /// - Remark: Generated from `#/components/schemas/PresenceList`.
+        public struct PresenceList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PresenceList/present`.
+            public var present: [Components.Schemas.PresenceDiff]
+            /// Creates a new `PresenceList`.
+            ///
+            /// - Parameters:
+            ///   - present:
+            public init(present: [Components.Schemas.PresenceDiff]) {
+                self.present = present
+            }
+            public enum CodingKeys: String, CodingKey {
+                case present
+            }
+        }
+        /// `POST /apps/{app}/public-links`: the link's key and, this once, its token.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublicLinkMade`.
+        public struct PublicLinkMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublicLinkMade/link`.
+            public var link: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublicLinkMade/token`.
+            public var token: Swift.String
+            /// Creates a new `PublicLinkMade`.
+            ///
+            /// - Parameters:
+            ///   - link:
+            ///   - token:
+            public init(
+                link: Swift.String,
+                token: Swift.String
+            ) {
+                self.link = link
+                self.token = token
+            }
+            public enum CodingKeys: String, CodingKey {
+                case link
+                case token
+            }
+        }
+        /// `GET /apps/{app}/public-links`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublicLinks`.
+        public struct PublicLinks: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublicLinks/links`.
+            public var links: [Components.Schemas.LinkView]
+            /// Creates a new `PublicLinks`.
+            ///
+            /// - Parameters:
+            ///   - links:
+            public init(links: [Components.Schemas.LinkView]) {
+                self.links = links
+            }
+            public enum CodingKeys: String, CodingKey {
+                case links
+            }
+        }
+        /// A registered pipeline: its hash, worst-case fuel (a decimal string), the module releases it pins, and its canonical JSON.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ReleasePipeline`.
+        public struct ReleasePipeline: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ReleasePipeline/hash`.
+            public var hash: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ReleasePipeline/worstCaseFuel`.
+            public var worstCaseFuel: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ReleasePipeline/modules`.
+            public struct ModulesPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ReleasePipeline/modules/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/ReleasePipeline/modules/additionalProperties/package`.
+                    public var package: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/ReleasePipeline/modules/additionalProperties/version`.
+                    public var version: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/ReleasePipeline/modules/additionalProperties/compute`.
+                    public var compute: Swift.String
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - package:
+                    ///   - version:
+                    ///   - compute:
+                    public init(
+                        package: Swift.String,
+                        version: Swift.String,
+                        compute: Swift.String
+                    ) {
+                        self.package = package
+                        self.version = version
+                        self.compute = compute
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case package
+                        case version
+                        case compute
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.ReleasePipeline.ModulesPayload.AdditionalPropertiesPayload]
+                /// Creates a new `ModulesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.ReleasePipeline.ModulesPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ReleasePipeline/modules`.
+            public var modules: Components.Schemas.ReleasePipeline.ModulesPayload
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/ReleasePipeline/pipeline`.
+            public var pipeline: OpenAPIRuntime.OpenAPIValueContainer
+            /// Creates a new `ReleasePipeline`.
+            ///
+            /// - Parameters:
+            ///   - hash:
+            ///   - worstCaseFuel:
+            ///   - modules:
+            ///   - pipeline: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                hash: Swift.String,
+                worstCaseFuel: Swift.String,
+                modules: Components.Schemas.ReleasePipeline.ModulesPayload,
+                pipeline: OpenAPIRuntime.OpenAPIValueContainer
+            ) {
+                self.hash = hash
+                self.worstCaseFuel = worstCaseFuel
+                self.modules = modules
+                self.pipeline = pipeline
+            }
+            public enum CodingKeys: String, CodingKey {
+                case hash
+                case worstCaseFuel
+                case modules
+                case pipeline
+            }
+        }
+        /// `GET /packages/{package}/{version}/pipelines`: the release's pipelines by name.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ReleasePipelines`.
+        public struct ReleasePipelines: Codable, Hashable, Sendable {
+            /// A container of undocumented properties.
+            public var additionalProperties: [String: Components.Schemas.ReleasePipeline]
+            /// Creates a new `ReleasePipelines`.
+            ///
+            /// - Parameters:
+            ///   - additionalProperties: A container of undocumented properties.
+            public init(additionalProperties: [String: Components.Schemas.ReleasePipeline] = .init()) {
+                self.additionalProperties = additionalProperties
+            }
+            public init(from decoder: any Decoder) throws {
+                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+            }
+            public func encode(to encoder: any Encoder) throws {
+                try encoder.encodeAdditionalProperties(additionalProperties)
+            }
+        }
+        /// What `POST /apps/{app}/pipelines/{name}/estimate` answers: per step its runs and fuel, the whole run's fuel, and its cost and the price table's version when the cluster has one; every figure a decimal string.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RunEstimate`.
+        public struct RunEstimate: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RunEstimate/steps`.
+            public struct StepsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.StepEstimate]
+                /// Creates a new `StepsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.StepEstimate] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/RunEstimate/steps`.
+            public var steps: Components.Schemas.RunEstimate.StepsPayload
+            /// - Remark: Generated from `#/components/schemas/RunEstimate/fuel`.
+            public var fuel: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RunEstimate/cost`.
+            public var cost: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/RunEstimate/priceVersion`.
+            public var priceVersion: Swift.Int64?
+            /// Creates a new `RunEstimate`.
+            ///
+            /// - Parameters:
+            ///   - steps:
+            ///   - fuel:
+            ///   - cost:
+            ///   - priceVersion:
+            public init(
+                steps: Components.Schemas.RunEstimate.StepsPayload,
+                fuel: Swift.String,
+                cost: Swift.String? = nil,
+                priceVersion: Swift.Int64? = nil
+            ) {
+                self.steps = steps
+                self.fuel = fuel
+                self.cost = cost
+                self.priceVersion = priceVersion
+            }
+            public enum CodingKeys: String, CodingKey {
+                case steps
+                case fuel
+                case cost
+                case priceVersion
+            }
+        }
+        /// `GET /apps/{app}/runs`: a page of the app's compute runs, newest first, and the cursor of the next page (`null`: none).
+        ///
+        /// - Remark: Generated from `#/components/schemas/RunList`.
+        public struct RunList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RunList/runs`.
+            public var runs: [Components.Schemas.Run]
+            /// - Remark: Generated from `#/components/schemas/RunList/next`.
+            public var next: Swift.String?
+            /// Creates a new `RunList`.
+            ///
+            /// - Parameters:
+            ///   - runs:
+            ///   - next:
+            public init(
+                runs: [Components.Schemas.Run],
+                next: Swift.String? = nil
+            ) {
+                self.runs = runs
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case runs
+                case next
+            }
+        }
+        /// `GET /apps/{app}/runs/{run}/logs` (deprecated): always empty, a run keeps no log.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RunLogs`.
+        public struct RunLogs: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RunLogs/LogsPayload`.
+            public struct LogsPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/RunLogs/LogsPayload/attempt`.
+                public var attempt: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/RunLogs/LogsPayload/id`.
+                public var id: Swift.String
+                /// - Remark: Generated from `#/components/schemas/RunLogs/LogsPayload/size`.
+                public var size: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/RunLogs/LogsPayload/sha256`.
+                public var sha256: Swift.String
+                /// Creates a new `LogsPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - attempt:
+                ///   - id:
+                ///   - size:
+                ///   - sha256:
+                public init(
+                    attempt: Swift.Int64,
+                    id: Swift.String,
+                    size: Swift.Int64,
+                    sha256: Swift.String
+                ) {
+                    self.attempt = attempt
+                    self.id = id
+                    self.size = size
+                    self.sha256 = sha256
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case attempt
+                    case id
+                    case size
+                    case sha256
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/RunLogs/logs`.
+            public typealias LogsPayload = [Components.Schemas.RunLogs.LogsPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/RunLogs/logs`.
+            public var logs: Components.Schemas.RunLogs.LogsPayload
+            /// Creates a new `RunLogs`.
+            ///
+            /// - Parameters:
+            ///   - logs:
+            public init(logs: Components.Schemas.RunLogs.LogsPayload) {
+                self.logs = logs
+            }
+            public enum CodingKeys: String, CodingKey {
+                case logs
+            }
+        }
+        /// What `DELETE /apps/{app}/secrets/{name}` answers: the app log's entry.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SecretCleared`.
+        public struct SecretCleared: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SecretCleared/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SecretCleared/index`.
+            public var index: Swift.Int64
+            /// Creates a new `SecretCleared`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - index:
+            public init(
+                name: Swift.String,
+                index: Swift.Int64
+            ) {
+                self.name = name
+                self.index = index
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case index
+            }
+        }
+        /// What `PUT /apps/{app}/secrets/{name}` answers: the value's fingerprint and the app log's entry.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SecretSet`.
+        public struct SecretSet: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SecretSet/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SecretSet/fingerprint`.
+            public var fingerprint: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SecretSet/index`.
+            public var index: Swift.Int64
+            /// Creates a new `SecretSet`.
+            ///
+            /// - Parameters:
+            ///   - name:
+            ///   - fingerprint:
+            ///   - index:
+            public init(
+                name: Swift.String,
+                fingerprint: Swift.String,
+                index: Swift.Int64
+            ) {
+                self.name = name
+                self.fingerprint = fingerprint
+                self.index = index
+            }
+            public enum CodingKeys: String, CodingKey {
+                case name
+                case fingerprint
+                case index
+            }
+        }
+        /// `GET /apps/{app}/pipeline-runs/{run}/receipt`: a pipeline run's receipt (`calimero_client::receipt::PipelineReceipt`) with the signature of the answering node's receipt key over it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SignedPipelineReceipt`.
+        public struct SignedPipelineReceipt: Codable, Hashable, Sendable {
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/SignedPipelineReceipt/receipt`.
+            public var receipt: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/SignedPipelineReceipt/node`.
+            public var node: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/SignedPipelineReceipt/signature`.
+            public var signature: Swift.String
+            /// Creates a new `SignedPipelineReceipt`.
+            ///
+            /// - Parameters:
+            ///   - receipt: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - node:
+            ///   - signature:
+            public init(
+                receipt: OpenAPIRuntime.OpenAPIValueContainer,
+                node: Swift.Int64,
+                signature: Swift.String
+            ) {
+                self.receipt = receipt
+                self.node = node
+                self.signature = signature
+            }
+            public enum CodingKeys: String, CodingKey {
+                case receipt
+                case node
+                case signature
+            }
+        }
+        /// One step's estimate: its runs, fuel and (with a price table) cost, as decimal strings.
+        ///
+        /// - Remark: Generated from `#/components/schemas/StepEstimate`.
+        public struct StepEstimate: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/StepEstimate/runs`.
+            public var runs: Swift.String
+            /// - Remark: Generated from `#/components/schemas/StepEstimate/fuel`.
+            public var fuel: Swift.String
+            /// - Remark: Generated from `#/components/schemas/StepEstimate/cost`.
+            public var cost: Swift.String?
+            /// Creates a new `StepEstimate`.
+            ///
+            /// - Parameters:
+            ///   - runs:
+            ///   - fuel:
+            ///   - cost:
+            public init(
+                runs: Swift.String,
+                fuel: Swift.String,
+                cost: Swift.String? = nil
+            ) {
+                self.runs = runs
+                self.fuel = fuel
+                self.cost = cost
+            }
+            public enum CodingKeys: String, CodingKey {
+                case runs
+                case fuel
+                case cost
+            }
+        }
+        /// What `POST /apps/{app}/undo` answers: each app group restored (its restore point's index, `null` when none), whether every group takes calls again, and each app reverted.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UndoDone`.
+        public struct UndoDone: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UndoDone/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UndoDone/groups`.
+            public struct GroupsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.Int64?]
+                /// Creates a new `GroupsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.Int64?] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UndoDone/groups`.
+            public var groups: Components.Schemas.UndoDone.GroupsPayload
+            /// - Remark: Generated from `#/components/schemas/UndoDone/restored`.
+            public var restored: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UndoDone/apps`.
+            public var apps: [Components.Schemas.UndoPart]
+            /// Creates a new `UndoDone`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - groups:
+            ///   - restored:
+            ///   - apps:
+            public init(
+                app: Swift.String,
+                groups: Components.Schemas.UndoDone.GroupsPayload,
+                restored: Swift.Bool,
+                apps: [Components.Schemas.UndoPart]
+            ) {
+                self.app = app
+                self.groups = groups
+                self.restored = restored
+                self.apps = apps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case groups
+                case restored
+                case apps
+            }
+        }
+        /// `GET /apps/{app}/undo`: whether the app's last upgrade may be undone now (else the refusal's `reason`), until when, and each app it reverts.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UndoView`.
+        public struct UndoView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UndoView/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UndoView/available`.
+            public var available: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UndoView/reason`.
+            public struct ReasonPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UndoView/reason/code`.
+                public var code: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UndoView/reason/message`.
+                public var message: Swift.String
+                /// Creates a new `ReasonPayload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - message:
+                public init(
+                    code: Swift.String,
+                    message: Swift.String
+                ) {
+                    self.code = code
+                    self.message = message
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case message
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UndoView/reason`.
+            public var reason: Components.Schemas.UndoView.ReasonPayload?
+            /// - Remark: Generated from `#/components/schemas/UndoView/undoUntil`.
+            public var undoUntil: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/UndoView/apps`.
+            public var apps: [Components.Schemas.UndoPart]
+            /// Creates a new `UndoView`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - available:
+            ///   - reason:
+            ///   - undoUntil:
+            ///   - apps:
+            public init(
+                app: Swift.String,
+                available: Swift.Bool,
+                reason: Components.Schemas.UndoView.ReasonPayload? = nil,
+                undoUntil: Swift.Int64? = nil,
+                apps: [Components.Schemas.UndoPart]
+            ) {
+                self.app = app
+                self.available = available
+                self.reason = reason
+                self.undoUntil = undoUntil
+                self.apps = apps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case available
+                case reason
+                case undoUntil
+                case apps
+            }
+        }
+        /// `GET /apps/{app}/update`: the release the instance runs, the update available to it (with the classifier's verdict), who may approve it, the policy in force and the live first approvals.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UpdateView`.
+        public struct UpdateView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UpdateView/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UpdateView/running`.
+            public struct RunningPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateView/running/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateView/running/version`.
+                public var version: Swift.String
+                /// Creates a new `RunningPayload`.
+                ///
+                /// - Parameters:
+                ///   - package:
+                ///   - version:
+                public init(
+                    package: Swift.String,
+                    version: Swift.String
+                ) {
+                    self.package = package
+                    self.version = version
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case package
+                    case version
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateView/running`.
+            public var running: Components.Schemas.UpdateView.RunningPayload?
+            /// - Remark: Generated from `#/components/schemas/UpdateView/available`.
+            public struct AvailablePayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/version`.
+                public var version: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/source`.
+                @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case deployment = "deployment"
+                    case release = "release"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/source`.
+                public var source: Components.Schemas.UpdateView.AvailablePayload.SourcePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/class`.
+                @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case green = "green"
+                    case red = "red"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/class`.
+                public var _class: Components.Schemas.UpdateView.AvailablePayload.ClassPayload?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/reasons`.
+                public var reasons: [Components.Schemas.UpdateReason]?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/egress`.
+                public struct EgressPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/UpdateView/available/egress/before`.
+                    public var before: [Swift.String]
+                    /// - Remark: Generated from `#/components/schemas/UpdateView/available/egress/after`.
+                    public var after: [Swift.String]
+                    /// - Remark: Generated from `#/components/schemas/UpdateView/available/egress/added`.
+                    public var added: [Swift.String]
+                    /// - Remark: Generated from `#/components/schemas/UpdateView/available/egress/removed`.
+                    public var removed: [Swift.String]
+                    /// Creates a new `EgressPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - before:
+                    ///   - after:
+                    ///   - added:
+                    ///   - removed:
+                    public init(
+                        before: [Swift.String],
+                        after: [Swift.String],
+                        added: [Swift.String],
+                        removed: [Swift.String]
+                    ) {
+                        self.before = before
+                        self.after = after
+                        self.added = added
+                        self.removed = removed
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case before
+                        case after
+                        case added
+                        case removed
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/egress`.
+                public var egress: Components.Schemas.UpdateView.AvailablePayload.EgressPayload?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/stateVersionChanged`.
+                public var stateVersionChanged: Swift.Bool?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/newMethods`.
+                public var newMethods: [Swift.String]?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/removedMethods`.
+                public var removedMethods: [Swift.String]?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/signerChanged`.
+                public var signerChanged: Swift.Bool?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/summary`.
+                public var summary: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/approvalsNeeded`.
+                public var approvalsNeeded: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/UpdateView/available/approvedBy`.
+                public var approvedBy: Swift.String?
+                /// Creates a new `AvailablePayload`.
+                ///
+                /// - Parameters:
+                ///   - package:
+                ///   - version:
+                ///   - source:
+                ///   - _class:
+                ///   - reasons:
+                ///   - egress:
+                ///   - stateVersionChanged:
+                ///   - newMethods:
+                ///   - removedMethods:
+                ///   - signerChanged:
+                ///   - summary:
+                ///   - approvalsNeeded:
+                ///   - approvedBy:
+                public init(
+                    package: Swift.String,
+                    version: Swift.String,
+                    source: Components.Schemas.UpdateView.AvailablePayload.SourcePayload,
+                    _class: Components.Schemas.UpdateView.AvailablePayload.ClassPayload? = nil,
+                    reasons: [Components.Schemas.UpdateReason]? = nil,
+                    egress: Components.Schemas.UpdateView.AvailablePayload.EgressPayload? = nil,
+                    stateVersionChanged: Swift.Bool? = nil,
+                    newMethods: [Swift.String]? = nil,
+                    removedMethods: [Swift.String]? = nil,
+                    signerChanged: Swift.Bool? = nil,
+                    summary: Swift.String? = nil,
+                    approvalsNeeded: Swift.Int64,
+                    approvedBy: Swift.String? = nil
+                ) {
+                    self.package = package
+                    self.version = version
+                    self.source = source
+                    self._class = _class
+                    self.reasons = reasons
+                    self.egress = egress
+                    self.stateVersionChanged = stateVersionChanged
+                    self.newMethods = newMethods
+                    self.removedMethods = removedMethods
+                    self.signerChanged = signerChanged
+                    self.summary = summary
+                    self.approvalsNeeded = approvalsNeeded
+                    self.approvedBy = approvedBy
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case package
+                    case version
+                    case source
+                    case _class = "class"
+                    case reasons
+                    case egress
+                    case stateVersionChanged
+                    case newMethods
+                    case removedMethods
+                    case signerChanged
+                    case summary
+                    case approvalsNeeded
+                    case approvedBy
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateView/available`.
+            public var available: Components.Schemas.UpdateView.AvailablePayload?
+            /// - Remark: Generated from `#/components/schemas/UpdateView/unit`.
+            public var unit: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UpdateView/mayApprove`.
+            public var mayApprove: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UpdateView/approvers`.
+            @frozen public enum ApproversPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case ownerAndAdmins = "owner-and-admins"
+                case _operator = "operator"
+                case managers = "managers"
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateView/approvers`.
+            public var approvers: Components.Schemas.UpdateView.ApproversPayload
+            /// - Remark: Generated from `#/components/schemas/UpdateView/policy`.
+            public struct PolicyPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateView/policy/autoApply`.
+                @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case never = "never"
+                    case noDestinations = "noDestinations"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateView/policy/autoApply`.
+                public var autoApply: Components.Schemas.UpdateView.PolicyPayload.AutoApplyPayload
+                /// - Remark: Generated from `#/components/schemas/UpdateView/policy/holdHours`.
+                public var holdHours: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/UpdateView/policy/secondApprover`.
+                public var secondApprover: Swift.Bool
+                /// - Remark: Generated from `#/components/schemas/UpdateView/policy/source`.
+                @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case app = "app"
+                    case org = "org"
+                    case _default = "default"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateView/policy/source`.
+                public var source: Components.Schemas.UpdateView.PolicyPayload.SourcePayload
+                /// Creates a new `PolicyPayload`.
+                ///
+                /// - Parameters:
+                ///   - autoApply:
+                ///   - holdHours:
+                ///   - secondApprover:
+                ///   - source:
+                public init(
+                    autoApply: Components.Schemas.UpdateView.PolicyPayload.AutoApplyPayload,
+                    holdHours: Swift.Int64,
+                    secondApprover: Swift.Bool,
+                    source: Components.Schemas.UpdateView.PolicyPayload.SourcePayload
+                ) {
+                    self.autoApply = autoApply
+                    self.holdHours = holdHours
+                    self.secondApprover = secondApprover
+                    self.source = source
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case autoApply
+                    case holdHours
+                    case secondApprover
+                    case source
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateView/policy`.
+            public var policy: Components.Schemas.UpdateView.PolicyPayload
+            /// - Remark: Generated from `#/components/schemas/UpdateView/pendingApprovals`.
+            public var pendingApprovals: [Components.Schemas.PendingApproval]
+            /// - Remark: Generated from `#/components/schemas/UpdateView/deployment`.
+            public var deployment: Components.Schemas.DeploymentShown?
+            /// Creates a new `UpdateView`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - running:
+            ///   - available:
+            ///   - unit:
+            ///   - mayApprove:
+            ///   - approvers:
+            ///   - policy:
+            ///   - pendingApprovals:
+            ///   - deployment:
+            public init(
+                app: Swift.String,
+                running: Components.Schemas.UpdateView.RunningPayload? = nil,
+                available: Components.Schemas.UpdateView.AvailablePayload? = nil,
+                unit: Swift.Bool,
+                mayApprove: Swift.Bool,
+                approvers: Components.Schemas.UpdateView.ApproversPayload,
+                policy: Components.Schemas.UpdateView.PolicyPayload,
+                pendingApprovals: [Components.Schemas.PendingApproval],
+                deployment: Components.Schemas.DeploymentShown? = nil
+            ) {
+                self.app = app
+                self.running = running
+                self.available = available
+                self.unit = unit
+                self.mayApprove = mayApprove
+                self.approvers = approvers
+                self.policy = policy
+                self.pendingApprovals = pendingApprovals
+                self.deployment = deployment
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case running
+                case available
+                case unit
+                case mayApprove
+                case approvers
+                case policy
+                case pendingApprovals
+                case deployment
+            }
+        }
+        /// What `POST /apps/{app}/upgrade` answers: the app log's entry, how it ended, the app's error (`null` when it ended `ok`) and whether the release ships a compute component.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UpgradeApplied`.
+        public struct UpgradeApplied: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UpgradeApplied/index`.
+            public var index: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UpgradeApplied/status`.
+            @frozen public enum StatusPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case ok = "ok"
+                case appError = "appError"
+                case trap = "trap"
+            }
+            /// - Remark: Generated from `#/components/schemas/UpgradeApplied/status`.
+            public var status: Components.Schemas.UpgradeApplied.StatusPayload
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/UpgradeApplied/error`.
+            public var error: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/UpgradeApplied/compute`.
+            public var compute: Swift.Bool
+            /// Creates a new `UpgradeApplied`.
+            ///
+            /// - Parameters:
+            ///   - index:
+            ///   - status:
+            ///   - error: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - compute:
+            public init(
+                index: Swift.Int64,
+                status: Components.Schemas.UpgradeApplied.StatusPayload,
+                error: OpenAPIRuntime.OpenAPIValueContainer,
+                compute: Swift.Bool
+            ) {
+                self.index = index
+                self.status = status
+                self.error = error
+                self.compute = compute
+            }
+            public enum CodingKeys: String, CodingKey {
+                case index
+                case status
+                case error
+                case compute
+            }
+        }
+        /// What a view (`/views`) answers: the log index it read at, the app's result, and the answering node's receipt.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ViewResult`.
+        public struct ViewResult: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ViewResult/index`.
+            public var index: Swift.Int64
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/ViewResult/result`.
+            public var result: OpenAPIRuntime.OpenAPIValueContainer
+            /// - Remark: Generated from `#/components/schemas/ViewResult/receipt`.
+            public var receipt: Components.Schemas.Receipt
+            /// Creates a new `ViewResult`.
+            ///
+            /// - Parameters:
+            ///   - index:
+            ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - receipt:
+            public init(
+                index: Swift.Int64,
+                result: OpenAPIRuntime.OpenAPIValueContainer,
+                receipt: Components.Schemas.Receipt
+            ) {
+                self.index = index
+                self.result = result
+                self.receipt = receipt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case index
+                case result
+                case receipt
+            }
+        }
+        /// `GET /apps/{app}/xcalls`: messages waiting, and those never delivered.
+        ///
+        /// - Remark: Generated from `#/components/schemas/XcallsReport`.
+        public struct XcallsReport: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/XcallsReport/pending`.
+            public var pending: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/XcallsReport/deadLetters`.
+            public var deadLetters: [Components.Schemas.DeadLetter]
+            /// Creates a new `XcallsReport`.
+            ///
+            /// - Parameters:
+            ///   - pending:
+            ///   - deadLetters:
+            public init(
+                pending: Swift.Int64,
+                deadLetters: [Components.Schemas.DeadLetter]
+            ) {
+                self.pending = pending
+                self.deadLetters = deadLetters
+            }
+            public enum CodingKeys: String, CodingKey {
+                case pending
+                case deadLetters
+            }
+        }
+        /// `GET /apps/{app}/blobs`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/BlobList`.
+        public struct BlobList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/BlobList/blobs`.
+            public var blobs: [Components.Schemas.BlobView]
+            /// Creates a new `BlobList`.
+            ///
+            /// - Parameters:
+            ///   - blobs:
+            public init(blobs: [Components.Schemas.BlobView]) {
+                self.blobs = blobs
+            }
+            public enum CodingKeys: String, CodingKey {
+                case blobs
+            }
+        }
+        /// A blob stored, and the index of the app's log entry that holds it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/BlobStored`.
+        public struct BlobStored: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/BlobStored/blobId`.
+            public var blobId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/BlobStored/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/BlobStored/size`.
+            public var size: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/BlobStored/index`.
+            public var index: Swift.Int64
+            /// Creates a new `BlobStored`.
+            ///
+            /// - Parameters:
+            ///   - blobId:
+            ///   - id:
+            ///   - size:
+            ///   - index:
+            public init(
+                blobId: Swift.String,
+                id: Swift.String,
+                size: Swift.Int64,
+                index: Swift.Int64
+            ) {
+                self.blobId = blobId
+                self.id = id
+                self.size = size
+                self.index = index
+            }
+            public enum CodingKeys: String, CodingKey {
+                case blobId
+                case id
+                case size
+                case index
+            }
+        }
+        /// A blob of an app: its id (base58 `blobId` and hex `id`) and size.
+        ///
+        /// - Remark: Generated from `#/components/schemas/BlobView`.
+        public struct BlobView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/BlobView/blobId`.
+            public var blobId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/BlobView/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/BlobView/size`.
+            public var size: Swift.Int64
+            /// Creates a new `BlobView`.
+            ///
+            /// - Parameters:
+            ///   - blobId:
+            ///   - id:
+            ///   - size:
+            public init(
+                blobId: Swift.String,
+                id: Swift.String,
+                size: Swift.Int64
+            ) {
+                self.blobId = blobId
+                self.id = id
+                self.size = size
+            }
+            public enum CodingKeys: String, CodingKey {
+                case blobId
+                case id
+                case size
+            }
+        }
+        /// `GET /apps/{app}/files`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/FileList`.
+        public struct FileList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/FileList/files`.
+            public var files: [Components.Schemas.FileView]
+            /// Creates a new `FileList`.
+            ///
+            /// - Parameters:
+            ///   - files:
+            public init(files: [Components.Schemas.FileView]) {
+                self.files = files
+            }
+            public enum CodingKeys: String, CodingKey {
+                case files
+            }
+        }
+        /// A sealed file stored, and the index of the app's log entry that holds it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/FileStored`.
+        public struct FileStored: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/FileStored/blobId`.
+            public var blobId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileStored/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileStored/size`.
+            public var size: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/FileStored/sha256`.
+            public var sha256: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileStored/index`.
+            public var index: Swift.Int64
+            /// Creates a new `FileStored`.
+            ///
+            /// - Parameters:
+            ///   - blobId:
+            ///   - id:
+            ///   - size:
+            ///   - sha256:
+            ///   - index:
+            public init(
+                blobId: Swift.String,
+                id: Swift.String,
+                size: Swift.Int64,
+                sha256: Swift.String,
+                index: Swift.Int64
+            ) {
+                self.blobId = blobId
+                self.id = id
+                self.size = size
+                self.sha256 = sha256
+                self.index = index
+            }
+            public enum CodingKeys: String, CodingKey {
+                case blobId
+                case id
+                case size
+                case sha256
+                case index
+            }
+        }
+        /// A sealed file of an app: its ids, plaintext size and SHA-256 (hex), never its key.
+        ///
+        /// - Remark: Generated from `#/components/schemas/FileView`.
+        public struct FileView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/FileView/blobId`.
+            public var blobId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileView/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FileView/size`.
+            public var size: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/FileView/sha256`.
+            public var sha256: Swift.String
+            /// Creates a new `FileView`.
+            ///
+            /// - Parameters:
+            ///   - blobId:
+            ///   - id:
+            ///   - size:
+            ///   - sha256:
+            public init(
+                blobId: Swift.String,
+                id: Swift.String,
+                size: Swift.Int64,
+                sha256: Swift.String
+            ) {
+                self.blobId = blobId
+                self.id = id
+                self.size = size
+                self.sha256 = sha256
+            }
+            public enum CodingKeys: String, CodingKey {
+                case blobId
+                case id
+                case size
+                case sha256
+            }
+        }
+        /// A change logged on the app: the index of its entry.
+        ///
+        /// - Remark: Generated from `#/components/schemas/Logged`.
+        public struct Logged: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Logged/index`.
+            public var index: Swift.Int64
+            /// Creates a new `Logged`.
+            ///
+            /// - Parameters:
+            ///   - index:
+            public init(index: Swift.Int64) {
+                self.index = index
+            }
+            public enum CodingKeys: String, CodingKey {
+                case index
+            }
+        }
+        /// A part taken: the part the session expects next.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PartTaken`.
+        public struct PartTaken: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PartTaken/next`.
+            public var next: Swift.Int64
+            /// Creates a new `PartTaken`.
+            ///
+            /// - Parameters:
+            ///   - next:
+            public init(next: Swift.Int64) {
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case next
+            }
+        }
+        /// An upload session's status: the file's size and the part it expects next.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UploadStatus`.
+        public struct UploadStatus: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UploadStatus/uploadId`.
+            public var uploadId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UploadStatus/partBytes`.
+            public var partBytes: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UploadStatus/parts`.
+            public var parts: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UploadStatus/expiresAt`.
+            public var expiresAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UploadStatus/size`.
+            public var size: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UploadStatus/next`.
+            public var next: Swift.Int64
+            /// Creates a new `UploadStatus`.
+            ///
+            /// - Parameters:
+            ///   - uploadId:
+            ///   - partBytes:
+            ///   - parts:
+            ///   - expiresAt:
+            ///   - size:
+            ///   - next:
+            public init(
+                uploadId: Swift.String,
+                partBytes: Swift.Int64,
+                parts: Swift.Int64,
+                expiresAt: Swift.Int64,
+                size: Swift.Int64,
+                next: Swift.Int64
+            ) {
+                self.uploadId = uploadId
+                self.partBytes = partBytes
+                self.parts = parts
+                self.expiresAt = expiresAt
+                self.size = size
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case uploadId
+                case partBytes
+                case parts
+                case expiresAt
+                case size
+                case next
+            }
+        }
+        /// An upload session: its id, the size of each part (the last may be shorter), how many parts and when it lapses unless a part arrives (Unix seconds).
+        ///
+        /// - Remark: Generated from `#/components/schemas/UploadView`.
+        public struct UploadView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UploadView/uploadId`.
+            public var uploadId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UploadView/partBytes`.
+            public var partBytes: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UploadView/parts`.
+            public var parts: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UploadView/expiresAt`.
+            public var expiresAt: Swift.Int64
+            /// Creates a new `UploadView`.
+            ///
+            /// - Parameters:
+            ///   - uploadId:
+            ///   - partBytes:
+            ///   - parts:
+            ///   - expiresAt:
+            public init(
+                uploadId: Swift.String,
+                partBytes: Swift.Int64,
+                parts: Swift.Int64,
+                expiresAt: Swift.Int64
+            ) {
+                self.uploadId = uploadId
+                self.partBytes = partBytes
+                self.parts = parts
+                self.expiresAt = expiresAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case uploadId
+                case partBytes
+                case parts
+                case expiresAt
+            }
+        }
+        /// A mero-tee release's end-of-new-work deadline: `after` RFC 3339, `afterSecs` Unix seconds.
+        ///
+        /// - Remark: Generated from `#/components/schemas/VersionDeadline`.
+        public struct VersionDeadline: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/VersionDeadline/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/VersionDeadline/after`.
+            public var after: Swift.String
+            /// - Remark: Generated from `#/components/schemas/VersionDeadline/afterSecs`.
+            public var afterSecs: Swift.Int64
+            /// Creates a new `VersionDeadline`.
+            ///
+            /// - Parameters:
+            ///   - version:
+            ///   - after:
+            ///   - afterSecs:
+            public init(
+                version: Swift.String,
+                after: Swift.String,
+                afterSecs: Swift.Int64
+            ) {
+                self.version = version
+                self.after = after
+                self.afterSecs = afterSecs
+            }
+            public enum CodingKeys: String, CodingKey {
+                case version
+                case after
+                case afterSecs
+            }
+        }
+        /// `POST /bundles`: the stored WASM's hash (development only).
+        ///
+        /// - Remark: Generated from `#/components/schemas/BundleStored`.
+        public struct BundleStored: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/BundleStored/hash`.
+            public var hash: Swift.String
+            /// Creates a new `BundleStored`.
+            ///
+            /// - Parameters:
+            ///   - hash:
+            public init(hash: Swift.String) {
+                self.hash = hash
+            }
+            public enum CodingKeys: String, CodingKey {
+                case hash
+            }
+        }
+        /// `GET /releases`: the cluster's governance and the deadlines set on mero-tee releases, oldest release first.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ClusterReleases`.
+        public struct ClusterReleases: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ClusterReleases/governance`.
+            public var governance: Components.Schemas.Governance
+            /// - Remark: Generated from `#/components/schemas/ClusterReleases/deadlines`.
+            public var deadlines: [Components.Schemas.VersionDeadline]
+            /// Creates a new `ClusterReleases`.
+            ///
+            /// - Parameters:
+            ///   - governance:
+            ///   - deadlines:
+            public init(
+                governance: Components.Schemas.Governance,
+                deadlines: [Components.Schemas.VersionDeadline]
+            ) {
+                self.governance = governance
+                self.deadlines = deadlines
+            }
+            public enum CodingKeys: String, CodingKey {
+                case governance
+                case deadlines
+            }
+        }
+        /// `POST /consent/requests`: the request, the page to send the person to, when it lapses and the code the page shows.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ConsentRequestMade`.
+        public struct ConsentRequestMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentRequestMade/requestId`.
+            public var requestId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ConsentRequestMade/url`.
+            public var url: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ConsentRequestMade/code`.
+            public var code: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ConsentRequestMade/expiresAt`.
+            public var expiresAt: Swift.Int64
+            /// Creates a new `ConsentRequestMade`.
+            ///
+            /// - Parameters:
+            ///   - requestId:
+            ///   - url:
+            ///   - code:
+            ///   - expiresAt:
+            public init(
+                requestId: Swift.String,
+                url: Swift.String,
+                code: Swift.String,
+                expiresAt: Swift.Int64
+            ) {
+                self.requestId = requestId
+                self.url = url
+                self.code = code
+                self.expiresAt = expiresAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case requestId
+                case url
+                case code
+                case expiresAt
+            }
+        }
+        /// `GET /consent/{request}/result`: the request's decision (`decidedAt` `null` while it is pending) and, once approved, what the approval made.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ConsentResult`.
+        public struct ConsentResult: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/requestId`.
+            public var requestId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case release = "release"
+                case upgrade = "upgrade"
+                case upgradeUnit = "upgradeUnit"
+                case delegate = "delegate"
+                case outbound = "outbound"
+                case createOrg = "createOrg"
+                case createInvite = "createInvite"
+                case acceptInvite = "acceptInvite"
+                case leaveOrg = "leaveOrg"
+                case removeMember = "removeMember"
+                case setMemberRole = "setMemberRole"
+                case setMemberTeams = "setMemberTeams"
+                case removeMemberTeams = "removeMemberTeams"
+                case revokeInvite = "revokeInvite"
+                case renameOrg = "renameOrg"
+                case deleteOrg = "deleteOrg"
+                case setCapabilities = "setCapabilities"
+                case setAllApps = "setAllApps"
+                case setEgress = "setEgress"
+                case install = "install"
+                case updatePolicy = "updatePolicy"
+                case updates = "updates"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/kind`.
+            public var kind: Components.Schemas.ConsentResult.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/status`.
+            @frozen public enum StatusPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case pending = "pending"
+                case approved = "approved"
+                case declined = "declined"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/status`.
+            public var status: Components.Schemas.ConsentResult.StatusPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/decidedAt`.
+            public var decidedAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome`.
+            public struct OutcomePayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/orgId`.
+                public var orgId: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/teamId`.
+                public var teamId: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/token`.
+                public var token: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/org`.
+                public var org: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/name`.
+                public var name: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/apps`.
+                public var apps: [Swift.String]?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/appId`.
+                public var appId: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/links`.
+                public struct LinksPayload: Codable, Hashable, Sendable {
+                    /// A container of undocumented properties.
+                    public var additionalProperties: [String: Swift.String]
+                    /// Creates a new `LinksPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - additionalProperties: A container of undocumented properties.
+                    public init(additionalProperties: [String: Swift.String] = .init()) {
+                        self.additionalProperties = additionalProperties
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                    }
+                    public func encode(to encoder: any Encoder) throws {
+                        try encoder.encodeAdditionalProperties(additionalProperties)
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome/links`.
+                public var links: Components.Schemas.ConsentResult.OutcomePayload.LinksPayload?
+                /// Creates a new `OutcomePayload`.
+                ///
+                /// - Parameters:
+                ///   - orgId:
+                ///   - teamId:
+                ///   - token:
+                ///   - org:
+                ///   - name:
+                ///   - apps:
+                ///   - appId:
+                ///   - links:
+                public init(
+                    orgId: Swift.String? = nil,
+                    teamId: Swift.String? = nil,
+                    token: Swift.String? = nil,
+                    org: Swift.String? = nil,
+                    name: Swift.String? = nil,
+                    apps: [Swift.String]? = nil,
+                    appId: Swift.String? = nil,
+                    links: Components.Schemas.ConsentResult.OutcomePayload.LinksPayload? = nil
+                ) {
+                    self.orgId = orgId
+                    self.teamId = teamId
+                    self.token = token
+                    self.org = org
+                    self.name = name
+                    self.apps = apps
+                    self.appId = appId
+                    self.links = links
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case orgId
+                    case teamId
+                    case token
+                    case org
+                    case name
+                    case apps
+                    case appId
+                    case links
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentResult/outcome`.
+            public var outcome: Components.Schemas.ConsentResult.OutcomePayload?
+            /// Creates a new `ConsentResult`.
+            ///
+            /// - Parameters:
+            ///   - requestId:
+            ///   - kind:
+            ///   - status:
+            ///   - decidedAt:
+            ///   - outcome:
+            public init(
+                requestId: Swift.String,
+                kind: Components.Schemas.ConsentResult.KindPayload,
+                status: Components.Schemas.ConsentResult.StatusPayload,
+                decidedAt: Swift.Int64? = nil,
+                outcome: Components.Schemas.ConsentResult.OutcomePayload? = nil
+            ) {
+                self.requestId = requestId
+                self.kind = kind
+                self.status = status
+                self.decidedAt = decidedAt
+                self.outcome = outcome
+            }
+            public enum CodingKeys: String, CodingKey {
+                case requestId
+                case kind
+                case status
+                case decidedAt
+                case outcome
+            }
+        }
+        /// `GET /health`, in the clear: the node, the system group's leader (`null`: none known), its release, the newest cluster version it supports and the cluster's rollback epoch (`null`: a node without a rollback counter).
+        ///
+        /// - Remark: Generated from `#/components/schemas/Health`.
+        public struct Health: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Health/ok`.
+            public var ok: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/Health/node`.
+            public var node: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Health/systemLeader`.
+            public var systemLeader: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/Health/release`.
+            public var release: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Health/clusterVersion`.
+            public var clusterVersion: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Health/rollbackEpoch`.
+            public var rollbackEpoch: Swift.Int64?
+            /// Creates a new `Health`.
+            ///
+            /// - Parameters:
+            ///   - ok:
+            ///   - node:
+            ///   - systemLeader:
+            ///   - release:
+            ///   - clusterVersion:
+            ///   - rollbackEpoch:
+            public init(
+                ok: Swift.Bool,
+                node: Swift.Int64,
+                systemLeader: Swift.Int64? = nil,
+                release: Swift.String,
+                clusterVersion: Swift.String,
+                rollbackEpoch: Swift.Int64? = nil
+            ) {
+                self.ok = ok
+                self.node = node
+                self.systemLeader = systemLeader
+                self.release = release
+                self.clusterVersion = clusterVersion
+                self.rollbackEpoch = rollbackEpoch
+            }
+            public enum CodingKeys: String, CodingKey {
+                case ok
+                case node
+                case systemLeader
+                case release
+                case clusterVersion
+                case rollbackEpoch
+            }
+        }
+        /// What redeeming an invite answers: the organization joined; for an instance invite, the instance and whether the account is a member of its organization (else a guest).
+        ///
+        /// - Remark: Generated from `#/components/schemas/InviteRedeemed`.
+        public struct InviteRedeemed: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/InviteRedeemed/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/InviteRedeemed/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/InviteRedeemed/member`.
+            public var member: Swift.Bool?
+            /// Creates a new `InviteRedeemed`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - org:
+            ///   - member:
+            public init(
+                app: Swift.String? = nil,
+                org: Swift.String,
+                member: Swift.Bool? = nil
+            ) {
+                self.app = app
+                self.org = org
+                self.member = member
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case org
+                case member
+            }
+        }
+        /// `GET /package-origins/{package}`: the origins registered for a package.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OriginList`.
+        public struct OriginList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OriginList/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OriginList/origins`.
+            public var origins: [Components.Schemas.PackageOrigin]
+            /// Creates a new `OriginList`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - origins:
+            public init(
+                package: Swift.String,
+                origins: [Components.Schemas.PackageOrigin]
+            ) {
+                self.package = package
+                self.origins = origins
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case origins
+            }
+        }
+        /// What removing an origin answers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OriginRemoved`.
+        public struct OriginRemoved: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OriginRemoved/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OriginRemoved/origin`.
+            public var origin: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OriginRemoved/removed`.
+            public var removed: Swift.Bool
+            /// Creates a new `OriginRemoved`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - origin:
+            ///   - removed:
+            public init(
+                package: Swift.String,
+                origin: Swift.String,
+                removed: Swift.Bool
+            ) {
+                self.package = package
+                self.origin = origin
+                self.removed = removed
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case origin
+                case removed
+            }
+        }
+        /// A release installed: its package, version, pinned signer and services (name to bundle hash).
+        ///
+        /// - Remark: Generated from `#/components/schemas/PackageInstalled`.
+        public struct PackageInstalled: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PackageInstalled/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PackageInstalled/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PackageInstalled/signerId`.
+            public var signerId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PackageInstalled/services`.
+            public struct ServicesPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `ServicesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PackageInstalled/services`.
+            public var services: Components.Schemas.PackageInstalled.ServicesPayload
+            /// Creates a new `PackageInstalled`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - version:
+            ///   - signerId:
+            ///   - services:
+            public init(
+                package: Swift.String,
+                version: Swift.String,
+                signerId: Swift.String,
+                services: Components.Schemas.PackageInstalled.ServicesPayload
+            ) {
+                self.package = package
+                self.version = version
+                self.signerId = signerId
+                self.services = services
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case version
+                case signerId
+                case services
+            }
+        }
+        /// The packages the caller may see.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PackageList`.
+        public struct PackageList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PackageList/packages`.
+            public var packages: [Components.Schemas.Package]
+            /// Creates a new `PackageList`.
+            ///
+            /// - Parameters:
+            ///   - packages:
+            public init(packages: [Components.Schemas.Package]) {
+                self.packages = packages
+            }
+            public enum CodingKeys: String, CodingKey {
+                case packages
+            }
+        }
+        /// One error in a pipeline: where (a path into it, empty for the whole), its code and what is wrong.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineError`.
+        public struct PipelineError: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineError/path`.
+            public var path: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineError/code`.
+            public var code: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PipelineError/message`.
+            public var message: Swift.String
+            /// Creates a new `PipelineError`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - code:
+            ///   - message:
+            public init(
+                path: Swift.String,
+                code: Swift.String,
+                message: Swift.String
+            ) {
+                self.path = path
+                self.code = code
+                self.message = message
+            }
+            public enum CodingKeys: String, CodingKey {
+                case path
+                case code
+                case message
+            }
+        }
+        /// `POST /pipelines/validate`: whether the pipeline compiles (and, against a release, checks), every error, its canonical JSON, and its worst-case fuel and cost (decimal strings).
+        ///
+        /// - Remark: Generated from `#/components/schemas/PipelineValidation`.
+        public struct PipelineValidation: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PipelineValidation/ok`.
+            public var ok: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PipelineValidation/errors`.
+            public var errors: [Components.Schemas.PipelineError]
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/PipelineValidation/pipeline`.
+            public var pipeline: OpenAPIRuntime.OpenAPIValueContainer?
+            /// - Remark: Generated from `#/components/schemas/PipelineValidation/worstCaseFuel`.
+            public var worstCaseFuel: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PipelineValidation/worstCaseCost`.
+            public var worstCaseCost: Swift.String?
+            /// Creates a new `PipelineValidation`.
+            ///
+            /// - Parameters:
+            ///   - ok:
+            ///   - errors:
+            ///   - pipeline: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///   - worstCaseFuel:
+            ///   - worstCaseCost:
+            public init(
+                ok: Swift.Bool,
+                errors: [Components.Schemas.PipelineError],
+                pipeline: OpenAPIRuntime.OpenAPIValueContainer? = nil,
+                worstCaseFuel: Swift.String? = nil,
+                worstCaseCost: Swift.String? = nil
+            ) {
+                self.ok = ok
+                self.errors = errors
+                self.pipeline = pipeline
+                self.worstCaseFuel = worstCaseFuel
+                self.worstCaseCost = worstCaseCost
+            }
+            public enum CodingKeys: String, CodingKey {
+                case ok
+                case errors
+                case pipeline
+                case worstCaseFuel
+                case worstCaseCost
+            }
+        }
+        /// Which organization publishes the packages a signing key signs.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublisherBinding`.
+        public struct PublisherBinding: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublisherBinding/signerId`.
+            public var signerId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublisherBinding/cluster`.
+            public var cluster: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublisherBinding/generation`.
+            public var generation: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PublisherBinding/bound`.
+            public var bound: Swift.Bool
+            /// Creates a new `PublisherBinding`.
+            ///
+            /// - Parameters:
+            ///   - signerId:
+            ///   - cluster:
+            ///   - generation:
+            ///   - bound:
+            public init(
+                signerId: Swift.String,
+                cluster: Swift.String,
+                generation: Swift.Int64,
+                bound: Swift.Bool
+            ) {
+                self.signerId = signerId
+                self.cluster = cluster
+                self.generation = generation
+                self.bound = bound
+            }
+            public enum CodingKeys: String, CodingKey {
+                case signerId
+                case cluster
+                case generation
+                case bound
+            }
+        }
+        /// The cluster's sign-up policy and live invites (keys and terms, never a token), and who runs sign-up (`owner` or `operator`).
+        ///
+        /// - Remark: Generated from `#/components/schemas/SignUpInviteList`.
+        public struct SignUpInviteList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteList/signUp`.
+            public var signUp: Components.Schemas.SignUpState
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteList/runBy`.
+            @frozen public enum RunByPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case owner = "owner"
+                case _operator = "operator"
+            }
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteList/runBy`.
+            public var runBy: Components.Schemas.SignUpInviteList.RunByPayload
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteList/invites`.
+            public var invites: [Components.Schemas.SignUpInvite]
+            /// Creates a new `SignUpInviteList`.
+            ///
+            /// - Parameters:
+            ///   - signUp:
+            ///   - runBy:
+            ///   - invites:
+            public init(
+                signUp: Components.Schemas.SignUpState,
+                runBy: Components.Schemas.SignUpInviteList.RunByPayload,
+                invites: [Components.Schemas.SignUpInvite]
+            ) {
+                self.signUp = signUp
+                self.runBy = runBy
+                self.invites = invites
+            }
+            public enum CodingKeys: String, CodingKey {
+                case signUp
+                case runBy
+                case invites
+            }
+        }
+        /// A sign-up invite the owner just made: its terms, then its token, answered this once.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SignUpInviteMade`.
+        public struct SignUpInviteMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/inviteKey`.
+            public var inviteKey: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/uses`.
+            public var uses: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/expiresAt`.
+            public var expiresAt: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/expiresAtSecs`.
+            public var expiresAtSecs: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/createdBy`.
+            public var createdBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/createdAt`.
+            public var createdAt: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SignUpInviteMade/token`.
+            public var token: Swift.String
+            /// Creates a new `SignUpInviteMade`.
+            ///
+            /// - Parameters:
+            ///   - inviteKey:
+            ///   - uses:
+            ///   - expiresAt:
+            ///   - expiresAtSecs:
+            ///   - createdBy:
+            ///   - createdAt:
+            ///   - token:
+            public init(
+                inviteKey: Swift.String,
+                uses: Swift.Int64,
+                expiresAt: Swift.String,
+                expiresAtSecs: Swift.Int64,
+                createdBy: Swift.String,
+                createdAt: Swift.String,
+                token: Swift.String
+            ) {
+                self.inviteKey = inviteKey
+                self.uses = uses
+                self.expiresAt = expiresAt
+                self.expiresAtSecs = expiresAtSecs
+                self.createdBy = createdBy
+                self.createdAt = createdAt
+                self.token = token
+            }
+            public enum CodingKeys: String, CodingKey {
+                case inviteKey
+                case uses
+                case expiresAt
+                case expiresAtSecs
+                case createdBy
+                case createdAt
+                case token
+            }
+        }
+        /// `GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in uses to pick the person's passkey for it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SignUpPublic`.
+        public struct SignUpPublic: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SignUpPublic/policy`.
+            public var policy: Components.Schemas.SignUp
+            /// - Remark: Generated from `#/components/schemas/SignUpPublic/orgInvites`.
+            public var orgInvites: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/SignUpPublic/signUpInvites`.
+            public var signUpInvites: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/SignUpPublic/inviteRequired`.
+            public var inviteRequired: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/SignUpPublic/cluster`.
+            public var cluster: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SignUpPublic/passkeyTag`.
+            public var passkeyTag: Swift.String
+            /// Creates a new `SignUpPublic`.
+            ///
+            /// - Parameters:
+            ///   - policy:
+            ///   - orgInvites:
+            ///   - signUpInvites:
+            ///   - inviteRequired:
+            ///   - cluster:
+            ///   - passkeyTag:
+            public init(
+                policy: Components.Schemas.SignUp,
+                orgInvites: Swift.Bool,
+                signUpInvites: Swift.Bool,
+                inviteRequired: Swift.Bool,
+                cluster: Swift.String,
+                passkeyTag: Swift.String
+            ) {
+                self.policy = policy
+                self.orgInvites = orgInvites
+                self.signUpInvites = signUpInvites
+                self.inviteRequired = inviteRequired
+                self.cluster = cluster
+                self.passkeyTag = passkeyTag
+            }
+            public enum CodingKeys: String, CodingKey {
+                case policy
+                case orgInvites
+                case signUpInvites
+                case inviteRequired
+                case cluster
+                case passkeyTag
+            }
+        }
+        /// One organization of an [`AccountView`]: the caller's role, and whether it is a personal one.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AccountOrg`.
+        public struct AccountOrg: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AccountOrg/orgId`.
+            public var orgId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountOrg/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountOrg/role`.
+            public var role: Components.Schemas.OrgRole
+            /// - Remark: Generated from `#/components/schemas/AccountOrg/personal`.
+            public var personal: Swift.Bool
+            /// Creates a new `AccountOrg`.
+            ///
+            /// - Parameters:
+            ///   - orgId:
+            ///   - name:
+            ///   - role:
+            ///   - personal:
+            public init(
+                orgId: Swift.String,
+                name: Swift.String,
+                role: Components.Schemas.OrgRole,
+                personal: Swift.Bool
+            ) {
+                self.orgId = orgId
+                self.name = name
+                self.role = role
+                self.personal = personal
+            }
+            public enum CodingKeys: String, CodingKey {
+                case orgId
+                case name
+                case role
+                case personal
+            }
+        }
+        /// One passkey of an [`AccountView`]: its label, and when it was added and last signed in (`null`: before the node kept it).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AccountPasskey`.
+        public struct AccountPasskey: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AccountPasskey/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountPasskey/signCount`.
+            public var signCount: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AccountPasskey/label`.
+            public var label: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/AccountPasskey/addedAt`.
+            public var addedAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/AccountPasskey/lastSignInAt`.
+            public var lastSignInAt: Swift.Int64?
+            /// Creates a new `AccountPasskey`.
+            ///
+            /// - Parameters:
+            ///   - id:
+            ///   - signCount:
+            ///   - label:
+            ///   - addedAt:
+            ///   - lastSignInAt:
+            public init(
+                id: Swift.String,
+                signCount: Swift.Int64,
+                label: Swift.String? = nil,
+                addedAt: Swift.Int64? = nil,
+                lastSignInAt: Swift.Int64? = nil
+            ) {
+                self.id = id
+                self.signCount = signCount
+                self.label = label
+                self.addedAt = addedAt
+                self.lastSignInAt = lastSignInAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case id
+                case signCount
+                case label
+                case addedAt
+                case lastSignInAt
+            }
+        }
+        /// An account recovery under way: the passkey it would add, when it started and when it may finish (Unix seconds).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AccountRecoveryPending`.
+        public struct AccountRecoveryPending: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AccountRecoveryPending/accountId`.
+            public var accountId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountRecoveryPending/credentialId`.
+            public var credentialId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountRecoveryPending/startedAt`.
+            public var startedAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AccountRecoveryPending/readyAt`.
+            public var readyAt: Swift.Int64
+            /// Creates a new `AccountRecoveryPending`.
+            ///
+            /// - Parameters:
+            ///   - accountId:
+            ///   - credentialId:
+            ///   - startedAt:
+            ///   - readyAt:
+            public init(
+                accountId: Swift.String,
+                credentialId: Swift.String,
+                startedAt: Swift.Int64,
+                readyAt: Swift.Int64
+            ) {
+                self.accountId = accountId
+                self.credentialId = credentialId
+                self.startedAt = startedAt
+                self.readyAt = readyAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case accountId
+                case credentialId
+                case startedAt
+                case readyAt
+            }
+        }
+        /// `GET /auth/usage`: what the account uses against the quotas, and its developer usage today (64-bit sums as decimal strings).
+        ///
+        /// - Remark: Generated from `#/components/schemas/AccountUsage`.
+        public struct AccountUsage: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/apps`.
+            public var apps: Swift.Int64
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/bundleBytes`.
+            public var bundleBytes: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/apiKeys`.
+            public var apiKeys: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/orgsOwned`.
+            public var orgsOwned: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/fileBytes`.
+            public struct FileBytesPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.Int64]
+                /// Creates a new `FileBytesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.Int64] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/fileBytes`.
+            public var fileBytes: Components.Schemas.AccountUsage.FileBytesPayload
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/quotas`.
+            public var quotas: Components.Schemas.Quotas
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/developerFuelToday`.
+            public var developerFuelToday: Swift.String
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/AccountUsage/developerWritesToday`.
+            public var developerWritesToday: Swift.String
+            /// Creates a new `AccountUsage`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            ///   - bundleBytes: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - apiKeys:
+            ///   - orgsOwned:
+            ///   - fileBytes:
+            ///   - quotas:
+            ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string (D20)
+            public init(
+                apps: Swift.Int64,
+                bundleBytes: Swift.String,
+                apiKeys: Swift.Int64,
+                orgsOwned: Swift.Int64,
+                fileBytes: Components.Schemas.AccountUsage.FileBytesPayload,
+                quotas: Components.Schemas.Quotas,
+                developerFuelToday: Swift.String,
+                developerWritesToday: Swift.String
+            ) {
+                self.apps = apps
+                self.bundleBytes = bundleBytes
+                self.apiKeys = apiKeys
+                self.orgsOwned = orgsOwned
+                self.fileBytes = fileBytes
+                self.quotas = quotas
+                self.developerFuelToday = developerFuelToday
+                self.developerWritesToday = developerWritesToday
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+                case bundleBytes
+                case apiKeys
+                case orgsOwned
+                case fileBytes
+                case quotas
+                case developerFuelToday
+                case developerWritesToday
+            }
+        }
+        /// `GET /auth/me`: the caller's account, its passkeys and organizations, how the caller came and its recovery state.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AccountView`.
+        public struct AccountView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AccountView/accountId`.
+            public var accountId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountView/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AccountView/passkeys`.
+            public var passkeys: [Components.Schemas.AccountPasskey]
+            /// - Remark: Generated from `#/components/schemas/AccountView/orgs`.
+            public var orgs: [Components.Schemas.AccountOrg]
+            /// - Remark: Generated from `#/components/schemas/AccountView/via`.
+            @frozen public enum ViaPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case session = "session"
+                case apiKey = "apiKey"
+            }
+            /// - Remark: Generated from `#/components/schemas/AccountView/via`.
+            public var via: Components.Schemas.AccountView.ViaPayload
+            /// - Remark: Generated from `#/components/schemas/AccountView/passkeyId`.
+            public var passkeyId: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/AccountView/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/AccountView/origin`.
+            public var origin: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/AccountView/recoveryCode`.
+            public var recoveryCode: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AccountView/recoveryPending`.
+            public var recoveryPending: Components.Schemas.AccountRecoveryPending?
+            /// Creates a new `AccountView`.
+            ///
+            /// - Parameters:
+            ///   - accountId:
+            ///   - name:
+            ///   - passkeys:
+            ///   - orgs:
+            ///   - via:
+            ///   - passkeyId:
+            ///   - app:
+            ///   - origin:
+            ///   - recoveryCode:
+            ///   - recoveryPending:
+            public init(
+                accountId: Swift.String,
+                name: Swift.String,
+                passkeys: [Components.Schemas.AccountPasskey],
+                orgs: [Components.Schemas.AccountOrg],
+                via: Components.Schemas.AccountView.ViaPayload,
+                passkeyId: Swift.String? = nil,
+                app: Swift.String? = nil,
+                origin: Swift.String? = nil,
+                recoveryCode: Swift.Bool,
+                recoveryPending: Components.Schemas.AccountRecoveryPending? = nil
+            ) {
+                self.accountId = accountId
+                self.name = name
+                self.passkeys = passkeys
+                self.orgs = orgs
+                self.via = via
+                self.passkeyId = passkeyId
+                self.app = app
+                self.origin = origin
+                self.recoveryCode = recoveryCode
+                self.recoveryPending = recoveryPending
+            }
+            public enum CodingKeys: String, CodingKey {
+                case accountId
+                case name
+                case passkeys
+                case orgs
+                case via
+                case passkeyId
+                case app
+                case origin
+                case recoveryCode
+                case recoveryPending
+            }
+        }
+        /// `GET /auth/activity`: what the account's passkeys did, newest first.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ActivityList`.
+        public struct ActivityList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ActivityList/activity`.
+            public var activity: [Components.Schemas.ActivityView]
+            /// Creates a new `ActivityList`.
+            ///
+            /// - Parameters:
+            ///   - activity:
+            public init(activity: [Components.Schemas.ActivityView]) {
+                self.activity = activity
+            }
+            public enum CodingKeys: String, CodingKey {
+                case activity
+            }
+        }
+        /// One activity entry: a sign-in (its package and origin) or an approval (its method and subject), every key present, those its kind does not have `null`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ActivityView`.
+        public struct ActivityView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ActivityView/at`.
+            public var at: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/ActivityView/passkey`.
+            public var passkey: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ActivityView/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case signIn = "signIn"
+                case approval = "approval"
+            }
+            /// - Remark: Generated from `#/components/schemas/ActivityView/kind`.
+            public var kind: Components.Schemas.ActivityView.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ActivityView/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/ActivityView/origin`.
+            public var origin: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/ActivityView/method`.
+            public var method: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/ActivityView/subject`.
+            public var subject: Swift.String?
+            /// Creates a new `ActivityView`.
+            ///
+            /// - Parameters:
+            ///   - at:
+            ///   - passkey:
+            ///   - kind:
+            ///   - app:
+            ///   - origin:
+            ///   - method:
+            ///   - subject:
+            public init(
+                at: Swift.Int64,
+                passkey: Swift.String,
+                kind: Components.Schemas.ActivityView.KindPayload,
+                app: Swift.String? = nil,
+                origin: Swift.String? = nil,
+                method: Swift.String? = nil,
+                subject: Swift.String? = nil
+            ) {
+                self.at = at
+                self.passkey = passkey
+                self.kind = kind
+                self.app = app
+                self.origin = origin
+                self.method = method
+                self.subject = subject
+            }
+            public enum CodingKeys: String, CodingKey {
+                case at
+                case passkey
+                case kind
+                case app
+                case origin
+                case method
+                case subject
+            }
+        }
+        /// `GET /auth/aliases`: the account's names for apps.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AliasList`.
+        public struct AliasList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AliasList/aliases`.
+            public struct AliasesPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `AliasesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/AliasList/aliases`.
+            public var aliases: Components.Schemas.AliasList.AliasesPayload
+            /// Creates a new `AliasList`.
+            ///
+            /// - Parameters:
+            ///   - aliases:
+            public init(aliases: Components.Schemas.AliasList.AliasesPayload) {
+                self.aliases = aliases
+            }
+            public enum CodingKeys: String, CodingKey {
+                case aliases
+            }
+        }
+        /// `GET /auth/aliases/{alias}`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AliasView`.
+        public struct AliasView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AliasView/alias`.
+            public var alias: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AliasView/appId`.
+            public var appId: Swift.String
+            /// Creates a new `AliasView`.
+            ///
+            /// - Parameters:
+            ///   - alias:
+            ///   - appId:
+            public init(
+                alias: Swift.String,
+                appId: Swift.String
+            ) {
+                self.alias = alias
+                self.appId = appId
+            }
+            public enum CodingKeys: String, CodingKey {
+                case alias
+                case appId
+            }
+        }
+        /// `GET /auth/apikeys`: the account's keys, never a key itself.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ApiKeyList`.
+        public struct ApiKeyList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ApiKeyList/keys`.
+            public var keys: [Components.Schemas.ApiKey]
+            /// Creates a new `ApiKeyList`.
+            ///
+            /// - Parameters:
+            ///   - keys:
+            public init(keys: [Components.Schemas.ApiKey]) {
+                self.keys = keys
+            }
+            public enum CodingKeys: String, CodingKey {
+                case keys
+            }
+        }
+        /// `POST /auth/apikeys`: the key, answered once, and what the calls made with it answered.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ApiKeyMade`.
+        public struct ApiKeyMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ApiKeyMade/keyId`.
+            public var keyId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ApiKeyMade/key`.
+            public var key: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ApiKeyMade/ThenPayload`.
+            public struct ThenPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ApiKeyMade/ThenPayload/index`.
+                public var index: Swift.Int64
+                /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                ///
+                /// - Remark: Generated from `#/components/schemas/ApiKeyMade/ThenPayload/result`.
+                public var result: OpenAPIRuntime.OpenAPIValueContainer
+                /// - Remark: Generated from `#/components/schemas/ApiKeyMade/ThenPayload/receipt`.
+                public var receipt: Components.Schemas.Receipt
+                /// Creates a new `ThenPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - index:
+                ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                ///   - receipt:
+                public init(
+                    index: Swift.Int64,
+                    result: OpenAPIRuntime.OpenAPIValueContainer,
+                    receipt: Components.Schemas.Receipt
+                ) {
+                    self.index = index
+                    self.result = result
+                    self.receipt = receipt
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case index
+                    case result
+                    case receipt
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ApiKeyMade/then`.
+            public typealias ThenPayload = [Components.Schemas.ApiKeyMade.ThenPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/ApiKeyMade/then`.
+            public var then: Components.Schemas.ApiKeyMade.ThenPayload
+            /// Creates a new `ApiKeyMade`.
+            ///
+            /// - Parameters:
+            ///   - keyId:
+            ///   - key:
+            ///   - then:
+            public init(
+                keyId: Swift.String,
+                key: Swift.String,
+                then: Components.Schemas.ApiKeyMade.ThenPayload
+            ) {
+                self.keyId = keyId
+                self.key = key
+                self.then = then
+            }
+            public enum CodingKeys: String, CodingKey {
+                case keyId
+                case key
+                case then
+            }
+        }
+        /// A passkey added to the account.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PasskeyAdded`.
+        public struct PasskeyAdded: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PasskeyAdded/credentialId`.
+            public var credentialId: Swift.String
+            /// Creates a new `PasskeyAdded`.
+            ///
+            /// - Parameters:
+            ///   - credentialId:
+            public init(credentialId: Swift.String) {
+                self.credentialId = credentialId
+            }
+            public enum CodingKeys: String, CodingKey {
+                case credentialId
+            }
+        }
+        /// A WebAuthn ceremony begun: its challenge id, and the options to hand the browser as they are (`navigator.credentials.create` or `.get`; WebAuthn's shape, not this API's).
+        ///
+        /// - Remark: Generated from `#/components/schemas/PasskeyChallenge`.
+        public struct PasskeyChallenge: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PasskeyChallenge/challengeId`.
+            public var challengeId: Swift.String
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/PasskeyChallenge/options`.
+            public var options: OpenAPIRuntime.OpenAPIValueContainer
+            /// Creates a new `PasskeyChallenge`.
+            ///
+            /// - Parameters:
+            ///   - challengeId:
+            ///   - options: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                challengeId: Swift.String,
+                options: OpenAPIRuntime.OpenAPIValueContainer
+            ) {
+                self.challengeId = challengeId
+                self.options = options
+            }
+            public enum CodingKeys: String, CodingKey {
+                case challengeId
+                case options
+            }
+        }
+        /// `POST /auth/recovery`: the account's recovery code, shown once.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RecoveryCode`.
+        public struct RecoveryCode: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RecoveryCode/code`.
+            public var code: Swift.String
+            /// Creates a new `RecoveryCode`.
+            ///
+            /// - Parameters:
+            ///   - code:
+            public init(code: Swift.String) {
+                self.code = code
+            }
+            public enum CodingKeys: String, CodingKey {
+                case code
+            }
+        }
+        /// `GET /auth/sessions`: the account's live sessions, latest active first.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SessionList`.
+        public struct SessionList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SessionList/sessions`.
+            public var sessions: [Components.Schemas.SessionView]
+            /// Creates a new `SessionList`.
+            ///
+            /// - Parameters:
+            ///   - sessions:
+            public init(sessions: [Components.Schemas.SessionView]) {
+                self.sessions = sessions
+            }
+            public enum CodingKeys: String, CodingKey {
+                case sessions
+            }
+        }
+        /// One live session: its passkey, the package and origin it is bound to, when it opened (`null`: before the node kept it), when it was last active and whether it is the caller's.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SessionView`.
+        public struct SessionView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SessionView/session`.
+            public var session: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SessionView/passkey`.
+            public var passkey: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/SessionView/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/SessionView/origin`.
+            public var origin: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/SessionView/openedAt`.
+            public var openedAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/SessionView/lastActiveAt`.
+            public var lastActiveAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/SessionView/current`.
+            public var current: Swift.Bool
+            /// Creates a new `SessionView`.
+            ///
+            /// - Parameters:
+            ///   - session:
+            ///   - passkey:
+            ///   - app:
+            ///   - origin:
+            ///   - openedAt:
+            ///   - lastActiveAt:
+            ///   - current:
+            public init(
+                session: Swift.String,
+                passkey: Swift.String? = nil,
+                app: Swift.String? = nil,
+                origin: Swift.String? = nil,
+                openedAt: Swift.Int64? = nil,
+                lastActiveAt: Swift.Int64,
+                current: Swift.Bool
+            ) {
+                self.session = session
+                self.passkey = passkey
+                self.app = app
+                self.origin = origin
+                self.openedAt = openedAt
+                self.lastActiveAt = lastActiveAt
+                self.current = current
+            }
+            public enum CodingKeys: String, CodingKey {
+                case session
+                case passkey
+                case app
+                case origin
+                case openedAt
+                case lastActiveAt
+                case current
+            }
+        }
+        /// What `RevokeAllSessions` answers: how many sessions ended.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SessionsRevoked`.
+        public struct SessionsRevoked: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SessionsRevoked/revoked`.
+            public var revoked: Swift.Int64
+            /// Creates a new `SessionsRevoked`.
+            ///
+            /// - Parameters:
+            ///   - revoked:
+            public init(revoked: Swift.Int64) {
+                self.revoked = revoked
+            }
+            public enum CodingKeys: String, CodingKey {
+                case revoked
+            }
+        }
+        /// What `OfferApp` answers: the offer now in force.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppOffered`.
+        public struct AppOffered: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppOffered/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppOffered/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppOffered/offer`.
+            public var offer: Components.Schemas.Offer
+            /// Creates a new `AppOffered`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - app:
+            ///   - offer:
+            public init(
+                deployment: Swift.String,
+                app: Swift.String,
+                offer: Components.Schemas.Offer
+            ) {
+                self.deployment = deployment
+                self.app = app
+                self.offer = offer
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case app
+                case offer
+            }
+        }
+        /// `GET /orgs/{org}/app-teams`: the organization's mode and its app teams.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppTeamList`.
+        public struct AppTeamList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppTeamList/mode`.
+            @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case legacy = "legacy"
+                case standalone = "standalone"
+                case shared = "shared"
+            }
+            /// - Remark: Generated from `#/components/schemas/AppTeamList/mode`.
+            public var mode: Components.Schemas.AppTeamList.ModePayload
+            /// - Remark: Generated from `#/components/schemas/AppTeamList/appTeams`.
+            public var appTeams: [Components.Schemas.AppTeamRow]
+            /// Creates a new `AppTeamList`.
+            ///
+            /// - Parameters:
+            ///   - mode:
+            ///   - appTeams:
+            public init(
+                mode: Components.Schemas.AppTeamList.ModePayload,
+                appTeams: [Components.Schemas.AppTeamRow]
+            ) {
+                self.mode = mode
+                self.appTeams = appTeams
+            }
+            public enum CodingKeys: String, CodingKey {
+                case mode
+                case appTeams
+            }
+        }
+        /// What `ScopeApps` answers: the organization's mode after, and each package's app team.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppTeamsScoped`.
+        public struct AppTeamsScoped: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppTeamsScoped/mode`.
+            @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case legacy = "legacy"
+                case standalone = "standalone"
+                case shared = "shared"
+            }
+            /// - Remark: Generated from `#/components/schemas/AppTeamsScoped/mode`.
+            public var mode: Components.Schemas.AppTeamsScoped.ModePayload
+            /// - Remark: Generated from `#/components/schemas/AppTeamsScoped/teams`.
+            public var teams: [Components.Schemas.ScopedTeam]
+            /// Creates a new `AppTeamsScoped`.
+            ///
+            /// - Parameters:
+            ///   - mode:
+            ///   - teams:
+            public init(
+                mode: Components.Schemas.AppTeamsScoped.ModePayload,
+                teams: [Components.Schemas.ScopedTeam]
+            ) {
+                self.mode = mode
+                self.teams = teams
+            }
+            public enum CodingKeys: String, CodingKey {
+                case mode
+                case teams
+            }
+        }
+        /// What `WithdrawApp` answers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppWithdrawn`.
+        public struct AppWithdrawn: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppWithdrawn/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppWithdrawn/app`.
+            public var app: Swift.String
+            /// Creates a new `AppWithdrawn`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - app:
+            public init(
+                deployment: Swift.String,
+                app: Swift.String
+            ) {
+                self.deployment = deployment
+                self.app = app
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case app
+            }
+        }
+        /// What `GrantDeployer` answers: the grant's key, whom it names and its terms.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeployerGranted`.
+        public struct DeployerGranted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeployerGranted/key`.
+            public var key: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeployerGranted/deployer`.
+            public var deployer: Components.Schemas.Deployer
+            /// - Remark: Generated from `#/components/schemas/DeployerGranted/grant`.
+            public var grant: Components.Schemas.DeployerGrant
+            /// Creates a new `DeployerGranted`.
+            ///
+            /// - Parameters:
+            ///   - key:
+            ///   - deployer:
+            ///   - grant:
+            public init(
+                key: Swift.String,
+                deployer: Components.Schemas.Deployer,
+                grant: Components.Schemas.DeployerGrant
+            ) {
+                self.key = key
+                self.deployer = deployer
+                self.grant = grant
+            }
+            public enum CodingKeys: String, CodingKey {
+                case key
+                case deployer
+                case grant
+            }
+        }
+        /// `GET /deployers`: the cluster's deployment rules, its owner and every grant.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeployerList`.
+        public struct DeployerList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeployerList/deployments`.
+            @frozen public enum DeploymentsPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case open = "open"
+                case granted = "granted"
+            }
+            /// - Remark: Generated from `#/components/schemas/DeployerList/deployments`.
+            public var deployments: Components.Schemas.DeployerList.DeploymentsPayload
+            /// - Remark: Generated from `#/components/schemas/DeployerList/deployers`.
+            @frozen public enum DeployersPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case _operator = "operator"
+                case owner = "owner"
+            }
+            /// - Remark: Generated from `#/components/schemas/DeployerList/deployers`.
+            public var deployers: Components.Schemas.DeployerList.DeployersPayload
+            /// - Remark: Generated from `#/components/schemas/DeployerList/owner`.
+            public var owner: Components.Schemas.Deployer?
+            /// - Remark: Generated from `#/components/schemas/DeployerList/grants`.
+            public var grants: [Components.Schemas.DeployerGrantView]
+            /// Creates a new `DeployerList`.
+            ///
+            /// - Parameters:
+            ///   - deployments:
+            ///   - deployers:
+            ///   - owner:
+            ///   - grants:
+            public init(
+                deployments: Components.Schemas.DeployerList.DeploymentsPayload,
+                deployers: Components.Schemas.DeployerList.DeployersPayload,
+                owner: Components.Schemas.Deployer? = nil,
+                grants: [Components.Schemas.DeployerGrantView]
+            ) {
+                self.deployments = deployments
+                self.deployers = deployers
+                self.owner = owner
+                self.grants = grants
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployments
+                case deployers
+                case owner
+                case grants
+            }
+        }
+        /// What `RevokeDeployer` answers: the key of the grant withdrawn.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeployerRevoked`.
+        public struct DeployerRevoked: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeployerRevoked/key`.
+            public var key: Swift.String
+            /// Creates a new `DeployerRevoked`.
+            ///
+            /// - Parameters:
+            ///   - key:
+            public init(key: Swift.String) {
+                self.key = key
+            }
+            public enum CodingKeys: String, CodingKey {
+                case key
+            }
+        }
+        /// `POST /deployments`: the record the log made, and its frontend host.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentCreated`.
+        public struct DeploymentCreated: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentCreated/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentCreated/deployment`.
+            public var deployment: Components.Schemas.DeploymentRecord
+            /// - Remark: Generated from `#/components/schemas/DeploymentCreated/host`.
+            public var host: Swift.String?
+            /// Creates a new `DeploymentCreated`.
+            ///
+            /// - Parameters:
+            ///   - id:
+            ///   - deployment:
+            ///   - host:
+            public init(
+                id: Swift.String,
+                deployment: Components.Schemas.DeploymentRecord,
+                host: Swift.String? = nil
+            ) {
+                self.id = id
+                self.deployment = deployment
+                self.host = host
+            }
+            public enum CodingKeys: String, CodingKey {
+                case id
+                case deployment
+                case host
+            }
+        }
+        /// What `DeleteDeployment` answers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentDeleted`.
+        public struct DeploymentDeleted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentDeleted/deployment`.
+            public var deployment: Swift.String
+            /// Creates a new `DeploymentDeleted`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            public init(deployment: Swift.String) {
+                self.deployment = deployment
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+            }
+        }
+        /// `POST /deployments/{id}/transfer`: the offer as logged (`offeredAt`: Unix seconds).
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentOffered`.
+        public struct DeploymentOffered: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffered/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffered/transfer`.
+            public struct TransferPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/DeploymentOffered/transfer/to`.
+                public var to: Components.Schemas.Deployer
+                /// - Remark: Generated from `#/components/schemas/DeploymentOffered/transfer/offeredBy`.
+                public var offeredBy: Swift.String
+                /// - Remark: Generated from `#/components/schemas/DeploymentOffered/transfer/offeredAt`.
+                public var offeredAt: Swift.Int64
+                /// Creates a new `TransferPayload`.
+                ///
+                /// - Parameters:
+                ///   - to:
+                ///   - offeredBy:
+                ///   - offeredAt:
+                public init(
+                    to: Components.Schemas.Deployer,
+                    offeredBy: Swift.String,
+                    offeredAt: Swift.Int64
+                ) {
+                    self.to = to
+                    self.offeredBy = offeredBy
+                    self.offeredAt = offeredAt
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case to
+                    case offeredBy
+                    case offeredAt
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffered/transfer`.
+            public var transfer: Components.Schemas.DeploymentOffered.TransferPayload
+            /// Creates a new `DeploymentOffered`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - transfer:
+            public init(
+                deployment: Swift.String,
+                transfer: Components.Schemas.DeploymentOffered.TransferPayload
+            ) {
+                self.deployment = deployment
+                self.transfer = transfer
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case transfer
+            }
+        }
+        /// `POST /deployments/{id}/transfer/accept`: its new owner, the owner it came from, and the secret names whose values were dropped.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentAccepted`.
+        public struct DeploymentAccepted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentAccepted/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentAccepted/owner`.
+            public var owner: Components.Schemas.Deployer
+            /// - Remark: Generated from `#/components/schemas/DeploymentAccepted/from`.
+            public var from: Components.Schemas.Deployer
+            /// - Remark: Generated from `#/components/schemas/DeploymentAccepted/secretsDropped`.
+            public var secretsDropped: [Swift.String]
+            /// Creates a new `DeploymentAccepted`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - owner:
+            ///   - from:
+            ///   - secretsDropped:
+            public init(
+                deployment: Swift.String,
+                owner: Components.Schemas.Deployer,
+                from: Components.Schemas.Deployer,
+                secretsDropped: [Swift.String]
+            ) {
+                self.deployment = deployment
+                self.owner = owner
+                self.from = from
+                self.secretsDropped = secretsDropped
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case owner
+                case from
+                case secretsDropped
+            }
+        }
+        /// `DELETE /deployments/{id}/transfer`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentTransferCancelled`.
+        public struct DeploymentTransferCancelled: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentTransferCancelled/deployment`.
+            public var deployment: Swift.String
+            /// Creates a new `DeploymentTransferCancelled`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            public init(deployment: Swift.String) {
+                self.deployment = deployment
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+            }
+        }
+        /// `GET /deployments`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentList`.
+        public struct DeploymentList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentList/deployments`.
+            public var deployments: [Components.Schemas.Deployment]
+            /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload`.
+            public struct OfferedPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/id`.
+                public var id: Swift.String
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/name`.
+                public var name: Swift.String
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/owner`.
+                @frozen public enum OwnerPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case account = "account"
+                    case org = "org"
+                }
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/owner`.
+                public var owner: Components.Schemas.DeploymentList.OfferedPayloadPayload.OwnerPayload
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/ownerName`.
+                public var ownerName: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/AppsPayload`.
+                public struct AppsPayloadPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/AppsPayload/app`.
+                    public var app: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/AppsPayload/package`.
+                    public var package: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/AppsPayload/version`.
+                    public var version: Swift.String
+                    /// Creates a new `AppsPayloadPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - app:
+                    ///   - package:
+                    ///   - version:
+                    public init(
+                        app: Swift.String,
+                        package: Swift.String,
+                        version: Swift.String
+                    ) {
+                        self.app = app
+                        self.package = package
+                        self.version = version
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case app
+                        case package
+                        case version
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/apps`.
+                public typealias AppsPayload = [Components.Schemas.DeploymentList.OfferedPayloadPayload.AppsPayloadPayload]
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/apps`.
+                public var apps: Components.Schemas.DeploymentList.OfferedPayloadPayload.AppsPayload
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/to`.
+                public var to: Components.Schemas.Deployer
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/offeredAt`.
+                public var offeredAt: Swift.String
+                /// - Remark: Generated from `#/components/schemas/DeploymentList/OfferedPayload/expiresAt`.
+                public var expiresAt: Swift.String
+                /// Creates a new `OfferedPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                ///   - name:
+                ///   - owner:
+                ///   - ownerName:
+                ///   - apps:
+                ///   - to:
+                ///   - offeredAt:
+                ///   - expiresAt:
+                public init(
+                    id: Swift.String,
+                    name: Swift.String,
+                    owner: Components.Schemas.DeploymentList.OfferedPayloadPayload.OwnerPayload,
+                    ownerName: Swift.String? = nil,
+                    apps: Components.Schemas.DeploymentList.OfferedPayloadPayload.AppsPayload,
+                    to: Components.Schemas.Deployer,
+                    offeredAt: Swift.String,
+                    expiresAt: Swift.String
+                ) {
+                    self.id = id
+                    self.name = name
+                    self.owner = owner
+                    self.ownerName = ownerName
+                    self.apps = apps
+                    self.to = to
+                    self.offeredAt = offeredAt
+                    self.expiresAt = expiresAt
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case id
+                    case name
+                    case owner
+                    case ownerName
+                    case apps
+                    case to
+                    case offeredAt
+                    case expiresAt
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentList/offered`.
+            public typealias OfferedPayload = [Components.Schemas.DeploymentList.OfferedPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/DeploymentList/offered`.
+            public var offered: Components.Schemas.DeploymentList.OfferedPayload
+            /// Creates a new `DeploymentList`.
+            ///
+            /// - Parameters:
+            ///   - deployments:
+            ///   - offered:
+            public init(
+                deployments: [Components.Schemas.Deployment],
+                offered: Components.Schemas.DeploymentList.OfferedPayload
+            ) {
+                self.deployments = deployments
+                self.offered = offered
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployments
+                case offered
+            }
+        }
+        /// `GET /deployments/{id}/orgs`: the customer organizations, by counts only.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentOrgs`.
+        public struct DeploymentOrgs: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentOrgs/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentOrgs/orgs`.
+            public var orgs: [Components.Schemas.DeploymentCustomer]
+            /// - Remark: Generated from `#/components/schemas/DeploymentOrgs/outsideOrgs`.
+            public var outsideOrgs: Swift.Int64
+            /// Creates a new `DeploymentOrgs`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - orgs:
+            ///   - outsideOrgs:
+            public init(
+                deployment: Swift.String,
+                orgs: [Components.Schemas.DeploymentCustomer],
+                outsideOrgs: Swift.Int64
+            ) {
+                self.deployment = deployment
+                self.orgs = orgs
+                self.outsideOrgs = outsideOrgs
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case orgs
+                case outsideOrgs
+            }
+        }
+        /// What `ClearDeploymentSecret` answers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentSecretCleared`.
+        public struct DeploymentSecretCleared: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretCleared/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretCleared/name`.
+            public var name: Swift.String
+            /// Creates a new `DeploymentSecretCleared`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - name:
+            public init(
+                deployment: Swift.String,
+                name: Swift.String
+            ) {
+                self.deployment = deployment
+                self.name = name
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case name
+            }
+        }
+        /// What `SetDeploymentSecret` answers: never the value, its fingerprint.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentSecretSet`.
+        public struct DeploymentSecretSet: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretSet/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretSet/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretSet/fingerprint`.
+            public var fingerprint: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretSet/setBy`.
+            public var setBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretSet/setAt`.
+            public var setAt: Swift.Int64
+            /// Creates a new `DeploymentSecretSet`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - name:
+            ///   - fingerprint:
+            ///   - setBy:
+            ///   - setAt:
+            public init(
+                deployment: Swift.String,
+                name: Swift.String,
+                fingerprint: Swift.String,
+                setBy: Swift.String,
+                setAt: Swift.Int64
+            ) {
+                self.deployment = deployment
+                self.name = name
+                self.fingerprint = fingerprint
+                self.setBy = setBy
+                self.setAt = setAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case name
+                case fingerprint
+                case setBy
+                case setAt
+            }
+        }
+        /// `GET /deployments/{id}/secrets`: each name its offers declare or it holds a value for.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentSecrets`.
+        public struct DeploymentSecrets: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecrets/deployment`.
+            public var deployment: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecrets/secrets`.
+            public struct SecretsPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.DeploymentSecretView]
+                /// Creates a new `SecretsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.DeploymentSecretView] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecrets/secrets`.
+            public var secrets: Components.Schemas.DeploymentSecrets.SecretsPayload
+            /// Creates a new `DeploymentSecrets`.
+            ///
+            /// - Parameters:
+            ///   - deployment:
+            ///   - secrets:
+            public init(
+                deployment: Swift.String,
+                secrets: Components.Schemas.DeploymentSecrets.SecretsPayload
+            ) {
+                self.deployment = deployment
+                self.secrets = secrets
+            }
+            public enum CodingKeys: String, CodingKey {
+                case deployment
+                case secrets
+            }
+        }
+        /// What `SetEgress` answers: the switch as set, the organization's own, and the instance when one was named.
+        ///
+        /// - Remark: Generated from `#/components/schemas/EgressSet`.
+        public struct EgressSet: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/EgressSet/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/EgressSet/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/EgressSet/egress`.
+            public var egress: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/EgressSet/orgEgressOff`.
+            public var orgEgressOff: Swift.Bool
+            /// Creates a new `EgressSet`.
+            ///
+            /// - Parameters:
+            ///   - org:
+            ///   - app:
+            ///   - egress:
+            ///   - orgEgressOff:
+            public init(
+                org: Swift.String,
+                app: Swift.String? = nil,
+                egress: Swift.Bool,
+                orgEgressOff: Swift.Bool
+            ) {
+                self.org = org
+                self.app = app
+                self.egress = egress
+                self.orgEgressOff = orgEgressOff
+            }
+            public enum CodingKeys: String, CodingKey {
+                case org
+                case app
+                case egress
+                case orgEgressOff
+            }
+        }
+        /// `GET /orgs/{org}/invites`.
+        ///
+        /// - Remark: Generated from `#/components/schemas/InviteList`.
+        public struct InviteList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/InviteList/invites`.
+            public var invites: [Components.Schemas.InviteView]
+            /// Creates a new `InviteList`.
+            ///
+            /// - Parameters:
+            ///   - invites:
+            public init(invites: [Components.Schemas.InviteView]) {
+                self.invites = invites
+            }
+            public enum CodingKeys: String, CodingKey {
+                case invites
+            }
+        }
+        /// `POST /orgs/{org}/invites`: the invite's token, answered once.
+        ///
+        /// - Remark: Generated from `#/components/schemas/InviteMade`.
+        public struct InviteMade: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/InviteMade/token`.
+            public var token: Swift.String
+            /// Creates a new `InviteMade`.
+            ///
+            /// - Parameters:
+            ///   - token:
+            public init(token: Swift.String) {
+                self.token = token
+            }
+            public enum CodingKeys: String, CodingKey {
+                case token
+            }
+        }
+        /// What `CreateOrg` answers: the new organization, and its app team when it is made with one (the consent page's `createOrg` for a package).
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgCreated`.
+        public struct OrgCreated: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgCreated/orgId`.
+            public var orgId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgCreated/teamId`.
+            public var teamId: Swift.String?
+            /// Creates a new `OrgCreated`.
+            ///
+            /// - Parameters:
+            ///   - orgId:
+            ///   - teamId:
+            public init(
+                orgId: Swift.String,
+                teamId: Swift.String? = nil
+            ) {
+                self.orgId = orgId
+                self.teamId = teamId
+            }
+            public enum CodingKeys: String, CodingKey {
+                case orgId
+                case teamId
+            }
+        }
+        /// What `DeleteOrg` answers: the instances deleted with it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgDeleted`.
+        public struct OrgDeleted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgDeleted/apps`.
+            public var apps: [Swift.String]
+            /// Creates a new `OrgDeleted`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            public init(apps: [Swift.String]) {
+                self.apps = apps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+            }
+        }
+        /// `GET /orgs/{org}/members?detail=security`: each member the caller sees, with what tells whether their account is safe.
+        ///
+        /// - Remark: Generated from `#/components/schemas/MemberSecurityList`.
+        public struct MemberSecurityList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/MemberSecurityList/orgId`.
+            public var orgId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/MemberSecurityList/members`.
+            public var members: [Components.Schemas.MemberSecurity]
+            /// Creates a new `MemberSecurityList`.
+            ///
+            /// - Parameters:
+            ///   - orgId:
+            ///   - members:
+            public init(
+                orgId: Swift.String,
+                members: [Components.Schemas.MemberSecurity]
+            ) {
+                self.orgId = orgId
+                self.members = members
+            }
+            public enum CodingKeys: String, CodingKey {
+                case orgId
+                case members
+            }
+        }
+        /// What `RenameOrg` answers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgRenamed`.
+        public struct OrgRenamed: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgRenamed/orgId`.
+            public var orgId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgRenamed/name`.
+            public var name: Swift.String
+            /// Creates a new `OrgRenamed`.
+            ///
+            /// - Parameters:
+            ///   - orgId:
+            ///   - name:
+            public init(
+                orgId: Swift.String,
+                name: Swift.String
+            ) {
+                self.orgId = orgId
+                self.name = name
+            }
+            public enum CodingKeys: String, CodingKey {
+                case orgId
+                case name
+            }
+        }
+        /// What `SetOrgSettings` answers: the settings after the change.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgSettingsSet`.
+        public struct OrgSettingsSet: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgSettingsSet/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgSettingsSet/allowGuests`.
+            public var allowGuests: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/OrgSettingsSet/allowPublicLinks`.
+            public var allowPublicLinks: Swift.Bool
+            /// Creates a new `OrgSettingsSet`.
+            ///
+            /// - Parameters:
+            ///   - org:
+            ///   - allowGuests:
+            ///   - allowPublicLinks:
+            public init(
+                org: Swift.String,
+                allowGuests: Swift.Bool,
+                allowPublicLinks: Swift.Bool
+            ) {
+                self.org = org
+                self.allowGuests = allowGuests
+                self.allowPublicLinks = allowPublicLinks
+            }
+            public enum CodingKeys: String, CodingKey {
+                case org
+                case allowGuests
+                case allowPublicLinks
+            }
+        }
+        /// `GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each as `GET /apps/{app}/update` shows it with its `name`, and the organization's policy.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgUpdates`.
+        public struct OrgUpdates: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgUpdates/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgUpdates/policy`.
+            public var policy: Components.Schemas.UpgradePolicy
+            /// - Remark: Generated from `#/components/schemas/OrgUpdates/updates`.
+            public var updates: [OpenAPIRuntime.OpenAPIValueContainer]
+            /// - Remark: Generated from `#/components/schemas/OrgUpdates/next`.
+            public var next: Swift.String?
+            /// Creates a new `OrgUpdates`.
+            ///
+            /// - Parameters:
+            ///   - org:
+            ///   - policy:
+            ///   - updates:
+            ///   - next:
+            public init(
+                org: Swift.String,
+                policy: Components.Schemas.UpgradePolicy,
+                updates: [OpenAPIRuntime.OpenAPIValueContainer],
+                next: Swift.String? = nil
+            ) {
+                self.org = org
+                self.policy = policy
+                self.updates = updates
+                self.next = next
+            }
+            public enum CodingKeys: String, CodingKey {
+                case org
+                case policy
+                case updates
+                case next
+            }
+        }
+        /// `GET /orgs/{org}/usage`: the apps billed to it, its developer usage today (decimal strings) and the cluster's quotas.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OrgUsage`.
+        public struct OrgUsage: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OrgUsage/apps`.
+            public var apps: Swift.Int64
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/OrgUsage/developerFuelToday`.
+            public var developerFuelToday: Swift.String
+            /// an unsigned 64-bit integer as a decimal string (D20)
+            ///
+            /// - Remark: Generated from `#/components/schemas/OrgUsage/developerWritesToday`.
+            public var developerWritesToday: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OrgUsage/quotas`.
+            public var quotas: Components.Schemas.Quotas
+            /// Creates a new `OrgUsage`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string (D20)
+            ///   - quotas:
+            public init(
+                apps: Swift.Int64,
+                developerFuelToday: Swift.String,
+                developerWritesToday: Swift.String,
+                quotas: Components.Schemas.Quotas
+            ) {
+                self.apps = apps
+                self.developerFuelToday = developerFuelToday
+                self.developerWritesToday = developerWritesToday
+                self.quotas = quotas
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+                case developerFuelToday
+                case developerWritesToday
+                case quotas
+            }
+        }
+        /// `GET /deployments/{id}`, public: its name, whose it is, and what it offers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublicDeployment`.
+        public struct PublicDeployment: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublicDeployment/id`.
+            public var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublicDeployment/host`.
+            public var host: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PublicDeployment/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublicDeployment/owner`.
+            public var owner: Components.Schemas.DeploymentOwner
+            /// - Remark: Generated from `#/components/schemas/PublicDeployment/apps`.
+            public var apps: [Components.Schemas.PublicDeploymentApp]
+            /// Creates a new `PublicDeployment`.
+            ///
+            /// - Parameters:
+            ///   - id:
+            ///   - host:
+            ///   - name:
+            ///   - owner:
+            ///   - apps:
+            public init(
+                id: Swift.String,
+                host: Swift.String? = nil,
+                name: Swift.String,
+                owner: Components.Schemas.DeploymentOwner,
+                apps: [Components.Schemas.PublicDeploymentApp]
+            ) {
+                self.id = id
+                self.host = host
+                self.name = name
+                self.owner = owner
+                self.apps = apps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case id
+                case host
+                case name
+                case owner
+                case apps
+            }
+        }
+        /// What `BindPublisher` answers: the key's binding generation now.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublisherBound`.
+        public struct PublisherBound: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublisherBound/generation`.
+            public var generation: Swift.Int64
+            /// Creates a new `PublisherBound`.
+            ///
+            /// - Parameters:
+            ///   - generation:
+            public init(generation: Swift.Int64) {
+                self.generation = generation
+            }
+            public enum CodingKeys: String, CodingKey {
+                case generation
+            }
+        }
+        /// What an organization recovery's finish answers: the organization and the owners it replaced.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RecoveryFinished`.
+        public struct RecoveryFinished: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RecoveryFinished/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RecoveryFinished/previousOwners`.
+            public var previousOwners: [Swift.String]
+            /// Creates a new `RecoveryFinished`.
+            ///
+            /// - Parameters:
+            ///   - org:
+            ///   - previousOwners:
+            public init(
+                org: Swift.String,
+                previousOwners: [Swift.String]
+            ) {
+                self.org = org
+                self.previousOwners = previousOwners
+            }
+            public enum CodingKeys: String, CodingKey {
+                case org
+                case previousOwners
+            }
+        }
+        /// What an organization recovery's start answers: when it started and when it may finish (Unix seconds).
+        ///
+        /// - Remark: Generated from `#/components/schemas/RecoveryStarted`.
+        public struct RecoveryStarted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RecoveryStarted/startedAt`.
+            public var startedAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/RecoveryStarted/readyAt`.
+            public var readyAt: Swift.Int64
+            /// Creates a new `RecoveryStarted`.
+            ///
+            /// - Parameters:
+            ///   - startedAt:
+            ///   - readyAt:
+            public init(
+                startedAt: Swift.Int64,
+                readyAt: Swift.Int64
+            ) {
+                self.startedAt = startedAt
+                self.readyAt = readyAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case startedAt
+                case readyAt
+            }
+        }
+        /// What `CreateTeam` answers.
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamCreated`.
+        public struct TeamCreated: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamCreated/teamId`.
+            public var teamId: Swift.String
+            /// Creates a new `TeamCreated`.
+            ///
+            /// - Parameters:
+            ///   - teamId:
+            public init(teamId: Swift.String) {
+                self.teamId = teamId
+            }
+            public enum CodingKeys: String, CodingKey {
+                case teamId
+            }
+        }
+        /// What `DeleteTeam` answers: the teams deleted (the team and those below it), the instances deleted with them, and with `keepApps` those kept instead (`apps` then empty).
+        ///
+        /// - Remark: Generated from `#/components/schemas/TeamDeleted`.
+        public struct TeamDeleted: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/TeamDeleted/teams`.
+            public var teams: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/TeamDeleted/apps`.
+            public var apps: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/TeamDeleted/keptApps`.
+            public var keptApps: [Swift.String]?
+            /// Creates a new `TeamDeleted`.
+            ///
+            /// - Parameters:
+            ///   - teams:
+            ///   - apps:
+            ///   - keptApps:
+            public init(
+                teams: [Swift.String],
+                apps: [Swift.String],
+                keptApps: [Swift.String]? = nil
+            ) {
+                self.teams = teams
+                self.apps = apps
+                self.keptApps = keptApps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case teams
+                case apps
+                case keptApps
+            }
+        }
+        /// One app team: its package, how many are in it, the capabilities a new member gets (`null`: the organization's), and whether the caller is in it or manages it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppTeamRow`.
+        public struct AppTeamRow: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/teamId`.
+            public var teamId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/name`.
+            public var name: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/join`.
+            public var join: Components.Schemas.TeamJoin
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/memberCount`.
+            public var memberCount: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/defaultCapabilities`.
+            public var defaultCapabilities: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/member`.
+            public var member: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/AppTeamRow/manages`.
+            public var manages: Swift.Bool
+            /// Creates a new `AppTeamRow`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - teamId:
+            ///   - name:
+            ///   - join:
+            ///   - memberCount:
+            ///   - defaultCapabilities:
+            ///   - member:
+            ///   - manages:
+            public init(
+                package: Swift.String,
+                teamId: Swift.String,
+                name: Swift.String,
+                join: Components.Schemas.TeamJoin,
+                memberCount: Swift.Int64,
+                defaultCapabilities: Swift.Int64? = nil,
+                member: Swift.Bool,
+                manages: Swift.Bool
+            ) {
+                self.package = package
+                self.teamId = teamId
+                self.name = name
+                self.join = join
+                self.memberCount = memberCount
+                self.defaultCapabilities = defaultCapabilities
+                self.member = member
+                self.manages = manages
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case teamId
+                case name
+                case join
+                case memberCount
+                case defaultCapabilities
+                case member
+                case manages
+            }
+        }
+        /// An app a customer runs from the deployment, and its version.
+        ///
+        /// - Remark: Generated from `#/components/schemas/CustomerApp`.
+        public struct CustomerApp: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/CustomerApp/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/CustomerApp/version`.
+            public var version: Swift.String
+            /// Creates a new `CustomerApp`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - version:
+            public init(
+                app: Swift.String,
+                version: Swift.String
+            ) {
+                self.app = app
+                self.version = version
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case version
+            }
+        }
+        /// A deployer grant: whom it names (`null`: a key no deployer parses), until when (`until` RFC 3339, `untilSecs` Unix seconds; `null`: no end), who granted it and when.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeployerGrantView`.
+        public struct DeployerGrantView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeployerGrantView/key`.
+            public var key: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeployerGrantView/deployer`.
+            public var deployer: Components.Schemas.Deployer?
+            /// - Remark: Generated from `#/components/schemas/DeployerGrantView/until`.
+            public var until: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/DeployerGrantView/untilSecs`.
+            public var untilSecs: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/DeployerGrantView/grantedAt`.
+            public var grantedAt: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeployerGrantView/grantedBy`.
+            public var grantedBy: Swift.String
+            /// Creates a new `DeployerGrantView`.
+            ///
+            /// - Parameters:
+            ///   - key:
+            ///   - deployer:
+            ///   - until:
+            ///   - untilSecs:
+            ///   - grantedAt:
+            ///   - grantedBy:
+            public init(
+                key: Swift.String,
+                deployer: Components.Schemas.Deployer? = nil,
+                until: Swift.String? = nil,
+                untilSecs: Swift.Int64? = nil,
+                grantedAt: Swift.String,
+                grantedBy: Swift.String
+            ) {
+                self.key = key
+                self.deployer = deployer
+                self.until = until
+                self.untilSecs = untilSecs
+                self.grantedAt = grantedAt
+                self.grantedBy = grantedBy
+            }
+            public enum CodingKeys: String, CodingKey {
+                case key
+                case deployer
+                case until
+                case untilSecs
+                case grantedAt
+                case grantedBy
+            }
+        }
+        /// A customer organization of a deployment, by counts only: its members, those active in the last 30 days, its instances and the releases they run, and when its first was made (RFC 3339).
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentCustomer`.
+        public struct DeploymentCustomer: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/orgId`.
+            public var orgId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/name`.
+            public var name: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/memberCount`.
+            public var memberCount: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/activeMembers30d`.
+            public var activeMembers30d: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/instances`.
+            public var instances: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/apps`.
+            public var apps: [Components.Schemas.CustomerApp]
+            /// - Remark: Generated from `#/components/schemas/DeploymentCustomer/firstCreatedAt`.
+            public var firstCreatedAt: Swift.String
+            /// Creates a new `DeploymentCustomer`.
+            ///
+            /// - Parameters:
+            ///   - orgId:
+            ///   - name:
+            ///   - memberCount:
+            ///   - activeMembers30d:
+            ///   - instances:
+            ///   - apps:
+            ///   - firstCreatedAt:
+            public init(
+                orgId: Swift.String,
+                name: Swift.String? = nil,
+                memberCount: Swift.Int64,
+                activeMembers30d: Swift.Int64,
+                instances: Swift.Int64,
+                apps: [Components.Schemas.CustomerApp],
+                firstCreatedAt: Swift.String
+            ) {
+                self.orgId = orgId
+                self.name = name
+                self.memberCount = memberCount
+                self.activeMembers30d = activeMembers30d
+                self.instances = instances
+                self.apps = apps
+                self.firstCreatedAt = firstCreatedAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case orgId
+                case name
+                case memberCount
+                case activeMembers30d
+                case instances
+                case apps
+                case firstCreatedAt
+            }
+        }
+        /// An app a deployment offers, as its managers list it: the release, who offered it and when (RFC 3339).
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentOffer`.
+        public struct DeploymentOffer: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffer/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffer/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffer/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffer/addedBy`.
+            public var addedBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/DeploymentOffer/addedAt`.
+            public var addedAt: Swift.String
+            /// Creates a new `DeploymentOffer`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - package:
+            ///   - version:
+            ///   - addedBy:
+            ///   - addedAt:
+            public init(
+                app: Swift.String,
+                package: Swift.String,
+                version: Swift.String,
+                addedBy: Swift.String,
+                addedAt: Swift.String
+            ) {
+                self.app = app
+                self.package = package
+                self.version = version
+                self.addedBy = addedBy
+                self.addedAt = addedAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case package
+                case version
+                case addedBy
+                case addedAt
+            }
+        }
+        /// Whose deployment it is: an account or an organization, and its name (`null`: gone).
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentOwner`.
+        public struct DeploymentOwner: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentOwner/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case account = "account"
+                case org = "org"
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentOwner/kind`.
+            public var kind: Components.Schemas.DeploymentOwner.KindPayload
+            /// - Remark: Generated from `#/components/schemas/DeploymentOwner/name`.
+            public var name: Swift.String?
+            /// Creates a new `DeploymentOwner`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - name:
+            public init(
+                kind: Components.Schemas.DeploymentOwner.KindPayload,
+                name: Swift.String? = nil
+            ) {
+                self.kind = kind
+                self.name = name
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case name
+            }
+        }
+        /// A secret of a deployment, never its value: the offered apps and releases that declare it, whether a value is set, and its fingerprint, setter and time when it is.
+        ///
+        /// - Remark: Generated from `#/components/schemas/DeploymentSecretView`.
+        public struct DeploymentSecretView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretView/apps`.
+            public var apps: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretView/declaredBy`.
+            public var declaredBy: [Components.Schemas.SecretDeclarer]
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretView/set`.
+            public var set: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretView/fingerprint`.
+            public var fingerprint: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretView/setBy`.
+            public var setBy: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/DeploymentSecretView/setAt`.
+            public var setAt: Swift.Int64?
+            /// Creates a new `DeploymentSecretView`.
+            ///
+            /// - Parameters:
+            ///   - apps:
+            ///   - declaredBy:
+            ///   - set:
+            ///   - fingerprint:
+            ///   - setBy:
+            ///   - setAt:
+            public init(
+                apps: [Swift.String],
+                declaredBy: [Components.Schemas.SecretDeclarer],
+                set: Swift.Bool,
+                fingerprint: Swift.String? = nil,
+                setBy: Swift.String? = nil,
+                setAt: Swift.Int64? = nil
+            ) {
+                self.apps = apps
+                self.declaredBy = declaredBy
+                self.set = set
+                self.fingerprint = fingerprint
+                self.setBy = setBy
+                self.setAt = setAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case apps
+                case declaredBy
+                case set
+                case fingerprint
+                case setBy
+                case setAt
+            }
+        }
+        /// An organization invite as its list shows it, never its token: `createdBy`/`createdAt` `null` for one made before they were kept.
+        ///
+        /// - Remark: Generated from `#/components/schemas/InviteView`.
+        public struct InviteView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/InviteView/inviteKey`.
+            public var inviteKey: Swift.String
+            /// - Remark: Generated from `#/components/schemas/InviteView/role`.
+            public var role: Components.Schemas.OrgRole
+            /// - Remark: Generated from `#/components/schemas/InviteView/teams`.
+            public var teams: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/InviteView/usesLeft`.
+            public var usesLeft: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/InviteView/expiresAt`.
+            public var expiresAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/InviteView/expired`.
+            public var expired: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/InviteView/createdBy`.
+            public var createdBy: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/InviteView/createdAt`.
+            public var createdAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/InviteView/allApps`.
+            public var allApps: Swift.Bool
+            /// Creates a new `InviteView`.
+            ///
+            /// - Parameters:
+            ///   - inviteKey:
+            ///   - role:
+            ///   - teams:
+            ///   - usesLeft:
+            ///   - expiresAt:
+            ///   - expired:
+            ///   - createdBy:
+            ///   - createdAt:
+            ///   - allApps:
+            public init(
+                inviteKey: Swift.String,
+                role: Components.Schemas.OrgRole,
+                teams: [Swift.String],
+                usesLeft: Swift.Int64,
+                expiresAt: Swift.Int64,
+                expired: Swift.Bool,
+                createdBy: Swift.String? = nil,
+                createdAt: Swift.Int64? = nil,
+                allApps: Swift.Bool
+            ) {
+                self.inviteKey = inviteKey
+                self.role = role
+                self.teams = teams
+                self.usesLeft = usesLeft
+                self.expiresAt = expiresAt
+                self.expired = expired
+                self.createdBy = createdBy
+                self.createdAt = createdAt
+                self.allApps = allApps
+            }
+            public enum CodingKeys: String, CodingKey {
+                case inviteKey
+                case role
+                case teams
+                case usesLeft
+                case expiresAt
+                case expired
+                case createdBy
+                case createdAt
+                case allApps
+            }
+        }
+        /// A member as the security listing shows them: their teams, how many passkeys (a number below 3, else `"3+"`), whether they hold a recovery code, the last UTC day they were active (`null`: never seen) and their live sessions.
+        ///
+        /// - Remark: Generated from `#/components/schemas/MemberSecurity`.
+        public struct MemberSecurity: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/account`.
+            public var account: Swift.String
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/name`.
+            public var name: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/role`.
+            public var role: Components.Schemas.OrgRole
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/teams`.
+            public var teams: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/passkeys`.
+            public struct PasskeysPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/MemberSecurity/passkeys/value1`.
+                public var value1: Swift.Int64?
+                /// - Remark: Generated from `#/components/schemas/MemberSecurity/passkeys/value2`.
+                @frozen public enum Value2Payload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case _3 = "3+"
+                }
+                /// - Remark: Generated from `#/components/schemas/MemberSecurity/passkeys/value2`.
+                public var value2: Components.Schemas.MemberSecurity.PasskeysPayload.Value2Payload?
+                /// Creates a new `PasskeysPayload`.
+                ///
+                /// - Parameters:
+                ///   - value1:
+                ///   - value2:
+                public init(
+                    value1: Swift.Int64? = nil,
+                    value2: Components.Schemas.MemberSecurity.PasskeysPayload.Value2Payload? = nil
+                ) {
+                    self.value1 = value1
+                    self.value2 = value2
+                }
+                public init(from decoder: any Decoder) throws {
+                    var errors: [any Error] = []
+                    do {
+                        self.value1 = try decoder.decodeFromSingleValueContainer()
+                    } catch {
+                        errors.append(error)
+                    }
+                    do {
+                        self.value2 = try decoder.decodeFromSingleValueContainer()
+                    } catch {
+                        errors.append(error)
+                    }
+                    try Swift.DecodingError.verifyAtLeastOneSchemaIsNotNil(
+                        [
+                            self.value1,
+                            self.value2
+                        ],
+                        type: Self.self,
+                        codingPath: decoder.codingPath,
+                        errors: errors
+                    )
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeFirstNonNilValueToSingleValueContainer([
+                        self.value1,
+                        self.value2
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/passkeys`.
+            public var passkeys: Components.Schemas.MemberSecurity.PasskeysPayload
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/recoveryCode`.
+            public var recoveryCode: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/lastActiveDay`.
+            public var lastActiveDay: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/MemberSecurity/sessions`.
+            public var sessions: Swift.Int64
+            /// Creates a new `MemberSecurity`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - name:
+            ///   - role:
+            ///   - teams:
+            ///   - passkeys:
+            ///   - recoveryCode:
+            ///   - lastActiveDay:
+            ///   - sessions:
+            public init(
+                account: Swift.String,
+                name: Swift.String? = nil,
+                role: Components.Schemas.OrgRole,
+                teams: [Swift.String],
+                passkeys: Components.Schemas.MemberSecurity.PasskeysPayload,
+                recoveryCode: Swift.Bool,
+                lastActiveDay: Swift.String? = nil,
+                sessions: Swift.Int64
+            ) {
+                self.account = account
+                self.name = name
+                self.role = role
+                self.teams = teams
+                self.passkeys = passkeys
+                self.recoveryCode = recoveryCode
+                self.lastActiveDay = lastActiveDay
+                self.sessions = sessions
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case name
+                case role
+                case teams
+                case passkeys
+                case recoveryCode
+                case lastActiveDay
+                case sessions
+            }
+        }
+        /// An app a deployment offers: the release new instances run, who offered it and when (Unix seconds).
+        ///
+        /// - Remark: Generated from `#/components/schemas/Offer`.
+        public struct Offer: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Offer/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Offer/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Offer/addedBy`.
+            public var addedBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Offer/addedAt`.
+            public var addedAt: Swift.Int64
+            /// Creates a new `Offer`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - version:
+            ///   - addedBy:
+            ///   - addedAt:
+            public init(
+                package: Swift.String,
+                version: Swift.String,
+                addedBy: Swift.String,
+                addedAt: Swift.Int64
+            ) {
+                self.package = package
+                self.version = version
+                self.addedBy = addedBy
+                self.addedAt = addedAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case version
+                case addedBy
+                case addedAt
+            }
+        }
+        /// An app a deployment offers, and the release its new instances run.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PublicDeploymentApp`.
+        public struct PublicDeploymentApp: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PublicDeploymentApp/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublicDeploymentApp/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PublicDeploymentApp/version`.
+            public var version: Swift.String
+            /// Creates a new `PublicDeploymentApp`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - package:
+            ///   - version:
+            public init(
+                app: Swift.String,
+                package: Swift.String,
+                version: Swift.String
+            ) {
+                self.app = app
+                self.package = package
+                self.version = version
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case package
+                case version
+            }
+        }
+        /// One package's app team after a scope: whether it was made, the instances moved onto it, the rows added, how it is joined now (`null`: not changed) and how many lost it by a close.
+        ///
+        /// - Remark: Generated from `#/components/schemas/ScopedTeam`.
+        public struct ScopedTeam: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/teamId`.
+            public var teamId: Swift.String
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/created`.
+            public var created: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/apps`.
+            public var apps: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/added`.
+            public var added: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/join`.
+            public var join: Components.Schemas.TeamJoin?
+            /// - Remark: Generated from `#/components/schemas/ScopedTeam/dropped`.
+            public var dropped: Swift.Int64
+            /// Creates a new `ScopedTeam`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - teamId:
+            ///   - created:
+            ///   - apps:
+            ///   - added:
+            ///   - join:
+            ///   - dropped:
+            public init(
+                package: Swift.String,
+                teamId: Swift.String,
+                created: Swift.Bool,
+                apps: [Swift.String],
+                added: Swift.Int64,
+                join: Components.Schemas.TeamJoin? = nil,
+                dropped: Swift.Int64
+            ) {
+                self.package = package
+                self.teamId = teamId
+                self.created = created
+                self.apps = apps
+                self.added = added
+                self.join = join
+                self.dropped = dropped
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case teamId
+                case created
+                case apps
+                case added
+                case join
+                case dropped
+            }
+        }
+        /// A release that declares a secret.
+        ///
+        /// - Remark: Generated from `#/components/schemas/SecretDeclarer`.
+        public struct SecretDeclarer: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/SecretDeclarer/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/SecretDeclarer/version`.
+            public var version: Swift.String
+            /// Creates a new `SecretDeclarer`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - version:
+            public init(
+                package: Swift.String,
+                version: Swift.String
+            ) {
+                self.package = package
+                self.version = version
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case version
+            }
+        }
         /// A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same request sent again with it approves exactly that request.
         ///
         /// - Remark: Generated from `#/components/schemas/Confirm`.
@@ -5877,6 +13016,67 @@ public enum Components {
                 case quoteSha256
                 case verifiedAt
                 case mock
+            }
+        }
+        /// A Raft group's status as one node sees it: the leader (`null`: none known), whether this node is it, the term, the last log index (`null`: an empty log), the applied index, and the voters and learners.
+        ///
+        /// - Remark: Generated from `#/components/schemas/GroupStatus`.
+        public struct GroupStatus: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/group`.
+            public var group: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/leader`.
+            public var leader: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/is_leader`.
+            public var isLeader: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/term`.
+            public var term: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/last_log`.
+            public var lastLog: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/applied`.
+            public var applied: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/voters`.
+            public var voters: [Swift.Int64]
+            /// - Remark: Generated from `#/components/schemas/GroupStatus/learners`.
+            public var learners: [Swift.Int64]
+            /// Creates a new `GroupStatus`.
+            ///
+            /// - Parameters:
+            ///   - group:
+            ///   - leader:
+            ///   - isLeader:
+            ///   - term:
+            ///   - lastLog:
+            ///   - applied:
+            ///   - voters:
+            ///   - learners:
+            public init(
+                group: Swift.Int64,
+                leader: Swift.Int64? = nil,
+                isLeader: Swift.Bool,
+                term: Swift.Int64,
+                lastLog: Swift.Int64? = nil,
+                applied: Swift.Int64,
+                voters: [Swift.Int64],
+                learners: [Swift.Int64]
+            ) {
+                self.group = group
+                self.leader = leader
+                self.isLeader = isLeader
+                self.term = term
+                self.lastLog = lastLog
+                self.applied = applied
+                self.voters = voters
+                self.learners = learners
+            }
+            public enum CodingKeys: String, CodingKey {
+                case group
+                case leader
+                case isLeader = "is_leader"
+                case term
+                case lastLog = "last_log"
+                case applied
+                case voters
+                case learners
             }
         }
         /// The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.
@@ -6972,6 +14172,31 @@ public enum Components {
                 case responseBytes
             }
         }
+        /// An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not answer, so its runs' requests may be missing.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OutboundLog`.
+        public struct OutboundLog: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OutboundLog/entries`.
+            public var entries: [Components.Schemas.OutboundAuditEntry]
+            /// - Remark: Generated from `#/components/schemas/OutboundLog/partial`.
+            public var partial: Swift.Bool
+            /// Creates a new `OutboundLog`.
+            ///
+            /// - Parameters:
+            ///   - entries:
+            ///   - partial:
+            public init(
+                entries: [Components.Schemas.OutboundAuditEntry],
+                partial: Swift.Bool
+            ) {
+                self.entries = entries
+                self.partial = partial
+            }
+            public enum CodingKeys: String, CodingKey {
+                case entries
+                case partial
+            }
+        }
         /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
         ///
         /// - Remark: Generated from `#/components/schemas/UsageDay`.
@@ -7630,44 +14855,13 @@ public enum Components {
         ///
         /// - Remark: Generated from `#/components/schemas/Deadlines`.
         public struct Deadlines: Codable, Hashable, Sendable {
-            /// - Remark: Generated from `#/components/schemas/Deadlines/DeadlinesPayload`.
-            public struct DeadlinesPayloadPayload: Codable, Hashable, Sendable {
-                /// - Remark: Generated from `#/components/schemas/Deadlines/DeadlinesPayload/version`.
-                public var version: Swift.String
-                /// - Remark: Generated from `#/components/schemas/Deadlines/DeadlinesPayload/after`.
-                public var after: Swift.String
-                /// - Remark: Generated from `#/components/schemas/Deadlines/DeadlinesPayload/afterSecs`.
-                public var afterSecs: Swift.Int64
-                /// Creates a new `DeadlinesPayloadPayload`.
-                ///
-                /// - Parameters:
-                ///   - version:
-                ///   - after:
-                ///   - afterSecs:
-                public init(
-                    version: Swift.String,
-                    after: Swift.String,
-                    afterSecs: Swift.Int64
-                ) {
-                    self.version = version
-                    self.after = after
-                    self.afterSecs = afterSecs
-                }
-                public enum CodingKeys: String, CodingKey {
-                    case version
-                    case after
-                    case afterSecs
-                }
-            }
             /// - Remark: Generated from `#/components/schemas/Deadlines/deadlines`.
-            public typealias DeadlinesPayload = [Components.Schemas.Deadlines.DeadlinesPayloadPayload]
-            /// - Remark: Generated from `#/components/schemas/Deadlines/deadlines`.
-            public var deadlines: Components.Schemas.Deadlines.DeadlinesPayload
+            public var deadlines: [Components.Schemas.VersionDeadline]
             /// Creates a new `Deadlines`.
             ///
             /// - Parameters:
             ///   - deadlines:
-            public init(deadlines: Components.Schemas.Deadlines.DeadlinesPayload) {
+            public init(deadlines: [Components.Schemas.VersionDeadline]) {
                 self.deadlines = deadlines
             }
             public enum CodingKeys: String, CodingKey {
@@ -8129,7 +15323,7 @@ public enum Components {
             /// - Remark: Generated from `#/components/schemas/AppEntry/owner`.
             public var owner: Swift.String
             /// - Remark: Generated from `#/components/schemas/AppEntry/org`.
-            public var org: Swift.String?
+            public var org: Swift.String
             /// - Remark: Generated from `#/components/schemas/AppEntry/bundle`.
             public var bundle: Swift.String
             /// - Remark: Generated from `#/components/schemas/AppEntry/package`.
@@ -8153,7 +15347,7 @@ public enum Components {
                 appId: Swift.String,
                 name: Swift.String,
                 owner: Swift.String,
-                org: Swift.String? = nil,
+                org: Swift.String,
                 bundle: Swift.String,
                 package: Swift.String? = nil,
                 version: Swift.String? = nil,
@@ -9394,51 +16588,8 @@ public enum Components {
             public var name: Swift.String
             /// - Remark: Generated from `#/components/schemas/Deployment/owner`.
             public var owner: Components.Schemas.Deployer
-            /// - Remark: Generated from `#/components/schemas/Deployment/AppsPayload`.
-            public struct AppsPayloadPayload: Codable, Hashable, Sendable {
-                /// - Remark: Generated from `#/components/schemas/Deployment/AppsPayload/app`.
-                public var app: Swift.String
-                /// - Remark: Generated from `#/components/schemas/Deployment/AppsPayload/package`.
-                public var package: Swift.String
-                /// - Remark: Generated from `#/components/schemas/Deployment/AppsPayload/version`.
-                public var version: Swift.String
-                /// - Remark: Generated from `#/components/schemas/Deployment/AppsPayload/addedBy`.
-                public var addedBy: Swift.String
-                /// - Remark: Generated from `#/components/schemas/Deployment/AppsPayload/addedAt`.
-                public var addedAt: Swift.String
-                /// Creates a new `AppsPayloadPayload`.
-                ///
-                /// - Parameters:
-                ///   - app:
-                ///   - package:
-                ///   - version:
-                ///   - addedBy:
-                ///   - addedAt:
-                public init(
-                    app: Swift.String,
-                    package: Swift.String,
-                    version: Swift.String,
-                    addedBy: Swift.String,
-                    addedAt: Swift.String
-                ) {
-                    self.app = app
-                    self.package = package
-                    self.version = version
-                    self.addedBy = addedBy
-                    self.addedAt = addedAt
-                }
-                public enum CodingKeys: String, CodingKey {
-                    case app
-                    case package
-                    case version
-                    case addedBy
-                    case addedAt
-                }
-            }
             /// - Remark: Generated from `#/components/schemas/Deployment/apps`.
-            public typealias AppsPayload = [Components.Schemas.Deployment.AppsPayloadPayload]
-            /// - Remark: Generated from `#/components/schemas/Deployment/apps`.
-            public var apps: Components.Schemas.Deployment.AppsPayload
+            public var apps: [Components.Schemas.DeploymentOffer]
             /// - Remark: Generated from `#/components/schemas/Deployment/createdBy`.
             public var createdBy: Swift.String
             /// - Remark: Generated from `#/components/schemas/Deployment/createdAt`.
@@ -9522,7 +16673,7 @@ public enum Components {
                 host: Swift.String? = nil,
                 name: Swift.String,
                 owner: Components.Schemas.Deployer,
-                apps: Components.Schemas.Deployment.AppsPayload,
+                apps: [Components.Schemas.DeploymentOffer],
                 createdBy: Swift.String,
                 createdAt: Swift.String,
                 transfer: Components.Schemas.Deployment.TransferPayload? = nil,
@@ -12931,28 +20082,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/GET/responses/200/content/json/apps`.
-                        public var apps: [Components.Schemas.AppEntry]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - apps:
-                        public init(apps: [Components.Schemas.AppEntry]) {
-                            self.apps = apps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case apps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -13167,54 +20303,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/json/appId`.
-                        public var appId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/json/contextId`.
-                        public var contextId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/json/group`.
-                        public var group: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/json/replicas`.
-                        public var replicas: [Swift.Int64]
-                        /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/json/compute`.
-                        public var compute: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - appId:
-                        ///   - contextId:
-                        ///   - group:
-                        ///   - replicas:
-                        ///   - compute:
-                        public init(
-                            appId: Swift.String,
-                            contextId: Swift.String,
-                            group: Swift.Int64,
-                            replicas: [Swift.Int64],
-                            compute: Swift.Bool
-                        ) {
-                            self.appId = appId
-                            self.contextId = contextId
-                            self.group = group
-                            self.replicas = replicas
-                            self.compute = compute
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case appId
-                            case contextId
-                            case group
-                            case replicas
-                            case compute
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppCreated)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppCreated {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -13472,42 +20567,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/json/appId`.
-                        public var appId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/json/deleted`.
-                        public var deleted: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/json/members`.
-                        public var members: [Swift.String]?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - appId:
-                        ///   - deleted:
-                        ///   - members:
-                        public init(
-                            appId: Swift.String,
-                            deleted: Swift.Bool,
-                            members: [Swift.String]? = nil
-                        ) {
-                            self.appId = appId
-                            self.deleted = deleted
-                            self.members = members
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case appId
-                            case deleted
-                            case members
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.AppDelete.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppDeleted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppDelete.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppDeleted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -13633,38 +20699,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/abi/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/abi/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/abi/GET/responses/200/content/json/bundle`.
-                        public var bundle: Swift.String
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/apps/{app}/abi/GET/responses/200/content/json/abi`.
-                        public var abi: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - bundle:
-                        ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        public init(
-                            bundle: Swift.String,
-                            abi: OpenAPIRuntime.OpenAPIValueContainer
-                        ) {
-                            self.bundle = bundle
-                            self.abi = abi
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case bundle
-                            case abi
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/abi/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppAbi.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppAbi)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppAbi.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppAbi {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -13962,125 +21003,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/appId`.
-                        public var appId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/cluster`.
-                        public var cluster: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload`.
-                        @frozen public enum ReplicasPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case1`.
-                            public struct Case1Payload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case1/node`.
-                                public var node: Swift.Int64
-                                /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case1/attestation`.
-                                public var attestation: Components.Schemas.AttestationDoc
-                                /// Creates a new `Case1Payload`.
-                                ///
-                                /// - Parameters:
-                                ///   - node:
-                                ///   - attestation:
-                                public init(
-                                    node: Swift.Int64,
-                                    attestation: Components.Schemas.AttestationDoc
-                                ) {
-                                    self.node = node
-                                    self.attestation = attestation
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case node
-                                    case attestation
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case1`.
-                            case case1(Operations.AppAttestation.Output.Ok.Body.JsonPayload.ReplicasPayloadPayload.Case1Payload)
-                            /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case2`.
-                            public struct Case2Payload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case2/node`.
-                                public var node: Swift.Int64
-                                /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case2/error`.
-                                public var error: Swift.String
-                                /// Creates a new `Case2Payload`.
-                                ///
-                                /// - Parameters:
-                                ///   - node:
-                                ///   - error:
-                                public init(
-                                    node: Swift.Int64,
-                                    error: Swift.String
-                                ) {
-                                    self.node = node
-                                    self.error = error
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case node
-                                    case error
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/ReplicasPayload/case2`.
-                            case case2(Operations.AppAttestation.Output.Ok.Body.JsonPayload.ReplicasPayloadPayload.Case2Payload)
-                            public init(from decoder: any Decoder) throws {
-                                var errors: [any Error] = []
-                                do {
-                                    self = .case1(try .init(from: decoder))
-                                    return
-                                } catch {
-                                    errors.append(error)
-                                }
-                                do {
-                                    self = .case2(try .init(from: decoder))
-                                    return
-                                } catch {
-                                    errors.append(error)
-                                }
-                                throw Swift.DecodingError.failedToDecodeOneOfSchema(
-                                    type: Self.self,
-                                    codingPath: decoder.codingPath,
-                                    errors: errors
-                                )
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                switch self {
-                                case let .case1(value):
-                                    try value.encode(to: encoder)
-                                case let .case2(value):
-                                    try value.encode(to: encoder)
-                                }
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/replicas`.
-                        public typealias ReplicasPayload = [Operations.AppAttestation.Output.Ok.Body.JsonPayload.ReplicasPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/json/replicas`.
-                        public var replicas: Operations.AppAttestation.Output.Ok.Body.JsonPayload.ReplicasPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - appId:
-                        ///   - cluster:
-                        ///   - replicas:
-                        public init(
-                            appId: Swift.String,
-                            cluster: Swift.String,
-                            replicas: Operations.AppAttestation.Output.Ok.Body.JsonPayload.ReplicasPayload
-                        ) {
-                            self.appId = appId
-                            self.cluster = cluster
-                            self.replicas = replicas
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case appId
-                            case cluster
-                            case replicas
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/attestation/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppAttestation.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppAttestations)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppAttestation.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppAttestations {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -14206,59 +21135,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json/BlobsPayload`.
-                        public struct BlobsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json/BlobsPayload/blobId`.
-                            public var blobId: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json/BlobsPayload/id`.
-                            public var id: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json/BlobsPayload/size`.
-                            public var size: Swift.Int64
-                            /// Creates a new `BlobsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - blobId:
-                            ///   - id:
-                            ///   - size:
-                            public init(
-                                blobId: Swift.String,
-                                id: Swift.String,
-                                size: Swift.Int64
-                            ) {
-                                self.blobId = blobId
-                                self.id = id
-                                self.size = size
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case blobId
-                                case id
-                                case size
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json/blobs`.
-                        public typealias BlobsPayload = [Operations.BlobList.Output.Ok.Body.JsonPayload.BlobsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/json/blobs`.
-                        public var blobs: Operations.BlobList.Output.Ok.Body.JsonPayload.BlobsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - blobs:
-                        public init(blobs: Operations.BlobList.Output.Ok.Body.JsonPayload.BlobsPayload) {
-                            self.blobs = blobs
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case blobs
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/blobs/GET/responses/200/content/application\/json`.
-                    case json(Operations.BlobList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.BlobList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.BlobList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.BlobList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -14411,48 +21294,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content/json/blobId`.
-                        public var blobId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - blobId:
-                        ///   - id:
-                        ///   - size:
-                        ///   - index:
-                        public init(
-                            blobId: Swift.String,
-                            id: Swift.String,
-                            size: Swift.Int64,
-                            index: Swift.Int64
-                        ) {
-                            self.blobId = blobId
-                            self.id = id
-                            self.size = size
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case blobId
-                            case id
-                            case size
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/blobs/POST/responses/200/content/application\/json`.
-                    case json(Operations.BlobUpload.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.BlobStored)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.BlobUpload.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.BlobStored {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -14740,28 +21588,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/DELETE/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - index:
-                        public init(index: Swift.Int64) {
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.BlobDelete.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.Logged)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.BlobDelete.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.Logged {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -14892,42 +21725,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/info/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/info/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/info/GET/responses/200/content/json/blobId`.
-                        public var blobId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/info/GET/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/info/GET/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - blobId:
-                        ///   - id:
-                        ///   - size:
-                        public init(
-                            blobId: Swift.String,
-                            id: Swift.String,
-                            size: Swift.Int64
-                        ) {
-                            self.blobId = blobId
-                            self.id = id
-                            self.size = size
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case blobId
-                            case id
-                            case size
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/info/GET/responses/200/content/application\/json`.
-                    case json(Operations.BlobInfo.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.BlobView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.BlobInfo.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.BlobView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -15060,28 +21864,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/revoke/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/revoke/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/revoke/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - index:
-                        public init(index: Swift.Int64) {
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/blobs/{id}/revoke/POST/responses/200/content/application\/json`.
-                    case json(Operations.BlobRevoke.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.Logged)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.BlobRevoke.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.Logged {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -15207,54 +21996,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json/source`.
-                        public var source: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json/delegations`.
-                        public struct DelegationsPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: [Swift.String]]
-                            /// Creates a new `DelegationsPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: [Swift.String]] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json/delegations`.
-                        public var delegations: Operations.AppDelegations.Output.Ok.Body.JsonPayload.DelegationsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - source:
-                        ///   - delegations:
-                        public init(
-                            source: Swift.String,
-                            delegations: Operations.AppDelegations.Output.Ok.Body.JsonPayload.DelegationsPayload
-                        ) {
-                            self.source = source
-                            self.delegations = delegations
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case source
-                            case delegations
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppDelegations.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.Delegations)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppDelegations.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.Delegations {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -15421,42 +22169,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json/source`.
-                        public var source: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json/target`.
-                        public var target: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json/methods`.
-                        public var methods: [Swift.String]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - source:
-                        ///   - target:
-                        ///   - methods:
-                        public init(
-                            source: Swift.String,
-                            target: Swift.String,
-                            methods: [Swift.String]
-                        ) {
-                            self.source = source
-                            self.target = target
-                            self.methods = methods
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case source
-                            case target
-                            case methods
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/application\/json`.
-                    case json(Operations.AppDelegate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DelegationMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppDelegate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DelegationMade {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -15721,88 +22440,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/destinations`.
-                        public var destinations: [Swift.String]
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
-                        public struct MembersPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Components.Schemas.UnitMember]
-                            /// Creates a new `MembersPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Components.Schemas.UnitMember] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
-                        public var members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
-                        @frozen public enum EgressPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case on = "on"
-                            case off = "off"
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
-                        public var egress: Operations.AppEgress.Output.Ok.Body.JsonPayload.EgressPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/offBy`.
-                        @frozen public enum OffByPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case organization = "organization"
-                            case instance = "instance"
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/offBy`.
-                        public var offBy: Operations.AppEgress.Output.Ok.Body.JsonPayload.OffByPayload?
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/summary`.
-                        public var summary: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - destinations:
-                        ///   - members:
-                        ///   - egress:
-                        ///   - offBy:
-                        ///   - summary:
-                        public init(
-                            app: Swift.String,
-                            destinations: [Swift.String],
-                            members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload,
-                            egress: Operations.AppEgress.Output.Ok.Body.JsonPayload.EgressPayload,
-                            offBy: Operations.AppEgress.Output.Ok.Body.JsonPayload.OffByPayload? = nil,
-                            summary: Swift.String? = nil
-                        ) {
-                            self.app = app
-                            self.destinations = destinations
-                            self.members = members
-                            self.egress = egress
-                            self.offBy = offBy
-                            self.summary = summary
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case destinations
-                            case members
-                            case egress
-                            case offBy
-                            case summary
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppEgress.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.EgressView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppEgress.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.EgressView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -15975,48 +22619,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/app`.
-                        public var app: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/egress`.
-                        public var egress: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/orgEgressOff`.
-                        public var orgEgressOff: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - org:
-                        ///   - app:
-                        ///   - egress:
-                        ///   - orgEgressOff:
-                        public init(
-                            org: Swift.String,
-                            app: Swift.String? = nil,
-                            egress: Swift.Bool,
-                            orgEgressOff: Swift.Bool
-                        ) {
-                            self.org = org
-                            self.app = app
-                            self.egress = egress
-                            self.orgEgressOff = orgEgressOff
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case org
-                            case app
-                            case egress
-                            case orgEgressOff
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppSetEgress.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.EgressSet)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppSetEgress.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.EgressSet {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -16288,65 +22897,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/FilesPayload`.
-                        public struct FilesPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/FilesPayload/blobId`.
-                            public var blobId: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/FilesPayload/id`.
-                            public var id: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/FilesPayload/size`.
-                            public var size: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/FilesPayload/sha256`.
-                            public var sha256: Swift.String
-                            /// Creates a new `FilesPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - blobId:
-                            ///   - id:
-                            ///   - size:
-                            ///   - sha256:
-                            public init(
-                                blobId: Swift.String,
-                                id: Swift.String,
-                                size: Swift.Int64,
-                                sha256: Swift.String
-                            ) {
-                                self.blobId = blobId
-                                self.id = id
-                                self.size = size
-                                self.sha256 = sha256
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case blobId
-                                case id
-                                case size
-                                case sha256
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/files`.
-                        public typealias FilesPayload = [Operations.FilesList.Output.Ok.Body.JsonPayload.FilesPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/json/files`.
-                        public var files: Operations.FilesList.Output.Ok.Body.JsonPayload.FilesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - files:
-                        public init(files: Operations.FilesList.Output.Ok.Body.JsonPayload.FilesPayload) {
-                            self.files = files
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case files
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/GET/responses/200/content/application\/json`.
-                    case json(Operations.FilesList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.FileList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.FilesList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.FileList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -16481,54 +23038,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/json/blobId`.
-                        public var blobId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/json/sha256`.
-                        public var sha256: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - blobId:
-                        ///   - id:
-                        ///   - size:
-                        ///   - sha256:
-                        ///   - index:
-                        public init(
-                            blobId: Swift.String,
-                            id: Swift.String,
-                            size: Swift.Int64,
-                            sha256: Swift.String,
-                            index: Swift.Int64
-                        ) {
-                            self.blobId = blobId
-                            self.id = id
-                            self.size = size
-                            self.sha256 = sha256
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case blobId
-                            case id
-                            case size
-                            case sha256
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/POST/responses/200/content/application\/json`.
-                    case json(Operations.FilesUpload.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.FileStored)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.FilesUpload.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.FileStored {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -16688,48 +23204,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content/json/uploadId`.
-                        public var uploadId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content/json/partBytes`.
-                        public var partBytes: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content/json/parts`.
-                        public var parts: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content/json/expiresAt`.
-                        public var expiresAt: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - uploadId:
-                        ///   - partBytes:
-                        ///   - parts:
-                        ///   - expiresAt:
-                        public init(
-                            uploadId: Swift.String,
-                            partBytes: Swift.Int64,
-                            parts: Swift.Int64,
-                            expiresAt: Swift.Int64
-                        ) {
-                            self.uploadId = uploadId
-                            self.partBytes = partBytes
-                            self.parts = parts
-                            self.expiresAt = expiresAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case uploadId
-                            case partBytes
-                            case parts
-                            case expiresAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/POST/responses/200/content/application\/json`.
-                    case json(Operations.UploadBegin.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.UploadView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.UploadBegin.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.UploadView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -16860,60 +23341,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json/uploadId`.
-                        public var uploadId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json/partBytes`.
-                        public var partBytes: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json/parts`.
-                        public var parts: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json/expiresAt`.
-                        public var expiresAt: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/json/next`.
-                        public var next: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - uploadId:
-                        ///   - partBytes:
-                        ///   - parts:
-                        ///   - expiresAt:
-                        ///   - size:
-                        ///   - next:
-                        public init(
-                            uploadId: Swift.String,
-                            partBytes: Swift.Int64,
-                            parts: Swift.Int64,
-                            expiresAt: Swift.Int64,
-                            size: Swift.Int64,
-                            next: Swift.Int64
-                        ) {
-                            self.uploadId = uploadId
-                            self.partBytes = partBytes
-                            self.parts = parts
-                            self.expiresAt = expiresAt
-                            self.size = size
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case uploadId
-                            case partBytes
-                            case parts
-                            case expiresAt
-                            case size
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/GET/responses/200/content/application\/json`.
-                    case json(Operations.UploadStatus.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.UploadStatus)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.UploadStatus.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.UploadStatus {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -17183,54 +23617,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/json/blobId`.
-                        public var blobId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/json/sha256`.
-                        public var sha256: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - blobId:
-                        ///   - id:
-                        ///   - size:
-                        ///   - sha256:
-                        ///   - index:
-                        public init(
-                            blobId: Swift.String,
-                            id: Swift.String,
-                            size: Swift.Int64,
-                            sha256: Swift.String,
-                            index: Swift.Int64
-                        ) {
-                            self.blobId = blobId
-                            self.id = id
-                            self.size = size
-                            self.sha256 = sha256
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case blobId
-                            case id
-                            case size
-                            case sha256
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/complete/POST/responses/200/content/application\/json`.
-                    case json(Operations.UploadComplete.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.FileStored)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.UploadComplete.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.FileStored {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -17377,28 +23770,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/parts/{k}/PUT/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/parts/{k}/PUT/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/parts/{k}/PUT/responses/200/content/json/next`.
-                        public var next: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - next:
-                        public init(next: Swift.Int64) {
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/uploads/{upload}/parts/{k}/PUT/responses/200/content/application\/json`.
-                    case json(Operations.UploadPart.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PartTaken)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.UploadPart.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PartTaken {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -17531,48 +23909,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content/json/blobId`.
-                        public var blobId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content/json/sha256`.
-                        public var sha256: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - blobId:
-                        ///   - id:
-                        ///   - size:
-                        ///   - sha256:
-                        public init(
-                            blobId: Swift.String,
-                            id: Swift.String,
-                            size: Swift.Int64,
-                            sha256: Swift.String
-                        ) {
-                            self.blobId = blobId
-                            self.id = id
-                            self.size = size
-                            self.sha256 = sha256
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case blobId
-                            case id
-                            case size
-                            case sha256
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/GET/responses/200/content/application\/json`.
-                    case json(Operations.FileInfo.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.FileView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.FileInfo.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.FileView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -17739,66 +24082,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/size`.
-                        public var size: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/sha256`.
-                        public var sha256: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/segments`.
-                        public var segments: [Swift.String]
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/ephemeral`.
-                        public var ephemeral: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/json/wrapped`.
-                        public var wrapped: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - id:
-                        ///   - size:
-                        ///   - sha256:
-                        ///   - segments:
-                        ///   - ephemeral:
-                        ///   - wrapped:
-                        public init(
-                            app: Swift.String,
-                            id: Swift.String,
-                            size: Swift.Int64,
-                            sha256: Swift.String,
-                            segments: [Swift.String],
-                            ephemeral: Swift.String,
-                            wrapped: Swift.String
-                        ) {
-                            self.app = app
-                            self.id = id
-                            self.size = size
-                            self.sha256 = sha256
-                            self.segments = segments
-                            self.ephemeral = ephemeral
-                            self.wrapped = wrapped
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case id
-                            case size
-                            case sha256
-                            case segments
-                            case ephemeral
-                            case wrapped
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/files/{id}/export/POST/responses/200/content/application\/json`.
-                    case json(Operations.ExportsExport.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.FileExport)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ExportsExport.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.FileExport {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -18114,77 +24404,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/result`.
-                        public var result: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/EventsPayload`.
-                        public struct EventsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/EventsPayload/kind`.
-                            public var kind: Swift.String
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/EventsPayload/data`.
-                            public var data: OpenAPIRuntime.OpenAPIValueContainer
-                            /// Creates a new `EventsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - kind:
-                            ///   - data: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            public init(
-                                kind: Swift.String,
-                                data: OpenAPIRuntime.OpenAPIValueContainer
-                            ) {
-                                self.kind = kind
-                                self.data = data
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case kind
-                                case data
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/events`.
-                        public typealias EventsPayload = [Operations.Intents.Output.Ok.Body.JsonPayload.EventsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/events`.
-                        public var events: Operations.Intents.Output.Ok.Body.JsonPayload.EventsPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/json/receipt`.
-                        public var receipt: Components.Schemas.Receipt
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - index:
-                        ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - events:
-                        ///   - receipt:
-                        public init(
-                            index: Swift.Int64,
-                            result: OpenAPIRuntime.OpenAPIValueContainer,
-                            events: Operations.Intents.Output.Ok.Body.JsonPayload.EventsPayload,
-                            receipt: Components.Schemas.Receipt
-                        ) {
-                            self.index = index
-                            self.result = result
-                            self.events = events
-                            self.receipt = receipt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case index
-                            case result
-                            case events
-                            case receipt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/intents/POST/responses/200/content/application\/json`.
-                    case json(Operations.Intents.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.IntentResult)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.Intents.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.IntentResult {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -18310,85 +24536,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload`.
-                        public struct InvitesPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/inviteKey`.
-                            public var inviteKey: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/usesLeft`.
-                            public var usesLeft: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/expiresAt`.
-                            public var expiresAt: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/expired`.
-                            public var expired: Swift.Bool
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/createdBy`.
-                            public var createdBy: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/createdAt`.
-                            public var createdAt: Swift.Int64
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/scope`.
-                            public var scope: OpenAPIRuntime.OpenAPIValueContainer
-                            /// Creates a new `InvitesPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - inviteKey:
-                            ///   - usesLeft:
-                            ///   - expiresAt:
-                            ///   - expired:
-                            ///   - createdBy:
-                            ///   - createdAt:
-                            ///   - scope: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            public init(
-                                inviteKey: Swift.String,
-                                usesLeft: Swift.Int64,
-                                expiresAt: Swift.Int64,
-                                expired: Swift.Bool,
-                                createdBy: Swift.String,
-                                createdAt: Swift.Int64,
-                                scope: OpenAPIRuntime.OpenAPIValueContainer
-                            ) {
-                                self.inviteKey = inviteKey
-                                self.usesLeft = usesLeft
-                                self.expiresAt = expiresAt
-                                self.expired = expired
-                                self.createdBy = createdBy
-                                self.createdAt = createdAt
-                                self.scope = scope
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case inviteKey
-                                case usesLeft
-                                case expiresAt
-                                case expired
-                                case createdBy
-                                case createdAt
-                                case scope
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/invites`.
-                        public typealias InvitesPayload = [Operations.AppInviteList.Output.Ok.Body.JsonPayload.InvitesPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/invites`.
-                        public var invites: Operations.AppInviteList.Output.Ok.Body.JsonPayload.InvitesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - invites:
-                        public init(invites: Operations.AppInviteList.Output.Ok.Body.JsonPayload.InvitesPayload) {
-                            self.invites = invites
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case invites
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppInviteList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppInviteList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppInviteList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppInviteList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -18585,28 +24739,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content/json/token`.
-                        public var token: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - token:
-                        public init(token: Swift.String) {
-                            self.token = token
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case token
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppInviteCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppInviteMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppInviteCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppInviteMade {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -18880,91 +25019,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload`.
-                        public struct LinksPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/name`.
-                            public var name: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/package`.
-                            public var package: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/range`.
-                            public var range: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/mode`.
-                            public var mode: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/app`.
-                            public var app: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/version`.
-                            public var version: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/inRange`.
-                            public var inRange: Swift.Bool?
-                            /// Creates a new `LinksPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - name:
-                            ///   - package:
-                            ///   - range:
-                            ///   - mode:
-                            ///   - app:
-                            ///   - version:
-                            ///   - inRange:
-                            public init(
-                                name: Swift.String,
-                                package: Swift.String? = nil,
-                                range: Swift.String? = nil,
-                                mode: Swift.String? = nil,
-                                app: Swift.String? = nil,
-                                version: Swift.String? = nil,
-                                inRange: Swift.Bool? = nil
-                            ) {
-                                self.name = name
-                                self.package = package
-                                self.range = range
-                                self.mode = mode
-                                self.app = app
-                                self.version = version
-                                self.inRange = inRange
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case name
-                                case package
-                                case range
-                                case mode
-                                case app
-                                case version
-                                case inRange
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/links`.
-                        public typealias LinksPayload = [Operations.AppLinks.Output.Ok.Body.JsonPayload.LinksPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/links`.
-                        public var links: Operations.AppLinks.Output.Ok.Body.JsonPayload.LinksPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - links:
-                        public init(
-                            app: Swift.String,
-                            links: Operations.AppLinks.Output.Ok.Body.JsonPayload.LinksPayload
-                        ) {
-                            self.app = app
-                            self.links = links
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case links
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppLinks.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppLinkList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppLinks.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppLinkList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -19144,66 +25205,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/package`.
-                        public var package: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/range`.
-                        public var range: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/mode`.
-                        public var mode: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/app`.
-                        public var app: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/version`.
-                        public var version: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/inRange`.
-                        public var inRange: Swift.Bool?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - name:
-                        ///   - package:
-                        ///   - range:
-                        ///   - mode:
-                        ///   - app:
-                        ///   - version:
-                        ///   - inRange:
-                        public init(
-                            name: Swift.String,
-                            package: Swift.String? = nil,
-                            range: Swift.String? = nil,
-                            mode: Swift.String? = nil,
-                            app: Swift.String? = nil,
-                            version: Swift.String? = nil,
-                            inRange: Swift.Bool? = nil
-                        ) {
-                            self.name = name
-                            self.package = package
-                            self.range = range
-                            self.mode = mode
-                            self.app = app
-                            self.version = version
-                            self.inRange = inRange
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case name
-                            case package
-                            case range
-                            case mode
-                            case app
-                            case version
-                            case inRange
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/application\/json`.
-                    case json(Operations.AppLink.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.LinkRow)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppLink.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.LinkRow {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -19487,25 +25495,8 @@ public enum Operations {
             public var headers: Operations.AppMetadata.Input.Headers
             /// - Remark: Generated from `#/paths/apps/{app}/metadata/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/apps/{app}/metadata/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    ///
-                    /// - Remark: Generated from `#/paths/apps/{app}/metadata/POST/requestBody/json/metadata`.
-                    public var metadata: OpenAPIRuntime.OpenAPIValueContainer
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    public init(metadata: OpenAPIRuntime.OpenAPIValueContainer) {
-                        self.metadata = metadata
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case metadata
-                    }
-                }
                 /// - Remark: Generated from `#/paths/apps/{app}/metadata/POST/requestBody/content/application\/json`.
-                case json(Operations.AppMetadata.Input.Body.JsonPayload)
+                case json(Components.Schemas.MetadataBody)
             }
             public var body: Operations.AppMetadata.Input.Body
             /// Creates a new `Input`.
@@ -19754,77 +25745,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/result`.
-                        public var result: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/EventsPayload`.
-                        public struct EventsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/EventsPayload/kind`.
-                            public var kind: Swift.String
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/EventsPayload/data`.
-                            public var data: OpenAPIRuntime.OpenAPIValueContainer
-                            /// Creates a new `EventsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - kind:
-                            ///   - data: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            public init(
-                                kind: Swift.String,
-                                data: OpenAPIRuntime.OpenAPIValueContainer
-                            ) {
-                                self.kind = kind
-                                self.data = data
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case kind
-                                case data
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/events`.
-                        public typealias EventsPayload = [Operations.AppMethod.Output.Ok.Body.JsonPayload.EventsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/events`.
-                        public var events: Operations.AppMethod.Output.Ok.Body.JsonPayload.EventsPayload?
-                        /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/json/receipt`.
-                        public var receipt: Components.Schemas.Receipt
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - index:
-                        ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - events:
-                        ///   - receipt:
-                        public init(
-                            index: Swift.Int64,
-                            result: OpenAPIRuntime.OpenAPIValueContainer,
-                            events: Operations.AppMethod.Output.Ok.Body.JsonPayload.EventsPayload? = nil,
-                            receipt: Components.Schemas.Receipt
-                        ) {
-                            self.index = index
-                            self.result = result
-                            self.events = events
-                            self.receipt = receipt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case index
-                            case result
-                            case events
-                            case receipt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/methods/{method}/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppMethod.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.MethodResult)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppMethod.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.MethodResult {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20008,66 +25935,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/appId`.
-                        public var appId: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/from`.
-                        public var from: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/grants`.
-                        public var grants: [Components.Schemas.Grant]
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/created`.
-                        public var created: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/added`.
-                        public var added: [Swift.String]
-                        /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/json/revokedInvites`.
-                        public var revokedInvites: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - appId:
-                        ///   - from:
-                        ///   - org:
-                        ///   - grants:
-                        ///   - created:
-                        ///   - added:
-                        ///   - revokedInvites:
-                        public init(
-                            appId: Swift.String,
-                            from: Swift.String? = nil,
-                            org: Swift.String,
-                            grants: [Components.Schemas.Grant],
-                            created: Swift.Bool,
-                            added: [Swift.String],
-                            revokedInvites: Swift.Int64
-                        ) {
-                            self.appId = appId
-                            self.from = from
-                            self.org = org
-                            self.grants = grants
-                            self.created = created
-                            self.added = added
-                            self.revokedInvites = revokedInvites
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case appId
-                            case from
-                            case org
-                            case grants
-                            case created
-                            case added
-                            case revokedInvites
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/move/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppMove.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppMoved)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppMove.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppMoved {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20193,31 +26067,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/openapi.json/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/openapi.json/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// A container of undocumented properties.
-                        public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - additionalProperties: A container of undocumented properties.
-                        public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
-                            self.additionalProperties = additionalProperties
-                        }
-                        public init(from decoder: any Decoder) throws {
-                            additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                        }
-                        public func encode(to encoder: any Encoder) throws {
-                            try encoder.encodeAdditionalProperties(additionalProperties)
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/openapi.json/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppOpenapi.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppOpenApi)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppOpenapi.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppOpenApi {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20343,36 +26199,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json/entries`.
-                        public var entries: [Components.Schemas.OutboundAuditEntry]
-                        /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json/partial`.
-                        public var partial: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - entries:
-                        ///   - partial:
-                        public init(
-                            entries: [Components.Schemas.OutboundAuditEntry],
-                            partial: Swift.Bool
-                        ) {
-                            self.entries = entries
-                            self.partial = partial
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case entries
-                            case partial
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppOutboundLog.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OutboundLog)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppOutboundLog.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OutboundLog {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20514,31 +26347,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// A container of undocumented properties.
-                        public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - additionalProperties: A container of undocumented properties.
-                        public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
-                            self.additionalProperties = additionalProperties
-                        }
-                        public init(from decoder: any Decoder) throws {
-                            additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                        }
-                        public func encode(to encoder: any Encoder) throws {
-                            try encoder.encodeAdditionalProperties(additionalProperties)
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/GET/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PipelineRunList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PipelineRunList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20671,31 +26486,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// A container of undocumented properties.
-                        public var additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - additionalProperties: A container of undocumented properties.
-                        public init(additionalProperties: OpenAPIRuntime.OpenAPIObjectContainer = .init()) {
-                            self.additionalProperties = additionalProperties
-                        }
-                        public init(from decoder: any Decoder) throws {
-                            additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                        }
-                        public func encode(to encoder: any Encoder) throws {
-                            try encoder.encodeAdditionalProperties(additionalProperties)
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/GET/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesGet.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PipelineRunView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesGet.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PipelineRunView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20828,28 +26625,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/cancel/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/cancel/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/cancel/POST/responses/200/content/json/run`.
-                        public var run: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - run:
-                        public init(run: Swift.String) {
-                            self.run = run
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case run
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/cancel/POST/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesCancel.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PipelineCancelled)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesCancel.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PipelineCancelled {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -21137,44 +26919,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/receipt/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/receipt/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/receipt/GET/responses/200/content/json/receipt`.
-                        public var receipt: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/receipt/GET/responses/200/content/json/node`.
-                        public var node: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/receipt/GET/responses/200/content/json/signature`.
-                        public var signature: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - receipt: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - node:
-                        ///   - signature:
-                        public init(
-                            receipt: OpenAPIRuntime.OpenAPIValueContainer,
-                            node: Swift.Int64,
-                            signature: Swift.String
-                        ) {
-                            self.receipt = receipt
-                            self.node = node
-                            self.signature = signature
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case receipt
-                            case node
-                            case signature
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/receipt/GET/responses/200/content/application\/json`.
-                    case json(Operations.PipelineReceiptReceipt.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SignedPipelineReceipt)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelineReceiptReceipt.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SignedPipelineReceipt {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -21401,42 +27152,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json/run`.
-                        public var run: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json/retryOf`.
-                        public var retryOf: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json/worstCase`.
-                        public var worstCase: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - run:
-                        ///   - retryOf:
-                        ///   - worstCase:
-                        public init(
-                            run: Swift.String,
-                            retryOf: Swift.String,
-                            worstCase: Swift.String? = nil
-                        ) {
-                            self.run = run
-                            self.retryOf = retryOf
-                            self.worstCase = worstCase
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case run
-                            case retryOf
-                            case worstCase
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesRetry.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PipelineStarted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesRetry.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PipelineStarted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -21681,95 +27403,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/steps`.
-                        public struct StepsPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/steps/additionalProperties`.
-                            public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/steps/additionalProperties/runs`.
-                                public var runs: Swift.String
-                                /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/steps/additionalProperties/fuel`.
-                                public var fuel: Swift.String
-                                /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/steps/additionalProperties/cost`.
-                                public var cost: Swift.String?
-                                /// Creates a new `AdditionalPropertiesPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - runs:
-                                ///   - fuel:
-                                ///   - cost:
-                                public init(
-                                    runs: Swift.String,
-                                    fuel: Swift.String,
-                                    cost: Swift.String? = nil
-                                ) {
-                                    self.runs = runs
-                                    self.fuel = fuel
-                                    self.cost = cost
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case runs
-                                    case fuel
-                                    case cost
-                                }
-                            }
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload.StepsPayload.AdditionalPropertiesPayload]
-                            /// Creates a new `StepsPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload.StepsPayload.AdditionalPropertiesPayload] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/steps`.
-                        public var steps: Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload.StepsPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/fuel`.
-                        public var fuel: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/cost`.
-                        public var cost: Swift.String?
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/json/priceVersion`.
-                        public var priceVersion: Swift.Int64?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - steps:
-                        ///   - fuel:
-                        ///   - cost:
-                        ///   - priceVersion:
-                        public init(
-                            steps: Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload.StepsPayload,
-                            fuel: Swift.String,
-                            cost: Swift.String? = nil,
-                            priceVersion: Swift.Int64? = nil
-                        ) {
-                            self.steps = steps
-                            self.fuel = fuel
-                            self.cost = cost
-                            self.priceVersion = priceVersion
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case steps
-                            case fuel
-                            case cost
-                            case priceVersion
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/estimate/POST/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.RunEstimate)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.RunEstimate {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -21996,36 +27636,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/json/run`.
-                        public var run: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/json/worstCase`.
-                        public var worstCase: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - run:
-                        ///   - worstCase:
-                        public init(
-                            run: Swift.String,
-                            worstCase: Swift.String? = nil
-                        ) {
-                            self.run = run
-                            self.worstCase = worstCase
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case run
-                            case worstCase
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesStart.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PipelineStarted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesStart.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PipelineStarted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -22151,59 +27768,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json/PresentPayload`.
-                        public struct PresentPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json/PresentPayload/account`.
-                            public var account: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json/PresentPayload/device`.
-                            public var device: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json/PresentPayload/state`.
-                            public var state: Swift.String?
-                            /// Creates a new `PresentPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - account:
-                            ///   - device:
-                            ///   - state:
-                            public init(
-                                account: Swift.String,
-                                device: Swift.String,
-                                state: Swift.String? = nil
-                            ) {
-                                self.account = account
-                                self.device = device
-                                self.state = state
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case account
-                                case device
-                                case state
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json/present`.
-                        public typealias PresentPayload = [Operations.PresenceGet.Output.Ok.Body.JsonPayload.PresentPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/json/present`.
-                        public var present: Operations.PresenceGet.Output.Ok.Body.JsonPayload.PresentPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - present:
-                        public init(present: Operations.PresenceGet.Output.Ok.Body.JsonPayload.PresentPayload) {
-                            self.present = present
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case present
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/presence/GET/responses/200/content/application\/json`.
-                    case json(Operations.PresenceGet.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PresenceList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PresenceGet.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PresenceList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -22623,83 +28194,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload`.
-                        public struct LinksPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/link`.
-                            public var link: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/label`.
-                            public var label: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/expiresAt`.
-                            public var expiresAt: Swift.Int64?
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/expired`.
-                            public var expired: Swift.Bool
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/ratePerMinute`.
-                            public var ratePerMinute: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/createdBy`.
-                            public var createdBy: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/createdAt`.
-                            public var createdAt: Swift.Int64
-                            /// Creates a new `LinksPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - link:
-                            ///   - label:
-                            ///   - expiresAt:
-                            ///   - expired:
-                            ///   - ratePerMinute:
-                            ///   - createdBy:
-                            ///   - createdAt:
-                            public init(
-                                link: Swift.String,
-                                label: Swift.String? = nil,
-                                expiresAt: Swift.Int64? = nil,
-                                expired: Swift.Bool,
-                                ratePerMinute: Swift.Int64,
-                                createdBy: Swift.String,
-                                createdAt: Swift.Int64
-                            ) {
-                                self.link = link
-                                self.label = label
-                                self.expiresAt = expiresAt
-                                self.expired = expired
-                                self.ratePerMinute = ratePerMinute
-                                self.createdBy = createdBy
-                                self.createdAt = createdAt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case link
-                                case label
-                                case expiresAt
-                                case expired
-                                case ratePerMinute
-                                case createdBy
-                                case createdAt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/links`.
-                        public typealias LinksPayload = [Operations.PublicLinkList.Output.Ok.Body.JsonPayload.LinksPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/links`.
-                        public var links: Operations.PublicLinkList.Output.Ok.Body.JsonPayload.LinksPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - links:
-                        public init(links: Operations.PublicLinkList.Output.Ok.Body.JsonPayload.LinksPayload) {
-                            self.links = links
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case links
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/application\/json`.
-                    case json(Operations.PublicLinkList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PublicLinks)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PublicLinkList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PublicLinks {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -22894,36 +28395,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/json/link`.
-                        public var link: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/json/token`.
-                        public var token: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - link:
-                        ///   - token:
-                        public init(
-                            link: Swift.String,
-                            token: Swift.String
-                        ) {
-                            self.link = link
-                            self.token = token
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case link
-                            case token
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/application\/json`.
-                    case json(Operations.PublicLinkCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PublicLinkMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PublicLinkCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PublicLinkMade {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -23220,36 +28698,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/runs/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/runs/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/runs/GET/responses/200/content/json/runs`.
-                        public var runs: [Components.Schemas.Run]
-                        /// - Remark: Generated from `#/paths/apps/{app}/runs/GET/responses/200/content/json/next`.
-                        public var next: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - runs:
-                        ///   - next:
-                        public init(
-                            runs: [Components.Schemas.Run],
-                            next: Swift.String? = nil
-                        ) {
-                            self.runs = runs
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case runs
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/runs/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppRuns.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.RunList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppRuns.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.RunList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -23521,65 +28976,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/LogsPayload`.
-                        public struct LogsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/LogsPayload/attempt`.
-                            public var attempt: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/LogsPayload/id`.
-                            public var id: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/LogsPayload/size`.
-                            public var size: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/LogsPayload/sha256`.
-                            public var sha256: Swift.String
-                            /// Creates a new `LogsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - attempt:
-                            ///   - id:
-                            ///   - size:
-                            ///   - sha256:
-                            public init(
-                                attempt: Swift.Int64,
-                                id: Swift.String,
-                                size: Swift.Int64,
-                                sha256: Swift.String
-                            ) {
-                                self.attempt = attempt
-                                self.id = id
-                                self.size = size
-                                self.sha256 = sha256
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case attempt
-                                case id
-                                case size
-                                case sha256
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/logs`.
-                        public typealias LogsPayload = [Operations.AppRunLogs.Output.Ok.Body.JsonPayload.LogsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/json/logs`.
-                        public var logs: Operations.AppRunLogs.Output.Ok.Body.JsonPayload.LogsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - logs:
-                        public init(logs: Operations.AppRunLogs.Output.Ok.Body.JsonPayload.LogsPayload) {
-                            self.logs = logs
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case logs
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/runs/{run}/logs/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppRunLogs.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.RunLogs)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppRunLogs.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.RunLogs {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -23705,135 +29108,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets`.
-                        public struct SecretsPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties`.
-                            public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/host`.
-                                public var host: Swift.String
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/paths`.
-                                public var paths: [Swift.String]
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/header`.
-                                public var header: Swift.String?
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/format`.
-                                public var format: Swift.String?
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/bodyField`.
-                                public var bodyField: Swift.String?
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/binding`.
-                                public var binding: Swift.String
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/description`.
-                                public var description: Swift.String
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/required`.
-                                public var required: Swift.Bool
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/source`.
-                                @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                    case app = "app"
-                                    case deployment = "deployment"
-                                    case cluster = "cluster"
-                                }
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/source`.
-                                public var source: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.SourcePayload
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/fingerprint`.
-                                public var fingerprint: Swift.String?
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setBy`.
-                                public var setBy: Swift.String?
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setAt`.
-                                public var setAt: Swift.Int64?
-                                /// Creates a new `AdditionalPropertiesPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - host:
-                                ///   - paths:
-                                ///   - header:
-                                ///   - format:
-                                ///   - bodyField:
-                                ///   - binding:
-                                ///   - description:
-                                ///   - required:
-                                ///   - source:
-                                ///   - fingerprint:
-                                ///   - setBy:
-                                ///   - setAt:
-                                public init(
-                                    host: Swift.String,
-                                    paths: [Swift.String],
-                                    header: Swift.String? = nil,
-                                    format: Swift.String? = nil,
-                                    bodyField: Swift.String? = nil,
-                                    binding: Swift.String,
-                                    description: Swift.String,
-                                    required: Swift.Bool,
-                                    source: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.SourcePayload,
-                                    fingerprint: Swift.String? = nil,
-                                    setBy: Swift.String? = nil,
-                                    setAt: Swift.Int64? = nil
-                                ) {
-                                    self.host = host
-                                    self.paths = paths
-                                    self.header = header
-                                    self.format = format
-                                    self.bodyField = bodyField
-                                    self.binding = binding
-                                    self.description = description
-                                    self.required = required
-                                    self.source = source
-                                    self.fingerprint = fingerprint
-                                    self.setBy = setBy
-                                    self.setAt = setAt
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case host
-                                    case paths
-                                    case header
-                                    case format
-                                    case bodyField
-                                    case binding
-                                    case description
-                                    case required
-                                    case source
-                                    case fingerprint
-                                    case setBy
-                                    case setAt
-                                }
-                            }
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload]
-                            /// Creates a new `SecretsPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets`.
-                        public var secrets: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - secrets:
-                        public init(secrets: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload) {
-                            self.secrets = secrets
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case secrets
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppSecrets.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppSecrets)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppSecrets.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppSecrets {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -23998,42 +29279,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json/fingerprint`.
-                        public var fingerprint: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - name:
-                        ///   - fingerprint:
-                        ///   - index:
-                        public init(
-                            name: Swift.String,
-                            fingerprint: Swift.String,
-                            index: Swift.Int64
-                        ) {
-                            self.name = name
-                            self.fingerprint = fingerprint
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case name
-                            case fingerprint
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/application\/json`.
-                    case json(Operations.AppSecretSet.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SecretSet)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppSecretSet.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SecretSet {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -24175,36 +29427,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - name:
-                        ///   - index:
-                        public init(
-                            name: Swift.String,
-                            index: Swift.Int64
-                        ) {
-                            self.name = name
-                            self.index = index
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case name
-                            case index
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.AppSecretClear.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SecretCleared)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppSecretClear.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SecretCleared {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -24330,54 +29559,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/json/keys`.
-                        public var keys: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/json/bytes`.
-                        public var bytes: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/json/blobs`.
-                        public var blobs: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/json/blobBytes`.
-                        public var blobBytes: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/json/lastWriteAt`.
-                        public var lastWriteAt: Swift.Int64?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - keys:
-                        ///   - bytes:
-                        ///   - blobs:
-                        ///   - blobBytes:
-                        ///   - lastWriteAt:
-                        public init(
-                            keys: Swift.Int64,
-                            bytes: Swift.Int64,
-                            blobs: Swift.Int64,
-                            blobBytes: Swift.Int64,
-                            lastWriteAt: Swift.Int64? = nil
-                        ) {
-                            self.keys = keys
-                            self.bytes = bytes
-                            self.blobs = blobs
-                            self.blobBytes = blobBytes
-                            self.lastWriteAt = lastWriteAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case keys
-                            case bytes
-                            case blobs
-                            case blobBytes
-                            case lastWriteAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/storage/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppStorage.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppStorage)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppStorage.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppStorage {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -24611,77 +29799,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/available`.
-                        public var available: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason`.
-                        public struct ReasonPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason/code`.
-                            public var code: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason/message`.
-                            public var message: Swift.String
-                            /// Creates a new `ReasonPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - code:
-                            ///   - message:
-                            public init(
-                                code: Swift.String,
-                                message: Swift.String
-                            ) {
-                                self.code = code
-                                self.message = message
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case code
-                                case message
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason`.
-                        public var reason: Operations.AppUndoView.Output.Ok.Body.JsonPayload.ReasonPayload?
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/undoUntil`.
-                        public var undoUntil: Swift.Int64?
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/apps`.
-                        public var apps: [Components.Schemas.UndoPart]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - available:
-                        ///   - reason:
-                        ///   - undoUntil:
-                        ///   - apps:
-                        public init(
-                            app: Swift.String,
-                            available: Swift.Bool,
-                            reason: Operations.AppUndoView.Output.Ok.Body.JsonPayload.ReasonPayload? = nil,
-                            undoUntil: Swift.Int64? = nil,
-                            apps: [Components.Schemas.UndoPart]
-                        ) {
-                            self.app = app
-                            self.available = available
-                            self.reason = reason
-                            self.undoUntil = undoUntil
-                            self.apps = apps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case available
-                            case reason
-                            case undoUntil
-                            case apps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppUndoView.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.UndoView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppUndoView.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.UndoView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -24841,66 +29965,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/groups`.
-                        public struct GroupsPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Swift.Int64?]
-                            /// Creates a new `GroupsPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Swift.Int64?] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/groups`.
-                        public var groups: Operations.AppUndo.Output.Ok.Body.JsonPayload.GroupsPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/restored`.
-                        public var restored: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/apps`.
-                        public var apps: [Components.Schemas.UndoPart]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - groups:
-                        ///   - restored:
-                        ///   - apps:
-                        public init(
-                            app: Swift.String,
-                            groups: Operations.AppUndo.Output.Ok.Body.JsonPayload.GroupsPayload,
-                            restored: Swift.Bool,
-                            apps: [Components.Schemas.UndoPart]
-                        ) {
-                            self.app = app
-                            self.groups = groups
-                            self.restored = restored
-                            self.apps = apps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case groups
-                            case restored
-                            case apps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppUndo.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.UndoDone)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppUndo.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.UndoDone {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -25026,287 +30097,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running`.
-                        public struct RunningPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running/package`.
-                            public var package: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running/version`.
-                            public var version: Swift.String
-                            /// Creates a new `RunningPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - package:
-                            ///   - version:
-                            public init(
-                                package: Swift.String,
-                                version: Swift.String
-                            ) {
-                                self.package = package
-                                self.version = version
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case package
-                                case version
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running`.
-                        public var running: Operations.AppUpdate.Output.Ok.Body.JsonPayload.RunningPayload?
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
-                        public struct AvailablePayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/package`.
-                            public var package: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/version`.
-                            public var version: Swift.String
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/source`.
-                            @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case deployment = "deployment"
-                                case release = "release"
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/source`.
-                            public var source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/class`.
-                            @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case green = "green"
-                                case red = "red"
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/class`.
-                            public var _class: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.ClassPayload?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/reasons`.
-                            public var reasons: [Components.Schemas.UpdateReason]?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress`.
-                            public struct EgressPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/before`.
-                                public var before: [Swift.String]
-                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/after`.
-                                public var after: [Swift.String]
-                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/added`.
-                                public var added: [Swift.String]
-                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/removed`.
-                                public var removed: [Swift.String]
-                                /// Creates a new `EgressPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - before:
-                                ///   - after:
-                                ///   - added:
-                                ///   - removed:
-                                public init(
-                                    before: [Swift.String],
-                                    after: [Swift.String],
-                                    added: [Swift.String],
-                                    removed: [Swift.String]
-                                ) {
-                                    self.before = before
-                                    self.after = after
-                                    self.added = added
-                                    self.removed = removed
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case before
-                                    case after
-                                    case added
-                                    case removed
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress`.
-                            public var egress: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.EgressPayload?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/stateVersionChanged`.
-                            public var stateVersionChanged: Swift.Bool?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/newMethods`.
-                            public var newMethods: [Swift.String]?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/removedMethods`.
-                            public var removedMethods: [Swift.String]?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/signerChanged`.
-                            public var signerChanged: Swift.Bool?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/summary`.
-                            public var summary: Swift.String?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/approvalsNeeded`.
-                            public var approvalsNeeded: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/approvedBy`.
-                            public var approvedBy: Swift.String?
-                            /// Creates a new `AvailablePayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - package:
-                            ///   - version:
-                            ///   - source:
-                            ///   - _class:
-                            ///   - reasons:
-                            ///   - egress:
-                            ///   - stateVersionChanged:
-                            ///   - newMethods:
-                            ///   - removedMethods:
-                            ///   - signerChanged:
-                            ///   - summary:
-                            ///   - approvalsNeeded:
-                            ///   - approvedBy:
-                            public init(
-                                package: Swift.String,
-                                version: Swift.String,
-                                source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload,
-                                _class: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.ClassPayload? = nil,
-                                reasons: [Components.Schemas.UpdateReason]? = nil,
-                                egress: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.EgressPayload? = nil,
-                                stateVersionChanged: Swift.Bool? = nil,
-                                newMethods: [Swift.String]? = nil,
-                                removedMethods: [Swift.String]? = nil,
-                                signerChanged: Swift.Bool? = nil,
-                                summary: Swift.String? = nil,
-                                approvalsNeeded: Swift.Int64,
-                                approvedBy: Swift.String? = nil
-                            ) {
-                                self.package = package
-                                self.version = version
-                                self.source = source
-                                self._class = _class
-                                self.reasons = reasons
-                                self.egress = egress
-                                self.stateVersionChanged = stateVersionChanged
-                                self.newMethods = newMethods
-                                self.removedMethods = removedMethods
-                                self.signerChanged = signerChanged
-                                self.summary = summary
-                                self.approvalsNeeded = approvalsNeeded
-                                self.approvedBy = approvedBy
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case package
-                                case version
-                                case source
-                                case _class = "class"
-                                case reasons
-                                case egress
-                                case stateVersionChanged
-                                case newMethods
-                                case removedMethods
-                                case signerChanged
-                                case summary
-                                case approvalsNeeded
-                                case approvedBy
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
-                        public var available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload?
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/unit`.
-                        public var unit: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/mayApprove`.
-                        public var mayApprove: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/approvers`.
-                        @frozen public enum ApproversPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case ownerAndAdmins = "owner-and-admins"
-                            case _operator = "operator"
-                            case managers = "managers"
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/approvers`.
-                        public var approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy`.
-                        public struct PolicyPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/autoApply`.
-                            @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case never = "never"
-                                case noDestinations = "noDestinations"
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/autoApply`.
-                            public var autoApply: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.AutoApplyPayload
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/holdHours`.
-                            public var holdHours: Swift.Int64
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/secondApprover`.
-                            public var secondApprover: Swift.Bool
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/source`.
-                            @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case app = "app"
-                                case org = "org"
-                                case _default = "default"
-                            }
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/source`.
-                            public var source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.SourcePayload
-                            /// Creates a new `PolicyPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - autoApply:
-                            ///   - holdHours:
-                            ///   - secondApprover:
-                            ///   - source:
-                            public init(
-                                autoApply: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.AutoApplyPayload,
-                                holdHours: Swift.Int64,
-                                secondApprover: Swift.Bool,
-                                source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.SourcePayload
-                            ) {
-                                self.autoApply = autoApply
-                                self.holdHours = holdHours
-                                self.secondApprover = secondApprover
-                                self.source = source
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case autoApply
-                                case holdHours
-                                case secondApprover
-                                case source
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy`.
-                        public var policy: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/pendingApprovals`.
-                        public var pendingApprovals: [Components.Schemas.PendingApproval]
-                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/deployment`.
-                        public var deployment: Components.Schemas.DeploymentShown?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - running:
-                        ///   - available:
-                        ///   - unit:
-                        ///   - mayApprove:
-                        ///   - approvers:
-                        ///   - policy:
-                        ///   - pendingApprovals:
-                        ///   - deployment:
-                        public init(
-                            app: Swift.String,
-                            running: Operations.AppUpdate.Output.Ok.Body.JsonPayload.RunningPayload? = nil,
-                            available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload? = nil,
-                            unit: Swift.Bool,
-                            mayApprove: Swift.Bool,
-                            approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload,
-                            policy: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload,
-                            pendingApprovals: [Components.Schemas.PendingApproval],
-                            deployment: Components.Schemas.DeploymentShown? = nil
-                        ) {
-                            self.app = app
-                            self.running = running
-                            self.available = available
-                            self.unit = unit
-                            self.mayApprove = mayApprove
-                            self.approvers = approvers
-                            self.policy = policy
-                            self.pendingApprovals = pendingApprovals
-                            self.deployment = deployment
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case running
-                            case available
-                            case unit
-                            case mayApprove
-                            case approvers
-                            case policy
-                            case pendingApprovals
-                            case deployment
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppUpdate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.UpdateView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppUpdate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.UpdateView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -25488,50 +30285,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content/json/status`.
-                        public var status: Swift.String
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content/json/error`.
-                        public var error: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content/json/compute`.
-                        public var compute: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - index:
-                        ///   - status:
-                        ///   - error: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - compute:
-                        public init(
-                            index: Swift.Int64,
-                            status: Swift.String,
-                            error: OpenAPIRuntime.OpenAPIValueContainer,
-                            compute: Swift.Bool
-                        ) {
-                            self.index = index
-                            self.status = status
-                            self.error = error
-                            self.compute = compute
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case index
-                            case status
-                            case error
-                            case compute
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/upgrade/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppUpgrade.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.UpgradeApplied)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppUpgrade.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.UpgradeApplied {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -25715,36 +30475,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/json/approval`.
-                        public var approval: Components.Schemas.PendingApproval
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - app:
-                        ///   - approval:
-                        public init(
-                            app: Swift.String,
-                            approval: Components.Schemas.PendingApproval
-                        ) {
-                            self.app = app
-                            self.approval = approval
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case app
-                            case approval
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppApproveUpgrade.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ApprovalLogged)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppApproveUpgrade.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ApprovalLogged {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -25987,80 +30724,8 @@ public enum Operations {
             public var headers: Operations.AppPolicySet.Input.Headers
             /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy`.
-                    public struct PolicyPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
-                        @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case never = "never"
-                            case noDestinations = "noDestinations"
-                        }
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
-                        public var autoApply: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload?
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/holdHours`.
-                        public var holdHours: Swift.Int64?
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/secondApprover`.
-                        public var secondApprover: Swift.Bool?
-                        /// Creates a new `PolicyPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - autoApply:
-                        ///   - holdHours:
-                        ///   - secondApprover:
-                        public init(
-                            autoApply: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload? = nil,
-                            holdHours: Swift.Int64? = nil,
-                            secondApprover: Swift.Bool? = nil
-                        ) {
-                            self.autoApply = autoApply
-                            self.holdHours = holdHours
-                            self.secondApprover = secondApprover
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case autoApply
-                            case holdHours
-                            case secondApprover
-                        }
-                    }
-                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy`.
-                    public var policy: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload?
-                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - policy:
-                    ///   - confirm:
-                    public init(
-                        policy: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.policy = policy
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case policy
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.policy = try container.decodeIfPresent(
-                            Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload.self,
-                            forKey: .policy
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "policy",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/content/application\/json`.
-                case json(Operations.AppPolicySet.Input.Body.JsonPayload)
+                case json(Components.Schemas.UpgradePolicyBody)
             }
             public var body: Operations.AppPolicySet.Input.Body
             /// Creates a new `Input`.
@@ -26379,36 +31044,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/usage/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/usage/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/usage/GET/responses/200/content/json/today`.
-                        public var today: Components.Schemas.UsageDay
-                        /// - Remark: Generated from `#/paths/apps/{app}/usage/GET/responses/200/content/json/days`.
-                        public var days: [Components.Schemas.UsageDay]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - today:
-                        ///   - days:
-                        public init(
-                            today: Components.Schemas.UsageDay,
-                            days: [Components.Schemas.UsageDay]
-                        ) {
-                            self.today = today
-                            self.days = days
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case today
-                            case days
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/usage/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppUsage.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppUsage)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppUsage.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppUsage {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -26585,44 +31227,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/views/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/views/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/views/POST/responses/200/content/json/index`.
-                        public var index: Swift.Int64
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/apps/{app}/views/POST/responses/200/content/json/result`.
-                        public var result: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/apps/{app}/views/POST/responses/200/content/json/receipt`.
-                        public var receipt: Components.Schemas.Receipt
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - index:
-                        ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - receipt:
-                        public init(
-                            index: Swift.Int64,
-                            result: OpenAPIRuntime.OpenAPIValueContainer,
-                            receipt: Components.Schemas.Receipt
-                        ) {
-                            self.index = index
-                            self.result = result
-                            self.receipt = receipt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case index
-                            case result
-                            case receipt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/views/POST/responses/200/content/application\/json`.
-                    case json(Operations.Views.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ViewResult)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.Views.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ViewResult {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -26748,36 +31359,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/xcalls/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/xcalls/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/xcalls/GET/responses/200/content/json/pending`.
-                        public var pending: Swift.Int64
-                        /// - Remark: Generated from `#/paths/apps/{app}/xcalls/GET/responses/200/content/json/deadLetters`.
-                        public var deadLetters: [Components.Schemas.DeadLetter]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - pending:
-                        ///   - deadLetters:
-                        public init(
-                            pending: Swift.Int64,
-                            deadLetters: [Components.Schemas.DeadLetter]
-                        ) {
-                            self.pending = pending
-                            self.deadLetters = deadLetters
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case pending
-                            case deadLetters
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/xcalls/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppXcalls.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.XcallsReport)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppXcalls.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.XcallsReport {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -27221,88 +31809,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload`.
-                        public struct ActivityPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/at`.
-                            public var at: Swift.Int64
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/passkey`.
-                            public var passkey: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/kind`.
-                            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case signIn = "signIn"
-                                case approval = "approval"
-                            }
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/kind`.
-                            public var kind: Operations.ActivityList.Output.Ok.Body.JsonPayload.ActivityPayloadPayload.KindPayload
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/app`.
-                            public var app: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/origin`.
-                            public var origin: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/method`.
-                            public var method: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/ActivityPayload/subject`.
-                            public var subject: Swift.String?
-                            /// Creates a new `ActivityPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - at:
-                            ///   - passkey:
-                            ///   - kind:
-                            ///   - app:
-                            ///   - origin:
-                            ///   - method:
-                            ///   - subject:
-                            public init(
-                                at: Swift.Int64,
-                                passkey: Swift.String,
-                                kind: Operations.ActivityList.Output.Ok.Body.JsonPayload.ActivityPayloadPayload.KindPayload,
-                                app: Swift.String? = nil,
-                                origin: Swift.String? = nil,
-                                method: Swift.String? = nil,
-                                subject: Swift.String? = nil
-                            ) {
-                                self.at = at
-                                self.passkey = passkey
-                                self.kind = kind
-                                self.app = app
-                                self.origin = origin
-                                self.method = method
-                                self.subject = subject
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case at
-                                case passkey
-                                case kind
-                                case app
-                                case origin
-                                case method
-                                case subject
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/activity`.
-                        public typealias ActivityPayload = [Operations.ActivityList.Output.Ok.Body.JsonPayload.ActivityPayloadPayload]
-                        /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/json/activity`.
-                        public var activity: Operations.ActivityList.Output.Ok.Body.JsonPayload.ActivityPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - activity:
-                        public init(activity: Operations.ActivityList.Output.Ok.Body.JsonPayload.ActivityPayload) {
-                            self.activity = activity
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case activity
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/activity/GET/responses/200/content/application\/json`.
-                    case json(Operations.ActivityList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ActivityList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ActivityList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ActivityList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -27408,46 +31921,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/aliases/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/aliases/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/aliases/GET/responses/200/content/json/aliases`.
-                        public struct AliasesPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Swift.String]
-                            /// Creates a new `AliasesPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Swift.String] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/aliases/GET/responses/200/content/json/aliases`.
-                        public var aliases: Operations.AliasList.Output.Ok.Body.JsonPayload.AliasesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - aliases:
-                        public init(aliases: Operations.AliasList.Output.Ok.Body.JsonPayload.AliasesPayload) {
-                            self.aliases = aliases
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case aliases
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/aliases/GET/responses/200/content/application\/json`.
-                    case json(Operations.AliasList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AliasList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AliasList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AliasList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -27571,36 +32051,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/aliases/{alias}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/aliases/{alias}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/aliases/{alias}/GET/responses/200/content/json/alias`.
-                        public var alias: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/aliases/{alias}/GET/responses/200/content/json/appId`.
-                        public var appId: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - alias:
-                        ///   - appId:
-                        public init(
-                            alias: Swift.String,
-                            appId: Swift.String
-                        ) {
-                            self.alias = alias
-                            self.appId = appId
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case alias
-                            case appId
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/aliases/{alias}/GET/responses/200/content/application\/json`.
-                    case json(Operations.AliasGet.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AliasView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AliasGet.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AliasView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -27990,28 +32447,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/apikeys/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/apikeys/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/apikeys/GET/responses/200/content/json/keys`.
-                        public var keys: [Components.Schemas.ApiKey]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - keys:
-                        public init(keys: [Components.Schemas.ApiKey]) {
-                            self.keys = keys
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case keys
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/apikeys/GET/responses/200/content/application\/json`.
-                    case json(Operations.ApikeyList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ApiKeyList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ApikeyList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ApiKeyList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -28251,75 +32693,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/keyId`.
-                        public var keyId: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/key`.
-                        public var key: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload`.
-                        public struct ThenPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload/index`.
-                            public var index: Swift.Int64
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload/result`.
-                            public var result: OpenAPIRuntime.OpenAPIValueContainer
-                            /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/ThenPayload/receipt`.
-                            public var receipt: Components.Schemas.Receipt
-                            /// Creates a new `ThenPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - index:
-                            ///   - result: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///   - receipt:
-                            public init(
-                                index: Swift.Int64,
-                                result: OpenAPIRuntime.OpenAPIValueContainer,
-                                receipt: Components.Schemas.Receipt
-                            ) {
-                                self.index = index
-                                self.result = result
-                                self.receipt = receipt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case index
-                                case result
-                                case receipt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/then`.
-                        public typealias ThenPayload = [Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayloadPayload]
-                        /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/then`.
-                        public var then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - keyId:
-                        ///   - key:
-                        ///   - then:
-                        public init(
-                            keyId: Swift.String,
-                            key: Swift.String,
-                            then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload? = nil
-                        ) {
-                            self.keyId = keyId
-                            self.key = key
-                            self.then = then
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case keyId
-                            case key
-                            case then
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/application\/json`.
-                    case json(Operations.ApikeyCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ApiKeyMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ApiKeyMade {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -28591,60 +32971,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json/scope`.
-                        public var scope: Components.Schemas.AppScope
-                        /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json/governance`.
-                        public var governance: Components.Schemas.Governance
-                        /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json/approvedReleases`.
-                        public var approvedReleases: [Swift.String]?
-                        /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json/clusterReleases`.
-                        public var clusterReleases: [Components.Schemas.ClusterRelease]
-                        /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json/apps`.
-                        public var apps: [Components.Schemas.ReportApp]
-                        /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/json/next`.
-                        public var next: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - scope:
-                        ///   - governance:
-                        ///   - approvedReleases:
-                        ///   - clusterReleases:
-                        ///   - apps:
-                        ///   - next:
-                        public init(
-                            scope: Components.Schemas.AppScope,
-                            governance: Components.Schemas.Governance,
-                            approvedReleases: [Swift.String]? = nil,
-                            clusterReleases: [Components.Schemas.ClusterRelease],
-                            apps: [Components.Schemas.ReportApp],
-                            next: Swift.String? = nil
-                        ) {
-                            self.scope = scope
-                            self.governance = governance
-                            self.approvedReleases = approvedReleases
-                            self.clusterReleases = clusterReleases
-                            self.apps = apps
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case scope
-                            case governance
-                            case approvedReleases
-                            case clusterReleases
-                            case apps
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/apps/GET/responses/200/content/application\/json`.
-                    case json(Operations.AccountApps.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppsReport)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AccountApps.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppsReport {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -28856,46 +33189,8 @@ public enum Operations {
             public var headers: Operations.AccountSetBackupKey.Input.Headers
             /// - Remark: Generated from `#/paths/auth/backup-key/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/auth/backup-key/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/auth/backup-key/POST/requestBody/json/publicKey`.
-                    public var publicKey: Swift.String
-                    /// - Remark: Generated from `#/paths/auth/backup-key/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - publicKey:
-                    ///   - confirm:
-                    public init(
-                        publicKey: Swift.String,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.publicKey = publicKey
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case publicKey
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.publicKey = try container.decode(
-                            Swift.String.self,
-                            forKey: .publicKey
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "publicKey",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/auth/backup-key/POST/requestBody/content/application\/json`.
-                case json(Operations.AccountSetBackupKey.Input.Body.JsonPayload)
+                case json(Components.Schemas.BackupKeyBody)
             }
             public var body: Operations.AccountSetBackupKey.Input.Body
             /// Creates a new `Input`.
@@ -29141,28 +33436,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/logout-all/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/logout-all/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/logout-all/POST/responses/200/content/json/revoked`.
-                        public var revoked: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - revoked:
-                        public init(revoked: Swift.Int64) {
-                            self.revoked = revoked
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case revoked
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/logout-all/POST/responses/200/content/application\/json`.
-                    case json(Operations.LogoutAll.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SessionsRevoked)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.LogoutAll.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SessionsRevoked {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -29270,204 +33550,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/accountId`.
-                        public var accountId: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/PasskeysPayload`.
-                        public struct PasskeysPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/PasskeysPayload/id`.
-                            public var id: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/PasskeysPayload/signCount`.
-                            public var signCount: Swift.Int64
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/PasskeysPayload/label`.
-                            public var label: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/PasskeysPayload/addedAt`.
-                            public var addedAt: Swift.Int64?
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/PasskeysPayload/lastSignInAt`.
-                            public var lastSignInAt: Swift.Int64?
-                            /// Creates a new `PasskeysPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - id:
-                            ///   - signCount:
-                            ///   - label:
-                            ///   - addedAt:
-                            ///   - lastSignInAt:
-                            public init(
-                                id: Swift.String,
-                                signCount: Swift.Int64,
-                                label: Swift.String? = nil,
-                                addedAt: Swift.Int64? = nil,
-                                lastSignInAt: Swift.Int64? = nil
-                            ) {
-                                self.id = id
-                                self.signCount = signCount
-                                self.label = label
-                                self.addedAt = addedAt
-                                self.lastSignInAt = lastSignInAt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case id
-                                case signCount
-                                case label
-                                case addedAt
-                                case lastSignInAt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/passkeys`.
-                        public typealias PasskeysPayload = [Operations.Me.Output.Ok.Body.JsonPayload.PasskeysPayloadPayload]
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/passkeys`.
-                        public var passkeys: Operations.Me.Output.Ok.Body.JsonPayload.PasskeysPayload
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/OrgsPayload`.
-                        public struct OrgsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/OrgsPayload/orgId`.
-                            public var orgId: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/OrgsPayload/name`.
-                            public var name: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/OrgsPayload/role`.
-                            public var role: Components.Schemas.OrgRole
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/OrgsPayload/personal`.
-                            public var personal: Swift.Bool?
-                            /// Creates a new `OrgsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - orgId:
-                            ///   - name:
-                            ///   - role:
-                            ///   - personal:
-                            public init(
-                                orgId: Swift.String,
-                                name: Swift.String,
-                                role: Components.Schemas.OrgRole,
-                                personal: Swift.Bool? = nil
-                            ) {
-                                self.orgId = orgId
-                                self.name = name
-                                self.role = role
-                                self.personal = personal
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case orgId
-                                case name
-                                case role
-                                case personal
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/orgs`.
-                        public typealias OrgsPayload = [Operations.Me.Output.Ok.Body.JsonPayload.OrgsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/orgs`.
-                        public var orgs: Operations.Me.Output.Ok.Body.JsonPayload.OrgsPayload
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/via`.
-                        @frozen public enum ViaPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case session = "session"
-                            case apiKey = "apiKey"
-                        }
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/via`.
-                        public var via: Operations.Me.Output.Ok.Body.JsonPayload.ViaPayload
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/passkeyId`.
-                        public var passkeyId: Swift.String?
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/app`.
-                        public var app: Swift.String?
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/origin`.
-                        public var origin: Swift.String?
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryCode`.
-                        public var recoveryCode: Swift.Bool?
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryPending`.
-                        public struct RecoveryPendingPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryPending/accountId`.
-                            public var accountId: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryPending/credentialId`.
-                            public var credentialId: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryPending/startedAt`.
-                            public var startedAt: Swift.Int64
-                            /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryPending/readyAt`.
-                            public var readyAt: Swift.Int64
-                            /// Creates a new `RecoveryPendingPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - accountId:
-                            ///   - credentialId:
-                            ///   - startedAt:
-                            ///   - readyAt:
-                            public init(
-                                accountId: Swift.String,
-                                credentialId: Swift.String,
-                                startedAt: Swift.Int64,
-                                readyAt: Swift.Int64
-                            ) {
-                                self.accountId = accountId
-                                self.credentialId = credentialId
-                                self.startedAt = startedAt
-                                self.readyAt = readyAt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case accountId
-                                case credentialId
-                                case startedAt
-                                case readyAt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/json/recoveryPending`.
-                        public var recoveryPending: Operations.Me.Output.Ok.Body.JsonPayload.RecoveryPendingPayload?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - accountId:
-                        ///   - name:
-                        ///   - passkeys:
-                        ///   - orgs:
-                        ///   - via:
-                        ///   - passkeyId:
-                        ///   - app:
-                        ///   - origin:
-                        ///   - recoveryCode:
-                        ///   - recoveryPending:
-                        public init(
-                            accountId: Swift.String,
-                            name: Swift.String,
-                            passkeys: Operations.Me.Output.Ok.Body.JsonPayload.PasskeysPayload,
-                            orgs: Operations.Me.Output.Ok.Body.JsonPayload.OrgsPayload,
-                            via: Operations.Me.Output.Ok.Body.JsonPayload.ViaPayload,
-                            passkeyId: Swift.String? = nil,
-                            app: Swift.String? = nil,
-                            origin: Swift.String? = nil,
-                            recoveryCode: Swift.Bool? = nil,
-                            recoveryPending: Operations.Me.Output.Ok.Body.JsonPayload.RecoveryPendingPayload? = nil
-                        ) {
-                            self.accountId = accountId
-                            self.name = name
-                            self.passkeys = passkeys
-                            self.orgs = orgs
-                            self.via = via
-                            self.passkeyId = passkeyId
-                            self.app = app
-                            self.origin = origin
-                            self.recoveryCode = recoveryCode
-                            self.recoveryPending = recoveryPending
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case accountId
-                            case name
-                            case passkeys
-                            case orgs
-                            case via
-                            case passkeyId
-                            case app
-                            case origin
-                            case recoveryCode
-                            case recoveryPending
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/me/GET/responses/200/content/application\/json`.
-                    case json(Operations.Me.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AccountView)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.Me.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AccountView {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -29601,38 +33690,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/responses/200/content/json/challengeId`.
-                        public var challengeId: Swift.String
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/responses/200/content/json/options`.
-                        public var options: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - challengeId:
-                        ///   - options: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        public init(
-                            challengeId: Swift.String,
-                            options: OpenAPIRuntime.OpenAPIValueContainer
-                        ) {
-                            self.challengeId = challengeId
-                            self.options = options
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case challengeId
-                            case options
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/responses/200/content/application\/json`.
-                    case json(Operations.LoginBegin.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PasskeyChallenge)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.LoginBegin.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PasskeyChallenge {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -29926,38 +33990,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/passkey/register/begin/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/passkey/register/begin/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/passkey/register/begin/POST/responses/200/content/json/challengeId`.
-                        public var challengeId: Swift.String
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/passkey/register/begin/POST/responses/200/content/json/options`.
-                        public var options: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - challengeId:
-                        ///   - options: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        public init(
-                            challengeId: Swift.String,
-                            options: OpenAPIRuntime.OpenAPIValueContainer
-                        ) {
-                            self.challengeId = challengeId
-                            self.options = options
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case challengeId
-                            case options
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/passkey/register/begin/POST/responses/200/content/application\/json`.
-                    case json(Operations.RegisterBegin.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PasskeyChallenge)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.RegisterBegin.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PasskeyChallenge {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -30225,38 +34264,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/passkeys/add/begin/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/passkeys/add/begin/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/passkeys/add/begin/POST/responses/200/content/json/challengeId`.
-                        public var challengeId: Swift.String
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/passkeys/add/begin/POST/responses/200/content/json/options`.
-                        public var options: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - challengeId:
-                        ///   - options: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        public init(
-                            challengeId: Swift.String,
-                            options: OpenAPIRuntime.OpenAPIValueContainer
-                        ) {
-                            self.challengeId = challengeId
-                            self.options = options
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case challengeId
-                            case options
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/passkeys/add/begin/POST/responses/200/content/application\/json`.
-                    case json(Operations.PasskeyAddBegin.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PasskeyChallenge)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PasskeyAddBegin.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PasskeyChallenge {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -30404,28 +34418,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/passkeys/add/finish/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/passkeys/add/finish/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/passkeys/add/finish/POST/responses/200/content/json/credentialId`.
-                        public var credentialId: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - credentialId:
-                        public init(credentialId: Swift.String) {
-                            self.credentialId = credentialId
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case credentialId
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/passkeys/add/finish/POST/responses/200/content/application\/json`.
-                    case json(Operations.PasskeyAddFinish.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PasskeyAdded)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PasskeyAddFinish.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PasskeyAdded {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -30839,28 +34838,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/recovery/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/recovery/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/recovery/POST/responses/200/content/json/code`.
-                        public var code: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - code:
-                        public init(code: Swift.String) {
-                            self.code = code
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case code
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/recovery/POST/responses/200/content/application\/json`.
-                    case json(Operations.RecoveryCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.RecoveryCode)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.RecoveryCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.RecoveryCode {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -31127,38 +35111,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/recovery/begin/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/recovery/begin/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/recovery/begin/POST/responses/200/content/json/challengeId`.
-                        public var challengeId: Swift.String
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/recovery/begin/POST/responses/200/content/json/options`.
-                        public var options: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - challengeId:
-                        ///   - options: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        public init(
-                            challengeId: Swift.String,
-                            options: OpenAPIRuntime.OpenAPIValueContainer
-                        ) {
-                            self.challengeId = challengeId
-                            self.options = options
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case challengeId
-                            case options
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/recovery/begin/POST/responses/200/content/application\/json`.
-                    case json(Operations.AccountRecoveryBegin.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PasskeyChallenge)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AccountRecoveryBegin.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PasskeyChallenge {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -31614,48 +35573,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content/json/accountId`.
-                        public var accountId: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content/json/credentialId`.
-                        public var credentialId: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content/json/startedAt`.
-                        public var startedAt: Swift.Int64
-                        /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content/json/readyAt`.
-                        public var readyAt: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - accountId:
-                        ///   - credentialId:
-                        ///   - startedAt:
-                        ///   - readyAt:
-                        public init(
-                            accountId: Swift.String,
-                            credentialId: Swift.String,
-                            startedAt: Swift.Int64,
-                            readyAt: Swift.Int64
-                        ) {
-                            self.accountId = accountId
-                            self.credentialId = credentialId
-                            self.startedAt = startedAt
-                            self.readyAt = readyAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case accountId
-                            case credentialId
-                            case startedAt
-                            case readyAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/recovery/start/POST/responses/200/content/application\/json`.
-                    case json(Operations.AccountRecoveryStart.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AccountRecoveryPending)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AccountRecoveryStart.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AccountRecoveryPending {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -31903,83 +35827,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload`.
-                        public struct SessionsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/session`.
-                            public var session: Swift.String
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/passkey`.
-                            public var passkey: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/app`.
-                            public var app: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/origin`.
-                            public var origin: Swift.String?
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/openedAt`.
-                            public var openedAt: Swift.Int64?
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/lastActiveAt`.
-                            public var lastActiveAt: Swift.Int64
-                            /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/SessionsPayload/current`.
-                            public var current: Swift.Bool
-                            /// Creates a new `SessionsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - session:
-                            ///   - passkey:
-                            ///   - app:
-                            ///   - origin:
-                            ///   - openedAt:
-                            ///   - lastActiveAt:
-                            ///   - current:
-                            public init(
-                                session: Swift.String,
-                                passkey: Swift.String? = nil,
-                                app: Swift.String? = nil,
-                                origin: Swift.String? = nil,
-                                openedAt: Swift.Int64? = nil,
-                                lastActiveAt: Swift.Int64,
-                                current: Swift.Bool
-                            ) {
-                                self.session = session
-                                self.passkey = passkey
-                                self.app = app
-                                self.origin = origin
-                                self.openedAt = openedAt
-                                self.lastActiveAt = lastActiveAt
-                                self.current = current
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case session
-                                case passkey
-                                case app
-                                case origin
-                                case openedAt
-                                case lastActiveAt
-                                case current
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/sessions`.
-                        public typealias SessionsPayload = [Operations.SessionsList.Output.Ok.Body.JsonPayload.SessionsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/json/sessions`.
-                        public var sessions: Operations.SessionsList.Output.Ok.Body.JsonPayload.SessionsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - sessions:
-                        public init(sessions: Operations.SessionsList.Output.Ok.Body.JsonPayload.SessionsPayload) {
-                            self.sessions = sessions
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case sessions
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/sessions/GET/responses/200/content/application\/json`.
-                    case json(Operations.SessionsList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SessionList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.SessionsList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SessionList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -32219,96 +36073,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/apps`.
-                        public var apps: Swift.Int64
-                        /// an unsigned 64-bit integer as a decimal string (D20)
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/bundleBytes`.
-                        public var bundleBytes: Swift.String
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/apiKeys`.
-                        public var apiKeys: Swift.Int64
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/orgsOwned`.
-                        public var orgsOwned: Swift.Int64
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/fileBytes`.
-                        public struct FileBytesPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Swift.Int64]
-                            /// Creates a new `FileBytesPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Swift.Int64] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/fileBytes`.
-                        public var fileBytes: Operations.Usage.Output.Ok.Body.JsonPayload.FileBytesPayload
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/quotas`.
-                        public var quotas: Components.Schemas.Quotas
-                        /// an unsigned 64-bit integer as a decimal string (D20)
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/developerFuelToday`.
-                        public var developerFuelToday: Swift.String
-                        /// an unsigned 64-bit integer as a decimal string (D20)
-                        ///
-                        /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/json/developerWritesToday`.
-                        public var developerWritesToday: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - apps:
-                        ///   - bundleBytes: an unsigned 64-bit integer as a decimal string (D20)
-                        ///   - apiKeys:
-                        ///   - orgsOwned:
-                        ///   - fileBytes:
-                        ///   - quotas:
-                        ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string (D20)
-                        ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string (D20)
-                        public init(
-                            apps: Swift.Int64,
-                            bundleBytes: Swift.String,
-                            apiKeys: Swift.Int64,
-                            orgsOwned: Swift.Int64,
-                            fileBytes: Operations.Usage.Output.Ok.Body.JsonPayload.FileBytesPayload,
-                            quotas: Components.Schemas.Quotas,
-                            developerFuelToday: Swift.String,
-                            developerWritesToday: Swift.String
-                        ) {
-                            self.apps = apps
-                            self.bundleBytes = bundleBytes
-                            self.apiKeys = apiKeys
-                            self.orgsOwned = orgsOwned
-                            self.fileBytes = fileBytes
-                            self.quotas = quotas
-                            self.developerFuelToday = developerFuelToday
-                            self.developerWritesToday = developerWritesToday
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case apps
-                            case bundleBytes
-                            case apiKeys
-                            case orgsOwned
-                            case fileBytes
-                            case quotas
-                            case developerFuelToday
-                            case developerWritesToday
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/auth/usage/GET/responses/200/content/application\/json`.
-                    case json(Operations.Usage.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AccountUsage)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.Usage.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AccountUsage {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -32427,28 +36198,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/bundles/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/bundles/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/bundles/POST/responses/200/content/json/hash`.
-                        public var hash: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - hash:
-                        public init(hash: Swift.String) {
-                            self.hash = hash
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case hash
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/bundles/POST/responses/200/content/application\/json`.
-                    case json(Operations.BundlePut.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.BundleStored)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.BundlePut.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.BundleStored {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -32724,48 +36480,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content/json/requestId`.
-                        public var requestId: Swift.String
-                        /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content/json/url`.
-                        public var url: Swift.String
-                        /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content/json/code`.
-                        public var code: Swift.String
-                        /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content/json/expiresAt`.
-                        public var expiresAt: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - requestId:
-                        ///   - url:
-                        ///   - code:
-                        ///   - expiresAt:
-                        public init(
-                            requestId: Swift.String,
-                            url: Swift.String,
-                            code: Swift.String,
-                            expiresAt: Swift.Int64
-                        ) {
-                            self.requestId = requestId
-                            self.url = url
-                            self.code = code
-                            self.expiresAt = expiresAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case requestId
-                            case url
-                            case code
-                            case expiresAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/consent/requests/POST/responses/200/content/application\/json`.
-                    case json(Operations.ConsentPageCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ConsentRequestMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ConsentPageCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ConsentRequestMade {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -32891,162 +36612,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/requestId`.
-                        public var requestId: Swift.String
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/kind`.
-                        @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case release = "release"
-                            case upgrade = "upgrade"
-                            case upgradeUnit = "upgradeUnit"
-                            case delegate = "delegate"
-                            case outbound = "outbound"
-                            case createOrg = "createOrg"
-                            case createInvite = "createInvite"
-                            case acceptInvite = "acceptInvite"
-                            case leaveOrg = "leaveOrg"
-                            case removeMember = "removeMember"
-                            case setMemberRole = "setMemberRole"
-                            case setMemberTeams = "setMemberTeams"
-                            case removeMemberTeams = "removeMemberTeams"
-                            case revokeInvite = "revokeInvite"
-                            case renameOrg = "renameOrg"
-                            case deleteOrg = "deleteOrg"
-                            case setCapabilities = "setCapabilities"
-                            case setAllApps = "setAllApps"
-                            case setEgress = "setEgress"
-                            case install = "install"
-                            case updatePolicy = "updatePolicy"
-                            case updates = "updates"
-                        }
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/kind`.
-                        public var kind: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.KindPayload
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/status`.
-                        @frozen public enum StatusPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case pending = "pending"
-                            case approved = "approved"
-                            case declined = "declined"
-                        }
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/status`.
-                        public var status: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.StatusPayload
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/decidedAt`.
-                        public var decidedAt: Swift.Int64?
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome`.
-                        public struct OutcomePayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/orgId`.
-                            public var orgId: Swift.String?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/teamId`.
-                            public var teamId: Swift.String?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/token`.
-                            public var token: Swift.String?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/org`.
-                            public var org: Swift.String?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/name`.
-                            public var name: Swift.String?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/apps`.
-                            public var apps: [Swift.String]?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/appId`.
-                            public var appId: Swift.String?
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/links`.
-                            public struct LinksPayload: Codable, Hashable, Sendable {
-                                /// A container of undocumented properties.
-                                public var additionalProperties: [String: Swift.String]
-                                /// Creates a new `LinksPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - additionalProperties: A container of undocumented properties.
-                                public init(additionalProperties: [String: Swift.String] = .init()) {
-                                    self.additionalProperties = additionalProperties
-                                }
-                                public init(from decoder: any Decoder) throws {
-                                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                                }
-                                public func encode(to encoder: any Encoder) throws {
-                                    try encoder.encodeAdditionalProperties(additionalProperties)
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/links`.
-                            public var links: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.OutcomePayload.LinksPayload?
-                            /// Creates a new `OutcomePayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - orgId:
-                            ///   - teamId:
-                            ///   - token:
-                            ///   - org:
-                            ///   - name:
-                            ///   - apps:
-                            ///   - appId:
-                            ///   - links:
-                            public init(
-                                orgId: Swift.String? = nil,
-                                teamId: Swift.String? = nil,
-                                token: Swift.String? = nil,
-                                org: Swift.String? = nil,
-                                name: Swift.String? = nil,
-                                apps: [Swift.String]? = nil,
-                                appId: Swift.String? = nil,
-                                links: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.OutcomePayload.LinksPayload? = nil
-                            ) {
-                                self.orgId = orgId
-                                self.teamId = teamId
-                                self.token = token
-                                self.org = org
-                                self.name = name
-                                self.apps = apps
-                                self.appId = appId
-                                self.links = links
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case orgId
-                                case teamId
-                                case token
-                                case org
-                                case name
-                                case apps
-                                case appId
-                                case links
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome`.
-                        public var outcome: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.OutcomePayload?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - requestId:
-                        ///   - kind:
-                        ///   - status:
-                        ///   - decidedAt:
-                        ///   - outcome:
-                        public init(
-                            requestId: Swift.String,
-                            kind: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.KindPayload,
-                            status: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.StatusPayload,
-                            decidedAt: Swift.Int64? = nil,
-                            outcome: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.OutcomePayload? = nil
-                        ) {
-                            self.requestId = requestId
-                            self.kind = kind
-                            self.status = status
-                            self.decidedAt = decidedAt
-                            self.outcome = outcome
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case requestId
-                            case kind
-                            case status
-                            case decidedAt
-                            case outcome
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/application\/json`.
-                    case json(Operations.ConsentPageResult.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ConsentResult)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ConsentResult {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -33154,107 +36726,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/deployments`.
-                        @frozen public enum DeploymentsPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case open = "open"
-                            case granted = "granted"
-                        }
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/deployments`.
-                        public var deployments: Operations.DeployerList.Output.Ok.Body.JsonPayload.DeploymentsPayload
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/deployers`.
-                        @frozen public enum DeployersPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case _operator = "operator"
-                            case owner = "owner"
-                        }
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/deployers`.
-                        public var deployers: Operations.DeployerList.Output.Ok.Body.JsonPayload.DeployersPayload
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/owner`.
-                        public var owner: Components.Schemas.Deployer?
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload`.
-                        public struct GrantsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload/key`.
-                            public var key: Swift.String
-                            /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload/deployer`.
-                            public var deployer: Components.Schemas.Deployer?
-                            /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload/until`.
-                            public var until: Swift.String?
-                            /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload/untilSecs`.
-                            public var untilSecs: Swift.Int64?
-                            /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload/grantedAt`.
-                            public var grantedAt: Swift.String
-                            /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/GrantsPayload/grantedBy`.
-                            public var grantedBy: Swift.String
-                            /// Creates a new `GrantsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - key:
-                            ///   - deployer:
-                            ///   - until:
-                            ///   - untilSecs:
-                            ///   - grantedAt:
-                            ///   - grantedBy:
-                            public init(
-                                key: Swift.String,
-                                deployer: Components.Schemas.Deployer? = nil,
-                                until: Swift.String? = nil,
-                                untilSecs: Swift.Int64? = nil,
-                                grantedAt: Swift.String,
-                                grantedBy: Swift.String
-                            ) {
-                                self.key = key
-                                self.deployer = deployer
-                                self.until = until
-                                self.untilSecs = untilSecs
-                                self.grantedAt = grantedAt
-                                self.grantedBy = grantedBy
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case key
-                                case deployer
-                                case until
-                                case untilSecs
-                                case grantedAt
-                                case grantedBy
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/grants`.
-                        public typealias GrantsPayload = [Operations.DeployerList.Output.Ok.Body.JsonPayload.GrantsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/json/grants`.
-                        public var grants: Operations.DeployerList.Output.Ok.Body.JsonPayload.GrantsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployments:
-                        ///   - deployers:
-                        ///   - owner:
-                        ///   - grants:
-                        public init(
-                            deployments: Operations.DeployerList.Output.Ok.Body.JsonPayload.DeploymentsPayload,
-                            deployers: Operations.DeployerList.Output.Ok.Body.JsonPayload.DeployersPayload,
-                            owner: Components.Schemas.Deployer? = nil,
-                            grants: Operations.DeployerList.Output.Ok.Body.JsonPayload.GrantsPayload
-                        ) {
-                            self.deployments = deployments
-                            self.deployers = deployers
-                            self.owner = owner
-                            self.grants = grants
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployments
-                            case deployers
-                            case owner
-                            case grants
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployers/GET/responses/200/content/application\/json`.
-                    case json(Operations.DeployerList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeployerList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeployerList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeployerList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -33352,68 +36830,8 @@ public enum Operations {
             public var headers: Operations.DeployerGrant.Input.Headers
             /// - Remark: Generated from `#/paths/deployers/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/deployers/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/deployers/POST/requestBody/json/deployer`.
-                    public var deployer: Components.Schemas.Deployer
-                    /// - Remark: Generated from `#/paths/deployers/POST/requestBody/json/until`.
-                    public var until: Swift.String?
-                    /// - Remark: Generated from `#/paths/deployers/POST/requestBody/json/operatorProof`.
-                    public var operatorProof: Components.Schemas.OperatorProof?
-                    /// - Remark: Generated from `#/paths/deployers/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - deployer:
-                    ///   - until:
-                    ///   - operatorProof:
-                    ///   - confirm:
-                    public init(
-                        deployer: Components.Schemas.Deployer,
-                        until: Swift.String? = nil,
-                        operatorProof: Components.Schemas.OperatorProof? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.deployer = deployer
-                        self.until = until
-                        self.operatorProof = operatorProof
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case deployer
-                        case until
-                        case operatorProof
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.deployer = try container.decode(
-                            Components.Schemas.Deployer.self,
-                            forKey: .deployer
-                        )
-                        self.until = try container.decodeIfPresent(
-                            Swift.String.self,
-                            forKey: .until
-                        )
-                        self.operatorProof = try container.decodeIfPresent(
-                            Components.Schemas.OperatorProof.self,
-                            forKey: .operatorProof
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "deployer",
-                            "until",
-                            "operatorProof",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/deployers/POST/requestBody/content/application\/json`.
-                case json(Operations.DeployerGrant.Input.Body.JsonPayload)
+                case json(Components.Schemas.DeployerBody)
             }
             public var body: Operations.DeployerGrant.Input.Body
             /// Creates a new `Input`.
@@ -33433,42 +36851,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployers/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployers/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployers/POST/responses/200/content/json/key`.
-                        public var key: Swift.String
-                        /// - Remark: Generated from `#/paths/deployers/POST/responses/200/content/json/deployer`.
-                        public var deployer: Components.Schemas.Deployer
-                        /// - Remark: Generated from `#/paths/deployers/POST/responses/200/content/json/grant`.
-                        public var grant: Components.Schemas.DeployerGrant
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - key:
-                        ///   - deployer:
-                        ///   - grant:
-                        public init(
-                            key: Swift.String,
-                            deployer: Components.Schemas.Deployer,
-                            grant: Components.Schemas.DeployerGrant
-                        ) {
-                            self.key = key
-                            self.deployer = deployer
-                            self.grant = grant
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case key
-                            case deployer
-                            case grant
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployers/POST/responses/200/content/application\/json`.
-                    case json(Operations.DeployerGrant.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeployerGranted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeployerGrant.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeployerGranted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -33601,28 +36990,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployers/{key}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployers/{key}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployers/{key}/DELETE/responses/200/content/json/key`.
-                        public var key: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - key:
-                        public init(key: Swift.String) {
-                            self.key = key
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case key
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployers/{key}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.DeployerRevoke.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeployerRevoked)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeployerRevoke.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeployerRevoked {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -33730,133 +37104,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/deployments`.
-                        public var deployments: [Components.Schemas.Deployment]
-                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload`.
-                        public struct OfferedPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/id`.
-                            public var id: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/name`.
-                            public var name: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/owner`.
-                            @frozen public enum OwnerPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case account = "account"
-                                case org = "org"
-                            }
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/owner`.
-                            public var owner: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.OwnerPayload
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/ownerName`.
-                            public var ownerName: Swift.String?
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload`.
-                            public struct AppsPayloadPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload/app`.
-                                public var app: Swift.String
-                                /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload/package`.
-                                public var package: Swift.String
-                                /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload/version`.
-                                public var version: Swift.String
-                                /// Creates a new `AppsPayloadPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - app:
-                                ///   - package:
-                                ///   - version:
-                                public init(
-                                    app: Swift.String,
-                                    package: Swift.String,
-                                    version: Swift.String
-                                ) {
-                                    self.app = app
-                                    self.package = package
-                                    self.version = version
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case app
-                                    case package
-                                    case version
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/apps`.
-                            public typealias AppsPayload = [Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.AppsPayloadPayload]
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/apps`.
-                            public var apps: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.AppsPayload
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/to`.
-                            public var to: Components.Schemas.Deployer
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/offeredAt`.
-                            public var offeredAt: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/expiresAt`.
-                            public var expiresAt: Swift.String
-                            /// Creates a new `OfferedPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - id:
-                            ///   - name:
-                            ///   - owner:
-                            ///   - ownerName:
-                            ///   - apps:
-                            ///   - to:
-                            ///   - offeredAt:
-                            ///   - expiresAt:
-                            public init(
-                                id: Swift.String,
-                                name: Swift.String,
-                                owner: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.OwnerPayload,
-                                ownerName: Swift.String? = nil,
-                                apps: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.AppsPayload,
-                                to: Components.Schemas.Deployer,
-                                offeredAt: Swift.String,
-                                expiresAt: Swift.String
-                            ) {
-                                self.id = id
-                                self.name = name
-                                self.owner = owner
-                                self.ownerName = ownerName
-                                self.apps = apps
-                                self.to = to
-                                self.offeredAt = offeredAt
-                                self.expiresAt = expiresAt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case id
-                                case name
-                                case owner
-                                case ownerName
-                                case apps
-                                case to
-                                case offeredAt
-                                case expiresAt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/offered`.
-                        public typealias OfferedPayload = [Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload]
-                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/offered`.
-                        public var offered: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployments:
-                        ///   - offered:
-                        public init(
-                            deployments: [Components.Schemas.Deployment],
-                            offered: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayload
-                        ) {
-                            self.deployments = deployments
-                            self.offered = offered
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployments
-                            case offered
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -33954,57 +37208,8 @@ public enum Operations {
             public var headers: Operations.DeploymentCreate.Input.Headers
             /// - Remark: Generated from `#/paths/deployments/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/deployments/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/deployments/POST/requestBody/json/name`.
-                    public var name: Swift.String
-                    /// - Remark: Generated from `#/paths/deployments/POST/requestBody/json/owner`.
-                    public var owner: Components.Schemas.Deployer
-                    /// - Remark: Generated from `#/paths/deployments/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - name:
-                    ///   - owner:
-                    ///   - confirm:
-                    public init(
-                        name: Swift.String,
-                        owner: Components.Schemas.Deployer,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.name = name
-                        self.owner = owner
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case name
-                        case owner
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.name = try container.decode(
-                            Swift.String.self,
-                            forKey: .name
-                        )
-                        self.owner = try container.decode(
-                            Components.Schemas.Deployer.self,
-                            forKey: .owner
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "name",
-                            "owner",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/deployments/POST/requestBody/content/application\/json`.
-                case json(Operations.DeploymentCreate.Input.Body.JsonPayload)
+                case json(Components.Schemas.DeploymentBody)
             }
             public var body: Operations.DeploymentCreate.Input.Body
             /// Creates a new `Input`.
@@ -34024,42 +37229,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/POST/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/POST/responses/200/content/json/deployment`.
-                        public var deployment: Components.Schemas.DeploymentRecord
-                        /// - Remark: Generated from `#/paths/deployments/POST/responses/200/content/json/host`.
-                        public var host: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - id:
-                        ///   - deployment:
-                        ///   - host:
-                        public init(
-                            id: Swift.String,
-                            deployment: Components.Schemas.DeploymentRecord,
-                            host: Swift.String? = nil
-                        ) {
-                            self.id = id
-                            self.deployment = deployment
-                            self.host = host
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case id
-                            case deployment
-                            case host
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/POST/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentCreated)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentCreated {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -34185,113 +37361,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/id`.
-                        public var id: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/host`.
-                        public var host: Swift.String?
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/owner`.
-                        public struct OwnerPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/owner/kind`.
-                            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                                case account = "account"
-                                case org = "org"
-                            }
-                            /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/owner/kind`.
-                            public var kind: Operations.DeploymentGet.Output.Ok.Body.JsonPayload.OwnerPayload.KindPayload
-                            /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/owner/name`.
-                            public var name: Swift.String?
-                            /// Creates a new `OwnerPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - kind:
-                            ///   - name:
-                            public init(
-                                kind: Operations.DeploymentGet.Output.Ok.Body.JsonPayload.OwnerPayload.KindPayload,
-                                name: Swift.String? = nil
-                            ) {
-                                self.kind = kind
-                                self.name = name
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case kind
-                                case name
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/owner`.
-                        public var owner: Operations.DeploymentGet.Output.Ok.Body.JsonPayload.OwnerPayload
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/AppsPayload`.
-                        public struct AppsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/AppsPayload/app`.
-                            public var app: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/AppsPayload/package`.
-                            public var package: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/AppsPayload/version`.
-                            public var version: Swift.String
-                            /// Creates a new `AppsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - app:
-                            ///   - package:
-                            ///   - version:
-                            public init(
-                                app: Swift.String,
-                                package: Swift.String,
-                                version: Swift.String
-                            ) {
-                                self.app = app
-                                self.package = package
-                                self.version = version
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case app
-                                case package
-                                case version
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/apps`.
-                        public typealias AppsPayload = [Operations.DeploymentGet.Output.Ok.Body.JsonPayload.AppsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/json/apps`.
-                        public var apps: Operations.DeploymentGet.Output.Ok.Body.JsonPayload.AppsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - id:
-                        ///   - host:
-                        ///   - name:
-                        ///   - owner:
-                        ///   - apps:
-                        public init(
-                            id: Swift.String,
-                            host: Swift.String? = nil,
-                            name: Swift.String,
-                            owner: Operations.DeploymentGet.Output.Ok.Body.JsonPayload.OwnerPayload,
-                            apps: Operations.DeploymentGet.Output.Ok.Body.JsonPayload.AppsPayload
-                        ) {
-                            self.id = id
-                            self.host = host
-                            self.name = name
-                            self.owner = owner
-                            self.apps = apps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case id
-                            case host
-                            case name
-                            case owner
-                            case apps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/GET/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentGet.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PublicDeployment)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentGet.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PublicDeployment {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -34424,28 +37500,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/DELETE/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        public init(deployment: Swift.String) {
-                            self.deployment = deployment
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentDelete.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentDeleted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentDelete.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentDeleted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -34554,68 +37615,8 @@ public enum Operations {
             public var headers: Operations.DeploymentOffer.Input.Headers
             /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody/json/app`.
-                    public var app: Swift.String
-                    /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody/json/package`.
-                    public var package: Swift.String
-                    /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody/json/version`.
-                    public var version: Swift.String
-                    /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - app:
-                    ///   - package:
-                    ///   - version:
-                    ///   - confirm:
-                    public init(
-                        app: Swift.String,
-                        package: Swift.String,
-                        version: Swift.String,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.app = app
-                        self.package = package
-                        self.version = version
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case app
-                        case package
-                        case version
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.app = try container.decode(
-                            Swift.String.self,
-                            forKey: .app
-                        )
-                        self.package = try container.decode(
-                            Swift.String.self,
-                            forKey: .package
-                        )
-                        self.version = try container.decode(
-                            Swift.String.self,
-                            forKey: .version
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "app",
-                            "package",
-                            "version",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/requestBody/content/application\/json`.
-                case json(Operations.DeploymentOffer.Input.Body.JsonPayload)
+                case json(Components.Schemas.OfferBody)
             }
             public var body: Operations.DeploymentOffer.Input.Body
             /// Creates a new `Input`.
@@ -34638,36 +37639,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - app:
-                        public init(
-                            deployment: Swift.String,
-                            app: Swift.String
-                        ) {
-                            self.deployment = deployment
-                            self.app = app
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case app
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/apps/POST/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentOffer.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppOffered)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentOffer.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppOffered {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -34807,36 +37785,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/apps/{app}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/apps/{app}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/apps/{app}/DELETE/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/apps/{app}/DELETE/responses/200/content/json/app`.
-                        public var app: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - app:
-                        public init(
-                            deployment: Swift.String,
-                            app: Swift.String
-                        ) {
-                            self.deployment = deployment
-                            self.app = app
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case app
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/apps/{app}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentWithdraw.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppWithdrawn)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentWithdraw.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppWithdrawn {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -34962,122 +37917,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload`.
-                        public struct OrgsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/orgId`.
-                            public var orgId: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/name`.
-                            public var name: Swift.String?
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/memberCount`.
-                            public var memberCount: Swift.Int64
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/activeMembers30d`.
-                            public var activeMembers30d: Swift.Int64
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/instances`.
-                            public var instances: Swift.Int64
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/AppsPayload`.
-                            public struct AppsPayloadPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/AppsPayload/app`.
-                                public var app: Swift.String
-                                /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/AppsPayload/version`.
-                                public var version: Swift.String
-                                /// Creates a new `AppsPayloadPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - app:
-                                ///   - version:
-                                public init(
-                                    app: Swift.String,
-                                    version: Swift.String
-                                ) {
-                                    self.app = app
-                                    self.version = version
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case app
-                                    case version
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/apps`.
-                            public typealias AppsPayload = [Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.OrgsPayloadPayload.AppsPayloadPayload]
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/apps`.
-                            public var apps: Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.OrgsPayloadPayload.AppsPayload
-                            /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/OrgsPayload/firstCreatedAt`.
-                            public var firstCreatedAt: Swift.String
-                            /// Creates a new `OrgsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - orgId:
-                            ///   - name:
-                            ///   - memberCount:
-                            ///   - activeMembers30d:
-                            ///   - instances:
-                            ///   - apps:
-                            ///   - firstCreatedAt:
-                            public init(
-                                orgId: Swift.String,
-                                name: Swift.String? = nil,
-                                memberCount: Swift.Int64,
-                                activeMembers30d: Swift.Int64,
-                                instances: Swift.Int64,
-                                apps: Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.OrgsPayloadPayload.AppsPayload,
-                                firstCreatedAt: Swift.String
-                            ) {
-                                self.orgId = orgId
-                                self.name = name
-                                self.memberCount = memberCount
-                                self.activeMembers30d = activeMembers30d
-                                self.instances = instances
-                                self.apps = apps
-                                self.firstCreatedAt = firstCreatedAt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case orgId
-                                case name
-                                case memberCount
-                                case activeMembers30d
-                                case instances
-                                case apps
-                                case firstCreatedAt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/orgs`.
-                        public typealias OrgsPayload = [Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.OrgsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/orgs`.
-                        public var orgs: Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.OrgsPayload
-                        /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/json/outsideOrgs`.
-                        public var outsideOrgs: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - orgs:
-                        ///   - outsideOrgs:
-                        public init(
-                            deployment: Swift.String,
-                            orgs: Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.OrgsPayload,
-                            outsideOrgs: Swift.Int64
-                        ) {
-                            self.deployment = deployment
-                            self.orgs = orgs
-                            self.outsideOrgs = outsideOrgs
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case orgs
-                            case outsideOrgs
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/orgs/GET/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentOrgs)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentOrgs {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -35203,126 +38049,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets`.
-                        public struct SecretsPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties`.
-                            public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/apps`.
-                                public var apps: [Swift.String]
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/DeclaredByPayload`.
-                                public struct DeclaredByPayloadPayload: Codable, Hashable, Sendable {
-                                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/DeclaredByPayload/package`.
-                                    public var package: Swift.String
-                                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/DeclaredByPayload/version`.
-                                    public var version: Swift.String
-                                    /// Creates a new `DeclaredByPayloadPayload`.
-                                    ///
-                                    /// - Parameters:
-                                    ///   - package:
-                                    ///   - version:
-                                    public init(
-                                        package: Swift.String,
-                                        version: Swift.String
-                                    ) {
-                                        self.package = package
-                                        self.version = version
-                                    }
-                                    public enum CodingKeys: String, CodingKey {
-                                        case package
-                                        case version
-                                    }
-                                }
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/declaredBy`.
-                                public typealias DeclaredByPayload = [Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.DeclaredByPayloadPayload]
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/declaredBy`.
-                                public var declaredBy: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.DeclaredByPayload
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/set`.
-                                public var set: Swift.Bool
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/fingerprint`.
-                                public var fingerprint: Swift.String?
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setBy`.
-                                public var setBy: Swift.String?
-                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setAt`.
-                                public var setAt: Swift.Int64?
-                                /// Creates a new `AdditionalPropertiesPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - apps:
-                                ///   - declaredBy:
-                                ///   - set:
-                                ///   - fingerprint:
-                                ///   - setBy:
-                                ///   - setAt:
-                                public init(
-                                    apps: [Swift.String],
-                                    declaredBy: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.DeclaredByPayload,
-                                    set: Swift.Bool,
-                                    fingerprint: Swift.String? = nil,
-                                    setBy: Swift.String? = nil,
-                                    setAt: Swift.Int64? = nil
-                                ) {
-                                    self.apps = apps
-                                    self.declaredBy = declaredBy
-                                    self.set = set
-                                    self.fingerprint = fingerprint
-                                    self.setBy = setBy
-                                    self.setAt = setAt
-                                }
-                                public enum CodingKeys: String, CodingKey {
-                                    case apps
-                                    case declaredBy
-                                    case set
-                                    case fingerprint
-                                    case setBy
-                                    case setAt
-                                }
-                            }
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload]
-                            /// Creates a new `SecretsPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets`.
-                        public var secrets: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - secrets:
-                        public init(
-                            deployment: Swift.String,
-                            secrets: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload
-                        ) {
-                            self.deployment = deployment
-                            self.secrets = secrets
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case secrets
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentSecrets)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentSecrets {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -35440,46 +38173,8 @@ public enum Operations {
             public var headers: Operations.DeploymentSecretSet.Input.Headers
             /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/json/value`.
-                    public var value: Swift.String
-                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - value:
-                    ///   - confirm:
-                    public init(
-                        value: Swift.String,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.value = value
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case value
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.value = try container.decode(
-                            Swift.String.self,
-                            forKey: .value
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "value",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/content/application\/json`.
-                case json(Operations.DeploymentSecretSet.Input.Body.JsonPayload)
+                case json(Components.Schemas.DeploymentSecretBody)
             }
             public var body: Operations.DeploymentSecretSet.Input.Body
             /// Creates a new `Input`.
@@ -35502,54 +38197,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/fingerprint`.
-                        public var fingerprint: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/setBy`.
-                        public var setBy: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/setAt`.
-                        public var setAt: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - name:
-                        ///   - fingerprint:
-                        ///   - setBy:
-                        ///   - setAt:
-                        public init(
-                            deployment: Swift.String,
-                            name: Swift.String,
-                            fingerprint: Swift.String,
-                            setBy: Swift.String,
-                            setAt: Swift.Int64
-                        ) {
-                            self.deployment = deployment
-                            self.name = name
-                            self.fingerprint = fingerprint
-                            self.setBy = setBy
-                            self.setAt = setAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case name
-                            case fingerprint
-                            case setBy
-                            case setAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentSecretSet.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentSecretSet)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentSecretSet.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentSecretSet {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -35691,36 +38345,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - name:
-                        public init(
-                            deployment: Swift.String,
-                            name: Swift.String
-                        ) {
-                            self.deployment = deployment
-                            self.name = name
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case name
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentSecretClear.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentSecretCleared)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentSecretClear.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentSecretCleared {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -35893,65 +38524,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer`.
-                        public struct TransferPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer/to`.
-                            public var to: Components.Schemas.Deployer
-                            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer/offeredBy`.
-                            public var offeredBy: Swift.String
-                            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer/offeredAt`.
-                            public var offeredAt: Swift.Int64
-                            /// Creates a new `TransferPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - to:
-                            ///   - offeredBy:
-                            ///   - offeredAt:
-                            public init(
-                                to: Components.Schemas.Deployer,
-                                offeredBy: Swift.String,
-                                offeredAt: Swift.Int64
-                            ) {
-                                self.to = to
-                                self.offeredBy = offeredBy
-                                self.offeredAt = offeredAt
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case to
-                                case offeredBy
-                                case offeredAt
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer`.
-                        public var transfer: Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload.TransferPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - transfer:
-                        public init(
-                            deployment: Swift.String,
-                            transfer: Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload.TransferPayload
-                        ) {
-                            self.deployment = deployment
-                            self.transfer = transfer
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case transfer
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentOffered)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentOffered {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -36086,28 +38665,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        public init(deployment: Swift.String) {
-                            self.deployment = deployment
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentTransferCancel.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentTransferCancelled)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentTransferCancel.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentTransferCancelled {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -36280,48 +38844,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/deployment`.
-                        public var deployment: Swift.String
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/owner`.
-                        public var owner: Components.Schemas.Deployer
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/from`.
-                        public var from: Components.Schemas.Deployer
-                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/secretsDropped`.
-                        public var secretsDropped: [Swift.String]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - deployment:
-                        ///   - owner:
-                        ///   - from:
-                        ///   - secretsDropped:
-                        public init(
-                            deployment: Swift.String,
-                            owner: Components.Schemas.Deployer,
-                            from: Components.Schemas.Deployer,
-                            secretsDropped: [Swift.String]
-                        ) {
-                            self.deployment = deployment
-                            self.owner = owner
-                            self.from = from
-                            self.secretsDropped = secretsDropped
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case deployment
-                            case owner
-                            case from
-                            case secretsDropped
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/application\/json`.
-                    case json(Operations.DeploymentTransferAccept.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.DeploymentAccepted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.DeploymentTransferAccept.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.DeploymentAccepted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -36429,60 +38958,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/health/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json/ok`.
-                        public var ok: Swift.Bool
-                        /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json/node`.
-                        public var node: Swift.Int64
-                        /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json/systemLeader`.
-                        public var systemLeader: Swift.Int64?
-                        /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json/release`.
-                        public var release: Swift.String
-                        /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json/clusterVersion`.
-                        public var clusterVersion: Swift.String
-                        /// - Remark: Generated from `#/paths/health/GET/responses/200/content/json/rollbackEpoch`.
-                        public var rollbackEpoch: Swift.Int64?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - ok:
-                        ///   - node:
-                        ///   - systemLeader:
-                        ///   - release:
-                        ///   - clusterVersion:
-                        ///   - rollbackEpoch:
-                        public init(
-                            ok: Swift.Bool,
-                            node: Swift.Int64,
-                            systemLeader: Swift.Int64? = nil,
-                            release: Swift.String,
-                            clusterVersion: Swift.String,
-                            rollbackEpoch: Swift.Int64? = nil
-                        ) {
-                            self.ok = ok
-                            self.node = node
-                            self.systemLeader = systemLeader
-                            self.release = release
-                            self.clusterVersion = clusterVersion
-                            self.rollbackEpoch = rollbackEpoch
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case ok
-                            case node
-                            case systemLeader
-                            case release
-                            case clusterVersion
-                            case rollbackEpoch
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/health/GET/responses/200/content/application\/json`.
-                    case json(Operations.Health.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.Health)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.Health.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.Health {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -36608,42 +39090,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/app`.
-                        public var app: Swift.String?
-                        /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/member`.
-                        public var member: Swift.Bool?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - org:
-                        ///   - app:
-                        ///   - member:
-                        public init(
-                            org: Swift.String,
-                            app: Swift.String? = nil,
-                            member: Swift.Bool? = nil
-                        ) {
-                            self.org = org
-                            self.app = app
-                            self.member = member
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case org
-                            case app
-                            case member
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/application\/json`.
-                    case json(Operations.InviteRedeem.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.InviteRedeemed)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.InviteRedeem.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.InviteRedeemed {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -36776,48 +39229,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content/json/fresh`.
-                        public var fresh: Swift.Bool
-                        /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content/json/governance`.
-                        public var governance: Components.Schemas.Governance
-                        /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content/json/apps`.
-                        public var apps: [Components.Schemas.ReportApp]
-                        /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content/json/next`.
-                        public var next: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - fresh:
-                        ///   - governance:
-                        ///   - apps:
-                        ///   - next:
-                        public init(
-                            fresh: Swift.Bool,
-                            governance: Components.Schemas.Governance,
-                            apps: [Components.Schemas.ReportApp],
-                            next: Swift.String? = nil
-                        ) {
-                            self.fresh = fresh
-                            self.governance = governance
-                            self.apps = apps
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case fresh
-                            case governance
-                            case apps
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/ops/apps/GET/responses/200/content/application\/json`.
-                    case json(Operations.OpsApps.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OpsApps)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OpsApps.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OpsApps {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -36948,73 +39366,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/fresh`.
-                        public var fresh: Swift.Bool
-                        /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/governance`.
-                        public var governance: Components.Schemas.Governance
-                        /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/OrgsPayload`.
-                        public struct OrgsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/OrgsPayload/org`.
-                            public var org: Swift.String
-                            /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/OrgsPayload/approvedReleases`.
-                            public var approvedReleases: [Swift.String]?
-                            /// Creates a new `OrgsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - org:
-                            ///   - approvedReleases:
-                            public init(
-                                org: Swift.String,
-                                approvedReleases: [Swift.String]? = nil
-                            ) {
-                                self.org = org
-                                self.approvedReleases = approvedReleases
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case org
-                                case approvedReleases
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/orgs`.
-                        public typealias OrgsPayload = [Operations.OpsOrgs.Output.Ok.Body.JsonPayload.OrgsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/orgs`.
-                        public var orgs: Operations.OpsOrgs.Output.Ok.Body.JsonPayload.OrgsPayload
-                        /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/json/next`.
-                        public var next: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - fresh:
-                        ///   - governance:
-                        ///   - orgs:
-                        ///   - next:
-                        public init(
-                            fresh: Swift.Bool,
-                            governance: Components.Schemas.Governance,
-                            orgs: Operations.OpsOrgs.Output.Ok.Body.JsonPayload.OrgsPayload,
-                            next: Swift.String? = nil
-                        ) {
-                            self.fresh = fresh
-                            self.governance = governance
-                            self.orgs = orgs
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case fresh
-                            case governance
-                            case orgs
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/ops/orgs/GET/responses/200/content/application\/json`.
-                    case json(Operations.OpsOrgs.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OpsOrgs)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OpsOrgs.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OpsOrgs {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -37430,57 +39788,8 @@ public enum Operations {
             public var headers: Operations.OrgCreate.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/POST/requestBody/json/name`.
-                    public var name: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/POST/requestBody/json/recoveryKey`.
-                    public var recoveryKey: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/POST/requestBody/json/capabilities`.
-                    public var capabilities: Swift.Int64?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - name:
-                    ///   - recoveryKey:
-                    ///   - capabilities:
-                    public init(
-                        name: Swift.String,
-                        recoveryKey: Swift.String? = nil,
-                        capabilities: Swift.Int64? = nil
-                    ) {
-                        self.name = name
-                        self.recoveryKey = recoveryKey
-                        self.capabilities = capabilities
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case name
-                        case recoveryKey
-                        case capabilities
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.name = try container.decode(
-                            Swift.String.self,
-                            forKey: .name
-                        )
-                        self.recoveryKey = try container.decodeIfPresent(
-                            Swift.String.self,
-                            forKey: .recoveryKey
-                        )
-                        self.capabilities = try container.decodeIfPresent(
-                            Swift.Int64.self,
-                            forKey: .capabilities
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "name",
-                            "recoveryKey",
-                            "capabilities"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgCreate.Input.Body.JsonPayload)
+                case json(Components.Schemas.OrgBody)
             }
             public var body: Operations.OrgCreate.Input.Body
             /// Creates a new `Input`.
@@ -37500,28 +39809,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/POST/responses/200/content/json/orgId`.
-                        public var orgId: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - orgId:
-                        public init(orgId: Swift.String) {
-                            self.orgId = orgId
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case orgId
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/POST/responses/200/content/application\/json`.
-                    case json(Operations.OrgCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OrgCreated)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OrgCreated {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -37788,28 +40082,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/DELETE/responses/200/content/json/apps`.
-                        public var apps: [Swift.String]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - apps:
-                        public init(apps: [Swift.String]) {
-                            self.apps = apps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case apps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.OrgDelete.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OrgDeleted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgDelete.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OrgDeleted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -37920,57 +40199,8 @@ public enum Operations {
             public var headers: Operations.OrgAllApps.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/all-apps/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/all-apps/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/all-apps/POST/requestBody/json/account`.
-                    public var account: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/all-apps/POST/requestBody/json/allApps`.
-                    public var allApps: Swift.Bool
-                    /// - Remark: Generated from `#/paths/orgs/{org}/all-apps/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - account:
-                    ///   - allApps:
-                    ///   - confirm:
-                    public init(
-                        account: Swift.String,
-                        allApps: Swift.Bool,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.account = account
-                        self.allApps = allApps
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case account
-                        case allApps
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.account = try container.decode(
-                            Swift.String.self,
-                            forKey: .account
-                        )
-                        self.allApps = try container.decode(
-                            Swift.Bool.self,
-                            forKey: .allApps
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "account",
-                            "allApps",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/all-apps/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgAllApps.Input.Body.JsonPayload)
+                case json(Components.Schemas.AllAppsBody)
             }
             public var body: Operations.OrgAllApps.Input.Body
             /// Creates a new `Input`.
@@ -38125,103 +40355,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/mode`.
-                        @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case legacy = "legacy"
-                            case standalone = "standalone"
-                            case shared = "shared"
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/mode`.
-                        public var mode: Operations.AppTeamList.Output.Ok.Body.JsonPayload.ModePayload
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload`.
-                        public struct AppTeamsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/package`.
-                            public var package: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/teamId`.
-                            public var teamId: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/name`.
-                            public var name: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/join`.
-                            public var join: Components.Schemas.TeamJoin
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/memberCount`.
-                            public var memberCount: Swift.Int64
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/defaultCapabilities`.
-                            public var defaultCapabilities: Swift.Int64?
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/member`.
-                            public var member: Swift.Bool
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/AppTeamsPayload/manages`.
-                            public var manages: Swift.Bool
-                            /// Creates a new `AppTeamsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - package:
-                            ///   - teamId:
-                            ///   - name:
-                            ///   - join:
-                            ///   - memberCount:
-                            ///   - defaultCapabilities:
-                            ///   - member:
-                            ///   - manages:
-                            public init(
-                                package: Swift.String,
-                                teamId: Swift.String,
-                                name: Swift.String,
-                                join: Components.Schemas.TeamJoin,
-                                memberCount: Swift.Int64,
-                                defaultCapabilities: Swift.Int64? = nil,
-                                member: Swift.Bool,
-                                manages: Swift.Bool
-                            ) {
-                                self.package = package
-                                self.teamId = teamId
-                                self.name = name
-                                self.join = join
-                                self.memberCount = memberCount
-                                self.defaultCapabilities = defaultCapabilities
-                                self.member = member
-                                self.manages = manages
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case package
-                                case teamId
-                                case name
-                                case join
-                                case memberCount
-                                case defaultCapabilities
-                                case member
-                                case manages
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/appTeams`.
-                        public typealias AppTeamsPayload = [Operations.AppTeamList.Output.Ok.Body.JsonPayload.AppTeamsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/json/appTeams`.
-                        public var appTeams: Operations.AppTeamList.Output.Ok.Body.JsonPayload.AppTeamsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - mode:
-                        ///   - appTeams:
-                        public init(
-                            mode: Operations.AppTeamList.Output.Ok.Body.JsonPayload.ModePayload,
-                            appTeams: Operations.AppTeamList.Output.Ok.Body.JsonPayload.AppTeamsPayload
-                        ) {
-                            self.mode = mode
-                            self.appTeams = appTeams
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case mode
-                            case appTeams
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/GET/responses/200/content/application\/json`.
-                    case json(Operations.AppTeamList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppTeamList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppTeamList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppTeamList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -38332,106 +40472,8 @@ public enum Operations {
             public var headers: Operations.AppTeamsScope.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload`.
-                    public struct AppsPayloadPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload/package`.
-                        public var package: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload/name`.
-                        public var name: Swift.String?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload/instances`.
-                        public var instances: [Swift.String]?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload/join`.
-                        public var join: Components.Schemas.TeamJoin?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload/keep`.
-                        public var keep: [Swift.String]?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/AppsPayload/childTeams`.
-                        public var childTeams: Swift.Bool?
-                        /// Creates a new `AppsPayloadPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - package:
-                        ///   - name:
-                        ///   - instances:
-                        ///   - join:
-                        ///   - keep:
-                        ///   - childTeams:
-                        public init(
-                            package: Swift.String,
-                            name: Swift.String? = nil,
-                            instances: [Swift.String]? = nil,
-                            join: Components.Schemas.TeamJoin? = nil,
-                            keep: [Swift.String]? = nil,
-                            childTeams: Swift.Bool? = nil
-                        ) {
-                            self.package = package
-                            self.name = name
-                            self.instances = instances
-                            self.join = join
-                            self.keep = keep
-                            self.childTeams = childTeams
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case package
-                            case name
-                            case instances
-                            case join
-                            case keep
-                            case childTeams
-                        }
-                    }
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/apps`.
-                    public typealias AppsPayload = [Operations.AppTeamsScope.Input.Body.JsonPayload.AppsPayloadPayload]
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/apps`.
-                    public var apps: Operations.AppTeamsScope.Input.Body.JsonPayload.AppsPayload?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/shared`.
-                    public var shared: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - apps:
-                    ///   - shared:
-                    ///   - confirm:
-                    public init(
-                        apps: Operations.AppTeamsScope.Input.Body.JsonPayload.AppsPayload? = nil,
-                        shared: Swift.Bool? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.apps = apps
-                        self.shared = shared
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case apps
-                        case shared
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.apps = try container.decodeIfPresent(
-                            Operations.AppTeamsScope.Input.Body.JsonPayload.AppsPayload.self,
-                            forKey: .apps
-                        )
-                        self.shared = try container.decodeIfPresent(
-                            Swift.Bool.self,
-                            forKey: .shared
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "apps",
-                            "shared",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/requestBody/content/application\/json`.
-                case json(Operations.AppTeamsScope.Input.Body.JsonPayload)
+                case json(Components.Schemas.ScopeAppsBody)
             }
             public var body: Operations.AppTeamsScope.Input.Body
             /// Creates a new `Input`.
@@ -38454,97 +40496,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/mode`.
-                        @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case legacy = "legacy"
-                            case standalone = "standalone"
-                            case shared = "shared"
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/mode`.
-                        public var mode: Operations.AppTeamsScope.Output.Ok.Body.JsonPayload.ModePayload
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload`.
-                        public struct TeamsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/package`.
-                            public var package: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/teamId`.
-                            public var teamId: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/created`.
-                            public var created: Swift.Bool
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/apps`.
-                            public var apps: [Swift.String]
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/added`.
-                            public var added: Swift.Int64
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/join`.
-                            public var join: Components.Schemas.TeamJoin?
-                            /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/TeamsPayload/dropped`.
-                            public var dropped: Swift.Int64
-                            /// Creates a new `TeamsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - package:
-                            ///   - teamId:
-                            ///   - created:
-                            ///   - apps:
-                            ///   - added:
-                            ///   - join:
-                            ///   - dropped:
-                            public init(
-                                package: Swift.String,
-                                teamId: Swift.String,
-                                created: Swift.Bool,
-                                apps: [Swift.String],
-                                added: Swift.Int64,
-                                join: Components.Schemas.TeamJoin? = nil,
-                                dropped: Swift.Int64
-                            ) {
-                                self.package = package
-                                self.teamId = teamId
-                                self.created = created
-                                self.apps = apps
-                                self.added = added
-                                self.join = join
-                                self.dropped = dropped
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case package
-                                case teamId
-                                case created
-                                case apps
-                                case added
-                                case join
-                                case dropped
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/teams`.
-                        public typealias TeamsPayload = [Operations.AppTeamsScope.Output.Ok.Body.JsonPayload.TeamsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/json/teams`.
-                        public var teams: Operations.AppTeamsScope.Output.Ok.Body.JsonPayload.TeamsPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - mode:
-                        ///   - teams:
-                        public init(
-                            mode: Operations.AppTeamsScope.Output.Ok.Body.JsonPayload.ModePayload,
-                            teams: Operations.AppTeamsScope.Output.Ok.Body.JsonPayload.TeamsPayload
-                        ) {
-                            self.mode = mode
-                            self.teams = teams
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case mode
-                            case teams
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/app-teams/POST/responses/200/content/application\/json`.
-                    case json(Operations.AppTeamsScope.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppTeamsScoped)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.AppTeamsScope.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppTeamsScoped {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -38693,60 +40651,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json/scope`.
-                        public var scope: Components.Schemas.AppScope
-                        /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json/governance`.
-                        public var governance: Components.Schemas.Governance
-                        /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json/approvedReleases`.
-                        public var approvedReleases: [Swift.String]?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json/clusterReleases`.
-                        public var clusterReleases: [Components.Schemas.ClusterRelease]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json/apps`.
-                        public var apps: [Components.Schemas.ReportApp]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/json/next`.
-                        public var next: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - scope:
-                        ///   - governance:
-                        ///   - approvedReleases:
-                        ///   - clusterReleases:
-                        ///   - apps:
-                        ///   - next:
-                        public init(
-                            scope: Components.Schemas.AppScope,
-                            governance: Components.Schemas.Governance,
-                            approvedReleases: [Swift.String]? = nil,
-                            clusterReleases: [Components.Schemas.ClusterRelease],
-                            apps: [Components.Schemas.ReportApp],
-                            next: Swift.String? = nil
-                        ) {
-                            self.scope = scope
-                            self.governance = governance
-                            self.approvedReleases = approvedReleases
-                            self.clusterReleases = clusterReleases
-                            self.apps = apps
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case scope
-                            case governance
-                            case approvedReleases
-                            case clusterReleases
-                            case apps
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/apps/GET/responses/200/content/application\/json`.
-                    case json(Operations.OrgApps.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.AppsReport)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgApps.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.AppsReport {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -38989,46 +40900,8 @@ public enum Operations {
             public var headers: Operations.OrgSetBackupKey.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/backup-key/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/backup-key/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/backup-key/POST/requestBody/json/publicKey`.
-                    public var publicKey: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/backup-key/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - publicKey:
-                    ///   - confirm:
-                    public init(
-                        publicKey: Swift.String,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.publicKey = publicKey
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case publicKey
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.publicKey = try container.decode(
-                            Swift.String.self,
-                            forKey: .publicKey
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "publicKey",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/backup-key/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgSetBackupKey.Input.Body.JsonPayload)
+                case json(Components.Schemas.BackupKeyBody)
             }
             public var body: Operations.OrgSetBackupKey.Input.Body
             /// Creates a new `Input`.
@@ -39168,43 +41041,8 @@ public enum Operations {
             public var headers: Operations.OrgCapabilities.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody/json/account`.
-                    public var account: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody/json/team`.
-                    public var team: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody/json/capabilities`.
-                    public var capabilities: Swift.Int64
-                    /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - account:
-                    ///   - team:
-                    ///   - capabilities:
-                    ///   - confirm:
-                    public init(
-                        account: Swift.String? = nil,
-                        team: Swift.String? = nil,
-                        capabilities: Swift.Int64,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.account = account
-                        self.team = team
-                        self.capabilities = capabilities
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case account
-                        case team
-                        case capabilities
-                        case confirm
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/capabilities/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgCapabilities.Input.Body.JsonPayload)
+                case json(Components.Schemas.CapabilitiesBody)
             }
             public var body: Operations.OrgCapabilities.Input.Body
             /// Creates a new `Input`.
@@ -39406,48 +41244,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/app`.
-                        public var app: Swift.String?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/egress`.
-                        public var egress: Swift.Bool
-                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/orgEgressOff`.
-                        public var orgEgressOff: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - org:
-                        ///   - app:
-                        ///   - egress:
-                        ///   - orgEgressOff:
-                        public init(
-                            org: Swift.String,
-                            app: Swift.String? = nil,
-                            egress: Swift.Bool,
-                            orgEgressOff: Swift.Bool
-                        ) {
-                            self.org = org
-                            self.app = app
-                            self.egress = egress
-                            self.orgEgressOff = orgEgressOff
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case org
-                            case app
-                            case egress
-                            case orgEgressOff
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/application\/json`.
-                    case json(Operations.OrgEgress.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.EgressSet)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgEgress.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.EgressSet {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -39573,95 +41376,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload`.
-                        public struct InvitesPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/inviteKey`.
-                            public var inviteKey: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/role`.
-                            public var role: Components.Schemas.OrgRole
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/teams`.
-                            public var teams: [Swift.String]
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/usesLeft`.
-                            public var usesLeft: Swift.Int64
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/expiresAt`.
-                            public var expiresAt: Swift.Int64
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/expired`.
-                            public var expired: Swift.Bool
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/createdBy`.
-                            public var createdBy: Swift.String?
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/createdAt`.
-                            public var createdAt: Swift.Int64?
-                            /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/InvitesPayload/allApps`.
-                            public var allApps: Swift.Bool
-                            /// Creates a new `InvitesPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - inviteKey:
-                            ///   - role:
-                            ///   - teams:
-                            ///   - usesLeft:
-                            ///   - expiresAt:
-                            ///   - expired:
-                            ///   - createdBy:
-                            ///   - createdAt:
-                            ///   - allApps:
-                            public init(
-                                inviteKey: Swift.String,
-                                role: Components.Schemas.OrgRole,
-                                teams: [Swift.String],
-                                usesLeft: Swift.Int64,
-                                expiresAt: Swift.Int64,
-                                expired: Swift.Bool,
-                                createdBy: Swift.String? = nil,
-                                createdAt: Swift.Int64? = nil,
-                                allApps: Swift.Bool
-                            ) {
-                                self.inviteKey = inviteKey
-                                self.role = role
-                                self.teams = teams
-                                self.usesLeft = usesLeft
-                                self.expiresAt = expiresAt
-                                self.expired = expired
-                                self.createdBy = createdBy
-                                self.createdAt = createdAt
-                                self.allApps = allApps
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case inviteKey
-                                case role
-                                case teams
-                                case usesLeft
-                                case expiresAt
-                                case expired
-                                case createdBy
-                                case createdAt
-                                case allApps
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/invites`.
-                        public typealias InvitesPayload = [Operations.InviteList.Output.Ok.Body.JsonPayload.InvitesPayloadPayload]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/json/invites`.
-                        public var invites: Operations.InviteList.Output.Ok.Body.JsonPayload.InvitesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - invites:
-                        public init(invites: Operations.InviteList.Output.Ok.Body.JsonPayload.InvitesPayload) {
-                            self.invites = invites
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case invites
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/invites/GET/responses/200/content/application\/json`.
-                    case json(Operations.InviteList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.InviteList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.InviteList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.InviteList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -39772,61 +41493,8 @@ public enum Operations {
             public var headers: Operations.InviteCreate.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/role`.
-                    public var role: Components.Schemas.OrgRole
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/teams`.
-                    public var teams: [Swift.String]?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/ttlSecs`.
-                    public var ttlSecs: Swift.Int64?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/uses`.
-                    public var uses: Swift.Int64?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/allApps`.
-                    public var allApps: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/capabilities`.
-                    public var capabilities: Swift.Int64?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - role:
-                    ///   - teams:
-                    ///   - ttlSecs:
-                    ///   - uses:
-                    ///   - allApps:
-                    ///   - capabilities:
-                    ///   - confirm:
-                    public init(
-                        role: Components.Schemas.OrgRole,
-                        teams: [Swift.String]? = nil,
-                        ttlSecs: Swift.Int64? = nil,
-                        uses: Swift.Int64? = nil,
-                        allApps: Swift.Bool? = nil,
-                        capabilities: Swift.Int64? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.role = role
-                        self.teams = teams
-                        self.ttlSecs = ttlSecs
-                        self.uses = uses
-                        self.allApps = allApps
-                        self.capabilities = capabilities
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case role
-                        case teams
-                        case ttlSecs
-                        case uses
-                        case allApps
-                        case capabilities
-                        case confirm
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/requestBody/content/application\/json`.
-                case json(Operations.InviteCreate.Input.Body.JsonPayload)
+                case json(Components.Schemas.InviteBody)
             }
             public var body: Operations.InviteCreate.Input.Body
             /// Creates a new `Input`.
@@ -39849,28 +41517,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/responses/200/content/json/token`.
-                        public var token: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - token:
-                        public init(token: Swift.String) {
-                            self.token = token
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case token
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/invites/POST/responses/200/content/application\/json`.
-                    case json(Operations.InviteCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.InviteMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.InviteCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.InviteMade {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -40162,148 +41815,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/orgId`.
-                        public var orgId: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload`.
-                        public struct MembersPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/account`.
-                            public var account: Swift.String
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/name`.
-                            public var name: Swift.String?
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/role`.
-                            public var role: Components.Schemas.OrgRole
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/teams`.
-                            public var teams: [Swift.String]
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/passkeys`.
-                            public struct PasskeysPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/passkeys/value1`.
-                                public var value1: Swift.Int64?
-                                /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/passkeys/value2`.
-                                @frozen public enum Value2Payload: String, Codable, Hashable, Sendable, CaseIterable {
-                                    case _3 = "3+"
-                                }
-                                /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/passkeys/value2`.
-                                public var value2: Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayloadPayload.PasskeysPayload.Value2Payload?
-                                /// Creates a new `PasskeysPayload`.
-                                ///
-                                /// - Parameters:
-                                ///   - value1:
-                                ///   - value2:
-                                public init(
-                                    value1: Swift.Int64? = nil,
-                                    value2: Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayloadPayload.PasskeysPayload.Value2Payload? = nil
-                                ) {
-                                    self.value1 = value1
-                                    self.value2 = value2
-                                }
-                                public init(from decoder: any Decoder) throws {
-                                    var errors: [any Error] = []
-                                    do {
-                                        self.value1 = try decoder.decodeFromSingleValueContainer()
-                                    } catch {
-                                        errors.append(error)
-                                    }
-                                    do {
-                                        self.value2 = try decoder.decodeFromSingleValueContainer()
-                                    } catch {
-                                        errors.append(error)
-                                    }
-                                    try Swift.DecodingError.verifyAtLeastOneSchemaIsNotNil(
-                                        [
-                                            self.value1,
-                                            self.value2
-                                        ],
-                                        type: Self.self,
-                                        codingPath: decoder.codingPath,
-                                        errors: errors
-                                    )
-                                }
-                                public func encode(to encoder: any Encoder) throws {
-                                    try encoder.encodeFirstNonNilValueToSingleValueContainer([
-                                        self.value1,
-                                        self.value2
-                                    ])
-                                }
-                            }
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/passkeys`.
-                            public var passkeys: Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayloadPayload.PasskeysPayload
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/recoveryCode`.
-                            public var recoveryCode: Swift.Bool
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/lastActiveDay`.
-                            public var lastActiveDay: Swift.String?
-                            /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/MembersPayload/sessions`.
-                            public var sessions: Swift.Int64
-                            /// Creates a new `MembersPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - account:
-                            ///   - name:
-                            ///   - role:
-                            ///   - teams:
-                            ///   - passkeys:
-                            ///   - recoveryCode:
-                            ///   - lastActiveDay:
-                            ///   - sessions:
-                            public init(
-                                account: Swift.String,
-                                name: Swift.String? = nil,
-                                role: Components.Schemas.OrgRole,
-                                teams: [Swift.String],
-                                passkeys: Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayloadPayload.PasskeysPayload,
-                                recoveryCode: Swift.Bool,
-                                lastActiveDay: Swift.String? = nil,
-                                sessions: Swift.Int64
-                            ) {
-                                self.account = account
-                                self.name = name
-                                self.role = role
-                                self.teams = teams
-                                self.passkeys = passkeys
-                                self.recoveryCode = recoveryCode
-                                self.lastActiveDay = lastActiveDay
-                                self.sessions = sessions
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case account
-                                case name
-                                case role
-                                case teams
-                                case passkeys
-                                case recoveryCode
-                                case lastActiveDay
-                                case sessions
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/members`.
-                        public typealias MembersPayload = [Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayloadPayload]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/json/members`.
-                        public var members: Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - orgId:
-                        ///   - members:
-                        public init(
-                            orgId: Swift.String,
-                            members: Operations.OrgMembers.Output.Ok.Body.JsonPayload.MembersPayload
-                        ) {
-                            self.orgId = orgId
-                            self.members = members
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case orgId
-                            case members
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/members/GET/responses/200/content/application\/json`.
-                    case json(Operations.OrgMembers.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.MemberSecurityList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgMembers.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.MemberSecurityList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -40414,37 +41932,8 @@ public enum Operations {
             public var headers: Operations.OrgSetMember.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/members/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/members/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/POST/requestBody/json/account`.
-                    public var account: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/POST/requestBody/json/role`.
-                    public var role: Components.Schemas.OrgRole
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - account:
-                    ///   - role:
-                    ///   - confirm:
-                    public init(
-                        account: Swift.String,
-                        role: Components.Schemas.OrgRole,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.account = account
-                        self.role = role
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case account
-                        case role
-                        case confirm
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/members/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgSetMember.Input.Body.JsonPayload)
+                case json(Components.Schemas.MemberBody)
             }
             public var body: Operations.OrgSetMember.Input.Body
             /// Creates a new `Input`.
@@ -40739,25 +42228,8 @@ public enum Operations {
             public var headers: Operations.MemberMetadata.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/metadata/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/metadata/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    ///
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/metadata/POST/requestBody/json/metadata`.
-                    public var metadata: OpenAPIRuntime.OpenAPIValueContainer
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    public init(metadata: OpenAPIRuntime.OpenAPIValueContainer) {
-                        self.metadata = metadata
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case metadata
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/metadata/POST/requestBody/content/application\/json`.
-                case json(Operations.MemberMetadata.Input.Body.JsonPayload)
+                case json(Components.Schemas.MetadataBody)
             }
             public var body: Operations.MemberMetadata.Input.Body
             /// Creates a new `Input`.
@@ -40904,77 +42376,8 @@ public enum Operations {
             public var headers: Operations.MemberSetTeams.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/TeamsPayload`.
-                    public struct TeamsPayloadPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/TeamsPayload/team`.
-                        public var team: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/TeamsPayload/role`.
-                        public var role: Components.Schemas.TeamRole?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/TeamsPayload/capabilities`.
-                        public var capabilities: Swift.Int64?
-                        /// Creates a new `TeamsPayloadPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - team:
-                        ///   - role:
-                        ///   - capabilities:
-                        public init(
-                            team: Swift.String,
-                            role: Components.Schemas.TeamRole? = nil,
-                            capabilities: Swift.Int64? = nil
-                        ) {
-                            self.team = team
-                            self.role = role
-                            self.capabilities = capabilities
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case team
-                            case role
-                            case capabilities
-                        }
-                    }
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/teams`.
-                    public typealias TeamsPayload = [Operations.MemberSetTeams.Input.Body.JsonPayload.TeamsPayloadPayload]
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/teams`.
-                    public var teams: Operations.MemberSetTeams.Input.Body.JsonPayload.TeamsPayload
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - teams:
-                    ///   - confirm:
-                    public init(
-                        teams: Operations.MemberSetTeams.Input.Body.JsonPayload.TeamsPayload,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.teams = teams
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case teams
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.teams = try container.decode(
-                            Operations.MemberSetTeams.Input.Body.JsonPayload.TeamsPayload.self,
-                            forKey: .teams
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "teams",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/POST/requestBody/content/application\/json`.
-                case json(Operations.MemberSetTeams.Input.Body.JsonPayload)
+                case json(Components.Schemas.TeamRowsBody)
             }
             public var body: Operations.MemberSetTeams.Input.Body
             /// Creates a new `Input`.
@@ -41121,46 +42524,8 @@ public enum Operations {
             public var headers: Operations.MemberRemoveTeams.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/DELETE/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/DELETE/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/DELETE/requestBody/json/teams`.
-                    public var teams: [Swift.String]
-                    /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/DELETE/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - teams:
-                    ///   - confirm:
-                    public init(
-                        teams: [Swift.String],
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.teams = teams
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case teams
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.teams = try container.decode(
-                            [Swift.String].self,
-                            forKey: .teams
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "teams",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/members/{account}/teams/DELETE/requestBody/content/application\/json`.
-                case json(Operations.MemberRemoveTeams.Input.Body.JsonPayload)
+                case json(Components.Schemas.TeamIdsBody)
             }
             public var body: Operations.MemberRemoveTeams.Input.Body
             /// Creates a new `Input`.
@@ -41300,25 +42665,8 @@ public enum Operations {
             public var headers: Operations.OrgMetadata.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/metadata/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/metadata/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    ///
-                    /// - Remark: Generated from `#/paths/orgs/{org}/metadata/POST/requestBody/json/metadata`.
-                    public var metadata: OpenAPIRuntime.OpenAPIValueContainer
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    public init(metadata: OpenAPIRuntime.OpenAPIValueContainer) {
-                        self.metadata = metadata
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case metadata
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/metadata/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgMetadata.Input.Body.JsonPayload)
+                case json(Components.Schemas.MetadataBody)
             }
             public var body: Operations.OrgMetadata.Input.Body
             /// Creates a new `Input`.
@@ -41458,46 +42806,8 @@ public enum Operations {
             public var headers: Operations.OrgRename.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/requestBody/json/name`.
-                    public var name: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - name:
-                    ///   - confirm:
-                    public init(
-                        name: Swift.String,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.name = name
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case name
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.name = try container.decode(
-                            Swift.String.self,
-                            forKey: .name
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "name",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgRename.Input.Body.JsonPayload)
+                case json(Components.Schemas.RenameOrgBody)
             }
             public var body: Operations.OrgRename.Input.Body
             /// Creates a new `Input`.
@@ -41520,36 +42830,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/responses/200/content/json/orgId`.
-                        public var orgId: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/responses/200/content/json/name`.
-                        public var name: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - orgId:
-                        ///   - name:
-                        public init(
-                            orgId: Swift.String,
-                            name: Swift.String
-                        ) {
-                            self.orgId = orgId
-                            self.name = name
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case orgId
-                            case name
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/name/POST/responses/200/content/application\/json`.
-                    case json(Operations.OrgRename.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OrgRenamed)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgRename.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OrgRenamed {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -41843,37 +43130,8 @@ public enum Operations {
             public var headers: Operations.PublisherUpgrade.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/packages/{package}/upgrade/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/packages/{package}/upgrade/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/packages/{package}/upgrade/POST/requestBody/json/version`.
-                    public var version: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/packages/{package}/upgrade/POST/requestBody/json/migrate`.
-                    public var migrate: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/packages/{package}/upgrade/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - version:
-                    ///   - migrate:
-                    ///   - confirm:
-                    public init(
-                        version: Swift.String,
-                        migrate: Swift.String? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.version = version
-                        self.migrate = migrate
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case version
-                        case migrate
-                        case confirm
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/packages/{package}/upgrade/POST/requestBody/content/application\/json`.
-                case json(Operations.PublisherUpgrade.Input.Body.JsonPayload)
+                case json(Components.Schemas.PublisherUpgradeBody)
             }
             public var body: Operations.PublisherUpgrade.Input.Body
             /// Creates a new `Input`.
@@ -42013,68 +43271,8 @@ public enum Operations {
             public var headers: Operations.OrgPublisher.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody/json/signerId`.
-                    public var signerId: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody/json/publicKey`.
-                    public var publicKey: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody/json/signature`.
-                    public var signature: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - signerId:
-                    ///   - publicKey:
-                    ///   - signature:
-                    ///   - confirm:
-                    public init(
-                        signerId: Swift.String,
-                        publicKey: Swift.String,
-                        signature: Swift.String,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.signerId = signerId
-                        self.publicKey = publicKey
-                        self.signature = signature
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case signerId
-                        case publicKey
-                        case signature
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.signerId = try container.decode(
-                            Swift.String.self,
-                            forKey: .signerId
-                        )
-                        self.publicKey = try container.decode(
-                            Swift.String.self,
-                            forKey: .publicKey
-                        )
-                        self.signature = try container.decode(
-                            Swift.String.self,
-                            forKey: .signature
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "signerId",
-                            "publicKey",
-                            "signature",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgPublisher.Input.Body.JsonPayload)
+                case json(Components.Schemas.PublisherBody)
             }
             public var body: Operations.OrgPublisher.Input.Body
             /// Creates a new `Input`.
@@ -42097,28 +43295,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/responses/200/content/json/generation`.
-                        public var generation: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - generation:
-                        public init(generation: Swift.Int64) {
-                            self.generation = generation
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case generation
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/publishers/POST/responses/200/content/application\/json`.
-                    case json(Operations.OrgPublisher.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PublisherBound)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgPublisher.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PublisherBound {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -42229,46 +43412,8 @@ public enum Operations {
             public var headers: Operations.RecoverySet.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/recovery/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/recovery/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/recovery/POST/requestBody/json/publicKey`.
-                    public var publicKey: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/recovery/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - publicKey:
-                    ///   - confirm:
-                    public init(
-                        publicKey: Swift.String? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.publicKey = publicKey
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case publicKey
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.publicKey = try container.decodeIfPresent(
-                            Swift.String.self,
-                            forKey: .publicKey
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "publicKey",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/recovery/POST/requestBody/content/application\/json`.
-                case json(Operations.RecoverySet.Input.Body.JsonPayload)
+                case json(Components.Schemas.RecoveryKeyBody)
             }
             public var body: Operations.RecoverySet.Input.Body
             /// Creates a new `Input`.
@@ -42573,36 +43718,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/recovery/finish/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/recovery/finish/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/recovery/finish/POST/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/recovery/finish/POST/responses/200/content/json/previousOwners`.
-                        public var previousOwners: [Swift.String]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - org:
-                        ///   - previousOwners:
-                        public init(
-                            org: Swift.String,
-                            previousOwners: [Swift.String]
-                        ) {
-                            self.org = org
-                            self.previousOwners = previousOwners
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case org
-                            case previousOwners
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/recovery/finish/POST/responses/200/content/application\/json`.
-                    case json(Operations.RecoveryFinish.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.RecoveryFinished)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.RecoveryFinish.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.RecoveryFinished {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -42713,46 +43835,8 @@ public enum Operations {
             public var headers: Operations.RecoveryStart.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/requestBody/json/nonce`.
-                    public var nonce: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/requestBody/json/signature`.
-                    public var signature: Swift.String
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - nonce:
-                    ///   - signature:
-                    public init(
-                        nonce: Swift.String,
-                        signature: Swift.String
-                    ) {
-                        self.nonce = nonce
-                        self.signature = signature
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case nonce
-                        case signature
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.nonce = try container.decode(
-                            Swift.String.self,
-                            forKey: .nonce
-                        )
-                        self.signature = try container.decode(
-                            Swift.String.self,
-                            forKey: .signature
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "nonce",
-                            "signature"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/requestBody/content/application\/json`.
-                case json(Operations.RecoveryStart.Input.Body.JsonPayload)
+                case json(Components.Schemas.RecoveryStartBody)
             }
             public var body: Operations.RecoveryStart.Input.Body
             /// Creates a new `Input`.
@@ -42775,36 +43859,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/responses/200/content/json/startedAt`.
-                        public var startedAt: Swift.Int64
-                        /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/responses/200/content/json/readyAt`.
-                        public var readyAt: Swift.Int64
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - startedAt:
-                        ///   - readyAt:
-                        public init(
-                            startedAt: Swift.Int64,
-                            readyAt: Swift.Int64
-                        ) {
-                            self.startedAt = startedAt
-                            self.readyAt = readyAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case startedAt
-                            case readyAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/recovery/start/POST/responses/200/content/application\/json`.
-                    case json(Operations.RecoveryStart.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.RecoveryStarted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.RecoveryStart.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.RecoveryStarted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -43085,57 +44146,8 @@ public enum Operations {
             public var headers: Operations.OrgSettings.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/allowGuests`.
-                    public var allowGuests: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/allowPublicLinks`.
-                    public var allowPublicLinks: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - allowGuests:
-                    ///   - allowPublicLinks:
-                    ///   - confirm:
-                    public init(
-                        allowGuests: Swift.Bool? = nil,
-                        allowPublicLinks: Swift.Bool? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.allowGuests = allowGuests
-                        self.allowPublicLinks = allowPublicLinks
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case allowGuests
-                        case allowPublicLinks
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.allowGuests = try container.decodeIfPresent(
-                            Swift.Bool.self,
-                            forKey: .allowGuests
-                        )
-                        self.allowPublicLinks = try container.decodeIfPresent(
-                            Swift.Bool.self,
-                            forKey: .allowPublicLinks
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "allowGuests",
-                            "allowPublicLinks",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgSettings.Input.Body.JsonPayload)
+                case json(Components.Schemas.OrgSettingsBody)
             }
             public var body: Operations.OrgSettings.Input.Body
             /// Creates a new `Input`.
@@ -43158,42 +44170,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/allowGuests`.
-                        public var allowGuests: Swift.Bool
-                        /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/allowPublicLinks`.
-                        public var allowPublicLinks: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - org:
-                        ///   - allowGuests:
-                        ///   - allowPublicLinks:
-                        public init(
-                            org: Swift.String,
-                            allowGuests: Swift.Bool,
-                            allowPublicLinks: Swift.Bool
-                        ) {
-                            self.org = org
-                            self.allowGuests = allowGuests
-                            self.allowPublicLinks = allowPublicLinks
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case org
-                            case allowGuests
-                            case allowPublicLinks
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/application\/json`.
-                    case json(Operations.OrgSettings.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OrgSettingsSet)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgSettings.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OrgSettingsSet {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -43304,37 +44287,8 @@ public enum Operations {
             public var headers: Operations.TeamCreate.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/requestBody/json/name`.
-                    public var name: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/requestBody/json/parent`.
-                    public var parent: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/requestBody/json/join`.
-                    public var join: Components.Schemas.TeamJoin
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - name:
-                    ///   - parent:
-                    ///   - join:
-                    public init(
-                        name: Swift.String,
-                        parent: Swift.String? = nil,
-                        join: Components.Schemas.TeamJoin
-                    ) {
-                        self.name = name
-                        self.parent = parent
-                        self.join = join
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case name
-                        case parent
-                        case join
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/requestBody/content/application\/json`.
-                case json(Operations.TeamCreate.Input.Body.JsonPayload)
+                case json(Components.Schemas.TeamBody)
             }
             public var body: Operations.TeamCreate.Input.Body
             /// Creates a new `Input`.
@@ -43357,28 +44311,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/responses/200/content/json/teamId`.
-                        public var teamId: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - teamId:
-                        public init(teamId: Swift.String) {
-                            self.teamId = teamId
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case teamId
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/teams/POST/responses/200/content/application\/json`.
-                    case json(Operations.TeamCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.TeamCreated)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.TeamCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.TeamCreated {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -43633,45 +44572,8 @@ public enum Operations {
             public var headers: Operations.TeamUpdate.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody/json/name`.
-                    public var name: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody/json/join`.
-                    public var join: Components.Schemas.TeamJoin?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody/json/parent`.
-                    public var parent: Swift.String?
-                    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    ///
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody/json/metadata`.
-                    public var metadata: OpenAPIRuntime.OpenAPIValueContainer?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - name:
-                    ///   - join:
-                    ///   - parent:
-                    ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                    public init(
-                        name: Swift.String? = nil,
-                        join: Components.Schemas.TeamJoin? = nil,
-                        parent: Swift.String? = nil,
-                        metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil
-                    ) {
-                        self.name = name
-                        self.join = join
-                        self.parent = parent
-                        self.metadata = metadata
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case name
-                        case join
-                        case parent
-                        case metadata
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/POST/requestBody/content/application\/json`.
-                case json(Operations.TeamUpdate.Input.Body.JsonPayload)
+                case json(Components.Schemas.TeamUpdateBody)
             }
             public var body: Operations.TeamUpdate.Input.Body
             /// Creates a new `Input`.
@@ -43818,46 +44720,8 @@ public enum Operations {
             public var headers: Operations.TeamDelete.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/requestBody/json/keepApps`.
-                    public var keepApps: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - keepApps:
-                    ///   - confirm:
-                    public init(
-                        keepApps: Swift.Bool? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.keepApps = keepApps
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case keepApps
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.keepApps = try container.decodeIfPresent(
-                            Swift.Bool.self,
-                            forKey: .keepApps
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "keepApps",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/requestBody/content/application\/json`.
-                case json(Operations.TeamDelete.Input.Body.JsonPayload)
+                case json(Components.Schemas.TeamDeleteBody)
             }
             public var body: Operations.TeamDelete.Input.Body?
             /// Creates a new `Input`.
@@ -43880,42 +44744,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/responses/200/content/json/teams`.
-                        public var teams: [Swift.String]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/responses/200/content/json/apps`.
-                        public var apps: [Swift.String]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/responses/200/content/json/keptApps`.
-                        public var keptApps: [Swift.String]?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - teams:
-                        ///   - apps:
-                        ///   - keptApps:
-                        public init(
-                            teams: [Swift.String],
-                            apps: [Swift.String],
-                            keptApps: [Swift.String]? = nil
-                        ) {
-                            self.teams = teams
-                            self.apps = apps
-                            self.keptApps = keptApps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case teams
-                            case apps
-                            case keptApps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.TeamDelete.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.TeamDeleted)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.TeamDelete.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.TeamDeleted {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -44033,49 +44868,8 @@ public enum Operations {
             public var headers: Operations.TeamSetMember.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/json/account`.
-                    public var account: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/json/lead`.
-                    public var lead: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/json/role`.
-                    public var role: Components.Schemas.TeamRole?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/json/capabilities`.
-                    public var capabilities: Swift.Int64?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - account:
-                    ///   - lead:
-                    ///   - role:
-                    ///   - capabilities:
-                    ///   - confirm:
-                    public init(
-                        account: Swift.String,
-                        lead: Swift.Bool? = nil,
-                        role: Components.Schemas.TeamRole? = nil,
-                        capabilities: Swift.Int64? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.account = account
-                        self.lead = lead
-                        self.role = role
-                        self.capabilities = capabilities
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case account
-                        case lead
-                        case role
-                        case capabilities
-                        case confirm
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/teams/{team}/members/POST/requestBody/content/application\/json`.
-                case json(Operations.TeamSetMember.Input.Body.JsonPayload)
+                case json(Components.Schemas.TeamMemberBody)
             }
             public var body: Operations.TeamSetMember.Input.Body
             /// Creates a new `Input`.
@@ -44399,48 +45193,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/org`.
-                        public var org: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/policy`.
-                        public var policy: Components.Schemas.UpgradePolicy
-                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/updates`.
-                        public var updates: [OpenAPIRuntime.OpenAPIValueContainer]
-                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/next`.
-                        public var next: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - org:
-                        ///   - policy:
-                        ///   - updates:
-                        ///   - next:
-                        public init(
-                            org: Swift.String,
-                            policy: Components.Schemas.UpgradePolicy,
-                            updates: [OpenAPIRuntime.OpenAPIValueContainer],
-                            next: Swift.String? = nil
-                        ) {
-                            self.org = org
-                            self.policy = policy
-                            self.updates = updates
-                            self.next = next
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case org
-                            case policy
-                            case updates
-                            case next
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/application\/json`.
-                    case json(Operations.OrgUpdates.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OrgUpdates)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgUpdates.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OrgUpdates {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -44551,61 +45310,8 @@ public enum Operations {
             public var headers: Operations.OrgUpgrade.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/package`.
-                    public var package: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/version`.
-                    public var version: Swift.String
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/team`.
-                    public var team: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/cascade`.
-                    public var cascade: Swift.Bool?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/migrate`.
-                    public var migrate: Swift.String?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/json/operatorProof`.
-                    public var operatorProof: Components.Schemas.OperatorProof?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - package:
-                    ///   - version:
-                    ///   - team:
-                    ///   - cascade:
-                    ///   - migrate:
-                    ///   - confirm:
-                    ///   - operatorProof:
-                    public init(
-                        package: Swift.String,
-                        version: Swift.String,
-                        team: Swift.String? = nil,
-                        cascade: Swift.Bool? = nil,
-                        migrate: Swift.String? = nil,
-                        confirm: Components.Schemas.Confirm? = nil,
-                        operatorProof: Components.Schemas.OperatorProof? = nil
-                    ) {
-                        self.package = package
-                        self.version = version
-                        self.team = team
-                        self.cascade = cascade
-                        self.migrate = migrate
-                        self.confirm = confirm
-                        self.operatorProof = operatorProof
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case package
-                        case version
-                        case team
-                        case cascade
-                        case migrate
-                        case confirm
-                        case operatorProof
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/upgrade/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgUpgrade.Input.Body.JsonPayload)
+                case json(Components.Schemas.OrgUpgradeBody)
             }
             public var body: Operations.OrgUpgrade.Input.Body
             /// Creates a new `Input`.
@@ -44877,80 +45583,8 @@ public enum Operations {
             public var headers: Operations.OrgPolicySet.Input.Headers
             /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody`.
             @frozen public enum Body: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json`.
-                public struct JsonPayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy`.
-                    public struct PolicyPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
-                        @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case never = "never"
-                            case noDestinations = "noDestinations"
-                        }
-                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
-                        public var autoApply: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/holdHours`.
-                        public var holdHours: Swift.Int64?
-                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/secondApprover`.
-                        public var secondApprover: Swift.Bool?
-                        /// Creates a new `PolicyPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - autoApply:
-                        ///   - holdHours:
-                        ///   - secondApprover:
-                        public init(
-                            autoApply: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload? = nil,
-                            holdHours: Swift.Int64? = nil,
-                            secondApprover: Swift.Bool? = nil
-                        ) {
-                            self.autoApply = autoApply
-                            self.holdHours = holdHours
-                            self.secondApprover = secondApprover
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case autoApply
-                            case holdHours
-                            case secondApprover
-                        }
-                    }
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy`.
-                    public var policy: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload?
-                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/confirm`.
-                    public var confirm: Components.Schemas.Confirm?
-                    /// Creates a new `JsonPayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - policy:
-                    ///   - confirm:
-                    public init(
-                        policy: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
-                    ) {
-                        self.policy = policy
-                        self.confirm = confirm
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case policy
-                        case confirm
-                    }
-                    public init(from decoder: any Decoder) throws {
-                        let container = try decoder.container(keyedBy: CodingKeys.self)
-                        self.policy = try container.decodeIfPresent(
-                            Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload.self,
-                            forKey: .policy
-                        )
-                        self.confirm = try container.decodeIfPresent(
-                            Components.Schemas.Confirm.self,
-                            forKey: .confirm
-                        )
-                        try decoder.ensureNoAdditionalProperties(knownKeys: [
-                            "policy",
-                            "confirm"
-                        ])
-                    }
-                }
                 /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/content/application\/json`.
-                case json(Operations.OrgPolicySet.Input.Body.JsonPayload)
+                case json(Components.Schemas.UpgradePolicyBody)
             }
             public var body: Operations.OrgPolicySet.Input.Body
             /// Creates a new `Input`.
@@ -45415,52 +46049,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content/json/apps`.
-                        public var apps: Swift.Int64
-                        /// an unsigned 64-bit integer as a decimal string (D20)
-                        ///
-                        /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content/json/developerFuelToday`.
-                        public var developerFuelToday: Swift.String
-                        /// an unsigned 64-bit integer as a decimal string (D20)
-                        ///
-                        /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content/json/developerWritesToday`.
-                        public var developerWritesToday: Swift.String
-                        /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content/json/quotas`.
-                        public var quotas: Components.Schemas.Quotas
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - apps:
-                        ///   - developerFuelToday: an unsigned 64-bit integer as a decimal string (D20)
-                        ///   - developerWritesToday: an unsigned 64-bit integer as a decimal string (D20)
-                        ///   - quotas:
-                        public init(
-                            apps: Swift.Int64,
-                            developerFuelToday: Swift.String,
-                            developerWritesToday: Swift.String,
-                            quotas: Components.Schemas.Quotas
-                        ) {
-                            self.apps = apps
-                            self.developerFuelToday = developerFuelToday
-                            self.developerWritesToday = developerWritesToday
-                            self.quotas = quotas
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case apps
-                            case developerFuelToday
-                            case developerWritesToday
-                            case quotas
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/orgs/{org}/usage/GET/responses/200/content/application\/json`.
-                    case json(Operations.OrgUsage.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OrgUsage)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OrgUsage.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OrgUsage {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -45586,36 +46181,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/package-origins/{package}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/package-origins/{package}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/package-origins/{package}/GET/responses/200/content/json/package`.
-                        public var package: Swift.String
-                        /// - Remark: Generated from `#/paths/package-origins/{package}/GET/responses/200/content/json/origins`.
-                        public var origins: [Components.Schemas.PackageOrigin]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - package:
-                        ///   - origins:
-                        public init(
-                            package: Swift.String,
-                            origins: [Components.Schemas.PackageOrigin]
-                        ) {
-                            self.package = package
-                            self.origins = origins
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case package
-                            case origins
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/package-origins/{package}/GET/responses/200/content/application\/json`.
-                    case json(Operations.OriginsList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OriginList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OriginsList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OriginList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -45987,42 +46559,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/package-origins/{package}/DELETE/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/package-origins/{package}/DELETE/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/package-origins/{package}/DELETE/responses/200/content/json/package`.
-                        public var package: Swift.String
-                        /// - Remark: Generated from `#/paths/package-origins/{package}/DELETE/responses/200/content/json/origin`.
-                        public var origin: Swift.String
-                        /// - Remark: Generated from `#/paths/package-origins/{package}/DELETE/responses/200/content/json/removed`.
-                        public var removed: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - package:
-                        ///   - origin:
-                        ///   - removed:
-                        public init(
-                            package: Swift.String,
-                            origin: Swift.String,
-                            removed: Swift.Bool
-                        ) {
-                            self.package = package
-                            self.origin = origin
-                            self.removed = removed
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case package
-                            case origin
-                            case removed
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/package-origins/{package}/DELETE/responses/200/content/application\/json`.
-                    case json(Operations.OriginsRemove.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.OriginRemoved)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.OriginsRemove.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.OriginRemoved {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -46130,28 +46673,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/packages/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/packages/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/packages/GET/responses/200/content/json/packages`.
-                        public var packages: [Components.Schemas.Package]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - packages:
-                        public init(packages: [Components.Schemas.Package]) {
-                            self.packages = packages
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case packages
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/packages/GET/responses/200/content/application\/json`.
-                    case json(Operations.PackageList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PackageList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PackageList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PackageList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -46286,66 +46814,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/packages/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/json/package`.
-                        public var package: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/json/version`.
-                        public var version: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/json/signerId`.
-                        public var signerId: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/json/services`.
-                        public struct ServicesPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Swift.String]
-                            /// Creates a new `ServicesPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Swift.String] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/json/services`.
-                        public var services: Operations.PackageUpload.Output.Ok.Body.JsonPayload.ServicesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - package:
-                        ///   - version:
-                        ///   - signerId:
-                        ///   - services:
-                        public init(
-                            package: Swift.String,
-                            version: Swift.String,
-                            signerId: Swift.String,
-                            services: Operations.PackageUpload.Output.Ok.Body.JsonPayload.ServicesPayload
-                        ) {
-                            self.package = package
-                            self.version = version
-                            self.signerId = signerId
-                            self.services = services
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case package
-                            case version
-                            case signerId
-                            case services
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/packages/POST/responses/200/content/application\/json`.
-                    case json(Operations.PackageUpload.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PackageInstalled)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PackageUpload.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PackageInstalled {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -46493,66 +46968,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/json/package`.
-                        public var package: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/json/version`.
-                        public var version: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/json/signerId`.
-                        public var signerId: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/json/services`.
-                        public struct ServicesPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Swift.String]
-                            /// Creates a new `ServicesPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Swift.String] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/json/services`.
-                        public var services: Operations.PackageInstall.Output.Ok.Body.JsonPayload.ServicesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - package:
-                        ///   - version:
-                        ///   - signerId:
-                        ///   - services:
-                        public init(
-                            package: Swift.String,
-                            version: Swift.String,
-                            signerId: Swift.String,
-                            services: Operations.PackageInstall.Output.Ok.Body.JsonPayload.ServicesPayload
-                        ) {
-                            self.package = package
-                            self.version = version
-                            self.signerId = signerId
-                            self.services = services
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case package
-                            case version
-                            case signerId
-                            case services
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/packages/install/POST/responses/200/content/application\/json`.
-                    case json(Operations.PackageInstall.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PackageInstalled)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PackageInstall.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PackageInstalled {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -47102,144 +47524,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/package`.
-                        public var package: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/version`.
-                        public var version: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/service`.
-                        public var service: Swift.String?
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/bundle`.
-                        public var bundle: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/mpk`.
-                        public var mpk: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/manifestHash`.
-                        public var manifestHash: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/signer`.
-                        public var signer: Swift.String
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/name`.
-                        public var name: Swift.String?
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/author`.
-                        public var author: Swift.String?
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/outbound`.
-                        public var outbound: [Swift.String]
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secrets`.
-                        public var secrets: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secretBindings`.
-                        public var secretBindings: [Swift.String]
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/uses`.
-                        public var uses: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/abi`.
-                        public var abi: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/destinations`.
-                        public var destinations: [Swift.String]?
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/members`.
-                        public struct MembersPayload: Codable, Hashable, Sendable {
-                            /// A container of undocumented properties.
-                            public var additionalProperties: [String: Components.Schemas.UnitMember]
-                            /// Creates a new `MembersPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - additionalProperties: A container of undocumented properties.
-                            public init(additionalProperties: [String: Components.Schemas.UnitMember] = .init()) {
-                                self.additionalProperties = additionalProperties
-                            }
-                            public init(from decoder: any Decoder) throws {
-                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                            }
-                            public func encode(to encoder: any Encoder) throws {
-                                try encoder.encodeAdditionalProperties(additionalProperties)
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/members`.
-                        public var members: Operations.PackageCapabilities.Output.Ok.Body.JsonPayload.MembersPayload?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - package:
-                        ///   - version:
-                        ///   - service:
-                        ///   - bundle:
-                        ///   - mpk:
-                        ///   - manifestHash:
-                        ///   - signer:
-                        ///   - name:
-                        ///   - author:
-                        ///   - outbound:
-                        ///   - secrets: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - secretBindings:
-                        ///   - uses: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - destinations:
-                        ///   - members:
-                        public init(
-                            package: Swift.String,
-                            version: Swift.String,
-                            service: Swift.String? = nil,
-                            bundle: Swift.String,
-                            mpk: Swift.String,
-                            manifestHash: Swift.String,
-                            signer: Swift.String,
-                            name: Swift.String? = nil,
-                            author: Swift.String? = nil,
-                            outbound: [Swift.String],
-                            secrets: OpenAPIRuntime.OpenAPIValueContainer,
-                            secretBindings: [Swift.String],
-                            uses: OpenAPIRuntime.OpenAPIValueContainer,
-                            abi: OpenAPIRuntime.OpenAPIValueContainer,
-                            destinations: [Swift.String]? = nil,
-                            members: Operations.PackageCapabilities.Output.Ok.Body.JsonPayload.MembersPayload? = nil
-                        ) {
-                            self.package = package
-                            self.version = version
-                            self.service = service
-                            self.bundle = bundle
-                            self.mpk = mpk
-                            self.manifestHash = manifestHash
-                            self.signer = signer
-                            self.name = name
-                            self.author = author
-                            self.outbound = outbound
-                            self.secrets = secrets
-                            self.secretBindings = secretBindings
-                            self.uses = uses
-                            self.abi = abi
-                            self.destinations = destinations
-                            self.members = members
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case package
-                            case version
-                            case service
-                            case bundle
-                            case mpk
-                            case manifestHash
-                            case signer
-                            case name
-                            case author
-                            case outbound
-                            case secrets
-                            case secretBindings
-                            case uses
-                            case abi
-                            case destinations
-                            case members
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/application\/json`.
-                    case json(Operations.PackageCapabilities.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.CapabilityCard)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PackageCapabilities.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.CapabilityCard {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -47372,72 +47663,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/json/additionalProperties`.
-                        public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/json/additionalProperties/hash`.
-                            public var hash: Swift.String
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/json/additionalProperties/worstCaseFuel`.
-                            public var worstCaseFuel: OpenAPIRuntime.OpenAPIValueContainer
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/json/additionalProperties/modules`.
-                            public var modules: OpenAPIRuntime.OpenAPIValueContainer
-                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///
-                            /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/json/additionalProperties/pipeline`.
-                            public var pipeline: OpenAPIRuntime.OpenAPIValueContainer
-                            /// Creates a new `AdditionalPropertiesPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - hash:
-                            ///   - worstCaseFuel: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///   - modules: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            ///   - pipeline: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                            public init(
-                                hash: Swift.String,
-                                worstCaseFuel: OpenAPIRuntime.OpenAPIValueContainer,
-                                modules: OpenAPIRuntime.OpenAPIValueContainer,
-                                pipeline: OpenAPIRuntime.OpenAPIValueContainer
-                            ) {
-                                self.hash = hash
-                                self.worstCaseFuel = worstCaseFuel
-                                self.modules = modules
-                                self.pipeline = pipeline
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case hash
-                                case worstCaseFuel
-                                case modules
-                                case pipeline
-                            }
-                        }
-                        /// A container of undocumented properties.
-                        public var additionalProperties: [String: Operations.PackagePipelines.Output.Ok.Body.JsonPayload.AdditionalPropertiesPayload]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - additionalProperties: A container of undocumented properties.
-                        public init(additionalProperties: [String: Operations.PackagePipelines.Output.Ok.Body.JsonPayload.AdditionalPropertiesPayload] = .init()) {
-                            self.additionalProperties = additionalProperties
-                        }
-                        public init(from decoder: any Decoder) throws {
-                            additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                        }
-                        public func encode(to encoder: any Encoder) throws {
-                            try encoder.encodeAdditionalProperties(additionalProperties)
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/packages/{package}/{version}/pipelines/GET/responses/200/content/application\/json`.
-                    case json(Operations.PackagePipelines.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ReleasePipelines)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PackagePipelines.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ReleasePipelines {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -47605,87 +47837,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/ok`.
-                        public var ok: Swift.Bool
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/ErrorsPayload`.
-                        public struct ErrorsPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/ErrorsPayload/path`.
-                            public var path: Swift.String
-                            /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/ErrorsPayload/code`.
-                            public var code: Swift.String
-                            /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/ErrorsPayload/message`.
-                            public var message: Swift.String
-                            /// Creates a new `ErrorsPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - path:
-                            ///   - code:
-                            ///   - message:
-                            public init(
-                                path: Swift.String,
-                                code: Swift.String,
-                                message: Swift.String
-                            ) {
-                                self.path = path
-                                self.code = code
-                                self.message = message
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case path
-                                case code
-                                case message
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/errors`.
-                        public typealias ErrorsPayload = [Operations.PipelinesValidate.Output.Ok.Body.JsonPayload.ErrorsPayloadPayload]
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/errors`.
-                        public var errors: Operations.PipelinesValidate.Output.Ok.Body.JsonPayload.ErrorsPayload
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/pipeline`.
-                        public var pipeline: OpenAPIRuntime.OpenAPIValueContainer?
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/worstCaseFuel`.
-                        public var worstCaseFuel: Swift.String?
-                        /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/json/worstCaseCost`.
-                        public var worstCaseCost: Swift.String?
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - ok:
-                        ///   - errors:
-                        ///   - pipeline: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - worstCaseFuel:
-                        ///   - worstCaseCost:
-                        public init(
-                            ok: Swift.Bool,
-                            errors: Operations.PipelinesValidate.Output.Ok.Body.JsonPayload.ErrorsPayload,
-                            pipeline: OpenAPIRuntime.OpenAPIValueContainer? = nil,
-                            worstCaseFuel: Swift.String? = nil,
-                            worstCaseCost: Swift.String? = nil
-                        ) {
-                            self.ok = ok
-                            self.errors = errors
-                            self.pipeline = pipeline
-                            self.worstCaseFuel = worstCaseFuel
-                            self.worstCaseCost = worstCaseCost
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case ok
-                            case errors
-                            case pipeline
-                            case worstCaseFuel
-                            case worstCaseCost
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/pipelines/validate/POST/responses/200/content/application\/json`.
-                    case json(Operations.PipelinesValidate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PipelineValidation)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesValidate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PipelineValidation {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -47811,48 +47969,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content/json/signerId`.
-                        public var signerId: Swift.String
-                        /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content/json/cluster`.
-                        public var cluster: Swift.String
-                        /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content/json/generation`.
-                        public var generation: Swift.Int64
-                        /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content/json/bound`.
-                        public var bound: Swift.Bool
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - signerId:
-                        ///   - cluster:
-                        ///   - generation:
-                        ///   - bound:
-                        public init(
-                            signerId: Swift.String,
-                            cluster: Swift.String,
-                            generation: Swift.Int64,
-                            bound: Swift.Bool
-                        ) {
-                            self.signerId = signerId
-                            self.cluster = cluster
-                            self.generation = generation
-                            self.bound = bound
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case signerId
-                            case cluster
-                            case generation
-                            case bound
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/publishers/{signer}/GET/responses/200/content/application\/json`.
-                    case json(Operations.PublisherBinding.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.PublisherBinding)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PublisherBinding.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.PublisherBinding {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -48115,30 +48238,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/recover/holder/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/recover/holder/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///
-                        /// - Remark: Generated from `#/paths/recover/holder/POST/responses/200/content/json/apps`.
-                        public var apps: OpenAPIRuntime.OpenAPIValueContainer
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - apps: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        public init(apps: OpenAPIRuntime.OpenAPIValueContainer) {
-                            self.apps = apps
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case apps
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/recover/holder/POST/responses/200/content/application\/json`.
-                    case json(Operations.RestoreRecoverHolder.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.HolderRecovered)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.RestoreRecoverHolder.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.HolderRecovered {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -48246,67 +48352,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/releases/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/governance`.
-                        public var governance: Components.Schemas.Governance
-                        /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/DeadlinesPayload`.
-                        public struct DeadlinesPayloadPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/DeadlinesPayload/version`.
-                            public var version: Swift.String
-                            /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/DeadlinesPayload/after`.
-                            public var after: Swift.String
-                            /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/DeadlinesPayload/afterSecs`.
-                            public var afterSecs: Swift.Int64
-                            /// Creates a new `DeadlinesPayloadPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - version:
-                            ///   - after:
-                            ///   - afterSecs:
-                            public init(
-                                version: Swift.String,
-                                after: Swift.String,
-                                afterSecs: Swift.Int64
-                            ) {
-                                self.version = version
-                                self.after = after
-                                self.afterSecs = afterSecs
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case version
-                                case after
-                                case afterSecs
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/deadlines`.
-                        public typealias DeadlinesPayload = [Operations.ReleasesPublic.Output.Ok.Body.JsonPayload.DeadlinesPayloadPayload]
-                        /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/json/deadlines`.
-                        public var deadlines: Operations.ReleasesPublic.Output.Ok.Body.JsonPayload.DeadlinesPayload
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - governance:
-                        ///   - deadlines:
-                        public init(
-                            governance: Components.Schemas.Governance,
-                            deadlines: Operations.ReleasesPublic.Output.Ok.Body.JsonPayload.DeadlinesPayload
-                        ) {
-                            self.governance = governance
-                            self.deadlines = deadlines
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case governance
-                            case deadlines
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/releases/GET/responses/200/content/application\/json`.
-                    case json(Operations.ReleasesPublic.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.ClusterReleases)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.ReleasesPublic.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.ClusterReleases {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -48414,60 +48466,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json/policy`.
-                        public var policy: Components.Schemas.SignUp
-                        /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json/orgInvites`.
-                        public var orgInvites: Swift.Bool
-                        /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json/signUpInvites`.
-                        public var signUpInvites: Swift.Bool
-                        /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json/inviteRequired`.
-                        public var inviteRequired: Swift.Bool
-                        /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json/cluster`.
-                        public var cluster: Swift.String
-                        /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/json/passkeyTag`.
-                        public var passkeyTag: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - policy:
-                        ///   - orgInvites:
-                        ///   - signUpInvites:
-                        ///   - inviteRequired:
-                        ///   - cluster:
-                        ///   - passkeyTag:
-                        public init(
-                            policy: Components.Schemas.SignUp,
-                            orgInvites: Swift.Bool,
-                            signUpInvites: Swift.Bool,
-                            inviteRequired: Swift.Bool,
-                            cluster: Swift.String,
-                            passkeyTag: Swift.String
-                        ) {
-                            self.policy = policy
-                            self.orgInvites = orgInvites
-                            self.signUpInvites = signUpInvites
-                            self.inviteRequired = inviteRequired
-                            self.cluster = cluster
-                            self.passkeyTag = passkeyTag
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case policy
-                            case orgInvites
-                            case signUpInvites
-                            case inviteRequired
-                            case cluster
-                            case passkeyTag
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/sign-up/GET/responses/200/content/application\/json`.
-                    case json(Operations.SignUpPublic.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SignUpPublic)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.SignUpPublic.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SignUpPublic {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -48747,82 +48752,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/signUp`.
-                        public struct SignUpPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/signUp/policy`.
-                            public var policy: Components.Schemas.SignUp
-                            /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/signUp/orgInvites`.
-                            public var orgInvites: Swift.Bool
-                            /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/signUp/signUpInvites`.
-                            public var signUpInvites: Swift.Bool
-                            /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/signUp/inviteRequired`.
-                            public var inviteRequired: Swift.Bool
-                            /// Creates a new `SignUpPayload`.
-                            ///
-                            /// - Parameters:
-                            ///   - policy:
-                            ///   - orgInvites:
-                            ///   - signUpInvites:
-                            ///   - inviteRequired:
-                            public init(
-                                policy: Components.Schemas.SignUp,
-                                orgInvites: Swift.Bool,
-                                signUpInvites: Swift.Bool,
-                                inviteRequired: Swift.Bool
-                            ) {
-                                self.policy = policy
-                                self.orgInvites = orgInvites
-                                self.signUpInvites = signUpInvites
-                                self.inviteRequired = inviteRequired
-                            }
-                            public enum CodingKeys: String, CodingKey {
-                                case policy
-                                case orgInvites
-                                case signUpInvites
-                                case inviteRequired
-                            }
-                        }
-                        /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/signUp`.
-                        public var signUp: Operations.SignUpInviteList.Output.Ok.Body.JsonPayload.SignUpPayload
-                        /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/runBy`.
-                        @frozen public enum RunByPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                            case owner = "owner"
-                            case _operator = "operator"
-                        }
-                        /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/runBy`.
-                        public var runBy: Operations.SignUpInviteList.Output.Ok.Body.JsonPayload.RunByPayload
-                        /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/json/invites`.
-                        public var invites: [Components.Schemas.SignUpInvite]
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - signUp:
-                        ///   - runBy:
-                        ///   - invites:
-                        public init(
-                            signUp: Operations.SignUpInviteList.Output.Ok.Body.JsonPayload.SignUpPayload,
-                            runBy: Operations.SignUpInviteList.Output.Ok.Body.JsonPayload.RunByPayload,
-                            invites: [Components.Schemas.SignUpInvite]
-                        ) {
-                            self.signUp = signUp
-                            self.runBy = runBy
-                            self.invites = invites
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case signUp
-                            case runBy
-                            case invites
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/sign-up/invites/GET/responses/200/content/application\/json`.
-                    case json(Operations.SignUpInviteList.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SignUpInviteList)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.SignUpInviteList.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SignUpInviteList {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -48988,66 +48924,13 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json`.
-                    public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/token`.
-                        public var token: Swift.String
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/inviteKey`.
-                        public var inviteKey: Swift.String
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/uses`.
-                        public var uses: Swift.Int64
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/expiresAt`.
-                        public var expiresAt: Swift.String
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/expiresAtSecs`.
-                        public var expiresAtSecs: Swift.Int64
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/createdBy`.
-                        public var createdBy: Swift.String
-                        /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/json/createdAt`.
-                        public var createdAt: Swift.String
-                        /// Creates a new `JsonPayload`.
-                        ///
-                        /// - Parameters:
-                        ///   - token:
-                        ///   - inviteKey:
-                        ///   - uses:
-                        ///   - expiresAt:
-                        ///   - expiresAtSecs:
-                        ///   - createdBy:
-                        ///   - createdAt:
-                        public init(
-                            token: Swift.String,
-                            inviteKey: Swift.String,
-                            uses: Swift.Int64,
-                            expiresAt: Swift.String,
-                            expiresAtSecs: Swift.Int64,
-                            createdBy: Swift.String,
-                            createdAt: Swift.String
-                        ) {
-                            self.token = token
-                            self.inviteKey = inviteKey
-                            self.uses = uses
-                            self.expiresAt = expiresAt
-                            self.expiresAtSecs = expiresAtSecs
-                            self.createdBy = createdBy
-                            self.createdAt = createdAt
-                        }
-                        public enum CodingKeys: String, CodingKey {
-                            case token
-                            case inviteKey
-                            case uses
-                            case expiresAt
-                            case expiresAtSecs
-                            case createdBy
-                            case createdAt
-                        }
-                    }
                     /// - Remark: Generated from `#/paths/sign-up/invites/POST/responses/200/content/application\/json`.
-                    case json(Operations.SignUpInviteCreate.Output.Ok.Body.JsonPayload)
+                    case json(Components.Schemas.SignUpInviteMade)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.SignUpInviteCreate.Output.Ok.Body.JsonPayload {
+                    public var json: Components.Schemas.SignUpInviteMade {
                         get throws {
                             switch self {
                             case let .json(body):

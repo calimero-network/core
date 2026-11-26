@@ -59,9 +59,9 @@ impl Applied {
 }
 
 /// A change a stream reports: an author's new state, or `None` when they left.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Diff {
+pub struct PresenceDiff {
     pub account: String,
     pub device: String,
     pub state: Option<String>,
@@ -76,7 +76,7 @@ struct Slot {
 
 struct AppPresence {
     entries: BTreeMap<(String, String), Slot>,
-    tx: broadcast::Sender<Diff>,
+    tx: broadcast::Sender<PresenceDiff>,
 }
 
 impl AppPresence {
@@ -130,7 +130,7 @@ impl Presence {
                     if let Some(k) = stalest {
                         if let Some(gone) = app.entries.remove(&k) {
                             if gone.state.is_some() {
-                                let _n = app.tx.send(Diff {
+                                let _n = app.tx.send(PresenceDiff {
                                     account: k.0,
                                     device: k.1,
                                     state: None,
@@ -149,7 +149,7 @@ impl Presence {
                 at_ms: now_ms,
             },
         );
-        let _n = app.tx.send(Diff {
+        let _n = app.tx.send(PresenceDiff {
             account: u.account.clone(),
             device: u.device.clone(),
             state: u.state.clone(),
@@ -176,7 +176,7 @@ impl Presence {
             for k in expired {
                 if let Some(gone) = app.entries.remove(&k) {
                     if gone.state.is_some() {
-                        let _n = app.tx.send(Diff {
+                        let _n = app.tx.send(PresenceDiff {
                             account: k.0,
                             device: k.1,
                             state: None,
@@ -189,7 +189,7 @@ impl Presence {
     }
 
     /// Who is present in `app` now, and a receiver for what changes after.
-    pub fn subscribe(&self, app: &str) -> (Vec<Diff>, broadcast::Receiver<Diff>) {
+    pub fn subscribe(&self, app: &str) -> (Vec<PresenceDiff>, broadcast::Receiver<PresenceDiff>) {
         let mut apps = self
             .apps
             .lock()
@@ -199,7 +199,7 @@ impl Presence {
     }
 
     /// Who is present in `app` now.
-    pub fn snapshot(&self, app: &str) -> Vec<Diff> {
+    pub fn snapshot(&self, app: &str) -> Vec<PresenceDiff> {
         let apps = self
             .apps
             .lock()
@@ -208,11 +208,11 @@ impl Presence {
     }
 }
 
-fn snapshot_of(a: &AppPresence) -> Vec<Diff> {
+fn snapshot_of(a: &AppPresence) -> Vec<PresenceDiff> {
     a.entries
         .iter()
         .filter(|(_, s)| s.state.is_some())
-        .map(|((account, device), s)| Diff {
+        .map(|((account, device), s)| PresenceDiff {
             account: account.clone(),
             device: device.clone(),
             state: s.state.clone(),

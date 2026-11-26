@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.sign_up_invite_list_response_200 import SignUpInviteListResponse200
+from ...models.sign_up_invite_list import SignUpInviteList
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, SignUpInviteListResponse200]]:
+) -> Optional[Union[Error, SignUpInviteList]]:
     if response.status_code == 200:
-        response_200 = SignUpInviteListResponse200.from_dict(response.json())
+        response_200 = SignUpInviteList.from_dict(response.json())
 
         return response_200
 
@@ -53,7 +53,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, SignUpInviteListResponse200]]:
+) -> Response[Union[Error, SignUpInviteList]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, SignUpInviteListResponse200]]:
+) -> Response[Union[Error, SignUpInviteList]]:
     """Cluster sign-up invites
 
      **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -75,7 +75,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, SignUpInviteListResponse200]]
+        Response[Union[Error, SignUpInviteList]]
     """
 
     kwargs = _get_kwargs()
@@ -90,7 +90,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, SignUpInviteListResponse200]]:
+) -> Optional[Union[Error, SignUpInviteList]]:
     """Cluster sign-up invites
 
      **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -100,7 +100,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, SignUpInviteListResponse200]
+        Union[Error, SignUpInviteList]
     """
 
     return sync_detailed(
@@ -111,7 +111,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, SignUpInviteListResponse200]]:
+) -> Response[Union[Error, SignUpInviteList]]:
     """Cluster sign-up invites
 
      **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -121,7 +121,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, SignUpInviteListResponse200]]
+        Response[Union[Error, SignUpInviteList]]
     """
 
     kwargs = _get_kwargs()
@@ -134,7 +134,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, SignUpInviteListResponse200]]:
+) -> Optional[Union[Error, SignUpInviteList]]:
     """Cluster sign-up invites
 
      **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -144,7 +144,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, SignUpInviteListResponse200]
+        Union[Error, SignUpInviteList]
     """
 
     return (

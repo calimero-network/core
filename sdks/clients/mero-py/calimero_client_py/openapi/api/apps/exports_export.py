@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.exports_export_body import ExportsExportBody
-from ...models.exports_export_response_200 import ExportsExportResponse200
+from ...models.file_export import FileExport
 from typing import cast
 
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, ExportsExportResponse200]]:
+) -> Optional[Union[Error, FileExport]]:
     if response.status_code == 200:
-        response_200 = ExportsExportResponse200.from_dict(response.json())
+        response_200 = FileExport.from_dict(response.json())
 
         return response_200
 
@@ -83,7 +83,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, ExportsExportResponse200]]:
+) -> Response[Union[Error, FileExport]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -98,7 +98,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ExportsExportBody,
-) -> Response[Union[Error, ExportsExportResponse200]]:
+) -> Response[Union[Error, FileExport]]:
     """Export a sealed file's key
 
      The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters);
@@ -118,7 +118,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, ExportsExportResponse200]]
+        Response[Union[Error, FileExport]]
     """
 
     kwargs = _get_kwargs(
@@ -140,7 +140,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ExportsExportBody,
-) -> Optional[Union[Error, ExportsExportResponse200]]:
+) -> Optional[Union[Error, FileExport]]:
     """Export a sealed file's key
 
      The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters);
@@ -160,7 +160,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, ExportsExportResponse200]
+        Union[Error, FileExport]
     """
 
     return sync_detailed(
@@ -177,7 +177,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ExportsExportBody,
-) -> Response[Union[Error, ExportsExportResponse200]]:
+) -> Response[Union[Error, FileExport]]:
     """Export a sealed file's key
 
      The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters);
@@ -197,7 +197,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, ExportsExportResponse200]]
+        Response[Union[Error, FileExport]]
     """
 
     kwargs = _get_kwargs(
@@ -217,7 +217,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ExportsExportBody,
-) -> Optional[Union[Error, ExportsExportResponse200]]:
+) -> Optional[Union[Error, FileExport]]:
     """Export a sealed file's key
 
      The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters);
@@ -237,7 +237,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, ExportsExportResponse200]
+        Union[Error, FileExport]
     """
 
     return (
