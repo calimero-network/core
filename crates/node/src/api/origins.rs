@@ -21,7 +21,7 @@ use crate::error::ApiError;
 use crate::node::Node;
 use crate::origins::{
     add_args, covers_cluster, new_registration, origin_host, origin_json, resolve_rp_id,
-    served_host, within, MAX_ORIGINS_PER_PACKAGE, MAX_SERVED_ORIGINS,
+    served_host, within, INSTANCE_HOLDS_ORIGIN, MAX_ORIGINS_PER_PACKAGE, MAX_SERVED_ORIGINS,
     MAX_SERVED_ORIGINS_PER_PACKAGE,
 };
 use crate::system::cluster_version::Feature;
@@ -122,8 +122,9 @@ pub(super) async fn add(
             Some(o) if o.package != package => {
                 return Err(taken("another package or app registered that origin"))
             }
-            // An instance of the package holds it: its manager takes it back.
-            Some(o) if o.app.is_some() => {}
+            // An instance of the package holds it: a bound publisher's manager takes it back.
+            Some(o) if o.app.is_some() && s.reclaims_instance_origins(&package) => {}
+            Some(o) if o.app.is_some() => return Err(taken(INSTANCE_HOLDS_ORIGIN)),
             Some(o) if o.served != served => {
                 return Err(taken(
                     "that origin is registered with the other `served`; remove it first",

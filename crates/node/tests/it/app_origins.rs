@@ -14,6 +14,7 @@ use calimero_identity::testing::SoftAuthenticator;
 use reqwest::Method;
 use serde_json::json;
 
+use crate::cluster::publisher_binding;
 use crate::harness;
 use crate::package_origins::{cors_allows, into_catalog, release, status};
 
@@ -414,8 +415,9 @@ async fn a_sessions_registration_ends_with_it_though_the_origin_returns() {
     assert_eq!(status(&e), 401, "{e}");
 }
 
-/// A package's manager takes back its site from someone else's instance of
-/// the package: the instance loses it, and the sessions opened there end.
+/// A package's bound publisher takes back its site from someone else's instance
+/// of the package: the instance loses it, and the sessions opened there end.
+/// Its first installer, before a publisher is bound, does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_packages_manager_takes_back_an_origin_an_instance_holds() {
     const OWN: &str = "com.test.own";
@@ -450,6 +452,24 @@ async fn a_packages_manager_takes_back_an_origin_an_instance_holds() {
         .await
         .unwrap();
     let _me = carol.auth().me().await.unwrap();
+
+    let e = alice
+        .packages()
+        .origins_add(OWN, SITE, None, None, Some(&mut alice_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 409, "{e}");
+    let _me = carol.auth().me().await.unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let _ok = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/publishers"))
+                .json(publisher_binding(&alice, &key, &org).await),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
 
     let added = wire(
         alice

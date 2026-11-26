@@ -50,6 +50,9 @@ pub const MAX_APP_ORIGINS: usize = 4096;
 
 /// Refuses an entry naming no [`PackageOrigin::registration`], which no re-registration would change.
 const NO_REGISTRATION: &str = "an origin's registration is empty";
+/// Refuses taking back an instance's origin for a package no publisher is bound to.
+pub const INSTANCE_HOLDS_ORIGIN: &str =
+    "an instance of the package registered that origin; only its bound publisher takes it back";
 
 /// The longest origin, in bytes (`scheme://host:port`).
 pub const MAX_ORIGIN_BYTES: usize = 255;
@@ -259,6 +262,15 @@ impl SystemState {
         }
     }
 
+    /// Whether `package`'s manager takes back an origin an instance of it holds:
+    /// only where a publisher is bound, never on a first installer's word.
+    #[must_use]
+    pub fn reclaims_instance_origins(&self, package: &str) -> bool {
+        self.packages
+            .get(package)
+            .is_some_and(|p| self.publisher_of_signer(&p.signer_id).is_some())
+    }
+
     /// The origins registered for `package` by its manager, by origin.
     pub fn origins_of<'a>(
         &'a self,
@@ -324,7 +336,12 @@ impl SystemState {
         if served {
             let _host = served_host(&origin).map_err(Refusal::message)?;
         }
-        // One an instance of the package holds, its manager takes back.
+        if self.package_origins.get(&origin).is_some_and(|o| {
+            o.app.is_some() && o.package == package && !self.reclaims_instance_origins(&package)
+        }) {
+            return Err(INSTANCE_HOLDS_ORIGIN.into());
+        }
+        // One an instance of the package holds, a bound publisher's manager takes back.
         if let Some(held) = self
             .package_origins
             .get(&origin)

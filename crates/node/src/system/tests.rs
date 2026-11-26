@@ -17521,12 +17521,31 @@ fn an_app_origin_needs_its_instances_release_installed() {
     );
 }
 
-/// The package's manager takes back an origin an instance of the package
-/// holds, under a new registration; an instance of another package keeps it.
+/// A bound publisher's manager takes back an origin an instance of the package
+/// holds, under a new registration; a first installer without a bound publisher
+/// does not, and an instance of another package keeps it.
 #[test]
 fn a_packages_manager_takes_back_its_instances_origin() {
     let mut m = instance_of_a_shared_bundle();
     let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let unbound = m
+        .run_unproven(add_origin(
+            "alice",
+            "q",
+            NOTES,
+            "notes.example.com",
+            Value::Null,
+        ))
+        .unwrap_err();
+    assert!(unbound.message().contains("publisher"), "{unbound}");
+    assert_eq!(m.state.origins_of_app("a").count(), 1);
+    let _prev = m.state.publishers.insert(
+        "did:key:q".into(),
+        super::PublisherBinding {
+            org: "acme".into(),
+            generation: 1,
+        },
+    );
     let refused = m
         .run_unproven(add_origin(
             "alice",
