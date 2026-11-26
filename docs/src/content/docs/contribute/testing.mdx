@@ -826,9 +826,14 @@ no GitHub Release yet, the test `release.yml` publishes on), and a merge-queue
 entry runs none of it, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
 the builds and the scenarios for any code change, and the process suite, compute
 and the clients only for a change that reaches `merod`'s closure, the compute
-fixtures or the fault tests; `E2E result` gathers them into one check, required on
+fixtures or the fault tests. A push to master runs the clients (mero-swift's on
+macOS) only when it changes them (`sdks/clients/`, the JS workspace); the nightly,
+a release cut and a `ci:e2e` PR run them whatever changed, so a client broken by
+the node shows at the latest the next morning. `E2E result` gathers the jobs, the
+latest release's suites and the flamegraph included, into one check, required on
 PRs and in the queue, where it passes when `plan` skips everything. On master its
-`report-master` job opens or closes the red-master issue. `clients against merod
+`report-master` job opens or closes the red-master issue: `master is red: E2E` for
+a push, `master is red: E2E nightly` for the nightly. `clients against merod
 (mero-swift)` builds `merod` on macOS from the `release` cache group, which the
 nightly run saves: rust-cache keys by OS, so the Linux save never reaches it.
 
@@ -924,7 +929,7 @@ inside the Docker image (the suite starts processes, so it is copied out with
   `kv-failover`, `frozen-leader`, `orgs-and-keys`, `packages` and a 30 s
   `kv-soak`. The release and its multi-arch image are published only once it
   passes. PRs and other master pushes build no image.
-- **The latest release's image, nightly** (`e2e.yml`, jobs
+- **The latest release's image, weekly and on a release cut** (`e2e.yml`, jobs
   `Latest release image` (`release-image`) and `process suite on release V`
   (`release-process-suite`); on demand with the `release_image` input:
   `latest`, a tag of `ghcr.io/<owner>/merod` such as `prerelease`, or an
@@ -935,7 +940,9 @@ inside the Docker image (the suite starts processes, so it is copied out with
   fixtures, so a test added after the release does not fail it: every test but
   the upgrade, with a 900 s soak. A release whose commit has no
   `crates/node/tests/fault/suite.py` is reported in the summary and not run.
-  The same nightly runs every scenario at that commit, in four shards (jobs
+  It runs in Sunday's nightly (cron `23 3 * * 0`; the other nights are
+  `23 3 * * 1-6`) and on the pull request that cuts a release, where `E2E result`
+  waits for it. The same run covers every scenario at that commit, in four shards (jobs
   `scenario fixtures (release V)` (`release-fixtures`) and
   `scenarios on release V (K/4)` (`release-scenarios`)), with that commit's
   runner and fixtures. The runner is in process, so what it tests is the
@@ -953,7 +960,7 @@ python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 
 ### Flamegraphs
 
-Nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
+Weekly, in Sunday's nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
 soak)` builds `merod` with the `profiling` profile (optimized, with symbols)
 and `-C force-frame-pointers=yes`, runs the process suite's `kv-soak` for five
 minutes, and records node 1 with `perf record -g` for most of it
