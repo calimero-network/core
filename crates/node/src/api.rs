@@ -48,8 +48,8 @@ use crate::system::{
     Deployments, PackageRef, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
 };
 use crate::types::{
-    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, NodeRole, OrgRole, RefreshRecord,
-    TeamJoin,
+    now_secs, Access, Account, ApiKeyRecord, AppId, Caller, Invite, NodeRole, OrgRole,
+    RefreshRecord, TeamJoin,
 };
 
 const SESSION_TTL: u64 = 15 * 60;
@@ -806,6 +806,14 @@ impl Principal {
         };
         s.origin_registration(origin, c.app.as_deref(), &c.registration)
             .is_some_and(|o| o.app.as_deref().is_none_or(|i| Some(i) == app_id))
+    }
+
+    /// The instance whose own origin this session was opened on, while its registration holds.
+    pub(crate) fn site_instance(&self, s: &SystemState) -> Option<AppId> {
+        let c = self.session.as_ref()?;
+        s.origin_registration(c.origin.as_deref()?, c.app.as_deref(), &c.registration)?
+            .app
+            .clone()
     }
 
     /// Refuse a package-bound session: credentials, keys, approvals and

@@ -1570,7 +1570,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/me
      * The caller&#39;s account
-     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
+     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;). A session opened on an instance&#39;s own site reads the account&#39;s id and name and that instance&#39;s organization alone: &#x60;passkeys&#x60; empty, no recovery state.  **Who:** signed in (a session or an API key).
      * @return AccountView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1601,7 +1601,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/me
      * The caller&#39;s account
-     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
+     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;). A session opened on an instance&#39;s own site reads the account&#39;s id and name and that instance&#39;s organization alone: &#x60;passkeys&#x60; empty, no recovery state.  **Who:** signed in (a session or an API key).
      * @return ApiResponse<AccountView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception

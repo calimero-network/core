@@ -443,7 +443,8 @@ instance alone. Any other instance answers `404` though the account reaches
 it, as does a new instance, and a team change is refused, as is a read of the
 organization's or the account's past the instance (`403`: the organization,
 its teams, invites, usage, update policy and upgrade runs, the account's usage
-and aliases). What the account may
+and aliases), and `/auth/me` names only the account's id and name and the
+instance's organization, with no passkeys and no recovery state. What the account may
 do in the instance is the instance's own access: a person who signs up there
 has a new account, which reaches the instance only once its managers let it in
 (a guest of the organization with a grant on the instance) and the app's own

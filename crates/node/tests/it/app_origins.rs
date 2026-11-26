@@ -235,6 +235,35 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         let e = r.unwrap_err();
         assert_eq!(status(&e), 403, "route {i}: {e}");
     }
+    // Her account as the site reads it: the store's organization alone, none
+    // of her passkeys and no recovery state.
+    let beta = wire(alice.orgs().create("beta", None, None).await.unwrap())["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ok = alice
+        .orgs()
+        .set_member(
+            &beta,
+            &carol_id,
+            typed(json!("member")),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap();
+    let me = wire(carol.auth().me().await.unwrap());
+    let orgs: Vec<&str> = me["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o["orgId"].as_str())
+        .collect();
+    assert_eq!(orgs, [org.as_str()], "{me}");
+    assert_eq!(
+        (&me["passkeys"], &me["recoveryCode"], &me["recoveryPending"]),
+        (&json!([]), &json!(false), &json!(null)),
+        "{me}"
+    );
     // Nor does the site ask her for anything past the store: an organization of hers.
     let e = carol
         .transport()

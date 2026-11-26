@@ -1145,15 +1145,26 @@ fn activity_entry(e: &crate::types::ActivityEntry) -> ActivityView {
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json<AccountView>> {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
-    let (acc, orgs, (recovery, pending)) = node.sys(|s| {
+    // An instance's own site learns the account's name and that instance's organization alone.
+    let (acc, orgs, (recovery, pending), site) = node.sys(|s| {
         let acc = s.accounts.get(&account).cloned();
+        let site = p
+            .site_instance(s)
+            .map(|app| s.apps.get(&app).map(|a| a.org.clone()));
         let recovery = (
-            s.recovery_keys.values().any(|a| *a == account),
-            s.account_recoveries.get(&account).map(|p| p.view(&account)),
+            site.is_none() && s.recovery_keys.values().any(|a| *a == account),
+            s.account_recoveries
+                .get(&account)
+                .filter(|_| site.is_none())
+                .map(|p| p.view(&account)),
         );
         let orgs: Vec<AccountOrg> = s
             .orgs
             .values()
+            .filter(|o| {
+                site.as_ref()
+                    .is_none_or(|org| org.as_ref() == Some(&o.org_id))
+            })
             .filter_map(|o| {
                 o.role(&account).map(|role| AccountOrg {
                     org_id: o.org_id.clone(),
@@ -1163,7 +1174,7 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json
                 })
             })
             .collect();
-        (acc, orgs, recovery)
+        (acc, orgs, recovery, site)
     });
     let acc = acc.ok_or_else(|| ApiError::not_found("account"))?;
     Ok(Json(AccountView {
@@ -1172,6 +1183,7 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json
         passkeys: acc
             .passkeys
             .iter()
+            .filter(|_| site.is_none())
             .map(|c| {
                 let times = acc.passkey_times.get(&c.id);
                 AccountPasskey {
