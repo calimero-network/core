@@ -721,8 +721,11 @@ async fn add_local(node: &Arc<Node>, add: AddWatch) -> Result<Value, ApiError> {
             &format!("{} is not a subscribable view", add.view),
         ));
     }
-    if stream.len() >= MAX_WATCHES_PER_STREAM || node.watches.total() >= MAX_WATCHES_PER_NODE {
+    if stream.len() >= MAX_WATCHES_PER_STREAM {
         return Err(too_many(Full::Stream));
+    }
+    if node.watches.total() >= MAX_WATCHES_PER_NODE {
+        return Err(too_many(Full::Node));
     }
     let req = ViewRequest {
         app_id: add.app.clone(),
