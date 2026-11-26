@@ -77,8 +77,67 @@ pub fn choose(candidates: &[Candidate<'_>], count: usize) -> Vec<NodeId> {
     picked
 }
 
+/// Orders an app's replica set so the first entry — the replica that
+/// initialises the group and so becomes its first leader
+/// ([the write path](https://calimero-network.github.io/core/protocol/write-path/))
+/// — is round-robin across the set by `index`, instead of always the lowest id.
+/// `index` is the count of apps already created when the leader places this one,
+/// so index 0 keeps the lowest id first — the first app a cluster creates still
+/// leads on the same node as before — and each later app moves one node along.
+/// The set is unchanged (its zones and load are [`choose`]'s); only the order
+/// rotates. The leader runs this before it records the set in the `CreateApp`
+/// entry, so every node applies the same order and apply does not recompute it —
+/// no node disagrees across a mixed-version rollout. Spreading the initial
+/// leadership is all core does: it hands a caught-up node no leadership later
+/// (openraft 0.9 has no leader transfer), so evening out leadership after
+/// failovers, or as the fleet grows, is the cluster manager's.
+pub fn order_for_leader(replicas: &mut [NodeId], index: u64) {
+    if replicas.is_empty() {
+        return;
+    }
+    replicas.sort_unstable();
+    let first = (index % replicas.len() as u64) as usize;
+    replicas.rotate_left(first);
+}
+
 #[cfg(test)]
 mod tests {
+    use super::order_for_leader;
+
+    #[test]
+    fn the_leader_slot_round_robins_by_index() {
+        // Whatever order the set arrives in, it is sorted, then the first slot
+        // rotates by index: index 0 keeps the lowest id leading (so the first
+        // app a cluster makes is unchanged), and later apps move one along.
+        let first = |i| {
+            let mut v = vec![3_u64, 1, 2];
+            order_for_leader(&mut v, i);
+            v[0]
+        };
+        assert_eq!((first(0), first(1), first(2), first(3)), (1, 2, 3, 1));
+    }
+
+    #[test]
+    fn ordering_keeps_the_set_and_handles_small_sets() {
+        // The rotation never drops, repeats or adds a replica.
+        let mut v = vec![5_u64, 9, 7];
+        order_for_leader(&mut v, 4); // sorted [5,7,9], 4 % 3 == 1 -> [7,9,5]
+        assert_eq!(v, vec![7, 9, 5]);
+        let mut sorted = v.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![5, 7, 9]);
+        // One replica, or none, is left as it is (no leadership to spread).
+        let mut one = vec![42_u64];
+        order_for_leader(&mut one, 7);
+        assert_eq!(one, vec![42]);
+        let mut none: Vec<u64> = vec![];
+        order_for_leader(&mut none, 7);
+        assert!(none.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod set_tests {
     use super::{choose, replicas, Candidate};
     use crate::system::SystemState;
     use crate::types::{NodeRecord, NodeRole};

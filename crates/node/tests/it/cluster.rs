@@ -4219,7 +4219,10 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         .map(wire)
         .unwrap();
     assert_eq!(again["unchanged"], json!(true), "{again}");
-    let (replicas, _) = placement(&ops_at(&c, 1).await, &app).await;
+    let (mut replicas, _) = placement(&ops_at(&c, 1).await, &app).await;
+    // The set, not the order: `placement::order_for_leader` rotates the first
+    // replica by app count to spread initial leadership.
+    replicas.sort_unstable();
     assert_eq!(replicas, vec![1, 2, 3]);
 
     // Node 1 stops: the others elect a system leader and serve the app.
@@ -4350,7 +4353,9 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let _ = moved.unwrap();
-    let (replicas, counts) = placement(&ops_at(&c, 1).await, &app).await;
+    let (mut replicas, counts) = placement(&ops_at(&c, 1).await, &app).await;
+    // The set, not the order (`placement::order_for_leader` rotates the first).
+    replicas.sort_unstable();
     assert_eq!(replicas, vec![2, 3, 4]);
     assert_eq!(counts.get(&4), Some(&1), "{counts:?}");
     // The kv fixture's `get` is not `#[app::public]`: read as the reader.
