@@ -2925,11 +2925,22 @@ impl Node {
             .propose_led(|m, _, _| {
                 // `base_index` holds this to the state read here, so a race retries into it.
                 let runs = m.state.bundle.as_deref();
+                // Already there (a switch whose record never followed): nothing to run, and the
+                // record catches up. That is also the repair for the refusal below.
+                if runs == Some(bundle)
+                    && m.state.component.head.compute_bundle.as_deref() == compute_bundle
+                {
+                    let done = crate::component::host_answer(m.state.last_index, true, "");
+                    return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
+                }
                 if judged_on.is_some_and(|j| runs.is_some_and(|r| r != j)) {
                     let mut refused = crate::component::host_answer(m.state.last_index, false, "");
                     refused.error = json!({
                         "code": "BundleMoved",
-                        "fields": { "message": "the app moved to other code since this upgrade was judged" },
+                        "fields": {
+                            "message": "the app runs other code than the one this upgrade was judged on: upgrade it to the release that ships `runs` first",
+                            "runs": runs,
+                        },
                     });
                     return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
                 }
