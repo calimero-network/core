@@ -648,3 +648,41 @@ async fn an_upgrade_into_a_pinning_release_pins_the_instance_and_says_so() {
         .unwrap_err();
     assert_eq!(e.code(), Some("LINEAGE_OLDER_RELEASE"), "{e}");
 }
+
+/// An instance pinned already, now on a later release that declares nothing, sees a pinning
+/// release as no new pin: not red for `pinsLineage`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pinned_instance_is_not_shown_a_new_pin() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let org = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    for (version, pinned) in [("1.0.0", true), ("1.1.0", false), ("1.2.0", true)] {
+        let _ok = alice
+            .packages()
+            .upload(release(SEALED, version, pinned), Some(&org))
+            .await
+            .unwrap_or_else(|e| panic!("{version}: {e}"));
+    }
+    let app = create(&alice, "1.0.0", Some(&org)).await;
+    let _up = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.1.0" })), Some(&mut pk))
+        .await
+        .unwrap();
+    let update = alice.apps().update(&app).await.map(wire).unwrap();
+    let available = &update["available"];
+    assert_eq!(available["version"], "1.2.0", "{update}");
+    assert_eq!(available["class"], "green", "{update}");
+    let up = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.2.0" })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+}

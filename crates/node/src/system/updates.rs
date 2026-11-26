@@ -872,19 +872,26 @@ impl SystemState {
         root: Option<(&str, &str)>,
         targets: &BTreeMap<AppId, RunTarget>,
     ) -> Option<Unit> {
+        // As it runs, a part is pinned as its record says, whatever its release declares.
+        let release = |package: &str, version: &str, pinned: bool| {
+            let mut r = self.logged_release(package, version)?;
+            r.pinned = if root.is_none() { pinned } else { r.pinned };
+            Some(r)
+        };
         let mut parts = self.unit_parts(app, root, targets)?.into_iter();
-        let (_, package, version) = parts.next()?;
-        let mut unit = Unit::of(self.logged_release(&package, &version)?);
-        for (path, package, version) in parts {
+        let (_, package, version, pinned) = parts.next()?;
+        let mut unit = Unit::of(release(&package, &version, pinned)?);
+        for (path, package, version, pinned) in parts {
             let _prev = unit
                 .members
-                .insert(path, self.logged_release(&package, &version)?);
+                .insert(path, release(&package, &version, pinned)?);
         }
         Some(unit)
     }
 
     /// Each part of `app`'s unit with the release the log names for it, as
-    /// [`Self::logged_unit`] reads them, installed or not: `(path, package, version)`, the
+    /// [`Self::logged_unit`] reads them, installed or not: `(path, package, version, pinned)`
+    /// (`pinned`: its record has a lineage), the
     /// app first (path `""`, at `root`, else the release it runs), then each member
     /// (`links`, transitively) at the release it runs, or a direct member at its entry in
     /// `targets`. `None` when the app runs no release.
@@ -893,7 +900,7 @@ impl SystemState {
         app: &AppRecord,
         root: Option<(&str, &str)>,
         targets: &BTreeMap<AppId, RunTarget>,
-    ) -> Option<Vec<(String, String, String)>> {
+    ) -> Option<Vec<(String, String, String, bool)>> {
         let (package, version) = match root {
             Some((p, v)) => (p.to_owned(), v.to_owned()),
             None => {
@@ -901,7 +908,7 @@ impl SystemState {
                 (r.package.clone(), r.version.clone())
             }
         };
-        let mut parts = vec![(String::new(), package, version)];
+        let mut parts = vec![(String::new(), package, version, app.lineage.is_some())];
         let mut stack = vec![(String::new(), app, 0_usize)];
         while let Some((path, rec, depth)) = stack.pop() {
             if depth >= crate::api::apps::MAX_UNIT_DEPTH {
@@ -923,7 +930,12 @@ impl SystemState {
                 } else {
                     format!("{path}/{name}")
                 };
-                parts.push((path.clone(), at.0.clone(), at.1.clone()));
+                parts.push((
+                    path.clone(),
+                    at.0.clone(),
+                    at.1.clone(),
+                    member.lineage.is_some(),
+                ));
                 stack.push((path, member, depth + 1));
             }
         }
@@ -946,7 +958,7 @@ impl SystemState {
             self.unit_parts(app, None, &BTreeMap::new()),
             self.unit_parts(app, Some(to), targets),
         ];
-        for (path, package, version) in sides.into_iter().flatten().flatten() {
+        for (path, package, version, _) in sides.into_iter().flatten().flatten() {
             if self.logged_release(&package, &version).is_some() {
                 continue;
             }

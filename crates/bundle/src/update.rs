@@ -82,7 +82,8 @@ pub struct Release {
     /// The methods its component's ABI declares; `None` when it embeds no ABI.
     #[serde(default)]
     pub methods: Option<BTreeSet<String>>,
-    /// Its manifest declares `lineage: pinned`.
+    /// Its manifest declares `lineage: pinned`; on the side an instance runs now, whether the
+    /// instance is pinned (the node reads it from the record).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
 }
@@ -280,7 +281,7 @@ pub enum Reason {
         before: Option<String>,
         after: String,
     },
-    /// It moves into a release declaring `lineage: pinned` from one that does not: from then
+    /// It moves into a release declaring `lineage: pinned` while not pinned yet: from then
     /// on it stays on `package` and its signer, never moving to an older release.
     #[serde(rename_all = "camelCase")]
     PinsLineage {

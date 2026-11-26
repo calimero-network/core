@@ -13893,6 +13893,30 @@ fn an_upgrade_into_a_pinning_release_pins_the_instance() {
     assert_eq!(m.state.apps["inst"].lineage, pinned, "nothing clears it");
 }
 
+/// `pinsLineage` names a new pin only: an instance pinned already, now on a release that
+/// declares nothing, moves into a pinning one green, and a green claim applies.
+#[test]
+fn an_instance_pinned_already_is_not_pinned_again() {
+    let mut m = classified();
+    m.state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.1")
+        .unwrap()
+        .lineage = calimero_bundle::Lineage::Pinned;
+    let pinned = Some(crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: m.state.packages["p"].signer_id.clone(),
+    });
+    m.state.apps.get_mut("inst").unwrap().lineage = pinned.clone();
+    let _ok = m
+        .run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10))
+        .unwrap();
+    assert_eq!(m.state.apps["inst"].lineage, pinned);
+}
+
 /// An organization's update policy, and an app's own over it, are set by an owner or
 /// admin with their passkey over exactly that policy; the hold is a day to a week; an app
 /// follows its own, else its organization's, else the defaults (nothing on its own, one
