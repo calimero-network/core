@@ -218,6 +218,41 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         .await
         .unwrap_err();
     assert_eq!(status(&e), 403, "{e}");
+    // An invite it may ask her to accept is one to the store alone.
+    let accept = |token: String| {
+        Request::new(Method::POST, "consent/requests").json(json!({
+            "kind": "acceptInvite",
+            "subject": { "token": token },
+            "returnTo": format!("{SITE}/"),
+        }))
+    };
+    let to_other = alice
+        .apps()
+        .invite_create(&other, None, None, None, Some(&mut alice_pk))
+        .await
+        .unwrap()
+        .token;
+    let to_org = alice
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap()
+        .token;
+    for token in [to_other, to_org] {
+        let e = carol.transport().json(accept(token)).await.unwrap_err();
+        assert_eq!(status(&e), 403, "{e}");
+    }
+    let to_store = alice
+        .apps()
+        .invite_create(&store, None, None, None, Some(&mut alice_pk))
+        .await
+        .unwrap()
+        .token;
+    let _made = carol.transport().json(accept(to_store)).await.unwrap();
     // Bob's own valid consent over the change, logged without the API, is refused at apply.
     let statement = calimero_node::proof::Statement::new(
         &store,
