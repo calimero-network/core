@@ -699,7 +699,8 @@ mod tests {
             for line in help.lines() {
                 let l = line.to_lowercase();
                 let old_instance = l.contains("context") && !l.contains("v1's contexts");
-                let old_package = l.contains("application")
+                // `MANAGE_APPLICATION` is the capability's name in the API.
+                let old_package = l.replace("manage_application", "").contains("application")
                     && !l.contains("v1's application")
                     && !l.contains("application/");
                 // `org` and `team`, not v1's `namespace` and `group` (a Raft
@@ -959,7 +960,7 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n == "install"), "{names:?}");
         let app = cli.find_subcommand("app").expect("app");
-        for name in &names {
+        for name in names.iter().filter(|n| *n != "help") {
             let under_app = app
                 .find_subcommand(name)
                 .unwrap_or_else(|| panic!("`app {name}` no longer parses"));
@@ -973,7 +974,10 @@ mod tests {
             );
         }
         // And nothing `app` lists is a package command.
-        for c in app.get_subcommands().filter(|c| !c.is_hide_set()) {
+        for c in app
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set() && c.get_name() != "help")
+        {
             assert!(
                 !names.iter().any(|n| n == c.get_name()),
                 "`app {}` is listed under app",

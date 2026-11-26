@@ -143,7 +143,7 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Approve URL prefixes an application's publisher may call out to from
+    /// Approve URL prefixes a package's publisher may call out to from
     /// the organization's instances (the owner's, where the owner holds outbound approvals).
     Outbound {
         #[arg(value_name = "ORG")]
