@@ -3233,11 +3233,19 @@ pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> R
     })
 }
 
-/// A POST from a page must come from the node's own origins (or none named,
-/// as a non-browser client sends): no other site posts a decision.
+/// A POST from a page must come from the node's own origins: no other site
+/// posts a decision. Only the page's own script posts here, and a browser
+/// names the origin of a `fetch` POST; one that names none passes only as the
+/// browser's own same-origin request (`Sec-Fetch-Site: same-origin`).
 fn same_origin(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
+    let refused = || ApiError::forbidden("not from this node's consent page");
     let Some(origin) = headers.get(header::ORIGIN) else {
-        return Ok(());
+        let fetch_site = headers.get("sec-fetch-site").map(HeaderValue::as_bytes);
+        return if fetch_site == Some(b"same-origin".as_slice()) {
+            Ok(())
+        } else {
+            Err(refused())
+        };
     };
     let origin = origin.to_str().unwrap_or_default();
     if relying_party(node)
@@ -3247,7 +3255,7 @@ fn same_origin(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
     {
         Ok(())
     } else {
-        Err(ApiError::forbidden("not from this node's consent page"))
+        Err(refused())
     }
 }
 

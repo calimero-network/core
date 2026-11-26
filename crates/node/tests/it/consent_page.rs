@@ -397,6 +397,32 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         403,
         "an app's script cannot decline for the person"
     );
+    // A POST that names no origin passes only as the browser's own
+    // same-origin request (`Sec-Fetch-Site`); anything else, a form another
+    // site submits or a client that sends neither header, is refused. Past
+    // the gate, `approve` with no assertion asks for one (412), and decides
+    // nothing.
+    for (origin, fetch_site, want) in [
+        (None, None, 403),
+        (None, Some("cross-site"), 403),
+        (None, Some("same-site"), 403),
+        (None, Some("same-origin"), 412),
+        (Some(origin(&url)), None, 412),
+    ] {
+        let mut req = page.http.post(format!("{url}/approve")).json(&json!({}));
+        if let Some(o) = &origin {
+            req = req.header("origin", o.as_str());
+        }
+        if let Some(s) = fetch_site {
+            req = req.header("sec-fetch-site", s);
+        }
+        let r = req.send().await.unwrap();
+        assert_eq!(
+            r.status(),
+            want,
+            "origin {origin:?}, sec-fetch-site {fetch_site:?}"
+        );
+    }
 
     // What the page renders, from node-side facts only.
     let model = page.model().await;
