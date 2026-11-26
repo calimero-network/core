@@ -4947,9 +4947,156 @@ export interface components {
         PipelineRunList: {
             runs: components["schemas"]["PipelineRunView"][];
         };
-        /** @description A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped for the reader (results and file hashes only to those who handle the app's files). Its keys follow the record's, so the document leaves it open. */
+        /** @description Who started a pipeline run. */
+        PipelineCaller: {
+            /** @enum {string} */
+            kind: "account";
+            account: string;
+        } | {
+            /** @enum {string} */
+            kind: "apiKey";
+            key: string;
+            account: string;
+        } | {
+            /** @enum {string} */
+            kind: "public";
+        } | {
+            /** @enum {string} */
+            kind: "app";
+            app: string;
+        } | {
+            /** @enum {string} */
+            kind: "system";
+        } | {
+            /** @enum {string} */
+            kind: "visitor";
+            link: string;
+            key: string;
+        };
+        /** @description The cost cap of a pipeline run and the price table it was admitted under; the figures that can pass 2^53 are decimal strings. */
+        PipelineRunCost: {
+            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            maxCost: string;
+            /** Format: int64 */
+            priceVersion: number;
+            table: {
+                /** Format: int64 */
+                version: number;
+                /** Format: int64 */
+                fuelPerVcpuSecond: number;
+                /** Format: int64 */
+                vcpuSecond: number;
+                /** Format: int64 */
+                gibSecond: number;
+                /** Format: int64 */
+                connectorGib: number;
+                /** Format: int64 */
+                storageGibMonth: number;
+                /** Format: int64 */
+                egressGib: number;
+            };
+            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            worstCase: string;
+        };
+        /** @description A file a pipeline step made: its size and hash only to those who handle the app's files. */
+        PipelineRunOutput: {
+            id: string;
+            /** Format: int64 */
+            size?: number;
+            sha256?: string;
+        };
+        /** @description One step of a pipeline run. `runs`, `outputs`, `result` and `results` come only with one run (`GET /apps/{app}/pipeline-runs/{run}`), not in the list; `result` and `results` are `null` to those who may not handle the app's files. `cost` is a decimal string, under a cost cap. */
+        PipelineRunStep: {
+            /** @enum {string} */
+            status: "pending" | "running" | "succeeded" | "failed" | "skipped" | "upstreamFailed" | "cancelled";
+            runs?: string[];
+            resultsTooLarge: boolean;
+            reason: string | null;
+            fan: {
+                /** Format: int64 */
+                total: number;
+                /** Format: int64 */
+                items: number;
+                /** Format: int64 */
+                batch: number;
+                /** Format: int64 */
+                allowed: number;
+            };
+            /** Format: int64 */
+            finished: number;
+            /** Format: int64 */
+            failedItems: number;
+            /** Format: int64 */
+            cachedCount?: number;
+            /** Format: int64 */
+            cachedItems: number;
+            cachedKeys?: {
+                [key: string]: string;
+            };
+            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            cost?: string;
+            capped?: boolean;
+            /** Format: int64 */
+            legacyItems?: number;
+            cached: boolean;
+            outputs?: components["schemas"]["PipelineRunOutput"][];
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            result?: unknown;
+            results?: unknown[] | null;
+        };
+        /** @description A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap. */
         PipelineRunView: {
-            [key: string]: unknown;
+            id: string;
+            pipeline: string;
+            version: string;
+            hash: string;
+            computeBundle: string;
+            modules?: {
+                [key: string]: string;
+            };
+            owner: string;
+            inputs: {
+                [key: string]: string[];
+            };
+            inputFiles?: {
+                [key: string]: {
+                    id: string;
+                    /** Format: int64 */
+                    size: number;
+                    sha256: string;
+                };
+            };
+            params: {
+                [key: string]: unknown;
+            };
+            caller: components["schemas"]["PipelineCaller"];
+            payer: string;
+            /** Format: int64 */
+            startTsMs: number;
+            /** @enum {string} */
+            state: "running" | "succeeded" | "succeededWithFailures" | "failed" | "cancelled";
+            cancelRequested: boolean;
+            failFast: boolean;
+            stopping: boolean;
+            steps: {
+                [key: string]: components["schemas"]["PipelineRunStep"];
+            };
+            /** Format: int64 */
+            endTsMs: number | null;
+            cost?: components["schemas"]["PipelineRunCost"];
+            /** @description an unsigned 64-bit integer as a decimal string (D20) */
+            costSoFar?: string;
+            retryOf?: string;
+            limits?: {
+                [key: string]: {
+                    /** Format: int64 */
+                    fuel: number | null;
+                    /** Format: int64 */
+                    memoryMib: number | null;
+                    /** Format: int64 */
+                    wallSecs: number | null;
+                };
+            };
         };
         /** @description What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap, and the run it retries. */
         PipelineStarted: {

@@ -1035,15 +1035,19 @@ async fn frontends_open_the_deployed_release() {
     // Served from this node's state, which applies the change a moment
     // after the leader committed it.
     let moved = format!("/1.1.0/?deployment={d}");
-    let mut seen = String::new();
-    for _ in 0..50 {
-        seen = location(&get(format!("/d/{d}/")).await.unwrap());
-        if seen == moved {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(seen, moved);
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "the deployment link moved",
+        || async {
+            let seen = location(&get(format!("/d/{d}/")).await.unwrap());
+            if seen == moved {
+                Ok(())
+            } else {
+                Err(seen)
+            }
+        },
+    )
+    .await;
     assert_eq!(
         location(&get(format!("/app/{app}/")).await.unwrap()),
         "/1.0.0/"
@@ -2131,21 +2135,24 @@ async fn a_unit_from_a_deployment_moves_only_to_its_offer() {
 
 /// An organization's upgrade run, once it finished.
 async fn finished(client: &Client, org: &str, run: &str) -> Value {
-    let mut status = Value::Null;
-    for _ in 0..100 {
-        status = client
-            .orgs()
-            .upgrade_status(org, run)
-            .await
-            .map(wire)
-            .unwrap();
-        if status["finished"] == json!(true) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(status["finished"], json!(true), "{status}");
-    status
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "the upgrade run finished",
+        || async {
+            let status = client
+                .orgs()
+                .upgrade_status(org, run)
+                .await
+                .map(wire)
+                .unwrap();
+            if status["finished"] == json!(true) {
+                Ok(status)
+            } else {
+                Err(status)
+            }
+        },
+    )
+    .await
 }
 
 /// The daily fuel cap follows the developer, the identity an
@@ -2259,12 +2266,12 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     .await
     .unwrap();
     for r in c.nodes.iter().flatten() {
-        for _ in 0..100 {
-            if r.node.sys(|s| s.quotas.max_fuel_per_developer_per_day) == developer {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        crate::harness::poll::until(
+            crate::harness::poll::EVENTUALLY,
+            "every node applied the developer quota",
+            || r.node.sys(|s| s.quotas.max_fuel_per_developer_per_day) == developer,
+        )
+        .await;
     }
     let err = erin
         .apps()

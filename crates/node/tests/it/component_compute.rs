@@ -138,18 +138,17 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
 
     // A follower has applied the same record.
     let follower = (0..3).find(|i| Some(*i) != c.app_leader(&app)).unwrap();
-    let mut seen = None;
-    for _ in 0..50 {
-        let node: &Node = &c.nodes[follower].as_ref().unwrap().node;
-        seen = node
-            .hosted(&app)
-            .and_then(|g| g.read_local(|m, _| m.run_record(&run)));
-        if seen.is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert_eq!(seen.as_ref(), Some(&record), "the follower's record");
+    let node: &Node = &c.nodes[follower].as_ref().unwrap().node;
+    let seen = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the follower applied the run",
+        || {
+            node.hosted(&app)
+                .and_then(|g| g.read_local(|m, _| m.run_record(&run)))
+        },
+    )
+    .await;
+    assert_eq!(seen, record, "the follower's record");
 
     // Other inputs are another run, and a file that is not the app's is refused.
     let other = alice

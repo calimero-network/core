@@ -37,3 +37,21 @@ where
         tokio::time::sleep(POLL).await;
     }
 }
+
+/// [`eventually`] for a condition read without waiting (a node's applied state, a
+/// group's status): polls `holds` until it is true.
+pub async fn until(timeout: Duration, what: &str, mut holds: impl FnMut() -> bool) {
+    eventually(timeout, what, || {
+        std::future::ready(if holds() { Ok(()) } else { Err("not yet") })
+    })
+    .await;
+}
+
+/// [`eventually`] for a value read without waiting: polls `find` until it answers
+/// `Some`, and returns that.
+pub async fn found<T>(timeout: Duration, what: &str, mut find: impl FnMut() -> Option<T>) -> T {
+    eventually(timeout, what, || {
+        std::future::ready(find().ok_or("none yet"))
+    })
+    .await
+}

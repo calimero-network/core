@@ -91,7 +91,7 @@ mod packages;
 mod passkeys;
 mod pipeline_events;
 pub(crate) mod pipeline_receipt;
-mod pipelines;
+pub(crate) mod pipelines;
 mod public_links;
 mod recovery;
 mod restore;

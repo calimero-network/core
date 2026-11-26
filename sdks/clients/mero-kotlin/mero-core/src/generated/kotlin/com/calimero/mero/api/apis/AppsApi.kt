@@ -80,6 +80,7 @@ import com.calimero.mero.api.models.OutboundLog
 import com.calimero.mero.api.models.PartTaken
 import com.calimero.mero.api.models.PipelineCancelled
 import com.calimero.mero.api.models.PipelineRunList
+import com.calimero.mero.api.models.PipelineRunView
 import com.calimero.mero.api.models.PipelineStarted
 import com.calimero.mero.api.models.PipelineValidation
 import com.calimero.mero.api.models.PipelinesEstimateRunRequest
@@ -4600,7 +4601,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Its record: &#x60;state&#x60;, &#x60;version&#x60;, &#x60;hash&#x60;, &#x60;computeBundle&#x60;, &#x60;inputs&#x60;, &#x60;params&#x60;, per-step &#x60;status&#x60;, &#x60;runs&#x60;, &#x60;outputs&#x60;, &#x60;result&#x60;, &#x60;reason&#x60; and &#x60;cost&#x60; (&#x60;cost&#x60; and &#x60;costSoFar&#x60; for a run with a cap). Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
-     * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
+     * @return PipelineRunView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4609,11 +4610,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesGet(app: kotlin.String, run: kotlin.String) : kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesGet(app: kotlin.String, run: kotlin.String) : PipelineRunView = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesGetWithHttpInfo(app = app, run = run)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineRunView
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4633,16 +4634,16 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      * Its record: &#x60;state&#x60;, &#x60;version&#x60;, &#x60;hash&#x60;, &#x60;computeBundle&#x60;, &#x60;inputs&#x60;, &#x60;params&#x60;, per-step &#x60;status&#x60;, &#x60;runs&#x60;, &#x60;outputs&#x60;, &#x60;result&#x60;, &#x60;reason&#x60; and &#x60;cost&#x60; (&#x60;cost&#x60; and &#x60;costSoFar&#x60; for a run with a cap). Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
-     * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?>
+     * @return ApiResponse<PipelineRunView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesGetWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesGetWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<PipelineRunView?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesGetRequestConfig(app = app, run = run)
 
-        return@withContext request<Unit, kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>>(
+        return@withContext request<Unit, PipelineRunView>(
             localVariableConfig
         )
     }

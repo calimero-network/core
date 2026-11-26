@@ -243,18 +243,14 @@ impl Cluster {
             _dirs: dirs,
         };
         // Wait for the system group to elect and every node to know them all.
-        for _ in 0..300 {
-            let ready = c
-                .nodes
+        crate::harness::poll::until(Duration::from_secs(30), "the cluster formed", || {
+            c.nodes
                 .iter()
                 .flatten()
-                .all(|r| r.node.sys(|s| s.nodes.len() == n as usize));
-            if ready {
-                return c;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("cluster did not form");
+                .all(|r| r.node.sys(|s| s.nodes.len() == n as usize))
+        })
+        .await;
+        c
     }
 
     pub fn client(&self, i: usize) -> Client {
@@ -398,13 +394,12 @@ impl Cluster {
         }
         let _ = ops_signed(&ops, "ops/nodes", body).await.unwrap();
         let node = &self.nodes[0].as_ref().unwrap().node;
-        for _ in 0..100 {
-            if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("node 1 never applied job node {id}");
+        crate::harness::poll::until(
+            crate::harness::poll::EVENTUALLY,
+            &format!("node 1 applied job node {id}"),
+            || node.sys(|s| s.job_nodes().any(|n| n.id == id)),
+        )
+        .await;
     }
 }
 

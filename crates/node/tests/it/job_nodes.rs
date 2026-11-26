@@ -506,12 +506,12 @@ async fn a_replicas_address_may_be_respelled_without_stopping_the_cluster() {
         .await
         .unwrap();
     let node = &c.nodes[0].as_ref().unwrap().node;
-    for _ in 0..100 {
-        if node.sys(|s| s.nodes[&2].addr == respelled) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "node 1 applied node 2's new address",
+        || node.sys(|s| s.nodes[&2].addr == respelled),
+    )
+    .await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let app = create(&alice, "kv").await;
     for i in 0..3 {

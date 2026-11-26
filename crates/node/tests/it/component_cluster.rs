@@ -3685,13 +3685,12 @@ async fn beats_reach(cl: &Client, app: &str, n: usize, secs: u64) -> Vec<BeatRow
 
 /// Waits until node `i` has applied past `index` for `app`.
 async fn applied_past(c: &Cluster, i: usize, app: &str, index: u64) {
-    for _ in 0..100 {
-        if c.applied_on(i, app) > index {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("node {i} never applied past {index}");
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        &format!("node {i} applied past {index}"),
+        || c.applied_on(i, app) > index,
+    )
+    .await;
 }
 
 fn slots(rows: &[BeatRow]) -> Vec<u64> {
@@ -3798,12 +3797,10 @@ async fn a_tick_runs_once_across_failover() {
     let other = (0..3).find(|i| *i != leader).unwrap();
     let cl = c.client(other);
     let _s = cl.sign_in(&mut pk).await.unwrap();
-    for _ in 0..100 {
-        if c.app_leader(&app).is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    crate::harness::poll::until(crate::harness::poll::EVENTUALLY, "a new leader", || {
+        c.app_leader(&app).is_some()
+    })
+    .await;
     offset += HOUR;
     c.advance_all(HOUR);
     let second = c.nodes[other].as_ref().unwrap().node.app_clock().now_ms();
@@ -4120,12 +4117,12 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
         .await
         .unwrap();
     for i in 0..3 {
-        for _ in 0..100 {
-            if running_bundle(&c, i, &app).as_deref() == Some(kv.as_str()) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        crate::harness::poll::until(
+            crate::harness::poll::EVENTUALLY,
+            &format!("node {i} runs the gated bundle"),
+            || running_bundle(&c, i, &app).as_deref() == Some(kv.as_str()),
+        )
+        .await;
         assert_eq!(running_bundle(&c, i, &app), Some(kv.clone()), "node {i}");
     }
     assert_eq!(
@@ -4516,13 +4513,12 @@ async fn hosted_on(
     i: usize,
     app: &str,
 ) -> Arc<calimero_log::Group<calimero_node::app::AppMachine>> {
-    for _ in 0..200 {
-        if let Some(g) = c.nodes[i].as_ref().unwrap().node.hosted(app) {
-            return g;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("node {i} never hosted {app}");
+    crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        &format!("node {i} hosts {app}"),
+        || c.nodes[i].as_ref().unwrap().node.hosted(app),
+    )
+    .await
 }
 
 /// A logged run does not hold its app's applied state while it runs. The leader runs a
@@ -5248,28 +5244,33 @@ async fn a_components_blobs_are_held_by_references_and_granted() {
         )
         .await
         .unwrap();
-    let mut gone = false;
-    for _ in 0..50 {
-        if alice.apps().blob_list(&app).await.map(wire).unwrap()["blobs"] == json!([])
-            && alice.apps().blob_download(&app, &id, None).await.is_err()
-        {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(gone, "an idle blob stayed");
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "the idle blob is forgotten",
+        || async {
+            let listed = alice.apps().blob_list(&app).await.map(wire).unwrap();
+            if listed["blobs"] == json!([])
+                && alice.apps().blob_download(&app, &id, None).await.is_err()
+            {
+                Ok(())
+            } else {
+                Err(listed)
+            }
+        },
+    )
+    .await;
     // The bytes left every node's store too (the leader collected them).
-    for _ in 0..50 {
-        if c.nodes.iter().flatten().all(|r| {
-            r.node.engine.get_blob(&id).ok().flatten().is_none()
-                && r.node.engine.get_blob(&idle).ok().flatten().is_none()
-        }) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the bytes of a forgotten blob stayed in a store");
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the bytes of the forgotten blobs leave every store",
+        || {
+            c.nodes.iter().flatten().all(|r| {
+                r.node.engine.get_blob(&id).ok().flatten().is_none()
+                    && r.node.engine.get_blob(&idle).ok().flatten().is_none()
+            })
+        },
+    )
+    .await;
 }
 
 /// The host keeps a full-text index of a table's declared fields from the
@@ -5419,16 +5420,20 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
             .unwrap();
     }
     // Delivered in order: the last value wins, and the outbox empties.
-    let mut last = Value::Null;
-    for _ in 0..100 {
-        last = strong_view(&alice, &target, "get", json!({ "key": "k" })).await;
-        let pending = alice.apps().xcalls(&source).await.map(wire).unwrap()["pending"].clone();
-        if last == json!("4") && pending == json!(0) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(last, json!("4"));
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "the last value wins and the outbox empties",
+        || async {
+            let last = strong_view(&alice, &target, "get", json!({ "key": "k" })).await;
+            let pending = alice.apps().xcalls(&source).await.map(wire).unwrap()["pending"].clone();
+            if last == json!("4") && pending == json!(0) {
+                Ok(())
+            } else {
+                Err((last, pending))
+            }
+        },
+    )
+    .await;
     assert_eq!(
         alice.apps().xcalls(&source).await.map(wire).unwrap()["deadLetters"],
         json!([])
@@ -5469,16 +5474,20 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
         )
         .await
         .unwrap();
-    let mut dead = Vec::new();
-    for _ in 0..100 {
-        let x = alice.apps().xcalls(&source).await.map(wire).unwrap();
-        dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
-        if dead.len() == 2 && x["pending"] == json!(0) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(dead.len(), 2, "{dead:?}");
+    let dead = crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "two dead letters and nothing pending",
+        || async {
+            let x = alice.apps().xcalls(&source).await.map(wire).unwrap();
+            let dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+            if dead.len() == 2 && x["pending"] == json!(0) {
+                Ok(dead)
+            } else {
+                Err(x)
+            }
+        },
+    )
+    .await;
     assert_eq!(dead[0]["app"], json!("no-such-app"));
     assert!(dead[0]["reason"]
         .as_str()
@@ -5497,14 +5506,19 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
         "another owner's app was reached"
     );
     // The source's onXcallFailed heard of the dead letters.
-    let mut failures = Value::Null;
-    for _ in 0..50 {
-        failures = strong_view(&alice, &source, "xcallFailures", json!({})).await;
-        if failures.as_object().is_some_and(|f| !f.is_empty()) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let failures = crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "onXcallFailed heard of the dead letters",
+        || async {
+            let failures = strong_view(&alice, &source, "xcallFailures", json!({})).await;
+            if failures.as_object().is_some_and(|f| !f.is_empty()) {
+                Ok(failures)
+            } else {
+                Err(failures)
+            }
+        },
+    )
+    .await;
     assert!(
         failures["setFromApp"]
             .as_str()
@@ -5566,14 +5580,20 @@ async fn an_app_calls_another_as_the_person_only_with_their_grant() {
     let delivered = |key: String| {
         let (alice, target) = (&alice, &target);
         async move {
-            for _ in 0..100 {
-                let seen = strong_view(alice, target, "get", json!({ "key": key })).await;
-                if !seen.is_null() {
-                    return seen;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Value::Null
+            let key = &key;
+            crate::harness::poll::eventually(
+                crate::harness::poll::EVENTUALLY,
+                &format!("{key} delivered"),
+                || async move {
+                    let seen = strong_view(alice, target, "get", json!({ "key": key })).await;
+                    if seen.is_null() {
+                        Err(seen)
+                    } else {
+                        Ok(seen)
+                    }
+                },
+            )
+            .await
         }
     };
 
@@ -5719,14 +5739,19 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
         .await
         .unwrap();
     let dead_of = |x: &Value| x["deadLetters"].as_array().cloned().unwrap_or_default();
-    let mut before = Vec::new();
-    for _ in 0..100 {
-        before = dead_of(&alice.apps().xcalls(&source).await.map(wire).unwrap());
-        if !before.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let before = crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "a dead letter",
+        || async {
+            let before = dead_of(&alice.apps().xcalls(&source).await.map(wire).unwrap());
+            if before.is_empty() {
+                Err(before)
+            } else {
+                Ok(before)
+            }
+        },
+    )
+    .await;
     assert_eq!(before.len(), 1, "{before:?}");
     assert_eq!(before[0]["app"], json!("no-such-app"));
 
@@ -5752,17 +5777,18 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
 
     // The new replica's own state, once it applied the dead-lettering: the letter is there.
     let node = &c.nodes[spare as usize - 1].as_ref().unwrap().node;
-    let mut caught_up = None;
-    for _ in 0..200 {
-        caught_up = node.hosted(&source).and_then(|g| {
-            g.read_local(|m, _| (m.state.component.head.xcall.first == 1).then(|| m.dead_letters()))
-        });
-        if caught_up.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let local = caught_up.expect("the new replica never applied the dead-lettering");
+    let local = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the new replica applied the dead-lettering",
+        || {
+            node.hosted(&source).and_then(|g| {
+                g.read_local(|m, _| {
+                    (m.state.component.head.xcall.first == 1).then(|| m.dead_letters())
+                })
+            })
+        },
+    )
+    .await;
     assert_eq!(
         serde_json::to_value(&local).unwrap(),
         Value::Array(before.clone()),
@@ -8859,20 +8885,20 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
                 .map(wire);
             (r, pk2)
         });
-        let mut app = None;
-        for _ in 0..100 {
-            app = c.nodes[0].as_ref().unwrap().node.sys(|s| {
-                s.apps
-                    .values()
-                    .find(|a| a.name == "stuck")
-                    .map(|a| a.app_id.clone())
-            });
-            if app.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        (app.expect("the app was recorded"), task)
+        let app = crate::harness::poll::found(
+            crate::harness::poll::EVENTUALLY,
+            "the app was recorded",
+            || {
+                c.nodes[0].as_ref().unwrap().node.sys(|s| {
+                    s.apps
+                        .values()
+                        .find(|a| a.name == "stuck")
+                        .map(|a| a.app_id.clone())
+                })
+            },
+        )
+        .await;
+        (app, task)
     };
     let (app, task) = creating;
     let (created, back) = task.await.unwrap();
@@ -8916,12 +8942,12 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
     assert!(done.is_some(), "the app never came up after the upgrade");
     for i in 0..3 {
         let g = hosted_on(&c, i, &app).await;
-        for _ in 0..100 {
-            if g.read_local(|m, _| m.state.initialized) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        crate::harness::poll::until(
+            crate::harness::poll::EVENTUALLY,
+            &format!("node {i} initialized the app"),
+            || g.read_local(|m, _| m.state.initialized),
+        )
+        .await;
         let (bundle, executor, initialized) = g.read_local(|m, _| {
             (
                 m.state.bundle.clone(),
@@ -9007,12 +9033,12 @@ async fn a_component_sees_no_organization_but_its_own() {
         .unwrap();
     let node = &c.nodes[0].as_ref().unwrap().node;
     // The node's replica has every org now.
-    for _ in 0..50 {
-        if node.sys(|s| s.orgs.contains_key(&other) && s.apps.contains_key(&personal)) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "node 1 applied every org and app",
+        || node.sys(|s| s.orgs.contains_key(&other) && s.apps.contains_key(&personal)),
+    )
+    .await;
     let dir = SysDirectory::new(Arc::downgrade(node), in_org.clone());
     assert_eq!(
         dir.orgs_of(&carol_id),
@@ -9222,12 +9248,12 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
         .find(|i| !record.replicas.contains(&(*i as u64 + 1)))
         .expect("a node without a replica");
     for i in (0..4).filter(|i| *i != outsider) {
-        for _ in 0..100 {
-            if running_bundle(&c, i, &app).as_deref() == Some(kv.as_str()) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        crate::harness::poll::until(
+            crate::harness::poll::EVENTUALLY,
+            &format!("node {i} runs the gated bundle"),
+            || running_bundle(&c, i, &app).as_deref() == Some(kv.as_str()),
+        )
+        .await;
     }
     let front = c.client(outsider);
     let _s = front.sign_in(&mut pk).await.unwrap();
@@ -9303,18 +9329,19 @@ async fn set_fuel_limit(ops: &Client, limit: u64) {
 
 /// Waits until every running node reads `limit` as the fuel quota.
 async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
-    for _ in 0..100 {
-        if c.nodes.iter().flatten().all(|r| {
-            r.node.sys(|s| {
-                serde_json::to_value(&s.quotas).unwrap()["maxFuelPerDeveloperPerDay"]
-                    == json!(limit.to_string())
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        "the fuel quota reached every node",
+        || {
+            c.nodes.iter().flatten().all(|r| {
+                r.node.sys(|s| {
+                    serde_json::to_value(&s.quotas).unwrap()["maxFuelPerDeveloperPerDay"]
+                        == json!(limit.to_string())
+                })
             })
-        }) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("the fuel quota never reached every node");
+        },
+    )
+    .await;
 }
 
 /// Waits until every running node has applied what the app's leader has, so a
@@ -9323,13 +9350,12 @@ async fn applied_everywhere(c: &Cluster, app: &str) {
     let target = c.applied_on(c.app_leader(app).unwrap(), app);
     for i in (0..c.nodes.len()).filter(|i| c.nodes[*i].is_some()) {
         let g = hosted_on(c, i, app).await;
-        for _ in 0..200 {
-            if g.applied() >= target {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(g.applied() >= target, "node {i} never applied {target}");
+        crate::harness::poll::until(
+            crate::harness::poll::EVENTUALLY,
+            &format!("node {i} never applied {target}"),
+            || g.applied() >= target,
+        )
+        .await;
     }
 }
 
@@ -9346,14 +9372,12 @@ async fn usage_on_every_node(
             continue;
         }
         let g = hosted_on(c, i, app).await;
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while g.applied() < target {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "node {i} never applied {target}"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        crate::harness::poll::until(
+            Duration::from_secs(30),
+            &format!("node {i} applied {target}"),
+            || g.applied() >= target,
+        )
+        .await;
         let cl = c.client(i);
         let _s = cl.sign_in(pk).await.unwrap();
         out.push(app_usage(&cl, app).await);
@@ -11000,14 +11024,19 @@ async fn an_org_run_answers_a_release_its_starter_may_not_use_as_a_missing_one()
 
 /// `who`'s upgrade run `run` of `org`, once it finished.
 async fn finished_run(who: &Client, org: &str, run: &str) -> Value {
-    for _ in 0..200 {
-        let r = who.orgs().upgrade_status(org, run).await.map(wire).unwrap();
-        if r["finished"] == json!(true) {
-            return r;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("run {run} never finished");
+    crate::harness::poll::eventually(
+        Duration::from_secs(20),
+        &format!("run {run} finished"),
+        || async {
+            let r = who.orgs().upgrade_status(org, run).await.map(wire).unwrap();
+            if r["finished"] == json!(true) {
+                Ok(r)
+            } else {
+                Err(r)
+            }
+        },
+    )
+    .await
 }
 
 /// An offer that no longer serves: Mal, a member of Acme, offers Acme's private V 0.1.0 and
