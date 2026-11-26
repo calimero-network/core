@@ -16173,3 +16173,67 @@ fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_insta
     let _ok = m.run(redeem("inv_alice", "carol")).unwrap();
     assert!(m.state.apps["oa"].access.names("carol"));
 }
+
+/// Each audience reaches who it names and nobody else, judged against the
+/// state at delivery: someone who leaves after the event was sent no longer
+/// receives it.
+#[test]
+fn each_audience_reaches_only_who_it_names() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    {
+        let org = m.state.orgs.get_mut("org").unwrap();
+        let _prev = org.members.insert("carol".into(), OrgRole::Admin);
+        let _prev = org.members.insert("dave".into(), OrgRole::Member);
+        let _prev = org
+            .teams
+            .get_mut("t")
+            .unwrap()
+            .members
+            .insert("bob".into(), true);
+    }
+    let app: AppRecord = serde_json::from_value(json!({
+        "appId": "shared", "name": "shared", "group": 5, "bundle": "b1", "owner": "alice",
+        "org": "org", "grants": [{ "kind": "org" }], "replicas": [1, 2, 3], "createdAt": 0
+    }))
+    .unwrap();
+    let audience = |v: Value| -> Audience { serde_json::from_value(v).unwrap() };
+    let who = |m: &SystemMachine, a: &Audience| -> Vec<&'static str> {
+        ["alice", "bob", "carol", "dave", "eve"]
+            .into_iter()
+            .filter(|x| m.state.receives(&app, a, Some("bob"), Some(x)))
+            .collect()
+    };
+
+    let caller = audience(json!({ "kind": "caller" }));
+    let accounts = audience(json!({ "kind": "accounts", "accounts": ["carol", "eve"] }));
+    let team = audience(json!({ "kind": "team", "team": "t" }));
+    let members = audience(json!({ "kind": "orgMembers", "org": "org" }));
+    let admins = audience(json!({ "kind": "orgAdmins", "org": "org" }));
+    let other_org = audience(json!({ "kind": "orgMembers", "org": p("alice") }));
+
+    assert_eq!(who(&m, &caller), ["bob"]);
+    assert_eq!(
+        who(&m, &accounts),
+        ["carol"],
+        "eve is named but not in the org"
+    );
+    assert_eq!(who(&m, &team), ["bob"]);
+    assert_eq!(who(&m, &members), ["alice", "bob", "carol", "dave"]);
+    assert_eq!(who(&m, &admins), ["alice", "carol"]);
+    assert!(who(&m, &other_org).is_empty(), "an org the app is not in");
+    for a in [&caller, &accounts, &team, &members, &admins] {
+        assert!(!m.state.receives(&app, a, Some("bob"), None), "no account");
+    }
+
+    // Membership is read at delivery, not when the event was sent.
+    {
+        let org = m.state.orgs.get_mut("org").unwrap();
+        let _gone = org.members.remove("bob");
+        let _prev = org.members.insert("carol".into(), OrgRole::Member);
+    }
+    assert!(who(&m, &caller).is_empty(), "the caller left");
+    assert!(who(&m, &team).is_empty(), "a team member who left the org");
+    assert_eq!(who(&m, &members), ["alice", "carol", "dave"]);
+    assert_eq!(who(&m, &admins), ["alice"], "carol was demoted");
+    assert!(who(&m, &accounts).contains(&"carol"));
+}

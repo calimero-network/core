@@ -11341,3 +11341,116 @@ async fn an_api_keys_scope_holds_on_every_route_not_only_calls() {
         .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 }
+
+/// Each audience's events reach only its subscribers on `GET /events`: a team,
+/// the org's admins, named accounts, the caller and the whole org.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn event_stream_delivers_each_audience_only_to_its_members() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    let team = s(
+        alice
+            .orgs()
+            .team_create(&org, "eng", TeamJoin::Invite, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "teamId",
+    );
+    // Alice leads the team she made. Bob: a member on it. Carol: an admin, on no team.
+    for (member, invite) in [
+        (&bob, json!({ "role": "member", "teams": [&team] })),
+        (&carol, json!({ "role": "admin" })),
+    ] {
+        let token = s(
+            alice
+                .orgs()
+                .invite_create(&org, typed(invite), Some(&mut a))
+                .await
+                .map(wire)
+                .unwrap(),
+            "token",
+        );
+        let _r = member.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let carol_id = s(carol.auth().me().await.map(wire).unwrap(), "accountId");
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "told", "bundle": &bundle, "org": org }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+
+    let mut streams = Vec::new();
+    for who in [&alice, &bob, &carol] {
+        streams.push(Box::pin(who.events(&app, 0).await.unwrap()));
+    }
+    for (to, text) in [
+        (format!("team:{team}"), "team"),
+        ("admins".to_owned(), "admins"),
+        (format!("accounts:{carol_id}"), "accounts"),
+        ("caller".to_owned(), "caller"),
+        ("org".to_owned(), "org"),
+        ("all".to_owned(), "end"),
+    ] {
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "tell",
+                Some(json!({ "to": to, "text": text })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let mut got = Vec::new();
+    for stream in &mut streams {
+        let mut texts = Vec::new();
+        loop {
+            let (_id, kind, data) = tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("the closing event arrives")
+                .unwrap();
+            assert_eq!(kind, "Told");
+            let text = data["text"].as_str().unwrap().to_owned();
+            if text == "end" {
+                break;
+            }
+            texts.push(text);
+        }
+        got.push(texts);
+    }
+    assert_eq!(
+        got[0],
+        ["team", "admins", "caller", "org"],
+        "alice: owner, the caller, the team's lead as its creator"
+    );
+    assert_eq!(got[1], ["team", "org"], "bob: a team member");
+    assert_eq!(
+        got[2],
+        ["admins", "accounts", "org"],
+        "carol: an admin, named"
+    );
+}

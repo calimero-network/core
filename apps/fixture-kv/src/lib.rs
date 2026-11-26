@@ -147,6 +147,7 @@ pub enum Event {
     Updated { key: String, value: String },
     Removed { key: String },
     Cleared,
+    Told { text: String },
 }
 
 /// The most entries one `entries` call lists.
@@ -202,6 +203,25 @@ impl Kv {
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         let event = self.upsert(&key, &value)?;
         env::emit(event, Audience::All)?;
+        Ok(())
+    }
+
+    /// Emits `Told { text }` to `to`: `all`, `caller`, `org`, `admins`, `team:<id>`
+    /// or `accounts:<a>,<b>`.
+    pub fn tell(&mut self, to: String, text: String) -> app::Result<()> {
+        let audience = match to.split_once(':') {
+            Some(("team", team)) => Audience::Team(team.to_owned()),
+            Some(("accounts", list)) => {
+                Audience::Accounts(list.split(',').map(str::to_owned).collect())
+            }
+            _ => match to.as_str() {
+                "caller" => Audience::Caller,
+                "org" => Audience::Org,
+                "admins" => Audience::OrgAdmins,
+                _ => Audience::All,
+            },
+        };
+        env::emit(Event::Told { text }, audience)?;
         Ok(())
     }
 
