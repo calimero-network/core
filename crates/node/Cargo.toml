@@ -108,6 +108,11 @@ harness = false
 name = "cluster_throughput"
 harness = false
 
+# Not criterion: live views under load, a few seconds per row, printed once and written as JSON.
+[[bench]]
+name = "live_views"
+harness = false
+
 [features]
 # DEV/TEST ONLY: accept `[outbound.testing]` in the settings file (answers
 # `.test` hosts in-process, literal secrets). A release build refuses it.
