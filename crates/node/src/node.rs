@@ -2333,6 +2333,60 @@ impl Node {
         Ok(g)
     }
 
+    /// Host an organization's tenant system group, forming it when this node is
+    /// its initializer. Tenant groups are hosted by the system voters and
+    /// mirror the system group's membership; the lowest-id voter forms the
+    /// group and the others host their own replica on their next reconcile,
+    /// Raft bringing them in (openraft treats an already-formed group as done).
+    /// A later slice spreads a tenant group's voters across zones instead of
+    /// pinning them to the system voters
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    async fn ensure_tenant_group(
+        &self,
+        org: &crate::types::OrgId,
+        group: GroupId,
+    ) -> eyre::Result<Arc<Group<SystemMachine>>> {
+        if let Some(g) = self
+            .tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .cloned()
+        {
+            return Ok(g);
+        }
+        let _starting = self.starting.lock().await;
+        if let Some(g) = self
+            .tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .cloned()
+        {
+            return Ok(g);
+        }
+        let machine = SystemMachine::new(self.config.cluster.clone());
+        let g = self.engine.start_group(group, machine).await?;
+        let _prev = self
+            .tenants
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(org.clone(), Arc::clone(&g));
+        let mut members = self.system.status().voters;
+        members.sort_unstable();
+        if members.first() == Some(&self.config.node_id) {
+            let voters: BTreeMap<NodeId, String> = self.sys(|s| {
+                members
+                    .iter()
+                    .filter_map(|id| s.nodes.get(id).map(|n| (*id, n.addr.clone())))
+                    .collect()
+            });
+            g.initialize(voters).await?;
+        }
+        info!(org = %org, group, "hosting tenant group");
+        Ok(g)
+    }
+
     /// Wait for `account`'s turn to make an API key on this node, so its quota
     /// check, follow-ups and `CreateApiKey` never interleave with another's.
     pub async fn api_key_turn(self: &Arc<Self>, account: &str) -> KeyTurn {
@@ -2679,6 +2733,24 @@ impl Node {
                 }
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
+            }
+        }
+        // Host the tenant system groups this node is a voter of: an
+        // organization's own control plane lives in its tenant group, placed on
+        // the system voters alongside the root system group. Nothing routes to
+        // these groups until the routing flip; forming them early lets a tenant
+        // group be ready the moment its org's first command is routed to it.
+        if self.system.status().voters.contains(&self.config.node_id) {
+            let tenants: Vec<(crate::types::OrgId, GroupId)> = self.sys(|s| {
+                s.tenant_groups
+                    .iter()
+                    .map(|(o, g)| (o.clone(), *g))
+                    .collect()
+            });
+            for (org, group) in tenants {
+                if let Err(e) = self.ensure_tenant_group(&org, group).await {
+                    warn!(org = %org, group, error = %format!("{e:#}"), "could not host tenant group");
+                }
             }
         }
     }
