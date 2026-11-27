@@ -136,7 +136,7 @@ mod tests {
             .take(Some("alice"), "app")
             .expect("the dropped slot is back");
         drop(held);
-        drop(_again);
+        drop(again);
         assert!(!s.counts().by_account.contains_key("alice"));
         assert_eq!(s.open(), 2);
     }
