@@ -309,6 +309,19 @@ pub enum CreateBody {
 }
 
 impl CreateBody {
+    /// Whether this asks about one instance alone, all a session opened on an
+    /// instance's own origin may ask ([`crate::api::Principal::within`] judges which).
+    fn about_one_app(&self) -> bool {
+        match self {
+            Self::Upgrade { .. }
+            | Self::UpgradeUnit { .. }
+            | Self::Delegate { .. }
+            | Self::AcceptInvite { .. } => true,
+            Self::UpdatePolicy { subject, .. } => subject.names_app(),
+            _ => false,
+        }
+    }
+
     /// The organization request this is, with its `returnTo`; the body itself
     /// for every other kind.
     fn into_org_ask(self) -> Result<(orgs::OrgAsk, String), Self> {
@@ -1174,6 +1187,9 @@ pub async fn create(
     let package = p.bound_app().map(str::to_owned);
     // `person` made this request's round (`Node::sys_fresh_from`).
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    if !body.about_one_app() && !node.sys(|s| p.origin_admits(s, None)) {
+        return Err(instance_site_only());
+    }
     let body = match body.into_org_ask() {
         Ok((ask, return_to)) => {
             let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
@@ -1231,7 +1247,7 @@ pub async fn create(
         }
         CreateBody::AcceptInvite { subject, return_to } => {
             let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
-            let (action, model) = accept_invite_request(&node, &account, subject)?;
+            let (action, model) = accept_invite_request(&node, &p, &account, subject)?;
             (action, model, to)
         }
         CreateBody::Install { subject, return_to } => {
@@ -1265,6 +1281,10 @@ pub async fn create(
         }
     };
     hold(&node, account, package, action, model, return_to).await
+}
+
+fn instance_site_only() -> ApiError {
+    ApiError::forbidden("a session opened on an instance's own site asks only about that instance")
 }
 
 /// Hold a request whose model is frozen, and answer where its page is.
@@ -2922,6 +2942,7 @@ async fn create_invite_request(
 
 fn accept_invite_request(
     node: &Node,
+    p: &Principal,
     account: &str,
     subject: AcceptInviteSubject,
 ) -> Result<(Action, Value), ApiError> {
@@ -2933,6 +2954,15 @@ fn accept_invite_request(
         ));
     }
     let key = crate::proof::invite_key(&token);
+    // A session on an instance's own site accepts an invite to that instance
+    // alone: no organization's, no other instance's.
+    let admitted = node.sys(|s| {
+        let app = s.app_invites.get(&key).map(|i| i.app.as_str());
+        p.origin_admits(s, app)
+    });
+    if !admitted {
+        return Err(instance_site_only());
+    }
     let now = now_secs();
     if let Some(found) = app_invite_model(node, account, &key, now) {
         let model = found?;

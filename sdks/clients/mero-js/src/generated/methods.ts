@@ -283,6 +283,32 @@ export function createRoutes(api: RouteClient) {
       openapi: (args: operations['app_openapi']['parameters']['path'], options?: MethodOptions): Promise<operations['app_openapi']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}/openapi.json","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_openapi']['responses'][200]['content']['application/json']>,
       /**
+       * Register a web origin for an instance.
+       *
+       * `POST /apps/{app}/origins` (`app_origin_add`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      originAdd: (args: operations['app_origin_add']['parameters']['path'] & operations['app_origin_add']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_origin_add']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/origins","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_origin_add']['responses'][200]['content']['application/json']>,
+      /**
+       * Remove an instance's web origin.
+       *
+       * `DELETE /apps/{app}/origins` (`app_origin_remove`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      originRemove: (args: operations['app_origin_remove']['parameters']['path'] & operations['app_origin_remove']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_origin_remove']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/origins","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_origin_remove']['responses'][200]['content']['application/json']>,
+      /**
+       * An instance's web origins.
+       *
+       * `GET /apps/{app}/origins` (`app_origins`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      origins: (args: operations['app_origins']['parameters']['path'], options?: MethodOptions): Promise<operations['app_origins']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/origins","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_origins']['responses'][200]['content']['application/json']>,
+      /**
        * An app's outbound requests.
        *
        * `GET /apps/{app}/outbound-log` (`app_outbound_log`). **Who:** signed in (a session or an API key).

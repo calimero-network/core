@@ -377,7 +377,15 @@ async fn account_recovery_finish(
     )
     .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
     let passkey = pending.credential.id;
-    let token = session_token_for(&node, &account, &passkey, None, None, &session)?;
+    let token = session_token_for(
+        &node,
+        &account,
+        &passkey,
+        None,
+        None,
+        String::new(),
+        &session,
+    )?;
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
@@ -392,7 +400,7 @@ async fn account_recovery_finish(
                 hash: session.hash(),
                 record: RefreshRecord {
                     opened_at: at,
-                    ..session.record(&account, &passkey, None, None)
+                    ..session.record(&account, &passkey, None, None, String::new())
                 },
             },
             consent: super::consent_value(&consent)?,

@@ -1360,7 +1360,9 @@ async fn org_upgrade_status(
     headers: HeaderMap,
     Path((org, run)): Path<(String, String)>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let r = node
         .sys(|s| {
             let o = s.orgs.get(&org)?;

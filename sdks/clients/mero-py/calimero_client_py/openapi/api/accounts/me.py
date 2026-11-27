@@ -70,7 +70,9 @@ def sync_detailed(
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -99,7 +101,9 @@ def sync(
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -124,7 +128,9 @@ async def asyncio_detailed(
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -151,7 +157,9 @@ async def asyncio(
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 

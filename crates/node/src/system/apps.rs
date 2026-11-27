@@ -1125,6 +1125,7 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
         // Pinned once it runs a pinning release; nothing clears it.
         app.lineage = app.lineage.take().or(pins);
     }
+    state.forget_moved_app_origins(&app_id);
     if let Some(org) = org {
         state.drop_spent_approvals(&org, at);
     }
@@ -1371,6 +1372,7 @@ fn transfer_app(
         }
     }
     state.set_app_file_bytes(&app_id, held);
+    state.forget_app_origins(&app_id);
     let payer = state.apps.get(&app_id).map(crate::usage::payer);
     if let (Some(payer), Some(runs)) = (payer, state.compute.get_mut(&app_id)) {
         for slot in runs.values_mut() {
@@ -1489,6 +1491,7 @@ fn restore_app(
         seed: Some(seed),
         source: Some(source),
     });
+    state.forget_moved_app_origins(&app_id);
     Ok(json!({ "group": group }))
 }
 

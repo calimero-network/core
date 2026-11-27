@@ -274,6 +274,45 @@ extension CalimeroClient {
             }
         }
 
+        /// Register a web origin for an instance: `POST /apps/{app}/origins` (`app_origin_add`).
+        ///
+        /// By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func originAdd(app: Swift.String, origin: Swift.String, rpId: Swift.String? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.PackageOrigin {
+            let input = Operations.AppOriginAdd.Input(path: .init(app: app), body: .json(.init(origin: origin, rpId: rpId)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appOriginAdd(input).ok.body.json
+            }
+        }
+
+        /// Remove an instance's web origin: `DELETE /apps/{app}/origins` (`app_origin_remove`).
+        ///
+        /// Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func originRemove(app: Swift.String, origin: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.OriginRemoved {
+            let input = Operations.AppOriginRemove.Input(path: .init(app: app), body: .json(.init(origin: origin)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appOriginRemove(input).ok.body.json
+            }
+        }
+
+        /// An instance's web origins: `GET /apps/{app}/origins` (`app_origins`).
+        ///
+        /// The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+        @discardableResult
+        public func origins(app: Swift.String) async throws -> Components.Schemas.AppOriginList {
+            let input = Operations.AppOrigins.Input(path: .init(app: app))
+            return try await client.perform { api in
+                try await api.appOrigins(input).ok.body.json
+            }
+        }
+
         /// An app's outbound requests: `GET /apps/{app}/outbound-log` (`app_outbound_log`).
         ///
         /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
@@ -1238,7 +1277,7 @@ extension CalimeroClient {
 
         /// The caller's account: `GET /auth/me` (`me`).
         ///
-        /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+        /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult

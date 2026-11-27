@@ -332,6 +332,7 @@ fn undo_upgrade(
     let mut groups = serde_json::Map::new();
     for (id, replicas) in apps {
         let group = undo_one(state, &id, replicas, actor, at)?;
+        state.forget_moved_app_origins(&id);
         let _prev = groups.insert(id, group.map_or(Value::Null, |group| json!(group)));
     }
     Ok(json!({ "groups": groups }))

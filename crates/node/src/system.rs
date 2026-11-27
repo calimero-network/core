@@ -2056,6 +2056,7 @@ impl SystemState {
     fn remove_app(&mut self, app_id: &str) {
         self.set_app_file_bytes(app_id, 0);
         let _gone = self.apps.remove(app_id);
+        self.forget_app_origins(app_id);
         // A grant from or to the app goes with it.
         for sources in self.delegations.values_mut() {
             let _from = sources.remove(app_id);
@@ -5200,6 +5201,7 @@ impl SystemState {
             a.org = to_org.to_owned();
             a.access = access.clone();
         }
+        self.forget_app_origins(app_id);
         // Its update policy and a first approval of its update were the source's owner's
         // and admins' decisions: the target's decide there.
         if let Some(o) = self.orgs.get_mut(&from) {
@@ -5924,6 +5926,7 @@ impl SystemCmd {
             Self::WithdrawApp { .. } => Area::Deployments,
             Self::AddPackageOrigin { .. } => Area::Packages,
             Self::RemovePackageOrigin { .. } => Area::Packages,
+            Self::AddAppOrigin { .. } | Self::RemoveAppOrigin { .. } => Area::Packages,
             Self::DeleteDeployment { .. } => Area::Deployments,
             Self::OfferDeployment { .. }
             | Self::AcceptDeployment { .. }
@@ -7335,6 +7338,9 @@ pub enum SystemCmd {
         rp_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         served: bool,
+        /// [`crate::origins::PackageOrigin::registration`]; empty from a release before.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        registration: String,
         actor: AccountId,
         at: u64,
         #[serde(default)]
@@ -7344,6 +7350,28 @@ pub enum SystemCmd {
     /// { origin }`): the sessions opened there end with it.
     RemovePackageOrigin {
         package: String,
+        origin: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Register `origin` for app instance `app_id` (`{app_id} / __add_origin /
+    /// { origin, rpId }`, the passkey `consent` of a manager of the instance):
+    /// its sessions reach that instance alone ([`crate::origins`]).
+    AddAppOrigin {
+        app_id: AppId,
+        origin: String,
+        rp_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        registration: String,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove an instance's origin (`{app_id} / __remove_origin / { origin }`).
+    RemoveAppOrigin {
+        app_id: AppId,
         origin: String,
         actor: AccountId,
         #[serde(default)]

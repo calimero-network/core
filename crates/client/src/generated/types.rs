@@ -2665,6 +2665,16 @@ pub struct OriginList {
     pub extra: Map<String, Value>,
 }
 
+/// `GET /apps/{app}/origins`: the origins registered for an instance.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppOriginList {
+    pub app: String,
+    pub origins: Vec<PackageOrigin>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// What removing an origin answers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OriginRemoved {
@@ -5660,7 +5670,7 @@ pub struct AccountStatement {
     pub extra: Map<String, Value>,
 }
 
-/// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.
+/// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageOrigin {
     pub package: String,
@@ -5672,6 +5682,8 @@ pub struct PackageOrigin {
     #[serde(rename = "addedAt")]
     pub added_at: String,
     pub served: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

@@ -296,6 +296,7 @@ fn authorize_exchange(
         // A session bound to a holder key stays bound to it: no node drops the binding
         // (or binds an unbound one) in an exchange.
         || old.holder != record.holder
+        || old.registration != record.registration
     {
         return Err(OTHER_SESSION);
     }

@@ -45,6 +45,9 @@ import com.calimero.mero.api.models.AppList
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMoveRequest
 import com.calimero.mero.api.models.AppMoved
+import com.calimero.mero.api.models.AppOriginAddRequest
+import com.calimero.mero.api.models.AppOriginList
+import com.calimero.mero.api.models.AppOriginRemoveRequest
 import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets
 import com.calimero.mero.api.models.AppSetEgressRequest
@@ -76,7 +79,9 @@ import com.calimero.mero.api.models.LinkRow
 import com.calimero.mero.api.models.Logged
 import com.calimero.mero.api.models.MetadataBody
 import com.calimero.mero.api.models.MethodResult
+import com.calimero.mero.api.models.OriginRemoved
 import com.calimero.mero.api.models.OutboundLog
+import com.calimero.mero.api.models.PackageOrigin
 import com.calimero.mero.api.models.PartTaken
 import com.calimero.mero.api.models.PipelineCancelled
 import com.calimero.mero.api.models.PipelineRunList
@@ -1660,6 +1665,233 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}/openapi.json".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/origins
+     * Register a web origin for an instance
+     * By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over &#x60;{ origin, rpId }&#x60;. A passkey ceremony there opens a session bound to the instance&#39;s package that reaches this instance alone; what the account may do in it is the instance&#39;s grants&#39;. Answers the origin as registered (the one already there, when the same origin is registered again).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginAddRequest 
+     * @return PackageOrigin
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOriginAdd(app: kotlin.String, appOriginAddRequest: AppOriginAddRequest) : PackageOrigin = withContext(Dispatchers.IO) {
+        val localVarResponse = appOriginAddWithHttpInfo(app = app, appOriginAddRequest = appOriginAddRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageOrigin
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/origins
+     * Register a web origin for an instance
+     * By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over &#x60;{ origin, rpId }&#x60;. A passkey ceremony there opens a session bound to the instance&#39;s package that reaches this instance alone; what the account may do in it is the instance&#39;s grants&#39;. Answers the origin as registered (the one already there, when the same origin is registered again).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginAddRequest 
+     * @return ApiResponse<PackageOrigin?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOriginAddWithHttpInfo(app: kotlin.String, appOriginAddRequest: AppOriginAddRequest) : ApiResponse<PackageOrigin?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOriginAddRequestConfig(app = app, appOriginAddRequest = appOriginAddRequest)
+
+        return@withContext request<AppOriginAddRequest, PackageOrigin>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOriginAdd
+     *
+     * @param app 
+     * @param appOriginAddRequest 
+     * @return RequestConfig
+     */
+    fun appOriginAddRequestConfig(app: kotlin.String, appOriginAddRequest: AppOriginAddRequest) : RequestConfig<AppOriginAddRequest> {
+        val localVariableBody = appOriginAddRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/origins".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /apps/{app}/origins
+     * Remove an instance&#39;s web origin
+     * Whoever manages the instance, with a passkey step-up. The sessions opened there end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginRemoveRequest 
+     * @return OriginRemoved
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOriginRemove(app: kotlin.String, appOriginRemoveRequest: AppOriginRemoveRequest) : OriginRemoved = withContext(Dispatchers.IO) {
+        val localVarResponse = appOriginRemoveWithHttpInfo(app = app, appOriginRemoveRequest = appOriginRemoveRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OriginRemoved
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /apps/{app}/origins
+     * Remove an instance&#39;s web origin
+     * Whoever manages the instance, with a passkey step-up. The sessions opened there end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginRemoveRequest 
+     * @return ApiResponse<OriginRemoved?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOriginRemoveWithHttpInfo(app: kotlin.String, appOriginRemoveRequest: AppOriginRemoveRequest) : ApiResponse<OriginRemoved?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOriginRemoveRequestConfig(app = app, appOriginRemoveRequest = appOriginRemoveRequest)
+
+        return@withContext request<AppOriginRemoveRequest, OriginRemoved>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOriginRemove
+     *
+     * @param app 
+     * @param appOriginRemoveRequest 
+     * @return RequestConfig
+     */
+    fun appOriginRemoveRequestConfig(app: kotlin.String, appOriginRemoveRequest: AppOriginRemoveRequest) : RequestConfig<AppOriginRemoveRequest> {
+        val localVariableBody = appOriginRemoveRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/apps/{app}/origins".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/origins
+     * An instance&#39;s web origins
+     * The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
+     * @param app 
+     * @return AppOriginList
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOrigins(app: kotlin.String) : AppOriginList = withContext(Dispatchers.IO) {
+        val localVarResponse = appOriginsWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppOriginList
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/origins
+     * An instance&#39;s web origins
+     * The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
+     * @param app 
+     * @return ApiResponse<AppOriginList?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOriginsWithHttpInfo(app: kotlin.String) : ApiResponse<AppOriginList?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOriginsRequestConfig(app = app)
+
+        return@withContext request<Unit, AppOriginList>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOrigins
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appOriginsRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/origins".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

@@ -2317,6 +2317,7 @@ fn refresh_token(
         passkey: Some(passkey.into()),
         app: None,
         origin: None,
+        registration: String::new(),
         key: crate::proof::refresh_key(&token),
         opened_at: 0,
         holder: None,
@@ -12170,6 +12171,7 @@ fn add_origin(actor: &str, package: &str, origin: &str, rp_id: &str, consent: Va
         origin: origin.into(),
         rp_id: rp_id.into(),
         served: false,
+        registration: String::new(),
         actor: actor.into(),
         at: 1,
         consent,
@@ -12182,6 +12184,7 @@ fn add_served(actor: &str, origin: &str, rp_id: &str, consent: Value) -> SystemC
         origin: origin.into(),
         rp_id: rp_id.into(),
         served: true,
+        registration: String::new(),
         actor: actor.into(),
         at: 1,
         consent,
@@ -12760,6 +12763,18 @@ fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
     );
     let by_alice_for_carol = consent(&mut alice, "org:org", "__finish_recovery", &args);
     assert!(m.run(finish("carol", ready, by_alice_for_carol)).is_err());
+    let _prev = m.state.package_origins.insert(
+        NOTES.into(),
+        crate::origins::PackageOrigin {
+            package: "p".into(),
+            rp_id: "notes.example.com".into(),
+            added_by: "alice".into(),
+            added_at: 1,
+            served: false,
+            app: Some("app".into()),
+            registration: "r".into(),
+        },
+    );
     let done = m
         .run(finish(
             "carol",
@@ -12776,6 +12791,11 @@ fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
     assert_eq!(
         m.state.apps["app"].owner, "carol",
         "the org's apps moved with it"
+    );
+    assert_eq!(m.state.origins_of_app("app").count(), 0);
+    assert!(
+        m.state.origin_registration(NOTES, Some("p"), "r").is_none(),
+        "the previous owner's sessions there end"
     );
     // Alice's passkeys and account are her own still.
     assert!(m.state.accounts.contains_key("alice"));
@@ -17434,4 +17454,269 @@ fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_insta
     );
     let _ok = m.run(redeem("inv_alice", "carol")).unwrap();
     assert!(m.state.apps["oa"].access.names("carol"));
+}
+
+/// Instance `a` of package `q`, whose component bundle `p` shipped first.
+fn instance_of_a_shared_bundle() -> SystemMachine {
+    let mut m = machine_with_apps(100, &[("a", Some("acme"))]);
+    let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
+    let _ok = m.run_unproven(account("alice")).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "q".into(),
+            signer_id: "did:key:q".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "q1", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-1.0.0" }, "installedBy": "alice", "installedAt": 1
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    let app = m.state.apps.get_mut("a").unwrap();
+    app.bundle = "b-1.0.0".into();
+    app.release = serde_json::from_value(json!({ "package": "q", "version": "1.0.0" })).unwrap();
+    m
+}
+
+fn add_app_origin() -> SystemCmd {
+    SystemCmd::AddAppOrigin {
+        app_id: "a".into(),
+        origin: NOTES.into(),
+        rp_id: "notes.example.com".into(),
+        registration: "r".into(),
+        actor: "alice".into(),
+        at: 1,
+        consent: Value::Null,
+    }
+}
+
+/// An instance's origin binds its sessions to the package of the release the
+/// instance runs, which `Principal::within` checks: not the first package
+/// recorded for its shared component bundle.
+#[test]
+fn an_app_origin_records_the_package_its_instance_runs() {
+    let mut m = instance_of_a_shared_bundle();
+    assert_eq!(m.state.package_of(&m.state.apps["a"]), Some("p"));
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    assert_eq!(m.state.package_origins[NOTES].package, "q");
+}
+
+/// An instance whose release was uninstalled (its bundle kept by another
+/// package) registers no origin: none of its sessions would reach it.
+#[test]
+fn an_app_origin_needs_its_instances_release_installed() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "q".into(),
+            version: None,
+            actor: "alice".into(),
+        })
+        .unwrap();
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(
+        refused.message().contains("no installed release"),
+        "{refused}"
+    );
+}
+
+/// A bound publisher's manager takes back an origin an instance of the package
+/// holds, under a new registration; a first installer without a bound publisher
+/// does not, and an instance of another package keeps it.
+#[test]
+fn a_packages_manager_takes_back_its_instances_origin() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let unbound = m
+        .run_unproven(add_origin(
+            "alice",
+            "q",
+            NOTES,
+            "notes.example.com",
+            Value::Null,
+        ))
+        .unwrap_err();
+    assert!(unbound.message().contains("publisher"), "{unbound}");
+    assert_eq!(m.state.origins_of_app("a").count(), 1);
+    let _prev = m.state.publishers.insert(
+        "did:key:q".into(),
+        super::PublisherBinding {
+            org: "acme".into(),
+            generation: 1,
+        },
+    );
+    let refused = m
+        .run_unproven(add_origin(
+            "alice",
+            "p",
+            NOTES,
+            "notes.example.com",
+            Value::Null,
+        ))
+        .unwrap_err();
+    assert!(refused.message().contains("another"), "{refused}");
+    let mut reclaim = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    if let SystemCmd::AddPackageOrigin { registration, .. } = &mut reclaim {
+        *registration = "r2".into();
+    }
+    let _ok = m.run_unproven(reclaim).unwrap();
+    let held = &m.state.package_origins[NOTES];
+    assert_eq!(
+        (held.app.as_deref(), held.registration.as_str()),
+        (None, "r2")
+    );
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+}
+
+/// An upgrade into another package forgets the instance's origins: each was
+/// bound to the package it was added under, which no longer reaches the instance.
+#[test]
+fn an_upgrade_into_another_package_forgets_the_instances_origins() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let _ok = m
+        .run_unproven(upgrade_to("a", "alice", "b-1.0.0", Some(("q", "1.0.0"))))
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 1);
+    let _ok = m
+        .run_unproven(upgrade_to("a", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+    let mut fresh = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    if let SystemCmd::AddPackageOrigin { registration, .. } = &mut fresh {
+        *registration = "r2".into();
+    }
+    let _ok = m.run_unproven(fresh).unwrap();
+    assert_eq!(m.state.package_origins[NOTES].app, None);
+}
+
+/// An undo or a restore that leaves the instance on another package forgets
+/// its origins as an upgrade does.
+#[test]
+fn an_undo_or_restore_into_another_package_forgets_the_instances_origins() {
+    let mut m = instance_of_a_shared_bundle();
+    let mut up = upgrade_to("a", "alice", "b-1.0.0", Some(("p", "1.0.0")));
+    if let SystemCmd::UpgradeApp { restore_point, .. } = &mut up {
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UndoUpgrade {
+            app_id: "a".into(),
+            apps: serde_json::from_value(json!({ "a": [] })).unwrap(),
+            actor: "alice".into(),
+            at: 20,
+            consent: Value::Null,
+            release_installed: true,
+        })
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    register(&mut m, 1, "replica");
+    let _prev = m.state.bundles.insert(
+        "b-other".into(),
+        serde_json::from_value(json!({ "hash": "b-other", "size": 1, "uploadedBy": "alice" }))
+            .unwrap(),
+    );
+    let _ok = m
+        .run_unproven(SystemCmd::RestoreApp {
+            app_id: "a".into(),
+            replicas: vec![1],
+            bundle: "b-other".into(),
+            compute_bundle: None,
+            source: crate::types::RestoreSource {
+                name: "a.snap".into(),
+                sha256: "ab".into(),
+                index: 1,
+            },
+            proof: Value::Null,
+        })
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+}
+
+/// Instances' origins have a cluster-wide budget of their own: filled, it
+/// leaves packages' origins room.
+#[test]
+fn instance_origins_filling_their_cap_leave_packages_room() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let held = m.state.package_origins[NOTES].clone();
+    for i in 0..crate::origins::MAX_APP_ORIGINS {
+        let site = crate::origins::PackageOrigin {
+            app: Some(format!("app{i}")),
+            ..held.clone()
+        };
+        let _prev = m
+            .state
+            .package_origins
+            .insert(format!("https://s{i}.example.com"), site);
+    }
+    let _ok = m
+        .run_unproven(add_origin(
+            "alice",
+            "q",
+            "https://q.example.com",
+            "q.example.com",
+            Value::Null,
+        ))
+        .unwrap();
+    let _gone = m.state.package_origins.remove(NOTES);
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(refused.is_quota(), "{refused}");
+}
+
+/// A registration a session names is never empty, where it applies: an
+/// instance's always, and a package's once the cluster brings instances' origins.
+#[test]
+fn an_origin_without_a_registration_is_refused_once_registrations_exist() {
+    let mut m = instance_of_a_shared_bundle();
+    let mut unnamed = add_app_origin();
+    if let SystemCmd::AddAppOrigin { registration, .. } = &mut unnamed {
+        registration.clear();
+    }
+    let refused = m.run_unproven(unnamed).unwrap_err();
+    assert!(refused.message().contains("registration"), "{refused}");
+    let package = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    let _ok = m.run_unproven(package.clone()).unwrap();
+    let _gone = m.state.package_origins.remove(NOTES);
+    m.state.cluster_version = Some(
+        super::cluster_version::Feature::AppOrigins
+            .since()
+            .to_owned(),
+    );
+    let refused = m.run_unproven(package).unwrap_err();
+    assert!(refused.message().contains("registration"), "{refused}");
+}
+
+/// One organization's instances register a share of the cluster's instance origins, not all
+/// of them: filled, its next instance is refused, and another organization's still fit.
+#[test]
+fn one_orgs_instances_fill_only_their_share_of_origins() {
+    const _: () =
+        assert!(crate::origins::MAX_APP_ORIGINS_PER_ORG < crate::origins::MAX_APP_ORIGINS);
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let held = m.state.package_origins.remove(NOTES).unwrap();
+    let instance = m.state.apps["a"].clone();
+    for i in 0..crate::origins::MAX_APP_ORIGINS_PER_ORG {
+        let _prev = m.state.apps.insert(format!("app{i}"), instance.clone());
+        let _prev = m.state.package_origins.insert(
+            format!("https://s{i}.example.com"),
+            crate::origins::PackageOrigin {
+                app: Some(format!("app{i}")),
+                ..held.clone()
+            },
+        );
+    }
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(refused.is_quota(), "{refused}");
+
+    for i in 0..crate::origins::MAX_APP_ORIGINS_PER_ORG {
+        m.state.apps.get_mut(&format!("app{i}")).unwrap().org = "elsewhere".into();
+    }
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
 }
