@@ -9480,6 +9480,44 @@ fn a_pinned_instance_moves_only_forward_on_its_package_and_signer() {
     );
 }
 
+/// An empty floor (a record written before floors) is no floor beyond the release the instance
+/// runs: forward from it goes, back from it does not, and the next upgrade sets the floor.
+#[test]
+fn an_empty_floor_is_judged_by_the_release_alone() {
+    use super::LINEAGE_OLDER_RELEASE;
+    let mut m = deploying(super::Deployments::Open);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = m.run_unproven(install_pinned("alice", version)).unwrap();
+    }
+    let mut create = instance("kv", "alice", "b-1.1.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.1.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    m.state
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .floor = String::new();
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+            .unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
+        .unwrap();
+    assert_eq!(m.state.apps["kv"].lineage.as_ref().unwrap().floor, "1.2.0");
+}
+
 /// A pinned instance of a release with only a compute component moves forward as any other.
 #[test]
 fn a_compute_only_pinned_instance_moves_forward() {
