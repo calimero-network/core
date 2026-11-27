@@ -85,6 +85,7 @@ async fn cluster(n: u64) -> Cluster {
         election_max_ms: 600,
         // Off the measured path: a snapshot every few thousand entries.
         snapshot_every: 5_000,
+        snapshot_scale_bytes: None,
     };
     let net = Arc::new(Net::default());
     let mut dirs = Vec::new();

@@ -386,7 +386,7 @@ fn set_outbound_approval(
         return Err(NO_SUCH_PACKAGE);
     }
     let declared = newest
-        .map(crate::system::PackageVersion::approvable_prefixes)
+        .map(|version| version.outbound.clone())
         .unwrap_or_default();
     let operator = state.governance().outbound == Authority::Operator;
     if operator != (*scope == ReleaseScope::Cluster) {

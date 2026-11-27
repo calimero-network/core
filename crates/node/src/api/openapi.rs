@@ -1360,6 +1360,18 @@ fn components() -> Vec<Component> {
         )
         .of::<super::sign_up::SignUpInviteMade>(),
         component(
+            "FrontendDigests",
+            "`GET /packages/{package}/{version}/frontend`: the release's frontend entry and every file, by path relative to the frontend root, with its SHA-256 (lowercase hex) and size in bytes.",
+            "{ package: string, version: string, entry: string, files: #FrontendFileDigest[] }",
+        )
+        .of::<super::packages::FrontendDigests>(),
+        component(
+            "FrontendFileDigest",
+            "One frontend file: its path relative to the frontend root (served at `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes.",
+            "{ path: string, sha256: string, size: uint }",
+        )
+        .of::<super::packages::FrontendFileDigest>(),
+        component(
             "SignUpPublic",
             "`GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in uses to pick the person's passkey for it.",
             "{ policy: #SignUp, orgInvites: bool, signUpInvites: bool, inviteRequired: bool, cluster: string, passkeyTag: string }",
@@ -2422,7 +2434,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "WRONG_CHALLENGE"), (401, "UNAUTHENTICATED"), (409, "RECOVERY_NOT_READY"), (421, "WRONG_NODE")]),
         post("/auth/refresh", "refresh", Anyone, "Refresh a session")
-            .about("A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `\"calimero.refresh-holder.v1\\0\" ‖ b64url(SHA-256(refreshToken)) ‖ \"\\0\" ‖ at ‖ \"\\0\"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.")
+            .about("A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `\"calimero.refresh-holder.v1\\0\" ‖ b64url(SHA-256(refreshToken)) ‖ \"\\0\" ‖ at ‖ \"\\0\"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.")
             .json::<super::RefreshBody>("{ refreshToken: string, holderProof?: { at: uint, signature: string } }")
             .ok("#Session")
             .errors(&[(401, "BAD_HOLDER_PROOF"), (401, "HOLDER_PROOF_REQUIRED"), (401, "UNAUTHENTICATED"), (421, "WRONG_NODE"), (503, "UNAVAILABLE")]),
@@ -2822,6 +2834,10 @@ fn operations() -> Vec<Op> {
         get("/packages/{package}/{version}/pipelines", "package_pipelines", SignedIn, "A release's pipelines")
             .about("The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the `modules` they pin and the canonical `pipeline`. `404` for a release the caller may not see.")
             .ok("#ReleasePipelines")
+            .errors(&[(404, "NOT_FOUND")]),
+        get("/packages/{package}/{version}/frontend", "package_frontend", Anyone, "A release's frontend files")
+            .about("Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.")
+            .ok("#FrontendDigests")
             .errors(&[(404, "NOT_FOUND")]),
         get("/packages/{package}/{version}/capabilities", "package_capabilities", SignedIn, "A release's capabilities")
             .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")

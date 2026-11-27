@@ -603,7 +603,10 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         recovery_dir: args.recovery_dir.clone(),
         recover_from: args.recover_from.clone(),
         restore_from: args.restore_from.clone(),
-        raft: calimero_log::Config::default(),
+        raft: calimero_log::Config {
+            snapshot_scale_bytes: args.snapshot_scale_bytes,
+            ..calimero_log::Config::default()
+        },
         read_wait: std::time::Duration::from_secs(2),
         sys_read_lease: std::time::Duration::from_millis(args.sys_read_lease_ms.unwrap_or(0)),
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,

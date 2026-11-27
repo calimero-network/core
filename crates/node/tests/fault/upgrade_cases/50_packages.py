@@ -685,13 +685,6 @@ class UnclassifiedUpdates(DeepCase):
 
 # What no case in this file seeds yet, and why (the matrix lists it as not covered).
 
-not_covered("Packages", "A guest calling a first-party connector a release declares (`connector.call`, WIT 0.5.8; "
-            "`BundleManifest::connectors`, `PackageVersion::connectors`)",
-            "a call reaches `api.stripe.com` or `api.openai.com`, which a deep run's cluster cannot reach and a release "
-            "`merod` has no in-process answer for (`[outbound.testing] connectors` is a test build's), and no release "
-            "before it has the call to seed; a release recorded without `connectors` reads as one declaring none. "
-            "`tests/it/connectors.rs` covers the call end to end and its refusals on one build")
-
 not_covered("Packages", "A passkey sign-in completed from a registered origin (a session bound to the package and naming it)",
             "the harness's passkeys are the dev passkey's, which holds a credential under the cluster's rp-id only, and an "
             "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "
@@ -702,6 +695,11 @@ not_covered("Packages", "Served frontends and served origins (custom domains)",
             "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
             "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
             "`app_frontends_are_served_and_their_sessions_are_bound` covers serving")
+
+not_covered("Packages", "A release's frontend digests (`GET /packages/{package}/{version}/frontend`)",
+            "the suite's packages carry no frontend, so the route answers 404 for every release they install; it reads the "
+            "installed `.mpk` and stores nothing, and the cluster test "
+            "`a_releases_frontend_digests_match_the_files_it_serves` checks each digest against the bytes served")
 
 not_covered("Packages", "One compile running or waiting per account at install and raw bundle upload (`429 TOO_MANY_COMPILES`)",
             "a node-local admission limit that stores nothing and logs nothing, so a roll carries no data of it to read "

@@ -278,6 +278,7 @@ Generated from core's `docs/public/openapi.json`.
 | --- | --- | --- |
 | `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
+| `frontend(package, version)` | `GET /packages/{package}/{version}/frontend` | A release's frontend files |
 | `get(package)` | `GET /packages/{package}` | One package |
 | `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 ACCOUNT_NOT_LINKED`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `list()` | `GET /packages` | Installed packages |

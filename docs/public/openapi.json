@@ -12140,7 +12140,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Refresh a session",
-        "description": "A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `\"calimero.refresh-holder.v1\\0\" ‖ b64url(SHA-256(refreshToken)) ‖ \"\\0\" ‖ at ‖ \"\\0\"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.\n\n**Who:** anyone.",
+        "description": "A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `\"calimero.refresh-holder.v1\\0\" ‖ b64url(SHA-256(refreshToken)) ‖ \"\\0\" ‖ at ‖ \"\\0\"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -26936,6 +26936,63 @@
         }
       }
     },
+    "/packages/{package}/{version}/frontend": {
+      "get": {
+        "operationId": "package_frontend",
+        "tags": [
+          "Packages"
+        ],
+        "x-calimero-group": "packages",
+        "summary": "A release's frontend files",
+        "description": "Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.\n\n**Who:** anyone.",
+        "security": [],
+        "x-calimero-who": "anyone",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "package",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontendDigests"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          }
+        }
+      }
+    },
     "/packages/{package}/{version}/pipelines": {
       "get": {
         "operationId": "package_pipelines",
@@ -32034,6 +32091,55 @@
           "token"
         ],
         "description": "A sign-up invite the owner just made: its terms, then its token, answered this once."
+      },
+      "FrontendDigests": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "entry": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrontendFileDigest"
+            }
+          }
+        },
+        "required": [
+          "package",
+          "version",
+          "entry",
+          "files"
+        ],
+        "description": "`GET /packages/{package}/{version}/frontend`: the release's frontend entry and every file, by path relative to the frontend root, with its SHA-256 (lowercase hex) and size in bytes."
+      },
+      "FrontendFileDigest": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size"
+        ],
+        "description": "One frontend file: its path relative to the frontend root (served at `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes."
       },
       "SignUpPublic": {
         "type": "object",

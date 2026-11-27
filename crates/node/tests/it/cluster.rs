@@ -981,7 +981,6 @@ fn mpk_full(
         services: None,
         pipelines: Vec::new(),
         signature: None,
-        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
@@ -3183,6 +3182,120 @@ async fn presence_reaches_every_node_and_expires() {
 }
 
 // ---------------------------------------------------------------- app frontends
+
+/// `GET /packages/{package}/{version}/frontend` answers, to anyone signed out, every file the
+/// node serves for a release's frontend with the SHA-256 of the bytes it serves at
+/// `/{version}/{path}`: what a client that attested the node checks the page against. A release
+/// that ships no frontend, and one the cluster does not hold, answer `404`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_releases_frontend_digests_match_the_files_it_serves() {
+    use sha2::Digest;
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let html: &[u8] = b"<!doctype html><html><head><script type=\"module\" src=\"./assets/app.js\"></script></head><body></body></html>";
+    let js: &[u8] = b"console.log('digests')";
+    let _ = alice
+        .packages()
+        .upload(
+            mpk_full(
+                "com.test.digests",
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[],
+                &[
+                    ("frontend/index.html", html),
+                    ("frontend/assets/app.js", js),
+                ],
+                None,
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = alice
+        .packages()
+        .upload(
+            mpk(
+                "com.test.nofront",
+                "0.1.0",
+                &variant(&kv_wasm(), "n"),
+                &publisher,
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let anyone = c.client(1);
+    let listing = |path: String| {
+        let anyone = &anyone;
+        async move {
+            anyone
+                .transport()
+                .json(Request::new(Method::GET, path))
+                .await
+        }
+    };
+    let digests = listing("packages/com.test.digests/0.1.0/frontend".into())
+        .await
+        .unwrap();
+    assert_eq!(digests["entry"], "index.html");
+    let files: BTreeMap<String, (String, u64)> = digests["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["path"].as_str().unwrap().to_owned(),
+                (
+                    f["sha256"].as_str().unwrap().to_owned(),
+                    f["size"].as_u64().unwrap(),
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(
+        files.keys().cloned().collect::<Vec<_>>(),
+        ["assets/app.js", "index.html"]
+    );
+
+    // Each digest is the hash of the bytes the package's origin serves at that path.
+    let label = calimero_node::app_host::label("com.test.digests");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let host = format!("{label}.localhost");
+    let web = reqwest::Client::builder()
+        .resolve(&host, ([127, 0, 0, 1], port).into())
+        .build()
+        .unwrap();
+    for (path, (sha256, size)) in &files {
+        let served = web
+            .get(format!("http://{host}:{port}/0.1.0/{path}"))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(
+            &hex::encode(sha2::Sha256::digest(&served)),
+            sha256,
+            "{path}"
+        );
+        assert_eq!(served.len() as u64, *size, "{path}");
+    }
+
+    for missing in [
+        "packages/com.test.nofront/0.1.0/frontend",
+        "packages/com.test.digests/9.9.9/frontend",
+        "packages/com.test.unknown/0.1.0/frontend",
+    ] {
+        let e = listing(missing.into()).await.unwrap_err().to_string();
+        assert!(e.starts_with("404"), "{missing}: {e}");
+    }
+}
 
 /// App frontends: each package's frontend on its own origin (and on its
 /// cluster's host for it, `cluster_label`), served from the
