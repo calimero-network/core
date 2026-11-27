@@ -192,6 +192,7 @@ impl Cluster {
                         election_min_ms: 500,
                         election_max_ms: 1000,
                         snapshot_every: 200,
+                        snapshot_scale_bytes: None,
                     },
                     read_wait: Duration::from_secs(2),
                     sys_read_lease: Duration::ZERO,

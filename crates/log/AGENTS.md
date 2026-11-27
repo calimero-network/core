@@ -166,9 +166,22 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   being deleted, a removed group's), before any group starts
   (`machine::clean_snapshot_dir`). Regressions: `tests/snapshot_files.rs`.
   A group builds a full snapshot every `Config::snapshot_every` (1,000) applied
-  entries whatever the state's size: openraft 0.9's `SnapshotPolicy` knows only
-  `LogsSinceLast(n)` and `Never`, so a size-aware policy would mean `Never` and
-  triggering builds from the engine (not done).
+  entries whatever the state's size (`openraft::SnapshotPolicy::LogsSinceLast`).
+  A whole snapshot re-seals the whole state, so a large app re-seals hundreds of
+  MB for a few MB of new log. `Config::snapshot_scale_bytes` (off by default)
+  makes the cadence size-aware: openraft's policy becomes `Never` and the engine
+  drives builds itself (`snapshot_supervisor`, a per-engine 1 s loop; spawned
+  only when the option is set). A group then snapshots every
+  `snapshot_every * clamp(state_bytes / scale, 1, MAX_SNAPSHOT_SCALE)` applied
+  entries, where `state_bytes` is its last snapshot file's size (a disk machine
+  streams its snapshot from RocksDB, never holding it in memory, so the file is
+  the cheapest size estimate): a small state keeps the base cadence, a `k`-unit
+  state re-seals every `k` intervals (so `k` times less often, capped), at the
+  cost of a longer log between snapshots. `snapshot_due` decides it; the trigger
+  is leader-only and openraft serializes builds, so an extra trigger while one
+  runs is a no-op. Regressions: `snapshot_cadence` (the policy math),
+  `the_engine_drives_snapshots_when_the_cadence_is_size_aware`,
+  `snapshot_amplification` (the re-seal count, fixed vs size-aware).
 - State digests (`digest.rs`): a disk machine's state has a digest, the sum mod 2^256 of
   `SHA-256(label ‖ len(key) ‖ key ‖ value)` over its rows (`StateDigest`), so it depends on
   the rows alone. `StateTx::put`/`delete` move it by the row written less the row replaced
