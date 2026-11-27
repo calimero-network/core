@@ -9951,6 +9951,28 @@ fn an_import_keeps_a_pinned_instance_on_its_lineage() {
     stripped.apps.get_mut("kv").unwrap().lineage = None;
     let mut unshipped = slice.clone();
     let _gone = unshipped.packages.remove("p");
+    // A record naming no release, its floor stale or missing, takes the floor of the release
+    // its bundle ships in: nothing older than that is reachable after the import.
+    for floor in ["1.0.0", ""] {
+        let mut stale = slice.clone();
+        let kv = stale.apps.get_mut("kv").unwrap();
+        kv.release = None;
+        kv.lineage.as_mut().unwrap().floor = floor.into();
+        let mut m = fresh(None);
+        let _ok = m.run_unproven(import(&stale)).unwrap();
+        assert_eq!(m.state.apps["kv"].lineage, pinned, "floor {floor:?}");
+        m.state.apps.get_mut("kv").unwrap().restore = None;
+        let _prev = m
+            .state
+            .bundles
+            .insert("b-1.0.0".into(), old.state.bundles["b-1.0.0"].clone());
+        assert_eq!(
+            m.run_unproven(upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+                .unwrap_err(),
+            super::LINEAGE_OLDER_RELEASE,
+            "floor {floor:?}"
+        );
+    }
     // A floor behind the release the record names is raised to it.
     let mut behind = slice.clone();
     behind
