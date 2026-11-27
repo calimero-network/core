@@ -1299,6 +1299,7 @@ async fn the_read_index_lease_reuses_a_round_without_skipping_the_credential() {
             passkey: None,
             app: None,
             origin: None,
+            registration: String::new(),
             node: c.nodes[entry].node.config.node_id,
             key: calimero_identity::b64url(&c.nodes[entry].node.receipt_public()),
         },
