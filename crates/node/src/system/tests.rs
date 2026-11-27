@@ -10037,6 +10037,39 @@ fn an_import_keeps_a_pinned_instance_on_its_lineage() {
         OUTSIDE_LINEAGE,
         "the package nowhere"
     );
+    // The slice's release declares nothing, but this cluster holds it as pinning: pinned.
+    let mut unflagged = stripped.clone();
+    for v in unflagged
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .values_mut()
+    {
+        v.lineage = calimero_bundle::Lineage::Free;
+    }
+    let mut m = fresh(Some("did:key:z"));
+    let _ok = m.run_unproven(import(&unflagged)).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage, pinned,
+        "pinned as this cluster holds it"
+    );
+    // A kept lineage of another package than the release it runs is refused.
+    let mut crossed = slice.clone();
+    crossed
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .package = "q".into();
+    let mut m = fresh(None);
+    assert_eq!(
+        m.run_unproven(import(&crossed)).unwrap_err(),
+        OUTSIDE_LINEAGE,
+        "a lineage of another package"
+    );
     // A record that names no release, created before its package's releases were installed,
     // still moves forward once imported.
     let mut bare = slice.clone();
@@ -10065,6 +10098,11 @@ fn an_import_refuses_a_release_that_does_not_ship_its_bundle_here() {
     let mut m = SystemMachine::default();
     let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
     register(&mut m, 1, "replica");
+    m.state.cluster_version = Some(
+        super::cluster_version::Feature::PinnedLineage
+            .since()
+            .into(),
+    );
     let mut theirs = old.state.packages["q"].clone();
     theirs.signer_id = "did:key:other".into();
     let v = theirs.versions.get_mut("1.0.0").unwrap();
@@ -10088,9 +10126,18 @@ fn an_import_refuses_a_release_that_does_not_ship_its_bundle_here() {
         at: 7,
         proof: Value::Null,
     };
+    // Refused whole: nothing of the slice is written, its bundle records included.
+    let before = serde_json::to_value(&m.state).unwrap();
     let refused = m.run_unproven(import.clone()).unwrap_err();
     assert!(refused.message().contains("ship"), "{refused}");
-    assert!(!m.state.apps.contains_key("plain"));
+    assert_eq!(serde_json::to_value(&m.state).unwrap(), before);
+    // Below the version that brings the rule, an entry applies as it did.
+    let mut old_rules = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    old_rules.state.cluster_version = Some("1.0.0-rc.38".into());
+    let _ok = old_rules.run_unproven(import.clone()).unwrap();
     // A record that names no release is judged by the release its bundle is recorded from.
     let SystemCmd::ImportHolder { mut slice, .. } = import.clone() else {
         unreachable!()
@@ -10119,6 +10166,11 @@ fn an_import_judges_a_release_less_record_by_its_bundles_attribution() {
         let mut m = SystemMachine::default();
         let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
         register(&mut m, 1, "replica");
+        m.state.cluster_version = Some(
+            super::cluster_version::Feature::PinnedLineage
+                .since()
+                .into(),
+        );
         m
     };
     let import = |slice: &super::HolderSlice| SystemCmd::ImportHolder {

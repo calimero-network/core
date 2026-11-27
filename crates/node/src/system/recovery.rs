@@ -729,23 +729,28 @@ fn import_holder(
     {
         return Err(ALREADY_HERE.into());
     }
+    let mut pins = BTreeMap::new();
+    for app in &apps {
+        let record = &slice.apps[&app.app_id];
+        if !state.bundles.contains_key(&record.bundle)
+            && !slice.bundles.contains_key(&record.bundle)
+        {
+            return Err(RESTORE_BUNDLE_GONE.into());
+        }
+        let _prev = pins.insert(app.app_id.clone(), imported_lineage(state, &slice, record)?);
+        // Judged from the version that brings lineages, so an earlier entry replays as it did.
+        if state.cluster_brings(cluster_version::Feature::PinnedLineage)
+            && !imported_release_ships(state, &slice, record)
+        {
+            return Err(RELEASE_NOT_SHIPPED_HERE);
+        }
+    }
+    // Checked: from here nothing is refused.
     for (hash, bundle) in &slice.bundles {
         if !state.bundles.contains_key(hash) {
             let _prev = state.bundles.insert(hash.clone(), bundle.clone());
         }
     }
-    let mut pins = BTreeMap::new();
-    for app in &apps {
-        let record = &slice.apps[&app.app_id];
-        if !state.bundles.contains_key(&record.bundle) {
-            return Err(RESTORE_BUNDLE_GONE.into());
-        }
-        let _prev = pins.insert(app.app_id.clone(), imported_lineage(state, &slice, record)?);
-        if !imported_release_ships(state, &slice, record) {
-            return Err(RELEASE_NOT_SHIPPED_HERE);
-        }
-    }
-    // Checked: from here nothing is refused.
     add_imported_accounts(state, &incoming);
     for (name, package) in slice.packages {
         let _kept = state.packages.entry(name).or_insert(package);
@@ -845,25 +850,35 @@ fn imported_lineage(
     slice: &HolderSlice,
     record: &AppRecord,
 ) -> Result<Option<AppLineage>, Rejection> {
-    let from_slice = || {
-        let r = record
-            .release
-            .as_ref()
-            .or_else(|| slice.bundles.get(&record.bundle)?.package.as_ref())?;
-        let p = slice.packages.get(&r.package)?;
-        let _pinned = p
-            .versions
-            .get(&r.version)
-            .filter(|v| !v.lineage.is_free())?;
-        Some(AppLineage {
+    let release = record
+        .release
+        .as_ref()
+        .or_else(|| slice.bundles.get(&record.bundle)?.package.as_ref());
+    // Pinning as the slice records the release, or as this cluster holds it.
+    let pinning = |r: &PackageRef| {
+        [
+            slice.packages.get(&r.package),
+            state.packages.get(&r.package),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|p| {
+            p.versions
+                .get(&r.version)
+                .is_some_and(|v| !v.lineage.is_free())
+        })
+        .map(|p| AppLineage {
             package: r.package.clone(),
             signer_id: p.signer_id.clone(),
             floor: r.version.clone(),
         })
     };
-    let Some(pin) = record.lineage.clone().or_else(from_slice) else {
+    let Some(pin) = record.lineage.clone().or_else(|| release.and_then(pinning)) else {
         return Ok(None);
     };
+    if release.is_some_and(|r| r.package != pin.package) {
+        return Err(OUTSIDE_LINEAGE);
+    }
     let held = state
         .packages
         .get(&pin.package)
