@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::env::Home;
 
+mod connectors;
 pub mod uses;
 
 /// The default component file names, as `mero-app-build` wrote them.
@@ -1118,6 +1119,13 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
+    let mut secrets: Map<String, Value> = match meta.table.get("secrets") {
+        None => Map::new(),
+        Some(s) => serde_json::to_value(s)
+            .and_then(serde_json::from_value)
+            .wrap_err("[package.metadata.calimero.secrets] is a table of NAME = binding")?,
+    };
+    connectors::merge(&meta, &mut outbound, &mut secrets)?;
     for url in &a.outbound {
         if !outbound.contains(url) {
             outbound.push(url.clone());
@@ -1138,10 +1146,9 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     // it, so whoever deploys it knows what to supply and the app never places it. Checked
     // as a node checks it at install (`BundleManifest::check_secrets`), against the
     // outbound prefixes above.
-    if let Some(secrets) = meta.table.get("secrets") {
+    if !secrets.is_empty() {
         let secrets: std::collections::BTreeMap<String, calimero_bundle::BundleSecret> =
-            serde_json::to_value(secrets)
-                .and_then(serde_json::from_value)
+            serde_json::from_value(Value::Object(secrets))
                 .wrap_err("[package.metadata.calimero.secrets]: each NAME takes host, paths (path prefixes on it, [\"/\"] for all), then header (with an optional format, \"Bearer {}\") or bodyField, and description and required")?;
         let probe = calimero_bundle::BundleManifest {
             outbound: outbound.clone(),
@@ -1154,9 +1161,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         probe
             .check_secrets()
             .map_err(|e| eyre!("[package.metadata.calimero.secrets]: {e}"))?;
-        if !secrets.is_empty() {
-            let _ = manifest.insert("secrets".into(), serde_json::to_value(&secrets)?);
-        }
+        let _ = manifest.insert("secrets".into(), serde_json::to_value(&secrets)?);
     }
     if let Some(uses) = uses_of(&meta, &package)? {
         let _ = manifest.insert("uses".into(), serde_json::to_value(&uses)?);

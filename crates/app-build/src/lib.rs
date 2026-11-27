@@ -25,7 +25,8 @@ pub mod uses;
 /// Name of the custom section carrying the app's ABI JSON.
 pub const ABI_SECTION: &str = "calimero:abi";
 
-const TARGET: &str = "wasm32-wasip2";
+/// The target an app component is built for.
+pub const TARGET: &str = "wasm32-wasip2";
 const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
 const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
