@@ -4228,6 +4228,9 @@ class Ops(Group):
         max_concurrent_runs_per_org=UNSET,
         compute_fuel_per_org=UNSET,
         max_fuel_per_developer_per_day=UNSET,
+        max_teams_per_org=UNSET,
+        max_metadata_bytes_per_org=UNSET,
+        max_metadata_bytes_per_account=UNSET,
         max_concurrent_runs=UNSET,
         compute_fuel=UNSET,
         max_file_bytes=UNSET,
@@ -4251,6 +4254,9 @@ class Ops(Group):
             max_concurrent_runs_per_org: body `maxConcurrentRunsPerOrg`
             compute_fuel_per_org: body `computeFuelPerOrg`
             max_fuel_per_developer_per_day: body `maxFuelPerDeveloperPerDay`
+            max_teams_per_org: body `maxTeamsPerOrg`
+            max_metadata_bytes_per_org: body `maxMetadataBytesPerOrg`
+            max_metadata_bytes_per_account: body `maxMetadataBytesPerAccount`
             max_concurrent_runs: body `maxConcurrentRuns`
             compute_fuel: body `computeFuel`
             max_file_bytes: body `maxFileBytes`
@@ -4274,6 +4280,9 @@ class Ops(Group):
                 "maxConcurrentRunsPerOrg": max_concurrent_runs_per_org,
                 "computeFuelPerOrg": compute_fuel_per_org,
                 "maxFuelPerDeveloperPerDay": max_fuel_per_developer_per_day,
+                "maxTeamsPerOrg": max_teams_per_org,
+                "maxMetadataBytesPerOrg": max_metadata_bytes_per_org,
+                "maxMetadataBytesPerAccount": max_metadata_bytes_per_account,
                 "maxConcurrentRuns": max_concurrent_runs,
                 "computeFuel": compute_fuel,
                 "maxFileBytes": max_file_bytes,
@@ -5058,19 +5067,31 @@ class Orgs(Group):
         """
         return self._run(_ORG_EGRESS, (org,), {}, {"egress": egress}, confirm=confirm)
 
-    def get(self, *, org):
+    def get(self, *, org, limit=UNSET, teams_after=UNSET, members_after=UNSET):
         """One organization (`GET /orgs/{org}`, `org_get`).
 
-        As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+        As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
 
         **Who:** signed in (a session or an API key).
 
         Args:
             org: path
+            limit: query
+            teams_after: query
+            members_after: query
 
         Returns: Org
         """
-        return self._run(_ORG_GET, (org,), {}, None)
+        return self._run(
+            _ORG_GET,
+            (org,),
+            {
+                "limit": limit,
+                "teams_after": teams_after,
+                "members_after": members_after,
+            },
+            None,
+        )
 
     def invite_create(
         self,

@@ -448,12 +448,15 @@ class OpsFacade internal constructor(
         maxConcurrentRunsPerOrg: kotlin.Long? = null,
         computeFuelPerOrg: kotlin.Long? = null,
         maxFuelPerDeveloperPerDay: kotlin.String? = null,
+        maxTeamsPerOrg: kotlin.Long? = null,
+        maxMetadataBytesPerOrg: kotlin.Long? = null,
+        maxMetadataBytesPerAccount: kotlin.Long? = null,
         maxConcurrentRuns: com.calimero.mero.Explicit<kotlin.Long>? = null,
         computeFuel: com.calimero.mero.Explicit<kotlin.String>? = null,
         maxFileBytes: com.calimero.mero.Explicit<kotlin.Long>? = null,
         operator: DeviceSigner? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, operator, setOfNotNull("maxConcurrentRuns".takeIf { maxConcurrentRuns != null && maxConcurrentRuns.value == null }, "computeFuel".takeIf { computeFuel != null && computeFuel.value == null }, "maxFileBytes".takeIf { maxFileBytes != null && maxFileBytes.value == null })).ops.opsQuotasSet(quotaChanges = QuotaChanges(org = org, orgs = orgs, maxAppsPerAccount = maxAppsPerAccount, maxBundleBytesPerAccount = maxBundleBytesPerAccount, maxApiKeysPerAccount = maxApiKeysPerAccount, maxOrgsPerAccount = maxOrgsPerAccount, maxAccounts = maxAccounts, maxFileBytesPerOrg = maxFileBytesPerOrg, maxConcurrentRunsPerOrg = maxConcurrentRunsPerOrg, computeFuelPerOrg = computeFuelPerOrg, maxFuelPerDeveloperPerDay = maxFuelPerDeveloperPerDay, maxConcurrentRuns = maxConcurrentRuns?.value, computeFuel = computeFuel?.value, maxFileBytes = maxFileBytes?.value))
+        api(null, operator, setOfNotNull("maxConcurrentRuns".takeIf { maxConcurrentRuns != null && maxConcurrentRuns.value == null }, "computeFuel".takeIf { computeFuel != null && computeFuel.value == null }, "maxFileBytes".takeIf { maxFileBytes != null && maxFileBytes.value == null })).ops.opsQuotasSet(quotaChanges = QuotaChanges(org = org, orgs = orgs, maxAppsPerAccount = maxAppsPerAccount, maxBundleBytesPerAccount = maxBundleBytesPerAccount, maxApiKeysPerAccount = maxApiKeysPerAccount, maxOrgsPerAccount = maxOrgsPerAccount, maxAccounts = maxAccounts, maxFileBytesPerOrg = maxFileBytesPerOrg, maxConcurrentRunsPerOrg = maxConcurrentRunsPerOrg, computeFuelPerOrg = computeFuelPerOrg, maxFuelPerDeveloperPerDay = maxFuelPerDeveloperPerDay, maxTeamsPerOrg = maxTeamsPerOrg, maxMetadataBytesPerOrg = maxMetadataBytesPerOrg, maxMetadataBytesPerAccount = maxMetadataBytesPerAccount, maxConcurrentRuns = maxConcurrentRuns?.value, computeFuel = computeFuel?.value, maxFileBytes = maxFileBytes?.value))
 
     /**
      * A node's receipt key

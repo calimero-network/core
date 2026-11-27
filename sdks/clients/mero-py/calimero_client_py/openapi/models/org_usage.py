@@ -26,7 +26,9 @@ class OrgUsage:
             developer_writes_today (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
             quotas (Quotas): The per-account limits, and the compute and file limits of each organization (or personal
                 account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are
-                JSON numbers.
+                JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an
+                organization, and the organizations an account owns, keep in the system state (absent from a node before
+                1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`).
     """
 
     apps: int

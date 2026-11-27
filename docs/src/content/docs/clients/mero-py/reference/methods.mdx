@@ -201,7 +201,7 @@ Generated from core's `docs/public/openapi.json`.
 | `prices_get()` | `GET /ops/prices` | The price table |
 | `prices_set(table, operator_proof=None)` | `POST /ops/prices` | Set the price table. **operator**. *Refusals:* `400 BAD_PRICES`, `409 PRICE_VERSION`, `409 UPGRADE_PENDING` |
 | `quotas_get()` | `GET /ops/quotas` | The quotas |
-| `quotas_set(org=…, orgs=…, max_apps_per_account=…, max_bundle_bytes_per_account=…, max_api_keys_per_account=…, max_orgs_per_account=…, max_accounts=…, max_file_bytes_per_org=…, max_concurrent_runs_per_org=…, compute_fuel_per_org=…, max_fuel_per_developer_per_day=…, max_concurrent_runs=…, compute_fuel=…, max_file_bytes=…, operator_proof=None)` | `POST /ops/quotas` | Change quotas. **operator**. *Refusals:* `400 UNKNOWN_QUOTA`, `409 UPGRADE_PENDING` |
+| `quotas_set(org=…, orgs=…, max_apps_per_account=…, max_bundle_bytes_per_account=…, max_api_keys_per_account=…, max_orgs_per_account=…, max_accounts=…, max_file_bytes_per_org=…, max_concurrent_runs_per_org=…, compute_fuel_per_org=…, max_fuel_per_developer_per_day=…, max_teams_per_org=…, max_metadata_bytes_per_org=…, max_metadata_bytes_per_account=…, max_concurrent_runs=…, compute_fuel=…, max_file_bytes=…, operator_proof=None)` | `POST /ops/quotas` | Change quotas. **operator**. *Refusals:* `400 UNKNOWN_QUOTA`, `409 UPGRADE_PENDING` |
 | `receipt_key(id)` | `GET /ops/nodes/{id}/receipt-key` | A node's receipt key |
 | `recover(system, code=…)` | `POST /ops/recover` | Found the cluster again from its recovery disk. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 NOT_RECOVERING`, `409 OLD_CLUSTER_ANSWERS`, `409 OTHER_DEPLOYMENT` |
 | `recovery_files(holder=…)` | `GET /ops/recovery-files` | The recovery files a node reads. *Refusals:* `409 NO_BACKUP_DIR` |
@@ -235,7 +235,7 @@ Generated from core's `docs/public/openapi.json`.
 | `create(name, recovery_key=…, capabilities=…)` | `POST /orgs` | Create an organization. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `delete(org, confirm=None)` | `DELETE /orgs/{org}` | Delete an organization. **passkey** |
 | `egress(org, egress, confirm=None)` | `POST /orgs/{org}/egress` | Turn the organization's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
-| `get(org)` | `GET /orgs/{org}` | One organization |
+| `get(org, limit=…, teams_after=…, members_after=…)` | `GET /orgs/{org}` | One organization |
 | `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |
 | `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite. *Refusals:* `409 GUESTS_NOT_ALLOWED` |

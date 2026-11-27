@@ -3271,7 +3271,7 @@ export interface paths {
         };
         /**
          * One organization
-         * @description As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+         * @description As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -6425,7 +6425,7 @@ export interface components {
             role: components["schemas"]["NodeRole"];
             pool?: string;
         };
-        /** @description The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. */
+        /** @description The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`). */
         Quotas: {
             /** Format: int64 */
             maxAppsPerAccount: number;
@@ -6445,6 +6445,12 @@ export interface components {
             computeFuelPerOrg: number;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay: string;
+            /** Format: int64 */
+            maxTeamsPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerAccount: number;
         };
         /** @description One payer's limits in place of the cluster's; a limit left out is the cluster's. */
         OrgQuotas: {
@@ -6475,6 +6481,12 @@ export interface components {
             computeFuelPerOrg: number;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay: string;
+            /** Format: int64 */
+            maxTeamsPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerAccount: number;
             orgs: {
                 [key: string]: components["schemas"]["OrgQuotas"];
             };
@@ -7046,6 +7058,8 @@ export interface components {
                 release: string;
                 after: string;
             } | null;
+            nextTeamsAfter?: string | null;
+            nextMembersAfter?: string | null;
         };
         /** @description A team as its organization records it: `members` maps each direct row to whether it is a lead; `capabilities` are capability bits per row; `defaultCapabilities` is absent when unset. */
         Team: {
@@ -7330,6 +7344,12 @@ export interface components {
             computeFuelPerOrg?: number;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay?: string;
+            /** Format: int64 */
+            maxTeamsPerOrg?: number;
+            /** Format: int64 */
+            maxMetadataBytesPerOrg?: number;
+            /** Format: int64 */
+            maxMetadataBytesPerAccount?: number;
             /** Format: int64 */
             maxConcurrentRuns?: number | null;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
@@ -18636,7 +18656,11 @@ export interface operations {
     };
     org_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                teamsAfter?: string;
+                membersAfter?: string;
+            };
             header?: never;
             path: {
                 org: string;

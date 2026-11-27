@@ -1513,8 +1513,8 @@ export function createRoutes(api: RouteClient) {
        * `GET /orgs/{org}` (`org_get`). **Who:** signed in (a session or an API key).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      get: (args: operations['org_get']['parameters']['path'], options?: MethodOptions): Promise<operations['org_get']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"GET","path":"/orgs/{org}","pathParams":["org"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_get']['responses'][200]['content']['application/json']>,
+      get: (args: operations['org_get']['parameters']['path'] & NonNullable<operations['org_get']['parameters']['query']>, options?: MethodOptions): Promise<operations['org_get']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/orgs/{org}","pathParams":["org"],"query":["limit","teamsAfter","membersAfter"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_get']['responses'][200]['content']['application/json']>,
       /**
        * Make an invite.
        *

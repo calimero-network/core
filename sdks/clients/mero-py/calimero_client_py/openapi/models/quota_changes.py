@@ -40,6 +40,9 @@ class QuotaChanges:
             compute_fuel_per_org (Union[Unset, int]):
             max_fuel_per_developer_per_day (Union[Unset, str]): an unsigned 64-bit integer as a decimal string, exact past
                 2^53
+            max_teams_per_org (Union[Unset, int]):
+            max_metadata_bytes_per_org (Union[Unset, int]):
+            max_metadata_bytes_per_account (Union[Unset, int]):
             max_concurrent_runs (Union[None, Unset, int]):
             compute_fuel (Union[None, Unset, str]): an unsigned 64-bit integer as a decimal string, exact past 2^53
             max_file_bytes (Union[None, Unset, int]):
@@ -57,6 +60,9 @@ class QuotaChanges:
     max_concurrent_runs_per_org: Union[Unset, int] = UNSET
     compute_fuel_per_org: Union[Unset, int] = UNSET
     max_fuel_per_developer_per_day: Union[Unset, str] = UNSET
+    max_teams_per_org: Union[Unset, int] = UNSET
+    max_metadata_bytes_per_org: Union[Unset, int] = UNSET
+    max_metadata_bytes_per_account: Union[Unset, int] = UNSET
     max_concurrent_runs: Union[None, Unset, int] = UNSET
     compute_fuel: Union[None, Unset, str] = UNSET
     max_file_bytes: Union[None, Unset, int] = UNSET
@@ -89,6 +95,12 @@ class QuotaChanges:
         compute_fuel_per_org = self.compute_fuel_per_org
 
         max_fuel_per_developer_per_day = self.max_fuel_per_developer_per_day
+
+        max_teams_per_org = self.max_teams_per_org
+
+        max_metadata_bytes_per_org = self.max_metadata_bytes_per_org
+
+        max_metadata_bytes_per_account = self.max_metadata_bytes_per_account
 
         max_concurrent_runs: Union[None, Unset, int]
         if isinstance(self.max_concurrent_runs, Unset):
@@ -135,6 +147,12 @@ class QuotaChanges:
             field_dict["computeFuelPerOrg"] = compute_fuel_per_org
         if max_fuel_per_developer_per_day is not UNSET:
             field_dict["maxFuelPerDeveloperPerDay"] = max_fuel_per_developer_per_day
+        if max_teams_per_org is not UNSET:
+            field_dict["maxTeamsPerOrg"] = max_teams_per_org
+        if max_metadata_bytes_per_org is not UNSET:
+            field_dict["maxMetadataBytesPerOrg"] = max_metadata_bytes_per_org
+        if max_metadata_bytes_per_account is not UNSET:
+            field_dict["maxMetadataBytesPerAccount"] = max_metadata_bytes_per_account
         if max_concurrent_runs is not UNSET:
             field_dict["maxConcurrentRuns"] = max_concurrent_runs
         if compute_fuel is not UNSET:
@@ -178,6 +196,12 @@ class QuotaChanges:
 
         max_fuel_per_developer_per_day = d.pop("maxFuelPerDeveloperPerDay", UNSET)
 
+        max_teams_per_org = d.pop("maxTeamsPerOrg", UNSET)
+
+        max_metadata_bytes_per_org = d.pop("maxMetadataBytesPerOrg", UNSET)
+
+        max_metadata_bytes_per_account = d.pop("maxMetadataBytesPerAccount", UNSET)
+
         def _parse_max_concurrent_runs(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -220,6 +244,9 @@ class QuotaChanges:
             max_concurrent_runs_per_org=max_concurrent_runs_per_org,
             compute_fuel_per_org=compute_fuel_per_org,
             max_fuel_per_developer_per_day=max_fuel_per_developer_per_day,
+            max_teams_per_org=max_teams_per_org,
+            max_metadata_bytes_per_org=max_metadata_bytes_per_org,
+            max_metadata_bytes_per_account=max_metadata_bytes_per_account,
             max_concurrent_runs=max_concurrent_runs,
             compute_fuel=compute_fuel,
             max_file_bytes=max_file_bytes,
