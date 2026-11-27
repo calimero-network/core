@@ -891,20 +891,14 @@ impl Node {
                 }
             }
         }
+        let Some(mut queue) = self.queue_room(g) else {
+            return;
+        };
         let key = (group, run.id.clone());
         let mut builds = locked(&self.compute.pipelines.builds)
             .remove(&key)
             .unwrap_or_default();
         let wanted = steps_named(&pipeline, run, &builds);
-        let (app_id, active) = g.read_local(|m, _| (m.app_id.clone(), m.active_runs()));
-        let queue = self.sys(|s| {
-            let payer = crate::usage::payer(s.apps.get(&app_id)?);
-            let arriving = active.iter().filter(|r| s.run_slot(&app_id, r).is_none());
-            Some(s.queue_room(&payer, arriving.count()))
-        });
-        let Some(mut queue) = queue else {
-            return;
-        };
         let decided = g.read_local(|m, _| {
             let mut run = run.clone();
             m.fill_steps(&mut run, |n| wanted.contains(n));
@@ -933,6 +927,26 @@ impl Node {
         for (step, verdict) in decided {
             self.propose_step(g, &run.id, &step, verdict).await;
         }
+    }
+
+    /// What the system queue would grant the app's payer now, each of the app's runs not queued yet
+    /// taken from the pool it goes to. Read once, outside the app read: a sizing hint, never applied.
+    fn queue_room(&self, g: &Group<AppMachine>) -> Option<QueueRoom> {
+        let (app_id, active) = g.read_local(|m, _| {
+            let records = m.active_runs().into_iter().filter_map(|r| m.run_record(&r));
+            let active: Vec<_> = records.map(|r| (r.run, r.caps, r.pool)).collect();
+            (m.app_id.clone(), active)
+        });
+        self.sys(|s| {
+            let mut queue = s.queue_room(&crate::usage::payer(s.apps.get(&app_id)?));
+            for (_, caps, pool) in active
+                .iter()
+                .filter(|(r, ..)| s.run_slot(&app_id, r).is_none())
+            {
+                queue.take(caps.fuel, caps.memory_mib, pool.as_deref(), 1);
+            }
+            Some(queue)
+        })
     }
 
     /// The pipeline's definition is gone: every step that has not started, and every fan-out that
@@ -1115,6 +1129,7 @@ mod tests {
 
     use super::*;
     use crate::component::{PipelineState, StepState};
+    use crate::system::{PoolConfig, RunSlot, SystemState};
     use crate::types::Caller;
 
     /// A cache that knows no file and has no entry.
@@ -1554,6 +1569,72 @@ steps:
             panic!("{decided:?}")
         };
         assert_eq!(runs.len(), 1, "none active: one waits in the queue");
+    }
+
+    /// A system state with pools `(name, runs per node, memory)`, job nodes `(id, pool)` and `slots`
+    /// granted to payer `p`.
+    fn system(pools: &[(&str, u32, u32)], nodes: &[(u64, &str)], slots: usize) -> SystemState {
+        let mut s = SystemState::default();
+        for (name, runs, memory) in pools {
+            let config = PoolConfig {
+                runs_per_node: *runs,
+                max_memory_mib: *memory,
+            };
+            let _prev = s.pools.insert((*name).to_owned(), config);
+        }
+        for (id, pool) in nodes {
+            let node = json!({ "id": id, "addr": "http://j", "role": "job", "pool": pool });
+            let _prev = s.nodes.insert(*id, serde_json::from_value(node).unwrap());
+        }
+        let runs = s.compute.entry("app".to_owned()).or_default();
+        for i in 0..slots {
+            let slot = RunSlot {
+                payer: "p".into(),
+                fuel: 1,
+                seq: i as u64,
+                granted: true,
+                refused: false,
+                pool: String::new(),
+            };
+            let _prev = runs.insert(format!("old{i}"), slot);
+        }
+        s
+    }
+
+    #[test]
+    fn an_idle_step_queues_one_run_on_a_pool_with_no_job_node_or_no_free_place() {
+        let view = CacheView {
+            sha: &|_| None,
+            hit: &|_| false,
+        };
+        let plan_on = |step: &str, s: &SystemState| {
+            let p = fan_pipeline(step);
+            let run = fan_run(&p, 10);
+            let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps()))]);
+            let room = (10, &mut s.queue_room("p"));
+            started(
+                &super::plan(&p, &run, &by_bundle, room, &view, &mut Builds::new()),
+                "each",
+            )
+            .0
+            .len()
+        };
+        let pools = system(
+            &[("standard", 2, 4096), ("spare", 4, 8192)],
+            &[(5, "standard")],
+            0,
+        );
+        let each = "  each: { method: digest, forEach: inputs.docs, maxItems: 20 }\n";
+        assert_eq!(plan_on(each, &pools), 2, "standard's two places");
+        let spare = "  each: { method: digest, forEach: inputs.docs, maxItems: 20, pool: spare }\n";
+        assert_eq!(
+            plan_on(spare, &pools),
+            1,
+            "spare has no job node: one waits in the queue"
+        );
+        // Slots of runs that ended stay granted until their release commits.
+        let stale = system(&[], &[(5, "")], 2);
+        assert_eq!(plan_on(each, &stale), 1, "no free place yet");
     }
 
     /// A table that prices a run of `caps()` at 20 at worst.

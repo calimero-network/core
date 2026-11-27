@@ -211,7 +211,8 @@ fn named_pool_for(
 }
 
 /// What the compute queue would grant one payer at once, past every run already in it: the free
-/// places of each pool and the runs and fuel left under the payer's quotas.
+/// places of each pool and the runs and fuel left under the payer's quotas. The pipeline leader
+/// sizes a fan-out wave by it ([Fan-out](https://calimero-network.github.io/core/protocol/compute-actions/#fan-out)).
 #[derive(Clone, Debug)]
 pub struct QueueRoom {
     pools: BTreeMap<String, PoolConfig>,
@@ -2174,12 +2175,12 @@ impl SystemState {
     }
 
     /// What the queue would grant `payer` now: places not granted in each pool, and its quotas
-    /// less the runs it holds or waits on. `arriving` runs, not queued yet, count against both.
+    /// less the runs it holds or waits on.
     #[must_use]
-    pub fn queue_room(&self, payer: &str, arriving: usize) -> QueueRoom {
+    pub fn queue_room(&self, payer: &str) -> QueueRoom {
         let (granted_in, load) = self.held();
         let (held, mut fuel) = load.get(payer).copied().unwrap_or_default();
-        let mut runs = held as usize + arriving;
+        let mut runs = held as usize;
         let waiting = self.compute.values().flat_map(BTreeMap::values);
         for slot in waiting.filter(|s| !s.granted && !s.refused && s.payer == payer) {
             runs += 1;
@@ -2190,7 +2191,7 @@ impl SystemState {
             .chain(self.pools.keys().cloned());
         let places = names
             .map(|pool| {
-                let used = granted_in.get(&pool).copied().unwrap_or(0) + arriving;
+                let used = granted_in.get(&pool).copied().unwrap_or(0);
                 let free = self.pool_capacity(&pool).saturating_sub(used);
                 (pool, free)
             })
