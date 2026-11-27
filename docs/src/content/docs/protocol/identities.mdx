@@ -393,7 +393,9 @@ state. An uninstalled package takes its origins with it.
 (lowercase, no path, no default port); `http://` only for a `localhost` name
 and only on a `--dev` node. One package per origin (first come; the cluster's
 own origins and served frontends are refused). 8 origins per package, 4096
-per cluster. CORS on the node's API admits registered origins. The node logs,
+per cluster. CORS on the node's API admits registered origins.
+Each node answers a preflight from its own applied state, so one sent to a lagging node can fail for a moment right after the origin is registered.
+The node logs,
 at `info`, each registration and removal (package, origin, rp-id) and each
 session opened on a registered origin (package and origin); who made the
 change is in the system log's command and at `debug` only, never in the
