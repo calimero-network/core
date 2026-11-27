@@ -19,6 +19,14 @@ const WAIT_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Subcommand)]
 pub enum PipelineCmd {
+    /// Ship a pipeline file as a release of its package: check it, pack it with the package's
+    /// components into a signed `.mpk` and install it (`app release --pipeline FILE`'s flags).
+    /// Prints the release and the pipelines the cluster registered, each with the modules it pins.
+    Apply {
+        file: PathBuf,
+        #[command(flatten)]
+        release: Box<crate::make::ReleaseArgs>,
+    },
     /// Check a pipeline file and print every problem with its path; exit 1 when it is not valid.
     /// With `--package` and `--version`, check it as that release would install it.
     Validate {
@@ -297,6 +305,33 @@ fn start_body(inputs: &[String], params: &[String], max_cost: Option<&str>) -> e
     Ok(body)
 }
 
+/// `pipeline apply`: the file is checked on its own before anything is built, so a broken one
+/// costs no build; the install then checks it against the release's modules and pools.
+async fn apply(
+    env: &Env,
+    file: &Path,
+    mut release: crate::make::ReleaseArgs,
+) -> eyre::Result<Value> {
+    let source = tokio::fs::read_to_string(file)
+        .await
+        .wrap_err_with(|| file.display().to_string())?;
+    let checked = env
+        .client
+        .validate_pipeline(json!({ "source": source }))
+        .await?;
+    if checked["ok"] != true {
+        println!("{}", serde_json::to_string_pretty(&checked)?);
+        bail!("the pipeline is not valid");
+    }
+    release.pack.pipelines.push(file.to_owned());
+    let mut shipped = crate::app::release(&release, env).await?;
+    shipped["pipelines"] = env
+        .client
+        .package_pipelines(&release.package()?, &release.version)
+        .await?;
+    Ok(shipped)
+}
+
 /// `--count NAME=N` as `{ NAME: N }`.
 fn parse_counts(args: &[String]) -> eyre::Result<Value> {
     let mut counts = serde_json::Map::new();
@@ -314,6 +349,7 @@ fn parse_counts(args: &[String]) -> eyre::Result<Value> {
 
 pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
     Ok(match cmd {
+        PipelineCmd::Apply { file, release } => apply(env, &file, *release).await?,
         PipelineCmd::Validate {
             file,
             package,

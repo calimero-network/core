@@ -349,7 +349,7 @@ async fn latest(registry: &Registry, package: &str) -> eyre::Result<String> {
 /// releases of the package (and with `--publish` the registry's) first, then
 /// `pack`, `publish` (with `--publish`) and the install, in that order; a
 /// step that fails stops the rest.
-async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value> {
+pub async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value> {
     let package = a.package()?;
     if a.publish {
         // A Cloud org key (`--org`) does not read the registry: the saved
