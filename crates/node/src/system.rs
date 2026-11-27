@@ -188,6 +188,86 @@ fn limits_of(
     )
 }
 
+/// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits.
+fn pool_for(pools: &BTreeMap<String, PoolConfig>, memory_mib: u32) -> Option<String> {
+    if pools.is_empty() {
+        return Some(String::new());
+    }
+    pools
+        .iter()
+        .filter(|(_, p)| p.max_memory_mib >= memory_mib)
+        .min_by_key(|(name, p)| (p.max_memory_mib, name.as_str()))
+        .map(|(name, _)| name.clone())
+}
+
+/// `name` when `pools` defines that pool and a run of `memory_mib` fits it.
+fn named_pool_for(
+    pools: &BTreeMap<String, PoolConfig>,
+    name: String,
+    memory_mib: u32,
+) -> Option<String> {
+    let fits = pools.get(&name)?.max_memory_mib >= memory_mib;
+    fits.then_some(name)
+}
+
+/// What the compute queue would grant one payer at once, past every run already in it: the free
+/// places of each pool and the runs and fuel left under the payer's quotas. The pipeline leader
+/// sizes a fan-out wave by it ([Fan-out](https://calimero-network.github.io/core/protocol/compute-actions/#fan-out)).
+#[derive(Clone, Debug)]
+pub struct QueueRoom {
+    pools: BTreeMap<String, PoolConfig>,
+    places: BTreeMap<String, usize>,
+    runs: usize,
+    fuel: u64,
+}
+
+impl QueueRoom {
+    /// Room for `runs` runs on a cluster with no pools.
+    #[cfg(test)]
+    #[must_use]
+    pub fn of(runs: usize) -> Self {
+        Self {
+            pools: BTreeMap::new(),
+            places: BTreeMap::from([(String::new(), runs)]),
+            runs,
+            fuel: u64::MAX,
+        }
+    }
+
+    /// How many runs of `fuel` and `memory_mib`, in the pool named `pool` or else placed by
+    /// memory, the queue would grant now.
+    #[must_use]
+    pub fn fits(&self, fuel: u64, memory_mib: u32, pool: Option<&str>) -> usize {
+        let places = self
+            .pool(memory_mib, pool)
+            .and_then(|p| self.places.get(&p).copied())
+            .unwrap_or(0);
+        let by_fuel = self
+            .fuel
+            .checked_div(fuel)
+            .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+        places.min(self.runs).min(by_fuel)
+    }
+
+    /// Counts `n` such runs as granted.
+    pub fn take(&mut self, fuel: u64, memory_mib: u32, pool: Option<&str>, n: usize) {
+        if let Some(p) = self.pool(memory_mib, pool) {
+            if let Some(places) = self.places.get_mut(&p) {
+                *places = places.saturating_sub(n);
+            }
+        }
+        self.runs = self.runs.saturating_sub(n);
+        self.fuel = self.fuel.saturating_sub(fuel.saturating_mul(n as u64));
+    }
+
+    fn pool(&self, memory_mib: u32, pool: Option<&str>) -> Option<String> {
+        match pool {
+            Some(name) => named_pool_for(&self.pools, name.to_owned(), memory_mib),
+            None => pool_for(&self.pools, memory_mib),
+        }
+    }
+}
+
 impl Default for Quotas {
     fn default() -> Self {
         Self {
@@ -1943,20 +2023,12 @@ impl SystemState {
     /// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits.
     #[must_use]
     pub fn pool_for(&self, memory_mib: u32) -> Option<String> {
-        if self.pools.is_empty() {
-            return Some(String::new());
-        }
-        self.pools
-            .iter()
-            .filter(|(_, p)| p.max_memory_mib >= memory_mib)
-            .min_by_key(|(name, p)| (p.max_memory_mib, name.as_str()))
-            .map(|(name, _)| name.clone())
+        pool_for(&self.pools, memory_mib)
     }
 
     /// `name` when the cluster defines that pool and a run of `memory_mib` fits it.
     fn named_pool_for(&self, name: String, memory_mib: u32) -> Option<String> {
-        let fits = self.pools.get(&name)?.max_memory_mib >= memory_mib;
-        fits.then_some(name)
+        named_pool_for(&self.pools, name, memory_mib)
     }
 
     /// The pool `slot` counts against (a slot from before pools belongs to the default one).
@@ -2100,6 +2172,37 @@ impl SystemState {
             held.1 = held.1.saturating_add(slot.fuel);
         }
         (granted_in, load)
+    }
+
+    /// What the queue would grant `payer` now: places not granted in each pool, and its quotas
+    /// less the runs it holds or waits on.
+    #[must_use]
+    pub fn queue_room(&self, payer: &str) -> QueueRoom {
+        let (granted_in, load) = self.held();
+        let (held, mut fuel) = load.get(payer).copied().unwrap_or_default();
+        let mut runs = held as usize;
+        let waiting = self.compute.values().flat_map(BTreeMap::values);
+        for slot in waiting.filter(|s| !s.granted && !s.refused && s.payer == payer) {
+            runs += 1;
+            fuel = fuel.saturating_add(slot.fuel);
+        }
+        let names = std::iter::once(String::new())
+            .filter(|_| self.pools.is_empty())
+            .chain(self.pools.keys().cloned());
+        let places = names
+            .map(|pool| {
+                let used = granted_in.get(&pool).copied().unwrap_or(0);
+                let free = self.pool_capacity(&pool).saturating_sub(used);
+                (pool, free)
+            })
+            .collect();
+        let (max_runs, max_fuel, _) = self.payer_quotas(payer);
+        QueueRoom {
+            pools: self.pools.clone(),
+            places,
+            runs: (max_runs as usize).saturating_sub(runs),
+            fuel: max_fuel.saturating_sub(fuel),
+        }
     }
 
     /// Why a run the queue has not granted waits, by the tests `grant_runs` applies: no place in

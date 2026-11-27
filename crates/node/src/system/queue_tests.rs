@@ -1111,3 +1111,82 @@ fn a_run_whose_pool_has_no_job_node_waits_for_capacity_while_another_pool_is_fre
     pool_node(&mut m, 6, "small");
     assert_eq!(m.state.wait_reason("a1", "r1"), None);
 }
+
+#[test]
+fn queue_room_is_the_places_not_granted_and_what_the_payers_quotas_leave() {
+    let mut m = machine();
+    m.state.quotas.max_concurrent_runs_per_org = 3;
+    m.state.quotas.compute_fuel_per_org = 10;
+    let one = OrgQuotas {
+        max_concurrent_runs: Some(1),
+        ..OrgQuotas::default()
+    };
+    let _prev = m.state.org_quotas.insert("y".into(), one);
+    job_node(&mut m, 5);
+    job_node(&mut m, 6);
+    m.run(acquire("b1", "r1", 1)).unwrap();
+    m.run(acquire("b1", "r2", 1)).unwrap();
+    m.run(acquire("a1", "r3", 2)).unwrap();
+    let room = m.state.queue_room("x");
+    // y's second run waits on y's own quota, so it holds no place from x.
+    assert_eq!(
+        room.fits(1, 0, None),
+        2,
+        "4 places, 2 granted; 2 of x's 3 runs left"
+    );
+    assert_eq!(room.fits(4, 0, None), 2, "8 fuel left");
+    assert_eq!(room.fits(5, 0, None), 1);
+    assert_eq!(room.fits(1, 0, Some("gpu")), 0, "no such pool");
+    let mut room = room;
+    room.take(1, 0, None, 1);
+    assert_eq!(
+        room.fits(1, 0, None),
+        1,
+        "a run on its way in takes a place"
+    );
+    m.run(acquire("a1", "r4", 9)).unwrap();
+    assert!(
+        !m.state.run_slot("a1", "r4").unwrap().granted,
+        "over x's fuel"
+    );
+    let room = m.state.queue_room("x");
+    assert_eq!(
+        room.fits(0, 0, None),
+        1,
+        "x's waiting run counts against its runs"
+    );
+    assert_eq!(room.fits(1, 0, None), 0, "and its fuel");
+}
+
+#[test]
+fn queue_room_counts_each_pool_apart_and_a_pool_with_no_job_node_has_none() {
+    let mut m = machine();
+    m.state.quotas.max_concurrent_runs_per_org = 100;
+    set_pools(
+        &mut m,
+        &[
+            ("standard", 2, 4096),
+            ("highmem", 1, 65536),
+            ("spare", 4, 2048),
+        ],
+    )
+    .unwrap();
+    pool_node(&mut m, 5, "standard");
+    pool_node(&mut m, 6, "highmem");
+    let mut room = m.state.queue_room("x");
+    assert_eq!(
+        room.fits(1, 1024, None),
+        0,
+        "spare fits by memory and has no job node"
+    );
+    assert_eq!(room.fits(1, 1024, Some("spare")), 0);
+    assert_eq!(room.fits(1, 3000, None), 2, "standard");
+    assert_eq!(room.fits(1, 0, Some("highmem")), 1);
+    room.take(1, 3000, None, 2);
+    assert_eq!(room.fits(1, 3000, None), 0);
+    assert_eq!(
+        room.fits(1, 0, Some("highmem")),
+        1,
+        "a run taken in standard leaves highmem"
+    );
+}
