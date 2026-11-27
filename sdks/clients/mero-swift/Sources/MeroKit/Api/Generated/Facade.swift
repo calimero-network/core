@@ -1982,12 +1982,12 @@ extension CalimeroClient {
 
         /// One organization: `GET /orgs/{org}` (`org_get`).
         ///
-        /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+        /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func get(org: Swift.String) async throws -> Components.Schemas.Org {
-            let input = Operations.OrgGet.Input(path: .init(org: org))
+        public func get(org: Swift.String, limit: Swift.Int64? = nil, teamsAfter: Swift.String? = nil, membersAfter: Swift.String? = nil) async throws -> Components.Schemas.Org {
+            let input = Operations.OrgGet.Input(path: .init(org: org), query: .init(limit: limit, teamsAfter: teamsAfter, membersAfter: membersAfter))
             return try await client.perform { api in
                 try await api.orgGet(input).ok.body.json
             }

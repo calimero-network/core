@@ -70,6 +70,7 @@ mod account_proof;
 mod approvals;
 pub(crate) mod apps;
 mod auth;
+pub use auth::{MAX_ACCOUNT_NAME_CHARS, MAX_PASSKEY_CEREMONY_BYTES};
 mod backup_keys;
 mod calls;
 mod deployments;
@@ -140,7 +141,7 @@ use {
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgSettingsBody, RenameOrgBody,
+        AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgQuery, OrgSettingsBody, RenameOrgBody,
         ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
         TeamUpdateBody,
     },
@@ -340,6 +341,16 @@ impl Ceremonies {
     /// The ceremony `id` names, if this node holds it.
     pub fn get(&self, id: &str) -> Option<&Pending> {
         self.held.get(id).map(|h| &h.pending)
+    }
+
+    /// How many ceremonies this node holds open.
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Whether this node holds no ceremony open.
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
     }
 
     fn insert(&mut self, id: String, pending: Pending, session: Option<SealedSession>) {

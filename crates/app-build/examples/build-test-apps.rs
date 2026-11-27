@@ -26,22 +26,36 @@ const GUESTS: &[&str] = &[
     "apps/team-space",
 ];
 
+/// Guests that compile a crate outside the SDK by path, with that crate: its edits key the cache.
+const GUESTS_WITH_PATH_DEPS: &[(&str, &[&str])] = &[(
+    "sdks/plugins/connectors/nearai/tests/guest",
+    &["sdks/plugins/connectors/nearai"],
+)];
+
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut guests: Vec<PathBuf> = GUESTS.iter().map(|g| root.join(g)).collect();
+    let mut guests: Vec<(PathBuf, Vec<PathBuf>)> =
+        GUESTS.iter().map(|g| (root.join(g), Vec::new())).collect();
     for dir in GUEST_DIRS {
         for entry in std::fs::read_dir(root.join(dir))? {
             let path = entry?.path();
             if path.join("Cargo.toml").is_file() {
-                guests.push(path);
+                guests.push((path, Vec::new()));
             }
         }
     }
+    for (guest, deps) in GUESTS_WITH_PATH_DEPS {
+        guests.push((
+            root.join(guest),
+            deps.iter().map(|d| root.join(d)).collect(),
+        ));
+    }
     guests.sort();
     let all = Instant::now();
-    for guest in &guests {
+    for (guest, deps) in &guests {
         let one = Instant::now();
-        let built = calimero_app_build::build_in_repo_cache(guest)
+        let deps: Vec<&Path> = deps.iter().map(PathBuf::as_path).collect();
+        let built = calimero_app_build::build_in_repo_cache_with(guest, &deps)
             .map_err(|e| eyre::eyre!("{}: {e}", guest.display()))?;
         println!(
             "{:>6.1}s  {}{}",

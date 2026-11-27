@@ -1497,6 +1497,9 @@ impl Node {
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        // A write past a bound on the system state is refused before it is logged; apply
+        // judges it again ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)).
+        self.sys(|s| s.check_state_caps(cmd)).map_err(rejected)?;
         self.sys_propose(cmd).await
     }
 

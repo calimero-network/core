@@ -734,7 +734,12 @@ async fn an_owner_opening_their_own_invite_leaves_it_for_the_invitee() {
         .as_str()
         .unwrap()
         .to_owned();
-    let listed = alice.orgs().get(&org).await.map(wire).unwrap();
+    let listed = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(listed["members"][&bob_id], "member", "{listed}");
     assert_eq!(listed["members"][&alice_id], "owner", "{listed}");
     let e = carol.orgs().invite_redeem(&token).await.unwrap_err();
@@ -1862,7 +1867,12 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     // Her organization approves the release of the node she made it through.
     let mine = home_org(&alice).await;
     assert_eq!(
-        alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"],
+        alice
+            .orgs()
+            .get(&mine, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["approvedReleases"],
         json!(["1.0.0"])
     );
     let bundle = alice
@@ -2645,7 +2655,12 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
         .metadata(&org, json!({ "logo": "x" }))
         .await
         .is_err());
-    let o = bob.orgs().get(&org).await.map(wire).unwrap();
+    let o = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["metadata"]["logo"], json!("acme.svg"));
 
     // Member metadata: the member's own, or an admin's; not another member's.
@@ -2665,7 +2680,12 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
         .member_metadata(&org, &bob_id, json!({ "title": "Lead" }))
         .await
         .unwrap();
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["memberMetadata"][&bob_id]["title"], json!("Lead"));
     // Over 16 KiB is refused.
     let big = "x".repeat(17 * 1024);
@@ -2744,7 +2764,7 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
         .map(wire)
         .unwrap();
     assert_eq!(gone["apps"], json!([app]));
-    assert!(alice.orgs().get(&org).await.is_err());
+    assert!(alice.orgs().get(&org, None, None, None).await.is_err());
     assert!(alice.apps().get(&app).await.is_err());
     let (carol, _cpk) = signed_up(&c, 2, "carol").await;
     assert!(carol.orgs().invite_redeem(&invite).await.is_err());
@@ -5410,7 +5430,10 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
         calimero_client::Error::WrongNode { .. } => 421,
         calimero_client::Error::Transport(e) => panic!("{e}"),
     };
-    assert_eq!(status(alice.orgs().get(&org).await.unwrap_err()), 404);
+    assert_eq!(
+        status(alice.orgs().get(&org, None, None, None).await.unwrap_err()),
+        404
+    );
 
     let laptop = c.client(1);
     let _s = laptop.sign_in(&mut pk).await.unwrap();
@@ -5814,7 +5837,12 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
         .release_approval(&org, "9.2.0", None, Some(&mut alice_pk))
         .await
         .unwrap();
-    let view = alice.orgs().get(&org).await.map(wire).unwrap();
+    let view = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     let approvers: Vec<String> = serde_json::from_value(view["releaseApprovers"].clone()).unwrap();
     assert!(approvers.contains(&bob_id), "{view}");
     assert_eq!(approvers.len(), 3, "{view}");
@@ -6191,7 +6219,12 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
         )
         .await
         .unwrap();
-    let view = pam.orgs().get(&publisher).await.map(wire).unwrap();
+    let view = pam
+        .orgs()
+        .get(&publisher, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(view["publishes"][0], binding["signerId"]);
     // Bound: the publisher's approvals now decide the customer's instance.
     let a = reported_app(&cora, &format!("orgs/{customer}/apps"), &inst).await;
@@ -7045,7 +7078,12 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
         .set_member(&org, &bob_id, OrgRole::Admin, Some(&mut apk))
         .await
         .unwrap();
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["members"][&bob_id], json!("admin"), "{o}");
 
     // The operator: 428 first, then signed.
