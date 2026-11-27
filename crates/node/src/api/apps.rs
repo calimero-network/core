@@ -744,6 +744,12 @@ async fn create_instance(
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.grants.map_or_else(Access::org, Access::new);
+    // Bake the organization from its own shard (its tenant group) into the
+    // entry: `apply` runs on the root group, which cannot read another shard,
+    // so every replica judges the app's membership, capability and grant checks
+    // against the organization this read sees
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let baked_org = node.org_of(&org).map(Box::new);
     let out = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(crate::types::AppRecord {
@@ -772,6 +778,7 @@ async fn create_instance(
                 restore_point: None,
                 egress_off: false,
             }),
+            org: baked_org,
             unit_offer: body.unit_offer,
             offers_only,
         })

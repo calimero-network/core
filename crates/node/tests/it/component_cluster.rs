@@ -7333,9 +7333,11 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
     member.deployment = Some(d.clone());
     member.release = None;
     let carried = member.app_id.clone();
+    let baked_org = node.org_of(&member.org).map(Box::new);
     let _ = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(member),
+            org: baked_org,
             unit_offer: None,
             offers_only: false,
         })

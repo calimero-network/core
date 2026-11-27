@@ -929,6 +929,7 @@ impl SystemCmd {
                 app,
                 unit_offer,
                 offers_only,
+                ..
             } => {
                 let mut f = Vec::new();
                 if !app.components.is_app() {

@@ -577,9 +577,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
     match cmd {
         SystemCmd::CreateApp {
             app,
+            org,
             unit_offer,
             offers_only,
-        } => create_app(state, *app, unit_offer, offers_only),
+        } => create_app(state, *app, org.map(|o| *o), unit_offer, offers_only),
         cmd @ SystemCmd::UpgradeApp { .. } => upgrade_app(state, index, cmd),
         cmd @ SystemCmd::UpgradeFailed { .. } => upgrade_failed(state, cmd),
         SystemCmd::StartUpgradeRun {
@@ -732,9 +733,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
 fn create_app(
     state: &mut SystemState,
     mut app: AppRecord,
+    org: Option<Org>,
     unit_offer: Option<PackageRef>,
     offers_only: bool,
 ) -> Result<Value, Rejection> {
+    // The app's organization as its own shard (its tenant group) holds it,
+    // baked into the entry at propose; apply cannot read another shard, so the
+    // membership, capability, installer, grant and team checks all judge against
+    // this one rather than root's copy
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    // `None` (an entry logged before sharding, or with the cutover off) reads
+    // the organization from this state as before.
+    let org = org.as_ref().or_else(|| state.orgs.get(&app.org));
     check_bundle(
         state,
         &app.bundle,
@@ -747,11 +757,11 @@ fn create_app(
     check_new_app_id(state, &app)?;
     check_deployment_offer(state, &app, unit_offer.as_ref())?;
     check_outside_offers(state, &app, unit_offer.as_ref(), offers_only)?;
-    check_org_membership(state, &app)?;
-    check_create_capability(state, &app)?;
-    check_new_package_installer(state, &app)?;
-    state.check_grants(&app.org, app.access.grants())?;
-    check_team_writes(state, &app)?;
+    check_org_membership(org, &app)?;
+    check_create_capability(org, &app)?;
+    check_new_package_installer(state, org, &app)?;
+    state.check_grants(&app.org, org, app.access.grants())?;
+    check_team_writes(org, &app)?;
     state.next_group = state.next_group.max(1) + 1;
     app.group = state.next_group;
     app.restore = None;
@@ -870,12 +880,10 @@ fn check_outside_offers(
     Ok(())
 }
 
-/// The owner is a member (or above) of the app's organization.
-fn check_org_membership(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
-    let role = state
-        .orgs
-        .get(&app.org)
-        .and_then(|org| org.role(&app.owner));
+/// The owner is a member (or above) of the app's organization. `org` is that
+/// organization as its shard holds it (resolved by `create_app`).
+fn check_org_membership(org: Option<&Org>, app: &AppRecord) -> Result<(), Rejection> {
+    let role = org.and_then(|org| org.role(&app.owner));
     if !role.is_some_and(|r| r >= OrgRole::Member) {
         return Err(OWNER_NOT_A_MEMBER);
     }
@@ -884,9 +892,8 @@ fn check_org_membership(state: &SystemState, app: &AppRecord) -> Result<(), Reje
 
 /// The owner holds `CREATE_APP` where the app goes: admins and the team's
 /// leads do, a member only when granted (not by default).
-fn check_create_capability(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
+fn check_create_capability(org: Option<&Org>, app: &AppRecord) -> Result<(), Rejection> {
     let team = app.access.the_team().map(String::as_str);
-    let org = state.orgs.get(&app.org);
     if !org.is_some_and(|org| org.may(&app.owner, team, crate::types::caps::CREATE_APP)) {
         return Err(NEEDS_CREATE_APP);
     }
@@ -895,8 +902,12 @@ fn check_create_capability(state: &SystemState, app: &AppRecord) -> Result<(), R
 
 /// In an organization whose apps have app teams, a package with none is a
 /// new app there: only its owner or an admin installs it.
-fn check_new_package_installer(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
-    if let (Some(org), Some(package)) = (state.orgs.get(&app.org), state.package_of(app)) {
+fn check_new_package_installer(
+    state: &SystemState,
+    org: Option<&Org>,
+    app: &AppRecord,
+) -> Result<(), Rejection> {
+    if let (Some(org), Some(package)) = (org, state.package_of(app)) {
         if org.mode() != crate::types::OrgMode::Legacy
             && org.app_team(package).is_none()
             && !org.role(&app.owner).is_some_and(|r| r >= OrgRole::Admin)
@@ -908,8 +919,7 @@ fn check_new_package_installer(state: &SystemState, app: &AppRecord) -> Result<(
 }
 
 /// A team's app is created by someone who writes each team it admits.
-fn check_team_writes(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
-    let org = state.orgs.get(&app.org);
+fn check_team_writes(org: Option<&Org>, app: &AppRecord) -> Result<(), Rejection> {
     for team in app.access.teams() {
         if !org.is_some_and(|org| org.writes_team(&app.owner, team)) {
             return Err(NOT_IN_TEAM);
@@ -1508,7 +1518,10 @@ fn set_access(
         .access
         .keeping_links(access)
         .ok_or(LINKS_KEEP_THEIR_CONSENT)?;
-    state.check_grants(&app.org, access.without_links().grants())?;
+    // TODO(sharding S4): bake the organization for `SetAccess` as `CreateApp`
+    // does; this still reads root's copy
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    state.check_grants(&app.org, None, access.without_links().grants())?;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
     app.access = access;
     Ok(Value::Null)

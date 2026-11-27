@@ -464,6 +464,39 @@ processes** (`tests/fault/`) and a multi-node deployment. That cluster validatio
 is why S2–S5 land as one reviewed unit on infrastructure this design note's
 author did not have — it is the gate between this plan and production.
 
+## Bring-up findings (cutover on, measured on the in-process cluster)
+
+Turning the gate on (`shard::ACTIVE = true`) and running `component_cluster`
+surfaces one dominant, well-understood failure, diagnosed command-by-command on
+a live three-node cluster:
+
+- **Org-scoped commands route correctly, invite commands do not.** Every
+  `SystemCmd` whose `scope()` names its org explicitly (`CreateTeam`,
+  `SetOrgRole`, `RemoveOrgMember`, …) routes to and applies on the org's tenant
+  group — verified. But `CreateInvite` and `RedeemInvite` carry `Scope::Cluster`
+  (they have no `org` field; the org is only reachable through the invite token),
+  so they route to **root**. A redeemed member is therefore written into the
+  **root** copy of the org and never the tenant copy. Reads go the other way: the
+  access gate (`api::reaches` → `Node::org_of`) reads the org from its **tenant**
+  shard, so the new member is absent from the org the gate judges against and
+  every call/view/event for them is refused `404 NOT_FOUND` ("no such app" —
+  `may_reach` with the member missing). This single gap accounts for the bulk of
+  the `component_cluster` failures under the cutover (each builds membership via
+  an invite, then exercises it).
+- **The fix is C4 for the invite/membership family.** Route `CreateInvite` and
+  `RedeemInvite` to the org's tenant so the invite record, its `uses_left`
+  bookkeeping and the membership change all live on the one shard the gate reads.
+  The one obstacle is that an invite **token names no org**: `RedeemInvite`
+  cannot compute its tenant from the command alone. Resolve it at propose through
+  a small **root-held `invite_org` directory** (`invite_key → OrgId`): the
+  create-invite API writes the directory entry on root and the invite record on
+  the tenant; the redeem API reads the directory to find the org, then routes
+  `RedeemInvite` to that tenant, where it validates and decrements the tenant's
+  own invite record and adds the member. The directory is routing metadata only
+  (never decremented), so it introduces no second source of truth for
+  membership. The same shape covers the other token-keyed, org-agnostic commands
+  (app invites, and — once `Accounts`/`Recovery` flip — sessions and recovery).
+
 ## Open questions / risks
 
 - **The gating decision: verifying a credential inside a tenant.** This blocks

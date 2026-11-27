@@ -1307,6 +1307,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     }
@@ -1449,6 +1450,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     };
@@ -3301,6 +3303,7 @@ fn a_create_apps_refusals_keep_their_wording_and_code() {
         }
         SystemCmd::CreateApp {
             app: Box::new(serde_json::from_value(app).unwrap()),
+            org: None,
             unit_offer,
             offers_only: false,
         }
@@ -7981,6 +7984,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     };

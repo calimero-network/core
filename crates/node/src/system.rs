@@ -5381,11 +5381,18 @@ impl SystemState {
     /// beside a team (it covers them), a team not of `org`, an account the cluster does not
     /// know (one name per account), a scope past [`crate::types::MAX_GRANT_SCOPE_BYTES`], or more than
     /// [`crate::types::MAX_TEAM_GRANTS`] teams or [`crate::types::MAX_ACCOUNT_GRANTS`] names.
-    pub fn check_grants(&self, org: &str, grants: &[Grant]) -> Result<(), Rejection> {
+    /// `baked` is the app's organization as its own shard (its tenant group)
+    /// holds it, resolved at propose; `None` reads it from this (root) state.
+    pub fn check_grants(
+        &self,
+        org: &str,
+        baked: Option<&Org>,
+        grants: &[Grant],
+    ) -> Result<(), Rejection> {
         if grants.len() > crate::types::MAX_GRANTS {
             return Err(Rejection::quota("an instance holds at most 1018 grants"));
         }
-        let o = self.orgs.get(org).ok_or("no such organization")?;
+        let o = baked.or_else(|| self.orgs.get(org)).ok_or("no such organization")?;
         let mut named: BTreeSet<&str> = BTreeSet::new();
         let mut teams: BTreeSet<&str> = BTreeSet::new();
         let (mut whole, mut anyone) = (false, false);
@@ -6434,6 +6441,16 @@ pub enum SystemCmd {
     },
     CreateApp {
         app: Box<AppRecord>,
+        /// The app's organization as the proposing node read it from the org's
+        /// shard (its tenant group) at propose, baked in so every replica judges
+        /// the app's membership, capability, team and grant checks against the
+        /// same organization — the resolve-at-propose the sharded control plane
+        /// needs, since `apply` cannot read another shard
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        /// Absent in an entry logged before sharding, or with the cutover off; the
+        /// checks then read the organization from this (root) state as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
         /// A unit's member created from its instance's deployment (`app.deployment`): the
         /// release the deployment offers for the instance, whose offer covers the member's
         /// own release ([`Feature::WholeUnits`](cluster_version::Feature::WholeUnits)).
