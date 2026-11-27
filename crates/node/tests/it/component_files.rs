@@ -1468,6 +1468,21 @@ impl Fixture {
         sent.map_err(Box::new)
     }
 
+    /// Uploads `stream(len, seed)` as a plain blob through node `via`.
+    async fn blob_upload(
+        &self,
+        via: usize,
+        len: usize,
+        seed: u64,
+    ) -> Result<Value, Box<calimero_client::Error>> {
+        self.clients[via]
+            .apps()
+            .blob_upload(&self.app, stream(len, seed), None)
+            .await
+            .map(wire)
+            .map_err(Box::new)
+    }
+
     /// Who the app's files are charged to: alice's personal organization, where
     /// the app went as it named none, asked of the first node that answers (a
     /// test may stop one, or delete the app).
@@ -3079,4 +3094,37 @@ async fn exports_are_rate_limited() {
     let (n, refusal) = refused.expect("a loop of exports is stopped");
     assert_eq!(refusal, (429, "TOO_MANY_EXPORTS".to_owned()));
     assert!((20..=45).contains(&n), "stopped after {n}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uploaded_blob_is_charged_to_the_payer_and_its_delete_gives_it_back() {
+    let f = start().await;
+    let up = f.blob_upload(1, 6_000, 31).await.unwrap();
+    f.until_charged(6_000).await;
+    // The same bytes again: the app holds one blob, charged once.
+    let _again = f.blob_upload(2, 6_000, 31).await.unwrap();
+    let _more = f.blob_upload(0, 2_000, 32).await.unwrap();
+    f.until_charged(8_000).await;
+
+    let id = up["id"].as_str().unwrap();
+    let _logged = f.clients[0].apps().blob_delete(&f.app, id).await.unwrap();
+    f.until_charged(2_000).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_upload_past_the_quota_is_refused_and_stores_nothing() {
+    let f = start().await;
+    f.set_file_quota(10_000).await;
+    let before = f.blob_counts();
+    let e = f.blob_upload(1, 20_000, 33).await.unwrap_err();
+    assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
+    assert_eq!(f.blob_counts(), before, "a refused upload stored bytes");
+    f.until_charged(0).await;
+
+    let _ok = f.blob_upload(0, 6_000, 34).await.unwrap();
+    let e = f.blob_upload(2, 6_000, 35).await.unwrap_err();
+    assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
+    f.until_charged(6_000).await;
+    let listed = f.clients[0].apps().blob_list(&f.app).await.map(wire).unwrap();
+    assert_eq!(listed["blobs"].as_array().map(Vec::len), Some(1), "{listed}");
 }

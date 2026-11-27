@@ -1035,7 +1035,7 @@ impl Node {
 impl Node {
     /// Counts `delta` plaintext bytes of files (negative: a release) against the app's payer in the
     /// system log; `429 QUOTA_EXCEEDED` when a charge would pass the quota.
-    pub(super) async fn count_file_bytes(&self, app_id: &str, delta: i64) -> Result<(), ApiError> {
+    pub(crate) async fn count_file_bytes(&self, app_id: &str, delta: i64) -> Result<(), ApiError> {
         let cmd = SystemCmd::ChargeFileBytes {
             app_id: app_id.to_owned(),
             delta,
@@ -1044,7 +1044,7 @@ impl Node {
     }
 
     /// Gives back `bytes`: files that were never marked, or that retention collected.
-    pub(super) async fn refund_files(&self, app_id: &str, bytes: u64) {
+    pub(crate) async fn refund_files(&self, app_id: &str, bytes: u64) {
         let Ok(delta) = i64::try_from(bytes).map(|b| -b) else {
             return;
         };

@@ -249,10 +249,16 @@ pub enum Feature {
     /// `OfferDeployment`, `AcceptDeployment` and `CancelDeploymentTransfer`: an earlier
     /// release cannot read them, so its replicas would keep the deployment's owner.
     DeploymentTransfer,
+    /// `componentBlob { metered }` in an app's log: an uploaded blob's bytes are charged to the
+    /// app's payer (`ChargeFileBytes`) and given back when the app forgets it
+    /// (`component::blobs::BlobRecord::metered`). An earlier release ignores the field and would
+    /// keep no record of the charge, so it would never give it back. Below it, uploads are not
+    /// charged. No system entry names it: the API reads the logged version before an upload.
+    MeteredBlobs,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 56] = [
+pub const FEATURES: [Feature; 57] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -309,6 +315,7 @@ pub const FEATURES: [Feature; 56] = [
     Feature::BackupKeyApprovers,
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
+    Feature::MeteredBlobs,
 ];
 
 impl Feature {
@@ -372,17 +379,21 @@ impl Feature {
             Self::BackupKeyApprovers => "backupKeyApprovers",
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
+            Self::MeteredBlobs => "meteredBlobs",
         }
     }
 
     /// Whether an entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
     /// `InviteCreatorStanding` and `BackupKeyApprovers` are rules apply reads from the logged
-    /// version: no entry names them.
+    /// version, and `MeteredBlobs` is a field of an app's entry: no system entry names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
         !matches!(
             self,
-            Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers
+            Self::HeldTeamGrants
+                | Self::InviteCreatorStanding
+                | Self::BackupKeyApprovers
+                | Self::MeteredBlobs
         )
     }
 
@@ -446,6 +457,7 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
+            Self::MeteredBlobs => "1.0.0-rc.39",
         }
     }
 }
@@ -1349,7 +1361,8 @@ mod tests {
             })),
             Feature::HeldTeamGrants
             | Feature::InviteCreatorStanding
-            | Feature::BackupKeyApprovers => unreachable!("no entry names {feature:?}"),
+            | Feature::BackupKeyApprovers
+            | Feature::MeteredBlobs => unreachable!("no entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",

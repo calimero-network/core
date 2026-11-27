@@ -2400,7 +2400,7 @@ impl Node {
         })
     }
 
-    /// A component's blob command on its leader: `__blob { id, size, mime }` (an upload),
+    /// A component's blob command on its leader: `__blob { id, size, mime, metered }` (an upload),
     /// `__blob_forget` or `__blob_revoke` (`{ id }`, the owner's), built by the API after judging who may.
     pub(super) async fn component_blob_cmd(
         &self,
@@ -2416,6 +2416,7 @@ impl Node {
                         size: req.args["size"].as_u64().unwrap_or_default(),
                         mime: req.args["mime"].as_str().unwrap_or_default().to_owned(),
                         ts_ms: self.stamp(m),
+                        metered: req.args["metered"].as_bool().unwrap_or(false),
                     },
                     "__blob_revoke" => ComponentCmd::BlobRevoke { id: id.clone() },
                     _ => ComponentCmd::BlobForget { id: id.clone() },
