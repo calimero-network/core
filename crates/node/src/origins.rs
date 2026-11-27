@@ -218,7 +218,7 @@ impl SystemState {
             return false;
         };
         match self.publisher_of_signer(&p.signer_id) {
-            Some(org) => self.manages_apps(org, account, None),
+            Some(org) => self.manages_apps_self(org, account, None),
             // A first installer, only while a release of it is theirs to use (from the
             // version that brings private releases, so earlier entries replay as they applied).
             None => {

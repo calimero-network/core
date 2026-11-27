@@ -1334,7 +1334,12 @@ fn transfer_app(
         return Err(ONLY_OWNER_TRANSFERS);
     }
     if owner_in_org
-        && !state.manages_app_as_logged(app, &actor, OwnerRule::logged(true, owner_in_team))
+        && !state.manages_app_as_logged(
+            app,
+            &actor,
+            OwnerRule::logged(true, owner_in_team),
+            state.orgs.get(&app.org),
+        )
     {
         return Err(ONLY_MANAGERS_TRANSFER.into());
     }
@@ -1377,7 +1382,8 @@ fn delete_app(
 ) -> Result<Value, Rejection> {
     let rule = OwnerRule::logged(owner_in_org, owner_in_team);
     let may_delete = |state: &SystemState, app: &AppRecord| {
-        state.owner_acts_as_logged(app, &actor, rule) || state.is_org_admin(&app.org, &actor)
+        state.owner_acts_as_logged(app, &actor, rule, state.orgs.get(&app.org))
+            || state.is_org_admin_self(&app.org, &actor)
     };
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
     if !may_delete(state, app) {
@@ -1487,8 +1493,12 @@ fn set_access(
     owner_in_team: bool,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !state.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
-        && !state.may_set_access(app, &access, &actor)
+    if !state.owner_acts_as_logged(
+        app,
+        &actor,
+        OwnerRule::logged(owner_in_org, owner_in_team),
+        state.orgs.get(&app.org),
+    ) && !state.may_set_access_self(app, &access, &actor)
     {
         return Err(ONLY_MANAGERS_SET_ACCESS);
     }
@@ -1562,7 +1572,7 @@ fn create_app_invite(
     actor: AccountId,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&invite.app).ok_or(NO_SUCH_APP)?;
-    if !state.manages_grants(app, &actor) {
+    if !state.manages_grants_self(app, &actor) {
         return Err(ONLY_MANAGERS_INVITE);
     }
     // Whether guests are allowed is judged when someone redeems it (a member always
@@ -1613,7 +1623,7 @@ fn create_public_link(
     actor: AccountId,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&link.app).ok_or(NO_SUCH_APP)?;
-    if !state.manages_grants(app, &actor) {
+    if !state.manages_grants_self(app, &actor) {
         return Err(ONLY_MANAGERS_MAKE_LINKS);
     }
     if !state
@@ -1663,7 +1673,7 @@ fn revoke_public_link(
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&app_id).ok_or(super::PUBLIC_LINK_GONE)?;
     let link = app.access.link(&link_key).ok_or(super::PUBLIC_LINK_GONE)?;
-    if link.created_by != actor && !state.manages_grants(app, &actor) {
+    if link.created_by != actor && !state.manages_grants_self(app, &actor) {
         return Err(ONLY_CREATOR_OR_MANAGERS_REVOKE_LINK);
     }
     let access = app.access.without_link(&link_key);
@@ -1686,7 +1696,7 @@ fn revoke_app_invite(
         .filter(|i| i.app == app_id)
         .ok_or(super::APP_INVITE_GONE)?;
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if invite.created_by != actor && !state.manages_grants(app, &actor) {
+    if invite.created_by != actor && !state.manages_grants_self(app, &actor) {
         return Err(ONLY_CREATOR_OR_MANAGERS_REVOKE_INVITE);
     }
     let _gone = state.app_invites.remove(&invite_key);
@@ -1717,7 +1727,7 @@ fn redeem_app_invite(
     // instance's grants (removed, demoted, out of its team, or unknown) names nobody, so a
     // manager who lost the instance cannot hand it out through invites made before.
     if state.cluster_brings(super::cluster_version::Feature::InviteCreatorStanding)
-        && !state.manages_grants(app, &invite.created_by)
+        && !state.manages_grants_self(app, &invite.created_by)
     {
         return Err(super::INVITE_CREATOR_LACKS);
     }
@@ -1768,7 +1778,7 @@ fn link_app(
     actor: AccountId,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !state.manages_app(app, &actor) {
+    if !state.manages_app_self(app, &actor) {
         return Err(ONLY_MANAGERS_LINK.into());
     }
     if !calimero_bundle::is_use_name(&name) {
@@ -1782,7 +1792,7 @@ fn link_app(
         if *target_id == app_id || attached.org != app.org {
             return Err(ATTACH_SAME_ORG);
         }
-        if !state.manages_app(attached, &actor) {
+        if !state.manages_app_self(attached, &actor) {
             return Err(ONLY_MANAGERS_LINK.into());
         }
         if !app.attached.contains_key(&name) && app.attached.len() >= MAX_ATTACHED {
@@ -1812,9 +1822,13 @@ fn set_app_metadata(
 ) -> Result<Value, Rejection> {
     metadata_fits(&metadata)?;
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    let admin = state.is_org_admin(&app.org, &actor);
-    if !state.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
-        && !admin
+    let admin = state.is_org_admin_self(&app.org, &actor);
+    if !state.owner_acts_as_logged(
+        app,
+        &actor,
+        OwnerRule::logged(owner_in_org, owner_in_team),
+        state.orgs.get(&app.org),
+    ) && !admin
     {
         return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);
     }

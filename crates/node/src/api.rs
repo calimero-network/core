@@ -2217,7 +2217,7 @@ fn may_handle_files(
         return false;
     };
     account.is_some_and(|a| {
-        s.owner_acts(app, a)
+        s.owner_acts_self(app, a)
             || s.orgs
                 .get(&app.org)
                 .is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
@@ -2229,8 +2229,9 @@ fn may_handle_files(
 /// blobs ([`crate::system::SystemState::manages_app`]). Judged on the record as applied
 /// now ([`fresh_record`]), not the one in hand.
 fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
+    let org = node.org_of(&app.org);
     account.is_some_and(|a| {
-        node.sys(|s| fresh_record(s, app).is_some_and(|app| s.manages_app(app, a)))
+        node.sys(|s| fresh_record(s, app).is_some_and(|app| s.manages_app(app, a, org.as_ref())))
     })
 }
 

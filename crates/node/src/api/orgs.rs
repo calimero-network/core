@@ -44,13 +44,13 @@ async fn org_members(
     }
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
+    let org_rec = node.org_of(&org);
     node.sys(|s| {
-        let o = s
-            .orgs
-            .get(&org)
+        let o = org_rec
+            .as_ref()
             .filter(|o| o.role(&account).is_some())
             .ok_or_else(|| ApiError::not_found("no such organization"))?;
-        if !s.is_org_admin(&org, &account) {
+        if !s.is_org_admin(org_rec.as_ref(), &account) {
             return Err(ApiError::forbidden(
                 "only the organization's owner and admins see its members' security",
             ));
@@ -1262,7 +1262,8 @@ pub(crate) async fn create_invite(
     body: InviteBody,
 ) -> ApiResult {
     let actor = p.account()?;
-    if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
+    let org_rec = node.org_of(&org);
+    if body.all_apps && !node.sys(|s| s.is_org_admin(org_rec.as_ref(), &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
     if let Some(bits) = body.capabilities {
@@ -1370,10 +1371,11 @@ async fn org_settings(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
+    let org_rec = node.org_of(&org);
     let (member, admin) = node.sys(|s| {
         (
-            s.orgs.get(&org).and_then(|o| o.role(&actor)).is_some(),
-            s.is_org_admin(&org, &actor),
+            org_rec.as_ref().and_then(|o| o.role(&actor)).is_some(),
+            s.is_org_admin(org_rec.as_ref(), &actor),
         )
     });
     if !member {
@@ -1489,13 +1491,14 @@ async fn invite_list(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
+    let org_rec = node.org_of(&org);
     let v = node
         .sys(|s| {
-            s.orgs.get(&org)?.role(&account)?;
+            org_rec.as_ref()?.role(&account)?;
             let invites = s
                 .invites
                 .iter()
-                .filter(|(_, i)| i.org == org && s.sees_invite(i, &account))
+                .filter(|(_, i)| i.org == org && s.sees_invite(i, &account, org_rec.as_ref()))
                 .map(|(k, i)| invite_json(k, i, now))
                 .collect();
             Some(InviteList { invites })
@@ -1527,10 +1530,11 @@ pub(crate) async fn revoke_invite(
 ) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
+    let org_rec = node.org_of(&org);
     let visible = node.sys(|s| {
         s.invites
             .get(&key)
-            .is_some_and(|i| i.org == org && s.sees_invite(i, &actor))
+            .is_some_and(|i| i.org == org && s.sees_invite(i, &actor, org_rec.as_ref()))
     });
     if !visible {
         return Err(ApiError::not_found(crate::system::INVITE_GONE));

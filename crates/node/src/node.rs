@@ -1511,10 +1511,10 @@ impl Node {
     /// A node that is a system voter hosts every tenant group, so this reads
     /// locally; a node that does not host it falls back to root
     /// ([`Node::system_shard`]) until forwarding lands.
-    pub fn sys_org<R>(&self, org: &crate::types::OrgId, f: impl FnOnce(&SystemState) -> R) -> R {
+    pub fn sys_org<R>(&self, org: &str, f: impl FnOnce(&SystemState) -> R) -> R {
         use crate::system::shard;
         if shard::ACTIVE {
-            self.system_shard(&shard::ShardId::Tenant(org.clone()))
+            self.system_shard(&shard::ShardId::Tenant(org.to_owned()))
                 .read_local(|m, _| f(&m.state))
         } else {
             self.sys(f)
@@ -1527,7 +1527,7 @@ impl Node {
     /// group while reading the fleet, packages and guest records from root —
     /// the cross-shard access read the sharded control plane performs.
     #[must_use]
-    pub fn org_of(&self, org: &crate::types::OrgId) -> Option<crate::types::Org> {
+    pub fn org_of(&self, org: &str) -> Option<crate::types::Org> {
         self.sys_org(org, |s| s.orgs.get(org).cloned())
     }
 

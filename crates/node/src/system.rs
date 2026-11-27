@@ -2936,7 +2936,7 @@ impl SystemState {
         }
         self.deployers.iter().any(|(key, g)| {
             g.live(now)
-                && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps(&o, account, None))
+                && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps_self(&o, account, None))
         })
     }
 
@@ -3003,7 +3003,7 @@ impl SystemState {
     pub fn acts_for(&self, owner: &Deployer, account: &str) -> bool {
         match owner {
             Deployer::Account(a) => a == account,
-            Deployer::Org(o) => self.manages_apps(o, account, None),
+            Deployer::Org(o) => self.manages_apps_self(o, account, None),
         }
     }
 
@@ -3067,7 +3067,7 @@ impl SystemState {
     pub fn hands_over(&self, owner: &Deployer, actor: &str) -> bool {
         match owner {
             Deployer::Account(a) => a == actor,
-            Deployer::Org(o) => self.is_org_admin(o, actor),
+            Deployer::Org(o) => self.is_org_admin_self(o, actor),
         }
     }
 
@@ -3176,7 +3176,8 @@ impl SystemState {
         // read from state at this log position, so replicas agree.
         let clamp =
             clamp_grants || self.cluster_brings(cluster_version::Feature::InviteCapabilities);
-        let all_apps = inv.all_apps && (!clamp || self.is_org_admin(&inv.org, &inv.created_by));
+        let all_apps =
+            inv.all_apps && (!clamp || self.is_org_admin_self(&inv.org, &inv.created_by));
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
         // From the logged version that brings it, an invite gives only what its
         // creator could still give: a creator removed (or unknown), demoted below
@@ -3688,8 +3689,14 @@ impl SystemState {
     /// grants: a team's leads on their team's instance, else who manages the organization's
     /// apps).
     #[must_use]
-    pub fn manages_grants(&self, app: &AppRecord, actor: &str) -> bool {
-        self.owner_acts(app, actor) || self.may_set_access(app, &app.access, actor)
+    pub fn manages_grants(&self, app: &AppRecord, actor: &str, org: Option<&Org>) -> bool {
+        self.owner_acts(app, actor, org) || self.may_set_access(app, &app.access, actor, org)
+    }
+
+    /// [`Self::manages_grants`] reading the app's org from this state.
+    #[must_use]
+    pub fn manages_grants_self(&self, app: &AppRecord, actor: &str) -> bool {
+        self.manages_grants(app, actor, self.orgs.get(&app.org))
     }
 
     /// Whether `org` is kept apart as a personal organization: flagged so, and only
@@ -3822,7 +3829,7 @@ impl SystemState {
             {
                 !by_operator && self.approves_upgrades(org, actor)
             }
-            BackupHolder::Org(org) => !by_operator && self.manages_apps(org, actor, None),
+            BackupHolder::Org(org) => !by_operator && self.manages_apps_self(org, actor, None),
             BackupHolder::Account(account) => {
                 !by_operator && actor == account && self.accounts.contains_key(account)
             }
@@ -3987,7 +3994,7 @@ impl SystemState {
     /// of any package.
     #[must_use]
     pub fn approves_upgrades(&self, org: &str, account: &str) -> bool {
-        self.is_org_admin(org, account)
+        self.is_org_admin_self(org, account)
     }
 
     /// Whether the rule [`cluster_version::Feature::OwnerApprovedUpgrades`] brings
@@ -4023,17 +4030,17 @@ impl SystemState {
         if !self.upgrades_of(release).is_owner() {
             return self
                 .upgraded_by_publisher(release)
-                .is_some_and(|p| self.manages_apps(p, account, None));
+                .is_some_and(|p| self.manages_apps_self(p, account, None));
         }
-        self.owner_acts_as_logged(app, account, rule)
-            || self.manages_access(&app.org, account, &app.access)
+        self.owner_acts_as_logged(app, account, rule, self.orgs.get(&app.org))
+            || self.manages_access_self(&app.org, account, &app.access)
     }
 
     /// Whether `actor` manages the apps an instance with `access` is: on each team it admits
     /// (every team grant), else organization-wide
     /// ([`Self::manages_apps`]).
     #[must_use]
-    pub fn manages_access(&self, org: &str, actor: &str, access: &Access) -> bool {
+    pub fn manages_access(&self, org: Option<&Org>, actor: &str, access: &Access) -> bool {
         let teams = access.teams();
         if teams.is_empty() {
             return self.manages_apps(org, actor, None);
@@ -4072,8 +4079,13 @@ impl SystemState {
     /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
     /// team's leads on their team.
     #[must_use]
-    pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
-        let org = app.org.as_str();
+    pub fn may_set_access(
+        &self,
+        app: &AppRecord,
+        to: &Access,
+        actor: &str,
+        org: Option<&Org>,
+    ) -> bool {
         self.manages_access(org, actor, &app.access) && self.manages_access(org, actor, to)
     }
 
@@ -4087,26 +4099,30 @@ impl SystemState {
     /// keys, files and blobs), as [`Self::may_reach`] no longer lets them
     /// reach it. A personal app is its owner's alone.
     #[must_use]
-    pub fn owner_acts(&self, app: &AppRecord, account: &str) -> bool {
-        self.owner_acts_as_logged(app, account, OwnerRule::CURRENT)
+    pub fn owner_acts(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
+        self.owner_acts_as_logged(app, account, OwnerRule::CURRENT, org)
     }
 
     /// [`Self::owner_acts`], as the release that logged the command judged
     /// it ([`OwnerRule`]).
-    fn owner_acts_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
+    fn owner_acts_as_logged(
+        &self,
+        app: &AppRecord,
+        account: &str,
+        rule: OwnerRule,
+        org: Option<&Org>,
+    ) -> bool {
         if app.owner != account {
             return false;
         }
-        let org = app.org.as_str();
         if rule == OwnerRule::Ownership {
             return true;
         }
-        let Some(o) = self.orgs.get(org) else {
+        let Some(o) = org else {
             return false;
         };
         o.role(account).is_some_and(|r| r >= OrgRole::Member)
-            && (rule == OwnerRule::InOrg
-                || self.owner_in_team(app, account, self.orgs.get(&app.org)))
+            && (rule == OwnerRule::InOrg || self.owner_in_team(app, account, org))
     }
 
     /// Whether `app`'s team, if it is on one, holds `owner`: an owner reaches
@@ -4124,14 +4140,26 @@ impl SystemState {
     /// [`Self::owner_acts`], or an admin of its organization, so an
     /// organization cleans up the app of an owner who left.
     #[must_use]
-    pub fn manages_app(&self, app: &AppRecord, account: &str) -> bool {
-        self.manages_app_as_logged(app, account, OwnerRule::CURRENT)
+    pub fn manages_app(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
+        self.manages_app_as_logged(app, account, OwnerRule::CURRENT, org)
+    }
+
+    /// [`Self::manages_app`] reading the app's org from this state.
+    #[must_use]
+    pub fn manages_app_self(&self, app: &AppRecord, account: &str) -> bool {
+        self.manages_app(app, account, self.orgs.get(&app.org))
     }
 
     /// [`Self::manages_app`], with the owner judged as the release that
     /// logged the command did ([`OwnerRule`]).
-    fn manages_app_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
-        self.owner_acts_as_logged(app, account, rule) || self.is_org_admin(&app.org, account)
+    fn manages_app_as_logged(
+        &self,
+        app: &AppRecord,
+        account: &str,
+        rule: OwnerRule,
+        org: Option<&Org>,
+    ) -> bool {
+        self.owner_acts_as_logged(app, account, rule, org) || self.is_org_admin(org, account)
     }
 
     /// Whether `actor` sees (and may revoke) the organization invite `inv`:
@@ -4139,8 +4167,8 @@ impl SystemState {
     /// member, or whoever manages every team it names (an invite naming no
     /// team is organization-wide: an admin's).
     #[must_use]
-    pub fn sees_invite(&self, inv: &Invite, actor: &str) -> bool {
-        let Some(o) = self.orgs.get(&inv.org) else {
+    pub fn sees_invite(&self, inv: &Invite, actor: &str, org: Option<&Org>) -> bool {
+        let Some(o) = org else {
             return false;
         };
         let Some(role) = o.role(actor) else {
@@ -4795,7 +4823,7 @@ impl SystemState {
         if from == to_org {
             return Err("the app is in that organization already".into());
         }
-        if !self.manages_app(app, actor) {
+        if !self.manages_app_self(app, actor) {
             return Err(ONLY_MANAGERS_MOVE.into());
         }
         let target = self.orgs.get(to_org).ok_or("no such organization")?;
@@ -5063,8 +5091,8 @@ impl SystemState {
     /// The owner, an admin, a team's lead, or a member holding the capability
     /// there; never someone outside the organization or below member.
     #[must_use]
-    pub fn manages_apps(&self, org: &str, account: &str, team: Option<&str>) -> bool {
-        self.orgs.get(org).is_some_and(|o| {
+    pub fn manages_apps(&self, org: Option<&Org>, account: &str, team: Option<&str>) -> bool {
+        org.is_some_and(|o| {
             o.role(account).is_some_and(|r| r >= OrgRole::Member)
                 && o.may(account, team, crate::types::caps::MANAGE_APPLICATION)
         })
@@ -5541,11 +5569,45 @@ impl SystemState {
     }
 
     #[must_use]
-    pub fn is_org_admin(&self, org: &str, account: &str) -> bool {
-        self.orgs
-            .get(org)
-            .and_then(|o| o.role(account))
+    pub fn is_org_admin(&self, org: Option<&Org>, account: &str) -> bool {
+        org.and_then(|o| o.role(account))
             .is_some_and(|r| r >= OrgRole::Admin)
+    }
+
+    /// [`Self::is_org_admin`] reading `org` from this state (apply, tests).
+    #[must_use]
+    pub fn is_org_admin_self(&self, org: &str, account: &str) -> bool {
+        self.is_org_admin(self.orgs.get(org), account)
+    }
+
+    /// [`Self::manages_apps`] reading `org` from this state.
+    #[must_use]
+    pub fn manages_apps_self(&self, org: &str, account: &str, team: Option<&str>) -> bool {
+        self.manages_apps(self.orgs.get(org), account, team)
+    }
+
+    /// [`Self::manages_access`] reading `org` from this state.
+    #[must_use]
+    pub fn manages_access_self(&self, org: &str, actor: &str, access: &Access) -> bool {
+        self.manages_access(self.orgs.get(org), actor, access)
+    }
+
+    /// [`Self::may_set_access`] reading the app's org from this state.
+    #[must_use]
+    pub fn may_set_access_self(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
+        self.may_set_access(app, to, actor, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::owner_acts`] reading the app's org from this state.
+    #[must_use]
+    pub fn owner_acts_self(&self, app: &AppRecord, account: &str) -> bool {
+        self.owner_acts(app, account, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::sees_invite`] reading the invite's org from this state.
+    #[must_use]
+    pub fn sees_invite_self(&self, inv: &Invite, actor: &str) -> bool {
+        self.sees_invite(inv, actor, self.orgs.get(&inv.org))
     }
 }
 

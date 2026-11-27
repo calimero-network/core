@@ -3956,7 +3956,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         "a release that says nothing forbids them"
     );
     assert!(!reaches(&m, "wide", "carol"));
-    assert!(!m.state.manages_grants(&m.state.apps["open"], "carol"));
+    assert!(!m.state.manages_grants_self(&m.state.apps["open"], "carol"));
 
     // The organization's switch: its owner, with a passkey, once; a member is refused.
     let settings = |allow: bool, actor: &str, consent: Value| SystemCmd::SetOrgSettings {
@@ -6397,7 +6397,7 @@ fn an_app_moves_without_its_people_only_to_where_its_owner_is() {
     );
     assert_eq!(s.orgs["new"].teams[&team].members.get("bob"), Some(&false));
     assert!(s.may_reach_self(&s.apps["oa"], Some("bob")));
-    assert!(s.owner_acts(&s.apps["oa"], "bob"));
+    assert!(s.owner_acts_self(&s.apps["oa"], "bob"));
 }
 
 /// Who moves: the app's manager where it is now, as an admin of the
@@ -6733,7 +6733,7 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
     for who in ["bob", "carol"] {
         assert!(s.may_reach_self(&s.apps["dm"], Some(who)), "{who}");
     }
-    assert!(s.owner_acts(&s.apps["dm"], "bob"));
+    assert!(s.owner_acts_self(&s.apps["dm"], "bob"));
 
     // The same move as an earlier release logged it (no
     // `accounts_in_app_team`) gives no such rows, as that release did,
@@ -6878,7 +6878,7 @@ fn a_move_entry_without_its_optional_fields_reads_as_a_plain_move() {
 #[test]
 fn an_org_apps_owner_manages_it_only_while_a_member() {
     let (mut m, _alice, mut bob) = org_app_of_bob();
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "bob"));
     assert!(m.state.may_upgrade(&m.state.apps["oa"], "bob", false));
     let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
 
@@ -6893,8 +6893,8 @@ fn an_org_apps_owner_manages_it_only_while_a_member() {
             }
         }
         let app = &m.state.apps["oa"];
-        assert!(!m.state.owner_acts(app, "bob"), "{demoted:?}");
-        assert!(!m.state.manages_app(app, "bob"), "{demoted:?}");
+        assert!(!m.state.owner_acts_self(app, "bob"), "{demoted:?}");
+        assert!(!m.state.manages_app_self(app, "bob"), "{demoted:?}");
         assert!(!m.state.may_upgrade(app, "bob", false), "{demoted:?}");
         assert!(m.run(set_access("oa", "bob")).is_err(), "{demoted:?}");
         assert!(m.run(set_app_metadata("oa", "bob")).is_err(), "{demoted:?}");
@@ -6943,7 +6943,7 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     m.state.apps.get_mut("oa").unwrap().access = Access::team("t".into());
     let app = m.state.apps["oa"].clone();
     assert!(m.state.may_reach_self(&app, Some("bob")));
-    assert!(m.state.owner_acts(&app, "bob"));
+    assert!(m.state.owner_acts_self(&app, "bob"));
     let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
 
     // Kicked or left (no row), closed without them (no row, no longer
@@ -6954,8 +6954,8 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
         set(&mut m, out);
         let app = &m.state.apps["oa"];
         assert!(!m.state.may_reach_self(app, Some("bob")));
-        assert!(!m.state.owner_acts(app, "bob"));
-        assert!(!m.state.manages_app(app, "bob"));
+        assert!(!m.state.owner_acts_self(app, "bob"));
+        assert!(!m.state.manages_app_self(app, "bob"));
         assert!(!m.state.may_upgrade(app, "bob", false));
         assert!(m.run(set_access("oa", "bob")).is_err());
         assert!(m.run(set_app_metadata("oa", "bob")).is_err());
@@ -6976,12 +6976,12 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     // Open to the organization again: Bob, a member, is in it.
     set(&mut m, team(&[], TeamJoin::Everyone));
     assert!(m.state.may_reach_self(&m.state.apps["oa"], Some("bob")));
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "bob"));
     set(&mut m, team(&["carol"], TeamJoin::Invite));
     let _ok = m
         .run(transfer_app(&mut alice, "oa", "alice", "carol"))
         .unwrap();
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "carol"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "carol"));
 }
 
 /// The organization's admins clean up an app whose owner left: they
@@ -7006,7 +7006,7 @@ fn an_org_admin_transfers_or_deletes_an_app_whose_owner_left() {
         .run(transfer_app(&mut alice, "oa", "alice", "carol"))
         .unwrap();
     assert_eq!(m.state.apps["oa"].owner, "carol");
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "carol"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "carol"));
     let _ok = m.run(delete_app("ob", "alice")).unwrap();
     assert!(!m.state.apps.contains_key("ob"));
 }
@@ -7022,8 +7022,8 @@ fn a_member_owner_and_a_personal_owner_manage_their_apps() {
     assert_eq!(m.state.apps["oa"].owner, "carol");
 
     // `app` is alice's own, outside any organization.
-    assert!(m.state.owner_acts(&m.state.apps["app"], "alice"));
-    assert!(!m.state.manages_app(&m.state.apps["app"], "bob"));
+    assert!(m.state.owner_acts_self(&m.state.apps["app"], "alice"));
+    assert!(!m.state.manages_app_self(&m.state.apps["app"], "bob"));
     let _ok = m.run(set_access("app", "alice")).unwrap();
     let _ok = m.run(set_app_metadata("app", "alice")).unwrap();
     let _ok = m
@@ -16019,7 +16019,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         .unwrap();
     assert!(m.state.orgs["org"].in_team("bob", "t"));
     assert!(
-        m.state.manages_apps("org", "bob", Some("t")),
+        m.state.manages_apps_self("org", "bob", Some("t")),
         "the old rule"
     );
 
@@ -16039,7 +16039,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         "no row in a restricted team either"
     );
     assert!(!m.state.orgs["org"].in_team("bob", "t"));
-    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+    assert!(!m.state.manages_apps_self("org", "bob", Some("t")));
 
     // Once the owner puts him in `t` holding MANAGE_MEMBERS there, he still
     // grants no bit he lacks organization-wide: not to his own row, not
@@ -16078,7 +16078,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         ),
         super::CANNOT_GRANT_UNHELD
     );
-    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+    assert!(!m.state.manages_apps_self("org", "bob", Some("t")));
     assert!(!m.state.orgs["org"].in_team("carol", "t"));
     // What he holds he hands on, and an unknown bit is refused to anyone.
     let _ok = m
@@ -16102,7 +16102,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
     let _ok = m
         .run(team_caps(&mut alice, "t", "carol", escalate, "alice"))
         .unwrap();
-    assert!(m.state.manages_apps("org", "carol", Some("t")));
+    assert!(m.state.manages_apps_self("org", "carol", Some("t")));
 }
 
 /// `bob`'s invite of `org` under `token`: `role`, `teams`, five uses.
@@ -16219,7 +16219,7 @@ fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
             .unwrap()
             .capabilities
             .insert("bob".into(), caps::MANAGE_APPLICATION);
-        assert!(m.state.manages_apps("org", "bob", None));
+        assert!(m.state.manages_apps_self("org", "bob", None));
         assert!(!m.state.approves_upgrades("org", "bob"));
     };
 
@@ -16292,7 +16292,7 @@ fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_insta
             .unwrap()
             .members
             .insert("bob".into(), OrgRole::Member);
-        assert!(!m.state.manages_grants(&m.state.apps["oa"], "bob"));
+        assert!(!m.state.manages_grants_self(&m.state.apps["oa"], "bob"));
         m
     };
     let redeem = |token: &str, who: &str| SystemCmd::RedeemAppInvite {

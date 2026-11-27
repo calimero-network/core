@@ -213,7 +213,8 @@ fn run_refusal(
         }
         return Ok(());
     }
-    if !node.sys(|s| s.manages_apps(org, account, team)) {
+    let org_rec = node.org_of(org);
+    if !node.sys(|s| s.manages_apps(org_rec.as_ref(), account, team)) {
         return Err(ApiError::forbidden(
             "upgrading the organization's apps needs MANAGE_APPLICATION there",
         ));
@@ -1236,7 +1237,10 @@ async fn publisher_upgrade(
     let owner_approves = owner_approves(&node).await;
     if owner_approves {
         run_refusal(&node, &org, &account, None, true)?;
-    } else if !node.sys(|s| s.manages_apps(&org, &account, None)) {
+    } else if !{
+        let o = node.org_of(&org);
+        node.sys(|s| s.manages_apps(o.as_ref(), &account, None))
+    } {
         return Err(ApiError::forbidden(
             "upgrading a published package's instances needs MANAGE_APPLICATION in the publisher",
         ));

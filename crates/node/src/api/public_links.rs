@@ -245,7 +245,7 @@ pub(super) async fn public_link_create(
         if !s.may_reach(&app, Some(&actor), org.as_ref()) {
             return Err(ApiError::not_found("no such app"));
         }
-        if !s.manages_grants(&app, &actor) {
+        if !s.manages_grants(&app, &actor, org.as_ref()) {
             return Err(ApiError::forbidden(
                 "only whoever may change the instance's access makes its public links",
             ));
@@ -354,7 +354,9 @@ pub(super) async fn public_link_list(
     let now = now_secs();
     let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor), org.as_ref()) || !s.manages_grants(&app, &actor) {
+        if !s.may_reach(&app, Some(&actor), org.as_ref())
+            || !s.manages_grants(&app, &actor, org.as_ref())
+        {
             return Err(ApiError::not_found("no such app"));
         }
         let links = app
@@ -387,10 +389,11 @@ pub(super) async fn public_link_revoke(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    let org = node.org_of(&app.org);
     let visible = node.sys(|s| {
         app.access
             .link(&link)
-            .is_some_and(|l| l.created_by == actor || s.manages_grants(&app, &actor))
+            .is_some_and(|l| l.created_by == actor || s.manages_grants(&app, &actor, org.as_ref()))
     });
     if !visible {
         return Err(ApiError::not_found(crate::system::PUBLIC_LINK_GONE));

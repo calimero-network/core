@@ -875,7 +875,7 @@ fn revoke(
     let inv = s
         .invites
         .get(&invite_key)
-        .filter(|i| i.org == org && s.sees_invite(i, actor))
+        .filter(|i| i.org == org && s.sees_invite_self(i, actor))
         .ok_or_else(|| ApiError::not_found(crate::system::INVITE_GONE))?
         .clone();
     let name = o.name.clone();

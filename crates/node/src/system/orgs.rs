@@ -1600,7 +1600,7 @@ fn set_org_settings(
     settings: &OrgSettings,
     actor: &str,
 ) -> Result<Value, Rejection> {
-    if !state.is_org_admin(org, actor) {
+    if !state.is_org_admin_self(org, actor) {
         return Err(ONLY_ADMINS_CHANGE_SETTINGS);
     }
     if settings.is_empty() {
@@ -1631,7 +1631,7 @@ fn revoke_invite(
     if invite.org != org {
         return Err(INVITE_GONE.into());
     }
-    if !state.sees_invite(invite, actor) {
+    if !state.sees_invite_self(invite, actor) {
         return Err(ONLY_CREATOR_OR_MANAGERS_REVOKE_ORG_INVITE);
     }
     let _gone = state.invites.remove(invite_key);

@@ -243,7 +243,7 @@ pub(crate) async fn set_egress(
     let (member, admin, app_in_org) = node.sys(|s| {
         (
             s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
-            s.is_org_admin(&org, &account),
+            s.is_org_admin_self(&org, &account),
             app.as_ref()
                 .is_none_or(|id| s.apps.get(id).is_some_and(|a| a.org == org)),
         )

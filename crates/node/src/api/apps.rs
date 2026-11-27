@@ -1095,7 +1095,8 @@ async fn app_get(
         return Err(ApiError::not_found("no such app"));
     }
     // Its public links are its managers' to see.
-    let manages = account.is_some_and(|a| node.sys(|s| s.manages_grants(&app, a)));
+    let morg = node.org_of(&app.org);
+    let manages = account.is_some_and(|a| node.sys(|s| s.manages_grants(&app, a, morg.as_ref())));
     let mut app = app;
     if !manages {
         app.access = app.access.without_links();
@@ -1141,7 +1142,7 @@ fn refuse_app_invite(
         if !s.may_reach(app, Some(actor), org.as_ref()) {
             return Err(ApiError::not_found("no such app"));
         }
-        if !s.manages_grants(app, actor) {
+        if !s.manages_grants(app, actor, org.as_ref()) {
             return Err(ApiError::forbidden(
                 "only whoever may change the instance's access invites its guests",
             ));
@@ -1262,7 +1263,9 @@ async fn app_invite_list(
     let now = now_secs();
     let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor), org.as_ref()) || !s.manages_grants(&app, &actor) {
+        if !s.may_reach(&app, Some(&actor), org.as_ref())
+            || !s.manages_grants(&app, &actor, org.as_ref())
+        {
             return Err(ApiError::not_found("no such app"));
         }
         let invites: Vec<AppInviteView> = s
@@ -1296,9 +1299,11 @@ async fn app_invite_revoke(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    let org = node.org_of(&app.org);
     let visible = node.sys(|s| {
         s.app_invites.get(&key).is_some_and(|i| {
-            i.app == app_id && (i.created_by == actor || s.manages_grants(&app, &actor))
+            i.app == app_id
+                && (i.created_by == actor || s.manages_grants(&app, &actor, org.as_ref()))
         })
     });
     if !visible {
@@ -1405,7 +1410,12 @@ async fn app_transfer(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
+    if !{
+        let org = node.org_of(&app.org);
+        node.sys(|s| {
+            fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
+        })
+    } {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
     }
     // Before organizations are ordinary, an app in a personal organization handed to
@@ -1482,10 +1492,16 @@ async fn app_move(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
+    if !{
+        let org = node.org_of(&app.org);
+        node.sys(|s| {
+            fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
+        })
+    } {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
     }
-    if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
+    let to_org = node.org_of(&body.to_org);
+    if !node.sys(|s| s.is_org_admin(to_org.as_ref(), &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
@@ -2213,9 +2229,12 @@ async fn app_link(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     let target = node.app(&target_id).await?;
+    let aorg = node.org_of(&app.org);
+    let torg = node.org_of(&target.org);
     if !node.sys(|s| {
-        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))
-            && fresh_record(s, &target).is_some_and(|target| s.manages_app(target, &actor))
+        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, aorg.as_ref()))
+            && fresh_record(s, &target)
+                .is_some_and(|target| s.manages_app(target, &actor, torg.as_ref()))
     }) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
@@ -2281,7 +2300,12 @@ async fn app_unlink(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
+    if !{
+        let org = node.org_of(&app.org);
+        node.sys(|s| {
+            fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
+        })
+    } {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if !app.attached.contains_key(&name) {
