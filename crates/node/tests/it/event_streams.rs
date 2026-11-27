@@ -63,7 +63,7 @@ async fn one_account_holding_its_stream_share_leaves_streams_for_others() {
         other => panic!("{other:?}"),
     };
     assert_eq!((status, e.code()), (429, Some("RATE_LIMITED")), "{e}");
-    assert!(e.to_string().contains("per account"), "{e}");
+    assert!(e.to_string().contains("per-account limit"), "{e}");
 
     let _bob_events = bob
         .events(&app, 0)

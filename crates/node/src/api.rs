@@ -2272,8 +2272,7 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     gauge(
         "calimero_event_streams",
         "Event and presence streams open on this node.",
-        node.event_streams
-            .load(std::sync::atomic::Ordering::Relaxed) as u64,
+        node.event_streams.open() as u64,
     );
     gauge(
         "calimero_system_applied",
