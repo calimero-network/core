@@ -259,6 +259,8 @@ outputs: [total.outputs]
 refused with `NOT_IN_V1`, never ignored.
 A source is at most 64 KiB, with at most 64 steps, 64 inputs, 64 params and
 10,000 items per fan-out (`crates/pipeline/src/compile.rs`).
+A run takes at most 1,024 files, so an install, or a check against a release,
+refuses an input's `maxItems` above that (`BAD_MAX_ITEMS`).
 
 ### Check it before you pack
 

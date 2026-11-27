@@ -12,6 +12,7 @@ pub const MAX_INPUTS: usize = 64; // declared inputs per pipeline
 pub const MAX_PARAMS: usize = 64; // declared params per pipeline
 pub const MAX_STEP_INPUTS: usize = 64; // files bound to one step, the engine's per-run input cap
 pub const MAX_ITEMS: u32 = 10_000; // upper bound for any maxItems
+pub const MAX_RUN_FILES: usize = 1024; // file ids across all inputs of one run, which its log entry carries
 pub const MAX_NAME_BYTES: usize = 64; // pipeline, step, input and param names
 pub const MAX_ARGS_BYTES: usize = 64 * 1024; // one step's args as JSON
 const NOT_IN_V1_FIELDS: [&str; 13] = [
