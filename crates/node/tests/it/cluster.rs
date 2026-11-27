@@ -7366,6 +7366,77 @@ async fn a_flood_of_attestations_does_not_stall_the_node() {
     );
 }
 
+/// Anonymous `/attestation` requests that keep a node's quote queue full, each
+/// quote taking a second as a TDX quote does, must not keep the cluster's
+/// own nodes from attesting it: a node that restarts during the flood opens
+/// its channel to the flooded node (attesting it on the way) and reaches an
+/// internal route, while the anonymous requests past the queue are `503 BUSY`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
+    const FLOODERS: usize = 40;
+    let mut c = Cluster::start(3).await;
+    let _ = signed_up(&c, 1, "alice").await;
+    let slow = c.nodes[0].as_ref().unwrap().node.config.public_url.clone();
+    calimero_node::testing::slow_quotes(&slow, Duration::from_secs(1));
+    let flooded = c.urls[0].clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flooders: Vec<_> = (0..FLOODERS)
+        .map(|_| {
+            let (url, stop) = (flooded.clone(), std::sync::Arc::clone(&stop));
+            tokio::spawn(async move {
+                let http = reqwest::Client::new();
+                let (mut ok, mut busy) = (0_u32, 0_u32);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let nonce = hex::encode(calimero_identity::random::<32>());
+                    let Ok(r) = http
+                        .get(format!("{url}attestation?nonce={nonce}"))
+                        .send()
+                        .await
+                    else {
+                        continue;
+                    };
+                    match r.status().as_u16() {
+                        200 => ok += 1,
+                        503 => busy += 1,
+                        s => panic!("/attestation answered {s}"),
+                    }
+                }
+                (ok, busy)
+            })
+        })
+        .collect();
+    // The queue is full before node 2 restarts.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    c.restart(1).await;
+    let started = std::time::Instant::now();
+    let reached = tokio::time::timeout(
+        Duration::from_secs(20),
+        c.nodes[1]
+            .as_ref()
+            .unwrap()
+            .node
+            .peer_post(&flooded, "internal/system/index", &json!({})),
+    )
+    .await;
+    let took = started.elapsed();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (mut ok, mut busy) = (0, 0);
+    for f in flooders {
+        let (o, b) = f.await.unwrap();
+        ok += o;
+        busy += b;
+    }
+    eprintln!("peer channel after {took:?}: {reached:?}; anonymous {ok} answered, {busy} busy");
+    assert!(
+        busy > 0,
+        "the anonymous queue was never full ({ok} answered)"
+    );
+    reached
+        .expect("the restarted node reached the flooded one in time")
+        .expect("the restarted node attested the flooded one during the flood");
+}
+
 /// A system write the group cannot commit answers `503 UNAVAILABLE` in
 /// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
 /// system group could not commit, and a sign-up and a node registration each

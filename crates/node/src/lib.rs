@@ -26,6 +26,7 @@ pub mod component;
 pub mod consent_page;
 mod egress;
 pub mod error;
+pub mod event_streams;
 pub mod files;
 pub mod idempotency;
 pub mod inspect;

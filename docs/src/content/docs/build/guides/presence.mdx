@@ -140,6 +140,8 @@ Rust: `client.apps().presence_publish(..)`, `presence_get(..)` and
 | Expiry (`PRESENCE_TTL_MS`) | 7 s without a heartbeat, swept every second | the entry is dropped and streams see `state: null` |
 | Entries per app (`MAX_AUTHORS_PER_APP`) | 512 devices | a new device evicts the one heard from longest ago |
 | Event and presence streams per node (`MAX_EVENT_STREAMS`) | 4,096 | `429 RATE_LIMITED`: try another node or later |
+| Event and presence streams per account per node (`MAX_EVENT_STREAMS_PER_ACCOUNT`) | 64, sessions and API keys together | `429 RATE_LIMITED`: close one or try another node |
+| Event and presence streams per app per node (`MAX_EVENT_STREAMS_PER_APP`) | 1,024 | `429 RATE_LIMITED`: try another node or later |
 
 The stream holds a short buffer per app (256 changes). A client too slow to
 read it loses the changes it missed without a sign, so reconnect (a new
