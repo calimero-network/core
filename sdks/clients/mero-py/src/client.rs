@@ -633,7 +633,7 @@ impl PyCloudClient {
         // verifying paths (`verify_app_cluster`) pick their own.
         let nonce = hex::encode([7_u8; 32]);
         let v = self.run_repeatable(py, async |c| {
-            c.public().attestation(&nonce, None, None, None).await
+            c.public().attestation(&nonce, None, None, None, None).await
         })?;
         to_py(py, &v)
     }
