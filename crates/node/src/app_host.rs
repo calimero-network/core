@@ -87,12 +87,35 @@ const CSP_HEAD: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'
 /// and `DEFAULT_COLLATERAL_MIRROR`. Both are signed (Sigstore over the
 /// measurements, Intel over the collateral) and checked by the client, so the
 /// mirror is trusted with nothing; without it no page can verify a TDX node.
+///
+/// Production's; a page on staging's apps domain uses
+/// [`STAGING_ATTESTATION_MIRROR`] ([`attestation_mirror`]).
 const ATTESTATION_MIRROR: &str = "https://cloud.calimero.network";
+/// Staging's apps domain and mirror, mero-js's `CLOUD_ENVIRONMENTS.staging`
+/// (`appsDomain`, `cloudUrl`) in `sdks/clients/mero-js/src/runtime/directory.ts`.
+const STAGING_APPS_DOMAIN: &str = "apps.relay.staging.cloud.calimero.network";
+const STAGING_ATTESTATION_MIRROR: &str = "https://staging.cloud.calimero.network";
 
-/// A served page's content security policy: it talks to its own origin, the
-/// attestation mirror and the cluster's nodes (`api_origins`), and nothing else.
-fn page_csp(api_origins: &[String]) -> String {
-    format!("{CSP_HEAD} {ATTESTATION_MIRROR} {}", api_origins.join(" "))
+/// The mirror a page served on `host` attests against: the rule mero-js's
+/// `cloudEnvironment` applies to the page's hostname, so the page's client and
+/// its `connect-src` name the same mirror. Staging's under staging's apps
+/// domain, production's on any other host.
+fn attestation_mirror(host: &str) -> &'static str {
+    let (name, _port) = host_parts(host);
+    let staging = name
+        .strip_suffix(STAGING_APPS_DOMAIN)
+        .is_some_and(|rest| rest.ends_with('.'));
+    if staging {
+        STAGING_ATTESTATION_MIRROR
+    } else {
+        ATTESTATION_MIRROR
+    }
+}
+
+/// A served page's content security policy: it talks to its own origin, its
+/// attestation `mirror` and the cluster's nodes (`api_origins`), and nothing else.
+fn page_csp(mirror: &str, api_origins: &[String]) -> String {
+    format!("{CSP_HEAD} {mirror} {}", api_origins.join(" "))
 }
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
@@ -674,7 +697,12 @@ async fn serve(node: &Node, site: &Site, req: Request) -> Response {
     let Some(mime) = mime_type(&name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let csp = page_csp(&node.api_origins());
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default();
+    let csp = page_csp(attestation_mirror(host), &node.api_origins());
     let mut resp = if req.method() == Method::HEAD {
         Response::new(Body::empty())
     } else {
@@ -853,7 +881,7 @@ mod tests {
             "https://n1.example.com".to_owned(),
             "https://n2.example.com".to_owned(),
         ];
-        let csp = page_csp(&origins);
+        let csp = page_csp(ATTESTATION_MIRROR, &origins);
         let connect = csp
             .split(';')
             .map(str::trim)
@@ -871,6 +899,38 @@ mod tests {
             "{csp}"
         );
         assert!(csp.starts_with("default-src 'self';"), "{csp}");
+    }
+
+    /// mero-js on a page under staging's apps domain fetches staging's mirror
+    /// (`cloudEnvironment`), so that page's `connect-src` names staging's: with
+    /// production's there, the browser blocked every staging page's release
+    /// fetch and the page never got past checking its node. Any other host,
+    /// including one that only contains staging's domain, keeps production's.
+    #[test]
+    fn a_page_attests_against_its_own_clouds_mirror() {
+        let staging = [
+            "kv.apps.relay.staging.cloud.calimero.network",
+            "Kv.Apps.Relay.Staging.Cloud.Calimero.Network.:443",
+            "abc.def.apps.relay.staging.cloud.calimero.network",
+        ];
+        for host in staging {
+            assert_eq!(
+                attestation_mirror(host),
+                STAGING_ATTESTATION_MIRROR,
+                "{host}"
+            );
+        }
+        let production = [
+            "kv.apps.calimero.network",
+            "apps.relay.staging.cloud.calimero.network",
+            "kv.evilapps.relay.staging.cloud.calimero.network",
+            "kv.apps.relay.staging.cloud.calimero.network.example.com",
+            "localhost:2428",
+            "",
+        ];
+        for host in production {
+            assert_eq!(attestation_mirror(host), ATTESTATION_MIRROR, "{host}");
+        }
     }
 
     #[test]
