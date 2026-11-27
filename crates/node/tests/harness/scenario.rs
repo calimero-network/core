@@ -1719,7 +1719,7 @@ impl<'a> Runner<'a> {
                     .await;
             }
             "team_list" => {
-                let o = cl.orgs().get(&org).await.map(wire)?;
+                let o = cl.orgs().get(&org, None, None, None).await.map(wire)?;
                 let teams = o
                     .get("teams")
                     .and_then(Value::as_object)
@@ -2354,7 +2354,7 @@ impl<'a> Runner<'a> {
                     };
                     return Ok(json!({ "capabilities": row["capabilities"] }));
                 }
-                let o = cl.orgs().get(&org).await.map(wire)?;
+                let o = cl.orgs().get(&org, None, None, None).await.map(wire)?;
                 if !o["members"]
                     .as_object()
                     .is_some_and(|m| m.contains_key(&who))

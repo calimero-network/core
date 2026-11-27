@@ -256,6 +256,14 @@ pub enum Feature {
     /// with `holder_proof`: an earlier release drops the proof and would revoke a bound
     /// session for a copy of its old token that a later one refuses.
     SessionHolders,
+    /// Bounds on what one organization and one account keep in the system state: teams per
+    /// organization (`maxTeamsPerOrg`) and metadata bytes per organization and per owning
+    /// account (`maxMetadataBytesPerOrg`, `maxMetadataBytesPerAccount`), checked at apply
+    /// (`SystemState::check_state_caps`). No entry changes shape: apply reads the logged
+    /// version, so a log replays unchanged, and an earlier release, which would apply what
+    /// this one refuses, holds it below the version; so are the three quotas, which an earlier
+    /// release drops, written only from it.
+    StateCaps,
     /// A component app's xcall carries its chain's budget (`XcallOut::budget`), and apply
     /// dead-letters one sent with none left
     /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
@@ -265,7 +273,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 58] = [
+pub const FEATURES: [Feature; 59] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -323,6 +331,7 @@ pub const FEATURES: [Feature; 58] = [
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
     Feature::SessionHolders,
+    Feature::StateCaps,
     Feature::XcallBudget,
 ];
 
@@ -388,14 +397,15 @@ impl Feature {
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
             Self::SessionHolders => "sessionHolders",
+            Self::StateCaps => "stateCaps",
             Self::XcallBudget => "xcallBudget",
         }
     }
 
     /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
-    /// `InviteCreatorStanding` and `BackupKeyApprovers` are rules apply reads from the logged
-    /// version: no entry names them. `XcallBudget` is carried by app entries, which the
-    /// leader shapes from the logged version.
+    /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
+    /// the logged version: no entry names them. `XcallBudget` is carried by app entries, which
+    /// the leader shapes from the logged version.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
         !matches!(
@@ -403,6 +413,7 @@ impl Feature {
             Self::HeldTeamGrants
                 | Self::InviteCreatorStanding
                 | Self::BackupKeyApprovers
+                | Self::StateCaps
                 | Self::XcallBudget
         )
     }
@@ -467,7 +478,7 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
-            Self::SessionHolders | Self::XcallBudget => "1.0.0-rc.39",
+            Self::SessionHolders | Self::StateCaps | Self::XcallBudget => "1.0.0-rc.39",
         }
     }
 }
@@ -1388,6 +1399,7 @@ mod tests {
             Feature::HeldTeamGrants
             | Feature::InviteCreatorStanding
             | Feature::BackupKeyApprovers
+            | Feature::StateCaps
             | Feature::XcallBudget => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
