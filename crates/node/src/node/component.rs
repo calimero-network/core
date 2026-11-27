@@ -2988,7 +2988,8 @@ impl Node {
                 if runs == Some(bundle)
                     && m.state.component.head.compute_bundle.as_deref() == compute_bundle
                 {
-                    let done = crate::component::host_answer(m.state.last_index, true, "");
+                    let mut done = crate::component::host_answer(m.state.last_index, true, "");
+                    done.result = json!({ "caughtUp": true });
                     return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
                 }
                 if judged_on.is_some_and(|j| runs.is_some_and(|r| r != j)) {

@@ -439,15 +439,32 @@ async fn a_half_finished_upgrade_is_repaired_by_upgrading_to_what_the_group_runs
     assert_eq!(group_bundle(&c, &app), Some(ahead.clone()));
     assert_eq!(node.app(&app).await.unwrap().bundle, recorded, "no record");
 
-    for version in ["1.2.0", "1.3.0"] {
-        let up = alice
-            .apps()
-            .upgrade(&app, typed(json!({ "version": version })), Some(&mut pk))
-            .await
-            .map(wire)
-            .unwrap_or_else(|e| panic!("{version}: {e}"));
-        assert_eq!(up["status"], "ok", "{version}: {up}");
-        let record = node.app(&app).await.unwrap().bundle;
-        assert_eq!(group_bundle(&c, &app), Some(record), "{version}");
-    }
+    let up = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.2.0" })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(group_bundle(&c, &app), Some(ahead.clone()));
+    assert_eq!(
+        node.app(&app).await.unwrap().bundle,
+        ahead,
+        "the record caught up"
+    );
+    // Catching up ran nothing, so it left nothing to undo: an undo would claim to revert
+    // code the group no longer ran before it.
+    let e = alice.apps().undo(&app, Some(&mut pk)).await.unwrap_err();
+    assert_eq!(e.code(), Some("NO_RESTORE_POINT"), "{e}");
+    assert_eq!(group_bundle(&c, &app), Some(ahead));
+
+    let up = alice
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.3.0" })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    let record = node.app(&app).await.unwrap().bundle;
+    assert_eq!(group_bundle(&c, &app), Some(record));
 }
