@@ -29,6 +29,9 @@ class QuotaSettings:
         max_concurrent_runs_per_org (int):
         compute_fuel_per_org (int):
         max_fuel_per_developer_per_day (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+        max_teams_per_org (int):
+        max_metadata_bytes_per_org (int):
+        max_metadata_bytes_per_account (int):
         orgs (QuotaSettingsOrgs):
     """
 
@@ -41,6 +44,9 @@ class QuotaSettings:
     max_concurrent_runs_per_org: int
     compute_fuel_per_org: int
     max_fuel_per_developer_per_day: str
+    max_teams_per_org: int
+    max_metadata_bytes_per_org: int
+    max_metadata_bytes_per_account: int
     orgs: "QuotaSettingsOrgs"
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -65,6 +71,12 @@ class QuotaSettings:
 
         max_fuel_per_developer_per_day = self.max_fuel_per_developer_per_day
 
+        max_teams_per_org = self.max_teams_per_org
+
+        max_metadata_bytes_per_org = self.max_metadata_bytes_per_org
+
+        max_metadata_bytes_per_account = self.max_metadata_bytes_per_account
+
         orgs = self.orgs.to_dict()
 
         field_dict: dict[str, Any] = {}
@@ -80,6 +92,9 @@ class QuotaSettings:
                 "maxConcurrentRunsPerOrg": max_concurrent_runs_per_org,
                 "computeFuelPerOrg": compute_fuel_per_org,
                 "maxFuelPerDeveloperPerDay": max_fuel_per_developer_per_day,
+                "maxTeamsPerOrg": max_teams_per_org,
+                "maxMetadataBytesPerOrg": max_metadata_bytes_per_org,
+                "maxMetadataBytesPerAccount": max_metadata_bytes_per_account,
                 "orgs": orgs,
             }
         )
@@ -109,6 +124,12 @@ class QuotaSettings:
 
         max_fuel_per_developer_per_day = d.pop("maxFuelPerDeveloperPerDay")
 
+        max_teams_per_org = d.pop("maxTeamsPerOrg")
+
+        max_metadata_bytes_per_org = d.pop("maxMetadataBytesPerOrg")
+
+        max_metadata_bytes_per_account = d.pop("maxMetadataBytesPerAccount")
+
         orgs = QuotaSettingsOrgs.from_dict(d.pop("orgs"))
 
         quota_settings = cls(
@@ -121,6 +142,9 @@ class QuotaSettings:
             max_concurrent_runs_per_org=max_concurrent_runs_per_org,
             compute_fuel_per_org=compute_fuel_per_org,
             max_fuel_per_developer_per_day=max_fuel_per_developer_per_day,
+            max_teams_per_org=max_teams_per_org,
+            max_metadata_bytes_per_org=max_metadata_bytes_per_org,
+            max_metadata_bytes_per_account=max_metadata_bytes_per_account,
             orgs=orgs,
         )
 

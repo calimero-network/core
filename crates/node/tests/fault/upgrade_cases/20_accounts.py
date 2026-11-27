@@ -343,3 +343,8 @@ not_covered("Accounts", ("Consent-page approvals (`/consent/requests`: release, 
             "frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` "
             "makes, which `app-teams` covers. The verifier link is a startup setting "
             "(`--attestation-verifier-url`) that stores nothing")
+
+not_covered("Accounts", "A sign-up name past `MAX_ACCOUNT_NAME_CHARS`, or a passkey ceremony body past "
+            "`MAX_PASSKEY_CEREMONY_BYTES`, refused at `register/begin`",
+            "a refusal before any ceremony is held stores nothing, so an upgrade has nothing to carry; "
+            "`tests/it/sessions.rs` covers it on one build")

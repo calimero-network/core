@@ -302,6 +302,19 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_id_past_webauthns_bound_is_refused() {
+        let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let challenge = random::<32>();
+        auth.set_credential_id(vec![7; webauthn::MAX_CREDENTIAL_ID_BYTES]);
+        assert!(verify_registration(&rp(), &challenge, &auth.register(&challenge)).is_ok());
+        auth.set_credential_id(vec![7; webauthn::MAX_CREDENTIAL_ID_BYTES + 1]);
+        assert_eq!(
+            verify_registration(&rp(), &challenge, &auth.register(&challenge)),
+            Err(Error::Malformed("credential id"))
+        );
+    }
+
+    #[test]
     fn refuses_wrong_challenge_origin_and_tampering() {
         let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
         let challenge = random::<32>();

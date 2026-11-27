@@ -35,6 +35,7 @@ mod recovery;
 mod rejection;
 mod routing;
 mod sign_up;
+mod state_caps;
 mod updates;
 
 pub use accounts::SessionsRevoked;
@@ -109,6 +110,16 @@ pub struct Quotas {
     /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_developer_per_day: u64,
+    /// Teams one organization holds, app teams included
+    /// (`state_caps::MAX_TEAMS_PER_ORG`). Checked at apply from cluster version
+    /// [`cluster_version::Feature::StateCaps`]; a change is written only from that version.
+    pub max_teams_per_org: u32,
+    /// Metadata bytes one organization holds: its own, its members' and its teams'
+    /// (`state_caps::MAX_METADATA_BYTES_PER_ORG`).
+    pub max_metadata_bytes_per_org: u64,
+    /// Metadata bytes of every organization one account owns, summed
+    /// (`state_caps::MAX_METADATA_BYTES_PER_ACCOUNT`).
+    pub max_metadata_bytes_per_account: u64,
 }
 
 /// A `u64` as a decimal string in JSON: digits only, no sign, no leading zero.
@@ -189,6 +200,9 @@ impl Default for Quotas {
             max_concurrent_runs_per_org: 4,
             compute_fuel_per_org: 10 * calimero_app_host::MAX_COMPUTE_FUEL,
             max_fuel_per_developer_per_day: 0,
+            max_teams_per_org: state_caps::MAX_TEAMS_PER_ORG,
+            max_metadata_bytes_per_org: state_caps::MAX_METADATA_BYTES_PER_ORG,
+            max_metadata_bytes_per_account: state_caps::MAX_METADATA_BYTES_PER_ACCOUNT,
         }
     }
 }

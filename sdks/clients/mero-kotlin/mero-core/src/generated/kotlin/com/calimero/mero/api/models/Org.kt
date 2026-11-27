@@ -63,6 +63,8 @@ import kotlinx.serialization.Contextual
  * @param releaseApprovers 
  * @param publishes 
  * @param newWorkStopped 
+ * @param nextTeamsAfter 
+ * @param nextMembersAfter 
  */
 @Serializable
 
@@ -139,7 +141,13 @@ data class Org (
     val publishes: kotlin.collections.List<kotlin.String>? = null,
 
     @SerialName(value = "newWorkStopped")
-    val newWorkStopped: OrgNewWorkStopped? = null
+    val newWorkStopped: OrgNewWorkStopped? = null,
+
+    @SerialName(value = "nextTeamsAfter")
+    val nextTeamsAfter: kotlin.String? = null,
+
+    @SerialName(value = "nextMembersAfter")
+    val nextMembersAfter: kotlin.String? = null
 
 ) {
 

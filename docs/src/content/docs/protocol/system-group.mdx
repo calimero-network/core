@@ -322,7 +322,9 @@ account can send (an organization's and member's metadata, creating and
 updating a team, an instance's metadata, access and deletion). It refuses
 only what `apply` would refuse on the same state, with the same kind and
 message, and proposes everything else; `apply` judges it again, so the
-verdict that counts is still the log's.
+verdict that counts is still the log's. It runs before the
+[state bounds](/protocol/limits/#quotas) are checked, so a caller who may not
+act is told so, or that the subject is missing, never how full the state is.
 
 A refusal on this replica's state is judged again once the replica caught up
 with the system leader ([one round per request](#one-round-per-request)): a

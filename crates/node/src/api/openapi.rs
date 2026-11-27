@@ -1977,8 +1977,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::NodeRecord>(),
         component(
             "Quotas",
-            "The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.",
-            "{ maxAppsPerAccount: uint, maxBundleBytesPerAccount: uint, maxApiKeysPerAccount: uint, maxOrgsPerAccount: uint, maxAccounts: uint, maxFileBytesPerOrg: uint, maxConcurrentRunsPerOrg: uint, computeFuelPerOrg: uint, maxFuelPerDeveloperPerDay: u64 }",
+            "The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`).",
+            "{ maxAppsPerAccount: uint, maxBundleBytesPerAccount: uint, maxApiKeysPerAccount: uint, maxOrgsPerAccount: uint, maxAccounts: uint, maxFileBytesPerOrg: uint, maxConcurrentRunsPerOrg: uint, computeFuelPerOrg: uint, maxFuelPerDeveloperPerDay: u64, maxTeamsPerOrg: uint, maxMetadataBytesPerOrg: uint, maxMetadataBytesPerAccount: uint }",
         )
         .of::<crate::system::Quotas>(),
         component(
@@ -1990,7 +1990,7 @@ fn components() -> Vec<Component> {
         component(
             "QuotaSettings",
             "`GET /ops/quotas`: the cluster's limits and, under `orgs`, each payer's overrides by payer id.",
-            "{ maxAppsPerAccount: uint, maxBundleBytesPerAccount: uint, maxApiKeysPerAccount: uint, maxOrgsPerAccount: uint, maxAccounts: uint, maxFileBytesPerOrg: uint, maxConcurrentRunsPerOrg: uint, computeFuelPerOrg: uint, maxFuelPerDeveloperPerDay: u64, orgs: { [string]: #OrgQuotas } }",
+            "{ maxAppsPerAccount: uint, maxBundleBytesPerAccount: uint, maxApiKeysPerAccount: uint, maxOrgsPerAccount: uint, maxAccounts: uint, maxFileBytesPerOrg: uint, maxConcurrentRunsPerOrg: uint, computeFuelPerOrg: uint, maxFuelPerDeveloperPerDay: u64, maxTeamsPerOrg: uint, maxMetadataBytesPerOrg: uint, maxMetadataBytesPerAccount: uint, orgs: { [string]: #OrgQuotas } }",
         )
         .of::<QuotaSettings>(),
         component(
@@ -2170,7 +2170,7 @@ fn components() -> Vec<Component> {
         component(
             "Org",
             "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, egressOff?: bool, upgradePolicy?: #UpgradePolicy, appUpgradePolicies?: { [string]: #UpgradePolicy }, pendingUpgrades?: { [string]: { package: string, version: string, targets?: { [string]: { package: string, version: string } }, by: string, at: uint, class: { class: "green" | "red", reasons?: #UpdateReason[] } } }, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, egressOff?: bool, upgradePolicy?: #UpgradePolicy, appUpgradePolicies?: { [string]: #UpgradePolicy }, pendingUpgrades?: { [string]: { package: string, version: string, targets?: { [string]: { package: string, version: string } }, by: string, at: uint, class: { class: "green" | "red", reasons?: #UpdateReason[] } } }, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null, nextTeamsAfter?: string | null, nextMembersAfter?: string | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -2273,7 +2273,7 @@ fn components() -> Vec<Component> {
         component(
             "QuotaChanges",
             "The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.",
-            "{ org?: string, operatorProof?: #OperatorProof, orgs?: any, maxAppsPerAccount?: uint, maxBundleBytesPerAccount?: uint, maxApiKeysPerAccount?: uint, maxOrgsPerAccount?: uint, maxAccounts?: uint, maxFileBytesPerOrg?: uint, maxConcurrentRunsPerOrg?: uint, computeFuelPerOrg?: uint, maxFuelPerDeveloperPerDay?: u64, maxConcurrentRuns?: uint | null, computeFuel?: u64 | null, maxFileBytes?: uint | null }",
+            "{ org?: string, operatorProof?: #OperatorProof, orgs?: any, maxAppsPerAccount?: uint, maxBundleBytesPerAccount?: uint, maxApiKeysPerAccount?: uint, maxOrgsPerAccount?: uint, maxAccounts?: uint, maxFileBytesPerOrg?: uint, maxConcurrentRunsPerOrg?: uint, computeFuelPerOrg?: uint, maxFuelPerDeveloperPerDay?: u64, maxTeamsPerOrg?: uint, maxMetadataBytesPerOrg?: uint, maxMetadataBytesPerAccount?: uint, maxConcurrentRuns?: uint | null, computeFuel?: u64 | null, maxFileBytes?: uint | null }",
         )
         .closed_body(),
     ]
@@ -2306,6 +2306,19 @@ struct OrgAnswer {
         skip_serializing_if = "Option::is_none"
     )]
     new_work_stopped: Option<Option<StallAnswer>>,
+    /// The next page's cursors, absent from an older node; `null` on the last page.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    next_teams_after: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    next_members_after: Option<Option<String>>,
 }
 
 #[derive(Serialize, serde::Deserialize)]
@@ -2895,7 +2908,8 @@ fn operations() -> Vec<Op> {
             .ok("#OrgCreated")
             .errors(&[(400, "BAD_REQUEST"), (400, "UNKNOWN_CAPABILITIES"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
         get("/orgs/{org}", "org_get", SignedIn, "One organization")
-            .about("As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).")
+            .about("As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).")
+            .query::<super::OrgQuery>("{ limit?: uint, teamsAfter?: string, membersAfter?: string }")
             .ok("#Org")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}", "org_delete", AccountHolder, "Delete an organization")

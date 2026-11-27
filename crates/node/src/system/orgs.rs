@@ -11,6 +11,8 @@
 )]
 use super::*;
 
+use super::state_caps::MetadataSlot;
+
 /// What `CreateOrg` answers: the new organization, and its app team when it is made with one
 /// (the consent page's `createOrg` for a package).
 #[derive(Debug, Serialize, Deserialize)]
@@ -940,6 +942,9 @@ fn set_org_metadata(
     actor: &str,
 ) -> Result<Value, Rejection> {
     check_org_metadata(state, org, &metadata, actor)?;
+    if state.caps_state() {
+        state.check_metadata(org, MetadataSlot::Org, &metadata)?;
+    }
     let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     organization.metadata = metadata;
     Ok(Value::Null)
@@ -971,6 +976,9 @@ fn set_member_metadata(
     actor: &str,
 ) -> Result<Value, Rejection> {
     check_member_metadata(state, org, &account, &metadata, actor)?;
+    if state.caps_state() {
+        state.check_metadata(org, MetadataSlot::Member(&account), &metadata)?;
+    }
     let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     if metadata.is_null() {
         let _gone = organization.member_metadata.remove(&account);
@@ -1086,6 +1094,9 @@ fn create_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         join,
         member_child_teams,
     )?;
+    if state.caps_state() {
+        state.check_new_team(&org)?;
+    }
     let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
     let members = BTreeMap::from([(actor, true)]);
     let _prev = organization.teams.insert(
@@ -1242,7 +1253,7 @@ fn update_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         // SAFETY: `apply` sends only an `UpdateTeam` here.
         unreachable!("update_team applies an UpdateTeam")
     };
-    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
+    let organization = state.orgs.get(&org).ok_or(NO_SUCH_ORG)?;
     if !organization.teams.contains_key(&team) {
         return Err(NO_SUCH_TEAM);
     }
@@ -1254,6 +1265,10 @@ fn update_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         join.is_some(),
         metadata.as_ref(),
     )?;
+    if let Some(metadata) = metadata.as_ref().filter(|_| state.caps_state()) {
+        state.check_metadata(&org, MetadataSlot::Team(&team), metadata)?;
+    }
+    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
     let current = organization.teams.get(&team).ok_or(NO_SUCH_TEAM)?;
     let parent_after = parent.clone().unwrap_or_else(|| current.parent.clone());
     let package_before = current.app_package().map(str::to_owned);

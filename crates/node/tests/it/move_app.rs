@@ -271,7 +271,13 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     let record = alice.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(record["org"], json!(dst), "{record}");
     assert_eq!(record["grants"][0]["kind"], "team", "{record}");
-    let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
+    let members = alice
+        .orgs()
+        .get(&dst, None, None, None)
+        .await
+        .map(wire)
+        .unwrap()["members"]
+        .clone();
     assert_eq!(members[&bob_id], "member", "{members}");
     assert_eq!(
         members[&carol_id], "member",
@@ -356,7 +362,13 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
             .unwrap();
         assert!(reaches(p, &dst).await.contains(&dm));
     }
-    let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
+    let members = alice
+        .orgs()
+        .get(&dst, None, None, None)
+        .await
+        .map(wire)
+        .unwrap()["members"]
+        .clone();
     assert!(members.get(&dave_id).is_none(), "{members}");
     assert!(reaches(&dave, &dst).await.is_empty());
 }

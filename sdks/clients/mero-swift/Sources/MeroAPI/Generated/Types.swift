@@ -1181,7 +1181,7 @@ public protocol APIProtocol: Sendable {
     func orgCreate(_ input: Operations.OrgCreate.Input) async throws -> Operations.OrgCreate.Output
     /// One organization
     ///
-    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -4015,7 +4015,7 @@ extension APIProtocol {
     }
     /// One organization
     ///
-    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -4023,10 +4023,12 @@ extension APIProtocol {
     /// - Remark: Generated from `#/paths//orgs/{org}/get(org_get)`.
     public func orgGet(
         path: Operations.OrgGet.Input.Path,
+        query: Operations.OrgGet.Input.Query = .init(),
         headers: Operations.OrgGet.Input.Headers = .init()
     ) async throws -> Operations.OrgGet.Output {
         try await orgGet(Operations.OrgGet.Input(
             path: path,
+            query: query,
             headers: headers
         ))
     }
@@ -13844,7 +13846,7 @@ public enum Components {
                 case learners
             }
         }
-        /// The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.
+        /// The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`).
         ///
         /// - Remark: Generated from `#/components/schemas/Quotas`.
         public struct Quotas: Codable, Hashable, Sendable {
@@ -13868,6 +13870,12 @@ public enum Components {
             ///
             /// - Remark: Generated from `#/components/schemas/Quotas/maxFuelPerDeveloperPerDay`.
             public var maxFuelPerDeveloperPerDay: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Quotas/maxTeamsPerOrg`.
+            public var maxTeamsPerOrg: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Quotas/maxMetadataBytesPerOrg`.
+            public var maxMetadataBytesPerOrg: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Quotas/maxMetadataBytesPerAccount`.
+            public var maxMetadataBytesPerAccount: Swift.Int64
             /// Creates a new `Quotas`.
             ///
             /// - Parameters:
@@ -13880,6 +13888,9 @@ public enum Components {
             ///   - maxConcurrentRunsPerOrg:
             ///   - computeFuelPerOrg:
             ///   - maxFuelPerDeveloperPerDay: an unsigned 64-bit integer as a decimal string, exact past 2^53
+            ///   - maxTeamsPerOrg:
+            ///   - maxMetadataBytesPerOrg:
+            ///   - maxMetadataBytesPerAccount:
             public init(
                 maxAppsPerAccount: Swift.Int64,
                 maxBundleBytesPerAccount: Swift.Int64,
@@ -13889,7 +13900,10 @@ public enum Components {
                 maxFileBytesPerOrg: Swift.Int64,
                 maxConcurrentRunsPerOrg: Swift.Int64,
                 computeFuelPerOrg: Swift.Int64,
-                maxFuelPerDeveloperPerDay: Swift.String
+                maxFuelPerDeveloperPerDay: Swift.String,
+                maxTeamsPerOrg: Swift.Int64,
+                maxMetadataBytesPerOrg: Swift.Int64,
+                maxMetadataBytesPerAccount: Swift.Int64
             ) {
                 self.maxAppsPerAccount = maxAppsPerAccount
                 self.maxBundleBytesPerAccount = maxBundleBytesPerAccount
@@ -13900,6 +13914,9 @@ public enum Components {
                 self.maxConcurrentRunsPerOrg = maxConcurrentRunsPerOrg
                 self.computeFuelPerOrg = computeFuelPerOrg
                 self.maxFuelPerDeveloperPerDay = maxFuelPerDeveloperPerDay
+                self.maxTeamsPerOrg = maxTeamsPerOrg
+                self.maxMetadataBytesPerOrg = maxMetadataBytesPerOrg
+                self.maxMetadataBytesPerAccount = maxMetadataBytesPerAccount
             }
             public enum CodingKeys: String, CodingKey {
                 case maxAppsPerAccount
@@ -13911,6 +13928,9 @@ public enum Components {
                 case maxConcurrentRunsPerOrg
                 case computeFuelPerOrg
                 case maxFuelPerDeveloperPerDay
+                case maxTeamsPerOrg
+                case maxMetadataBytesPerOrg
+                case maxMetadataBytesPerAccount
             }
         }
         /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method and moves none of the apps it created, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
@@ -16976,6 +16996,10 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/Org/newWorkStopped`.
             public var newWorkStopped: Components.Schemas.Org.NewWorkStoppedPayload?
+            /// - Remark: Generated from `#/components/schemas/Org/nextTeamsAfter`.
+            public var nextTeamsAfter: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/Org/nextMembersAfter`.
+            public var nextMembersAfter: Swift.String?
             /// Creates a new `Org`.
             ///
             /// - Parameters:
@@ -17003,6 +17027,8 @@ public enum Components {
             ///   - releaseApprovers:
             ///   - publishes:
             ///   - newWorkStopped:
+            ///   - nextTeamsAfter:
+            ///   - nextMembersAfter:
             public init(
                 orgId: Swift.String,
                 name: Swift.String,
@@ -17027,7 +17053,9 @@ public enum Components {
                 mode: Components.Schemas.Org.ModePayload? = nil,
                 releaseApprovers: [Swift.String]? = nil,
                 publishes: [Swift.String]? = nil,
-                newWorkStopped: Components.Schemas.Org.NewWorkStoppedPayload? = nil
+                newWorkStopped: Components.Schemas.Org.NewWorkStoppedPayload? = nil,
+                nextTeamsAfter: Swift.String? = nil,
+                nextMembersAfter: Swift.String? = nil
             ) {
                 self.orgId = orgId
                 self.name = name
@@ -17053,6 +17081,8 @@ public enum Components {
                 self.releaseApprovers = releaseApprovers
                 self.publishes = publishes
                 self.newWorkStopped = newWorkStopped
+                self.nextTeamsAfter = nextTeamsAfter
+                self.nextMembersAfter = nextMembersAfter
             }
             public enum CodingKeys: String, CodingKey {
                 case orgId
@@ -17079,6 +17109,8 @@ public enum Components {
                 case releaseApprovers
                 case publishes
                 case newWorkStopped
+                case nextTeamsAfter
+                case nextMembersAfter
             }
         }
         /// A team as its organization records it: `members` maps each direct row to whether it is a lead; `capabilities` are capability bits per row; `defaultCapabilities` is absent when unset.
@@ -40852,7 +40884,7 @@ public enum Operations {
     }
     /// One organization
     ///
-    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -40874,6 +40906,31 @@ public enum Operations {
                 }
             }
             public var path: Operations.OrgGet.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/GET/query`.
+            public struct Query: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/GET/query/limit`.
+                public var limit: Swift.Int64?
+                /// - Remark: Generated from `#/paths/orgs/{org}/GET/query/teamsAfter`.
+                public var teamsAfter: Swift.String?
+                /// - Remark: Generated from `#/paths/orgs/{org}/GET/query/membersAfter`.
+                public var membersAfter: Swift.String?
+                /// Creates a new `Query`.
+                ///
+                /// - Parameters:
+                ///   - limit:
+                ///   - teamsAfter:
+                ///   - membersAfter:
+                public init(
+                    limit: Swift.Int64? = nil,
+                    teamsAfter: Swift.String? = nil,
+                    membersAfter: Swift.String? = nil
+                ) {
+                    self.limit = limit
+                    self.teamsAfter = teamsAfter
+                    self.membersAfter = membersAfter
+                }
+            }
+            public var query: Operations.OrgGet.Input.Query
             /// - Remark: Generated from `#/paths/orgs/{org}/GET/header`.
             public struct Headers: Sendable, Hashable {
                 public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgGet.AcceptableContentType>]
@@ -40890,12 +40947,15 @@ public enum Operations {
             ///
             /// - Parameters:
             ///   - path:
+            ///   - query:
             ///   - headers:
             public init(
                 path: Operations.OrgGet.Input.Path,
+                query: Operations.OrgGet.Input.Query = .init(),
                 headers: Operations.OrgGet.Input.Headers = .init()
             ) {
                 self.path = path
+                self.query = query
                 self.headers = headers
             }
         }
