@@ -270,10 +270,11 @@ uses `localhost`.
   not offer this one, is a `404`.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
   node route. Responses carry a fixed content security policy with the cluster's
-  API origins and the attestation mirror (`https://cloud.calimero.network`, where
-  the page's client gets the release's signed measurements and Intel's
-  collateral; both are signed, so the mirror is trusted with nothing) added to
-  `connect-src`.
+  API origins and the attestation mirror (`https://cloud.calimero.network`, or
+  `https://staging.cloud.calimero.network` for a page under staging's apps
+  domain, as mero-js picks it; where the page's client gets the release's
+  signed measurements and Intel's collateral; both are signed, so the mirror is
+  trusted with nothing) added to `connect-src`.
 
 `GET /packages/{package}/{version}/frontend` (anyone, over the sealed channel
 like every route) answers the release's entry and every file with its SHA-256
@@ -621,7 +622,7 @@ Code: `app_host.rs`.
 - `/app/{app}/` of a record without `AppRecord::release` goes to the newest release shipping its WASM, by `compare_versions`.
 - `/d/{deployment}/` is looked up again on fresh state when nothing matches.
 - Every redirect keeps the request's query, after any `deployment` it adds, so `/?invite=...` reaches the page.
-- The mirror in `connect-src` is `ATTESTATION_MIRROR`.
+- The mirror in `connect-src` is `attestation_mirror(host)`: `STAGING_ATTESTATION_MIRROR` under `STAGING_APPS_DOMAIN`, `ATTESTATION_MIRROR` on any other host, copies of mero-js's `CLOUD_ENVIRONMENTS` kept equal by `the_mirrors_match_mero_js`.
 - Cluster hosts are `cluster_label(config.cluster, package)`; deployment hosts are `deployment_label(id)`, served as an `app_host::Site`.
 
 #### Package-bound sessions
