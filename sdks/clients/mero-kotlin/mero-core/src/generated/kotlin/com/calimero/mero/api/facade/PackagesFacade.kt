@@ -108,6 +108,23 @@ class PackagesFacade internal constructor(
         api(null, null, emptySet()).packages.packageCapabilities(`package` = `package`, version = version, service = service)
 
     /**
+     * A release's frontend files
+     *
+     * Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+     *
+     * **Who:** anyone.
+     *
+     * `GET /packages/{package}/{version}/frontend` (`package_frontend`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun frontend(
+        `package`: kotlin.String,
+        version: kotlin.String,
+    ): FrontendDigests =
+        api(null, null, emptySet()).packages.packageFrontend(`package` = `package`, version = version)
+
+    /**
      * One package
      *
      * The versions the caller may see; `404` when none.

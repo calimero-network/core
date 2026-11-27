@@ -7,8 +7,6 @@
 //!
 //! - **outbound prefixes**: what the app may call out to once approved
 //!   (`calimero-outbound`);
-//! - **connectors**: the first-party connector operations it may call, and the values
-//!   each connector's limits allow (`connector.operation`, `connector.limit=value`);
 //! - **frontend origin and aliases**: an added origin is a new place a
 //!   sign-in callback is trusted to land (highlighted as `newLoginOrigins`);
 //! - **interfaces** the bundle uses and exports;
@@ -62,7 +60,6 @@ pub fn capability_sheet(from: &Side<'_>, to: &Side<'_>) -> Value {
             from.manifest.outbound.iter().cloned().collect(),
             to.manifest.outbound.iter().cloned().collect(),
         ),
-        "connectors": set_diff(connectors(from.manifest), connectors(to.manifest)),
         "secrets": secrets(from.manifest, to.manifest),
         "uses": uses(from.manifest, to.manifest),
         "frontend": frontend(from.manifest, to.manifest),
@@ -183,23 +180,6 @@ fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
 }
 
 /// `{ added, removed, kept }` from `before` to `after`, each sorted.
-/// What a release declares of the node's connectors, one item each:
-/// `connector.operation` and `connector.limit=value`.
-fn connectors(m: &BundleManifest) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for (name, c) in m.connectors.iter().flatten() {
-        for op in &c.operations {
-            let _ = out.insert(format!("{name}.{op}"));
-        }
-        for (limit, values) in &c.limits {
-            for v in values {
-                let _ = out.insert(format!("{name}.{limit}={v}"));
-            }
-        }
-    }
-    out
-}
-
 fn set_diff(before: BTreeSet<String>, after: BTreeSet<String>) -> Value {
     json!({
         "added": after.difference(&before).collect::<Vec<_>>(),
@@ -496,40 +476,6 @@ mod tests {
         assert_eq!(card["uses"]["inference"]["mode"], json!("create"));
     }
 
-    /// An upgrade's sheet names each connector operation and limit value the target adds or
-    /// drops, so a new Stripe operation or OpenAI model is approved knowingly.
-    #[test]
-    fn the_sheet_names_connector_operations_and_values_a_release_adds() {
-        let from = manifest(json!({
-            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
-            "connectors": { "stripe": { "operations": ["retrievePaymentIntent"] } },
-        }));
-        let to = manifest(json!({
-            "version": "1.0", "package": "p", "appVersion": "2.0.0", "minRuntimeVersion": "0.1.0",
-            "connectors": {
-                "stripe": {
-                    "operations": ["createPaymentIntent", "retrievePaymentIntent"],
-                    "metadata": ["order_id"],
-                },
-                "openai": { "operations": ["chatCompletion"], "model": ["gpt-4o-mini"] },
-            },
-        }));
-        let sheet = capability_sheet(&side("1.0.0", &from, None), &side("2.0.0", &to, None));
-        assert_eq!(
-            sheet["connectors"],
-            json!({
-                "added": [
-                    "openai.chatCompletion",
-                    "openai.model=gpt-4o-mini",
-                    "stripe.createPaymentIntent",
-                    "stripe.metadata=order_id",
-                ],
-                "removed": [],
-                "kept": ["stripe.retrievePaymentIntent"],
-            })
-        );
-    }
-
     /// The fixture pair: 1.0.0 calls one host and has one alias; 2.0.0 calls
     /// a second host, moves its frontend, adds an alias, a confirmed method, a
     /// public view, an event and a timer, changes a timer's period, drops a
@@ -581,7 +527,7 @@ mod tests {
                 "sweep": { "kind": "timer", "every": "1h", "allowSystem": true },
             },
             "events": { "Changed": { "id": "string" }, "Wiped": null },
-            "world": "calimero:app@0.5.8",
+            "world": "calimero:app@0.5.7",
         });
         let sheet = capability_sheet(
             &side("1.0.0", &from, Some(&a)),

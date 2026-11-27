@@ -1077,6 +1077,31 @@ view and refused until it replicated (fail-closed, the two-sided bound the
 every row is error-free; set a lease only to a freshness bound the deployment
 accepts, below a client's own refresh spacing.
 
+**Size-aware snapshot cadence.** A full snapshot re-seals the whole state, so
+building one every `snapshot_every` (1000) applied entries whatever the size is
+write amplification for a large app — it competes with the write path and is a
+root cause of the single-app throughput drop and p99 spikes as state grows.
+`Config::snapshot_scale_bytes` (`--snapshot-scale-bytes`, off by default) widens
+the interval in proportion to the state's size, so the whole-state re-seal stays
+a bounded fraction of the bytes written (`calimero-log`, [AGENTS.md](https://github.com/calimero-network/core/blob/master/crates/log/AGENTS.md)).
+`snapshot_amplification` measures it directly — every build calls
+`Machine::snapshot`, so the count is exactly the whole-state re-seals — over 400
+entries at a ~1 MiB state (`snapshot_every` 20, scale 128 KiB):
+
+| Cadence | Whole-state re-seals | Final snapshot covers |
+| --- | --- | --- |
+| fixed (`LogsSinceLast(20)`) | 20 | index 399 |
+| size-aware (scale 128 KiB) | 1 | index 401 |
+
+The fixed cadence re-sealed the ~1 MiB state 20 times for 400 small entries
+(~20 MiB of re-seal work); the size-aware one re-sealed it once and still purged
+the log (its single snapshot covers every entry). The precise interval math is
+unit-tested in `snapshot_cadence`; the engine-driven path (openraft's policy is
+`Never` when the cadence is size-aware) in
+`the_engine_drives_snapshots_when_the_cadence_is_size_aware`. End-to-end
+large-state throughput and leader RSS as a single app grows into the hundreds of
+MB are validated separately with the store-growth harness, not here.
+
 <Aside type="note" title="Fuzzing">
   `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,
   `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`) and the

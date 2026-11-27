@@ -273,6 +273,64 @@ async fn package_pipelines(
     Ok(Json(json!(node.release_pipelines(&refs).await?)))
 }
 
+/// The longest package name `GET /packages/{package}/{version}/frontend` looks up; a longer
+/// one is no package.
+const MAX_FRONTEND_PACKAGE_BYTES: usize = 256;
+
+/// `GET /packages/{package}/{version}/frontend`: what the release's frontend is, file by file.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FrontendDigests {
+    package: String,
+    version: String,
+    /// The entry's path, relative to the frontend root (`index.html`).
+    entry: String,
+    /// Every file the node serves for this release, by path.
+    files: Vec<FrontendFileDigest>,
+}
+
+/// One frontend file: its path relative to the frontend root (served at
+/// `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FrontendFileDigest {
+    path: String,
+    sha256: String,
+    size: u64,
+}
+
+/// A release's frontend files and their digests, for a client that checks the page it was
+/// served against what this attested node verified at install (the publisher's signature over
+/// every file): the browser extension of mero-tee's frontend verification. Public, as the files
+/// themselves are (`app_host`): anyone may load a package's page, so anyone may check it.
+async fn package_frontend(
+    State(node): State<Arc<Node>>,
+    Path((package, version)): Path<(String, String)>,
+) -> ApiResult<Json<FrontendDigests>> {
+    if package.len() > MAX_FRONTEND_PACKAGE_BYTES
+        || version.len() > crate::system::MAX_RELEASE_VERSION_BYTES
+    {
+        return Err(ApiError::not_found("no such frontend"));
+    }
+    let frontend = node
+        .frontend(&package, &version)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such frontend"))?;
+    Ok(Json(FrontendDigests {
+        entry: frontend.entry().to_owned(),
+        files: frontend
+            .digests()
+            .map(|(path, sha256, size)| FrontendFileDigest {
+                path: path.to_owned(),
+                sha256: sha256.to_owned(),
+                size,
+            })
+            .collect(),
+        package,
+        version,
+    }))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CapabilitiesQuery {
@@ -598,6 +656,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route(
             "/packages/{package}/{version}/capabilities",
             get(package_capabilities),
+        )
+        .route(
+            "/packages/{package}/{version}/frontend",
+            get(package_frontend),
         )
         .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/publishers/{signer}", get(publisher_binding))

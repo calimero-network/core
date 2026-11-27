@@ -924,26 +924,18 @@ impl Node {
     ) -> Ran {
         // The run's wall clock, which its host calls keep too (`HostCore::with_deadline`).
         let deadline = Instant::now() + self.budget().wall_clock;
-        let outbound = extras.outbound.then(|| {
+        let http = extras.outbound.then(|| {
             let meter = self.meter(app_id, &prepared.hash);
-            let clients = self.outbound_for(
-                app_id,
-                &prepared.hash,
-                self.usage.outbound(&meter.app, &meter.billed),
-                &extras.secrets,
-            );
-            (
-                Arc::new(TimedHttp {
-                    inner: Arc::new(NodeHttp(clients.http)),
-                    timeout: CALL_FETCH_TIMEOUT,
-                    deadline,
-                }),
-                Arc::new(TimedConnectors {
-                    inner: clients.connectors,
-                    timeout: CALL_FETCH_TIMEOUT,
-                    deadline,
-                }),
-            )
+            Arc::new(TimedHttp {
+                inner: Arc::new(NodeHttp(self.outbound_for(
+                    app_id,
+                    &prepared.hash,
+                    self.usage.outbound(&meter.app, &meter.billed),
+                    &extras.secrets,
+                ))),
+                timeout: CALL_FETCH_TIMEOUT,
+                deadline,
+            })
         });
         // Whom this run serves, for the apps it calls (each call runs as them only with
         // their grant, `Node::caller_for`): its own caller when that is a person.
@@ -1003,8 +995,8 @@ impl Node {
                     Some(xcalls) => host.with_xcall_host(xcalls),
                     None => host,
                 };
-                let host = match outbound {
-                    Some((http, connectors)) => host.with_http(http).with_connectors(connectors),
+                let host = match http {
+                    Some(http) => host.with_http(http),
                     None => host,
                 };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
@@ -2624,19 +2616,13 @@ impl Node {
             .hosted(app_id)
             .map(|g| g.read_local(|m, _| m.instance_secrets()))
             .unwrap_or_default();
-        let clients = self.outbound_for(
-            app_id,
-            &prepared.hash,
-            self.usage.outbound(&meter.app, &meter.billed),
-            &own_secrets,
-        );
         let http = Arc::new(TimedHttp {
-            inner: Arc::new(NodeHttp(clients.http)),
-            timeout: budget.wall_clock,
-            deadline,
-        });
-        let connectors = Arc::new(TimedConnectors {
-            inner: clients.connectors,
+            inner: Arc::new(NodeHttp(self.outbound_for(
+                app_id,
+                &prepared.hash,
+                self.usage.outbound(&meter.app, &meter.billed),
+                &own_secrets,
+            ))),
             timeout: budget.wall_clock,
             deadline,
         });
@@ -2669,7 +2655,6 @@ impl Node {
                             host.with_deadline(deadline)
                                 .with_action(runner)
                                 .with_http(http)
-                                .with_connectors(connectors)
                                 .with_xcall_host(xcalls)
                                 .with_logs(keep_logs)
                                 .with_search_budget(searches),
@@ -3233,37 +3218,6 @@ impl calimero_app_host::HttpHost for TimedHttp {
             .name("call-fetch".into())
             .spawn(move || {
                 let _sent = tx.send(calimero_app_host::HttpHost::send(&*inner, &request));
-            })
-            .map_err(|e| e.to_string())?;
-        let wait = (self.timeout).min(self.deadline.saturating_duration_since(Instant::now()));
-        rx.recv_timeout(wait)
-            .unwrap_or_else(|_| Err(format!("no response within {wait:?}")))
-    }
-}
-
-/// The node's first-party connectors for a run (`connector.call`), with [`TimedHttp`]'s
-/// wait: the connector's answer, or a timeout after `timeout` or at the run's `deadline`,
-/// whichever comes first. `inner` is `None` for a release that declares no connector (or
-/// with outbound off), and every call is refused.
-struct TimedConnectors {
-    inner: Option<Arc<dyn calimero_outbound::ConnectorHost>>,
-    timeout: Duration,
-    deadline: Instant,
-}
-
-impl calimero_app_host::ConnectorHost for TimedConnectors {
-    fn call(&self, connector: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String> {
-        let Some(inner) = &self.inner else {
-            return Err(calimero_app_host::NO_CONNECTORS.to_owned());
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let inner = Arc::clone(inner);
-        let (connector, operation, input) =
-            (connector.to_owned(), operation.to_owned(), input.to_vec());
-        let _detached = std::thread::Builder::new()
-            .name("call-connector".into())
-            .spawn(move || {
-                let _sent = tx.send(inner.call(&connector, &operation, &input));
             })
             .map_err(|e| e.to_string())?;
         let wait = (self.timeout).min(self.deadline.saturating_duration_since(Instant::now()));
