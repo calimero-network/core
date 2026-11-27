@@ -1634,7 +1634,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1643,7 +1643,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -1988,7 +1990,7 @@
             ]
           },
           "403": {
-            "description": "`CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1997,8 +1999,10 @@
               }
             },
             "x-calimero-codes": [
+              "ASSERTION_REFUSED",
               "CONSENT_PAGE_REQUIRED",
-              "FORBIDDEN"
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -3324,7 +3328,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3333,7 +3337,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -3566,7 +3572,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3575,7 +3581,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -3832,7 +3840,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3841,7 +3849,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -4059,7 +4069,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4068,7 +4078,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -4214,7 +4226,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4223,7 +4235,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -4501,7 +4515,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4510,7 +4524,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -4738,7 +4754,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4747,7 +4763,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -6469,7 +6487,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6478,7 +6496,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -6736,7 +6756,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6745,7 +6765,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -7281,7 +7303,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -7290,7 +7312,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -7438,7 +7462,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -7447,7 +7471,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -7668,7 +7694,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -7677,7 +7703,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -7878,7 +7906,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -7887,7 +7915,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -8153,7 +8183,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8162,7 +8192,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -8338,7 +8370,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8347,7 +8379,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -8579,7 +8613,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8588,7 +8622,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -8746,7 +8782,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8755,7 +8791,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -9883,7 +9921,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9892,7 +9930,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -10136,7 +10176,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10145,7 +10185,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -10409,7 +10451,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10418,7 +10460,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -10845,6 +10889,19 @@
               "PASSKEY_UNKNOWN_HERE"
             ]
           },
+          "403": {
+            "description": "`SIGN_COUNT_REPLAYED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "SIGN_COUNT_REPLAYED"
+            ]
+          },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
             "content": {
@@ -11021,7 +11078,7 @@
             ]
           },
           "403": {
-            "description": "`SIGN_UP_REFUSED`",
+            "description": "`ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED`; `SIGN_UP_REFUSED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11030,6 +11087,8 @@
               }
             },
             "x-calimero-codes": [
+              "ASSERTION_REFUSED",
+              "SIGN_COUNT_REPLAYED",
               "SIGN_UP_REFUSED"
             ]
           },
@@ -11238,7 +11297,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11247,7 +11306,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -11457,7 +11518,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11466,7 +11527,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -11572,7 +11635,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11581,7 +11644,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -11684,7 +11749,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11693,7 +11758,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -11869,7 +11936,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11878,7 +11945,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -11985,6 +12054,20 @@
             },
             "x-calimero-codes": [
               "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "ASSERTION_REFUSED",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -13844,7 +13927,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13853,7 +13936,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -14035,7 +14120,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14044,7 +14129,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -14148,7 +14235,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14157,7 +14244,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -14422,7 +14511,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14431,7 +14520,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -14545,7 +14636,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14554,7 +14645,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -14690,7 +14783,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14699,7 +14792,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -14999,7 +15094,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15008,7 +15103,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -15174,7 +15271,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15183,7 +15280,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -15341,7 +15440,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15350,7 +15449,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -15495,7 +15596,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15504,7 +15605,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -15662,7 +15765,7 @@
             ]
           },
           "403": {
-            "description": "`DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15671,8 +15774,10 @@
               }
             },
             "x-calimero-codes": [
+              "ASSERTION_REFUSED",
               "DEPLOY_NOT_GRANTED",
-              "FORBIDDEN"
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -20618,7 +20723,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -20627,7 +20732,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -20741,7 +20848,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -20750,7 +20857,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -20976,7 +21085,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -20985,7 +21094,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -21308,7 +21419,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21317,7 +21428,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -21449,7 +21562,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21458,7 +21571,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -21584,7 +21699,7 @@
             ]
           },
           "403": {
-            "description": "`CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21593,8 +21708,10 @@
               }
             },
             "x-calimero-codes": [
+              "ASSERTION_REFUSED",
               "CONSENT_PAGE_REQUIRED",
-              "FORBIDDEN"
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -21723,7 +21840,7 @@
             ]
           },
           "403": {
-            "description": "`CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21732,8 +21849,10 @@
               }
             },
             "x-calimero-codes": [
+              "ASSERTION_REFUSED",
               "CANNOT_GRANT_UNHELD",
-              "FORBIDDEN"
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -21964,7 +22083,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21973,7 +22092,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -22214,7 +22335,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -22223,7 +22344,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -22346,7 +22469,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -22355,7 +22478,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -22565,7 +22690,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -22574,7 +22699,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -22713,7 +22840,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -22722,7 +22849,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -22933,7 +23062,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -22942,7 +23071,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -23104,7 +23235,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -23113,7 +23244,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -23235,7 +23368,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -23244,7 +23377,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -23371,7 +23506,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -23380,7 +23515,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -23508,7 +23645,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -23517,7 +23654,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "409": {
@@ -23645,7 +23784,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -23654,7 +23793,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -23782,7 +23923,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -23791,7 +23932,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -24053,7 +24196,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -24062,7 +24205,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -24177,7 +24322,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -24186,7 +24331,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -24612,7 +24759,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -24621,7 +24768,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -24774,7 +24923,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -24783,7 +24932,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -24914,7 +25065,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -24923,7 +25074,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -25137,7 +25290,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -25146,7 +25299,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -25351,7 +25506,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -25360,7 +25515,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -25613,7 +25770,7 @@
             ]
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -25622,8 +25779,10 @@
               }
             },
             "x-calimero-codes": [
+              "ASSERTION_REFUSED",
               "BAD_OPERATOR_SIGNATURE",
-              "FORBIDDEN"
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -25949,7 +26108,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -25958,7 +26117,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -26095,7 +26256,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -26104,7 +26265,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "404": {
@@ -27590,7 +27753,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -27599,7 +27762,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -27721,7 +27886,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -27730,7 +27895,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {
@@ -27912,7 +28079,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -27921,7 +28088,9 @@
               }
             },
             "x-calimero-codes": [
-              "FORBIDDEN"
+              "ASSERTION_REFUSED",
+              "FORBIDDEN",
+              "SIGN_COUNT_REPLAYED"
             ]
           },
           "412": {

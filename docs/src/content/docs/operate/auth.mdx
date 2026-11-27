@@ -301,7 +301,11 @@ the client signs it with a passkey and retries with `confirm: { challengeId,
 assertion }`. Like a sign-in challenge, it is held by the node that issued it
 for 5 minutes, so the retry must reach the same node. Browsers and the SDK
 clients do this; `meroctl` does it with a
-file passkey (`--dev-passkey`) on development clusters.
+file passkey (`--dev-passkey`) on development clusters. A refused approval is
+never a `401`, which a client takes for an expired session: an assertion
+whose signature counter did not advance is `403 SIGN_COUNT_REPLAYED`, any
+other that does not verify `403 ASSERTION_REFUSED`. Either spent the challenge,
+so a client does not send the same `confirm` again: it starts over.
 
 ## The consent page
 

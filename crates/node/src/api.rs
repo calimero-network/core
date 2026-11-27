@@ -1593,8 +1593,10 @@ async fn check_assertion_for(
         ));
     }
     let rp = rp_with(base, app.as_ref());
-    let count = verify_assertion(&rp, challenge, &cred, assertion)
-        .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    let count = verify_assertion(&rp, challenge, &cred, assertion).map_err(|e| match e {
+        calimero_identity::Error::Mismatch("signature counter") => sign_count_replayed(),
+        e => ApiError::unauthenticated(&e.to_string()),
+    })?;
     if count != 0 {
         let _ok = node
             .sys_write(&SystemCmd::SetSignCount {
@@ -1606,13 +1608,27 @@ async fn check_assertion_for(
             .await
             .map_err(|e| {
                 if e.code == "REJECTED" {
-                    ApiError::unauthenticated("signature counter did not advance")
+                    sign_count_replayed()
                 } else {
                     e
                 }
             })?;
     }
     Ok((owner, app))
+}
+
+/// `403 SIGN_COUNT_REPLAYED`: the assertion's signature counter is not past
+/// the one the cluster last saw for the passkey, the signal of a copied
+/// authenticator. Not a `401`: a client takes that for an expired session.
+/// Spec: [Confirmations](https://calimero-network.github.io/core/operate/auth/#confirmations)
+fn sign_count_replayed() -> ApiError {
+    ApiError::new(
+        403,
+        "SIGN_COUNT_REPLAYED",
+        "the passkey's signature counter did not advance past the one this cluster last saw: \
+         another copy of this passkey signed since (a passkey file shared by two processes, \
+         or restored from an older copy); sign again with its current copy",
+    )
 }
 
 const fn manifest() -> calimero_primitives::outbound::OutboundSelection {
@@ -2011,7 +2027,16 @@ async fn step_up(
         p.bound_app(),
         false,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        // The session was good: the approval was not. A `401` would be taken
+        // for an expired session and the spent challenge sent again.
+        if e.code == "UNAUTHENTICATED" {
+            ApiError::new(403, "ASSERTION_REFUSED", &e.message)
+        } else {
+            e
+        }
+    })?;
     // Logged with what was signed, so every replica checks it where the
     // command applies (`system::authorize`).
     let signed = String::from_utf8(a)

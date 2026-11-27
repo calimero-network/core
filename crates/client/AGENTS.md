@@ -79,7 +79,12 @@ node takes) and the request sent once more (`Transport::send`: `send_once`, then
 `refreshed_after`; the `Request` keeps its `Body` for that). Requests that get a `401` together refresh once
 (`refreshing`): a refresh token presented twice ends the session. A `401` to
 `auth/refresh` itself, an API key, or a session held without its refresh token is
-returned as it is. Why a `401` can need it: the node that issued the session was
+returned as it is, and so is one to a request whose JSON body carries a passkey's
+approval (`confirm`): the node spent its single-use challenge on the first send, so
+sent again it could only be `400 UNKNOWN_CHALLENGE` (test
+`a_401_to_an_approved_request_is_not_refreshed_or_sent_again`). The node answers a
+refused approval `403` (`SIGN_COUNT_REPLAYED`, `ASSERTION_REFUSED`); this keeps
+the `401`s left (`PASSKEY_UNKNOWN_HERE`, and an older node's refusals) from being lost. Why a `401` can need it: the node that issued the session was
 removed, or replaced on a new data directory (a new signing key); a node's
 restart keeps its key, and a stopped node's sessions verify on the others
 (node `AGENTS.md`, "Sessions are node-signed"). Test:
