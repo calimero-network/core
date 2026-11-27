@@ -2041,7 +2041,7 @@ impl Node {
     /// `app`'s usage book from this node's replica `g` at the app group's read
     /// index: read on a confirmed leader, or on a follower once it applied the
     /// index the leader named (`internal/app/index`, as a strong view's replica
-    /// does in [`Self::view_once`]); one heartbeat round of the app's group, no
+    /// does in `Node::view_once`); one heartbeat round of the app's group, no
     /// log entry. When this replica cannot answer fresh within `Config::read_wait`,
     /// the error names the leader's address, if known, to ask instead.
     pub async fn usage_fresh_here(
