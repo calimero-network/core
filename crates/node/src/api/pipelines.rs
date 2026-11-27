@@ -32,7 +32,7 @@ const MAX_PARAM_STRING_BYTES: usize = 4096; // a string param's value
 /// The refusal for a pipeline the app's release does not register.
 pub const NO_SUCH_PIPELINE: &str = "NO_SUCH_PIPELINE";
 const BAD_INPUTS: &str = "BAD_INPUTS";
-const OUTPUT_EXPIRED: &str = "OUTPUT_EXPIRED";
+const INPUT_EXPIRED: &str = "INPUT_EXPIRED";
 const BAD_PARAMS: &str = "BAD_PARAMS";
 const ONE_SERVICE: &str = "PIPELINES_NEED_ONE_SERVICE";
 const NO_PRICE_TABLE: &str = "NO_PRICE_TABLE";
@@ -46,7 +46,7 @@ const STILL_RUNNING: &str = "STILL_RUNNING";
 fn expired() -> ApiError {
     ApiError::new(
         410,
-        OUTPUT_EXPIRED,
+        INPUT_EXPIRED,
         "an input is not a file this app holds; it may have expired",
     )
 }

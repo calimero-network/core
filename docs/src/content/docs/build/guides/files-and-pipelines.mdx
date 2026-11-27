@@ -376,7 +376,7 @@ receipts, events and exports are also covered in
 | `400 BAD_PIPELINE` | at install: a pipeline does not compile or check; `details` lists every error |
 | `404 NO_SUCH_PIPELINE` | the app's release registers no pipeline of that name |
 | `400 BAD_INPUTS` | an input that is not the pipeline's, unbound, past its `maxItems`, more than 1,024 files in all, or not a file id |
-| `410 OUTPUT_EXPIRED` | an input (or, on a retry, an original input) is not a file the app holds |
+| `410 INPUT_EXPIRED` | an input (or, on a retry, an original input) is not a file the app holds |
 | `400 BAD_PARAMS` | a param of the wrong type, outside `min`/`max`/`enum`, or undeclared |
 | `409 NO_PRICE_TABLE`, `400 BAD_MAX_COST` | `maxCost` given and the operator set no prices, or it is not a whole number of micro-units |
 | `429 TOO_MANY_PIPELINE_RUNS` | 8 runs already going in this app |

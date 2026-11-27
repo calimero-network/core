@@ -1024,7 +1024,7 @@ async fn a_start_is_refused_with_a_stable_code() {
     );
     assert_eq!(
         code(start("broken", json!({ "docs": ["ab".repeat(32)] }), json!({})).await),
-        Some("OUTPUT_EXPIRED".into()),
+        Some("INPUT_EXPIRED".into()),
         "a file the app does not hold"
     );
     assert_eq!(
@@ -1068,7 +1068,7 @@ async fn a_start_while_the_apps_leader_changes_finds_its_uploaded_file() {
     assert!(started.is_ok(), "{started:?}");
 }
 
-/// A start while the app has no leader answers `503 UNAVAILABLE`, not `OUTPUT_EXPIRED`: an input the
+/// A start while the app has no leader answers `503 UNAVAILABLE`, not `INPUT_EXPIRED`: an input the
 /// leader cannot be asked about is not a forgotten one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_start_while_the_app_has_no_leader_is_unavailable_not_expired() {
@@ -1180,9 +1180,9 @@ async fn a_fan_out_reuses_its_cached_items() {
     assert_eq!(rig.all_records().len(), 2, "no new run");
 }
 
-/// A start naming a file the app forgot answers `410 OUTPUT_EXPIRED` and starts nothing.
+/// A start naming a file the app forgot answers `410 INPUT_EXPIRED` and starts nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn starting_with_an_expired_output_answers_output_expired() {
+async fn starting_with_an_expired_input_answers_input_expired() {
     let rig = Rig::start(&[JOB_A]).await;
     let file = rig.upload(b"will be forgotten").await;
     rig.c
@@ -1194,7 +1194,7 @@ async fn starting_with_an_expired_output_answers_output_expired() {
         .start_pipeline_run(&rig.app, "fresh", json!({ "docs": [file] }), json!({}))
         .await
         .unwrap_err();
-    assert_eq!(refused.code(), Some("OUTPUT_EXPIRED"), "{refused}");
+    assert_eq!(refused.code(), Some("INPUT_EXPIRED"), "{refused}");
 }
 
 /// The operator's prices, signed as mdma does: `check` then costs 2020 per run at worst.
@@ -1350,6 +1350,34 @@ async fn a_retry_with_raised_limits_reruns_only_the_failed_items() {
         done["steps"]["each"]["outputs"].as_array().unwrap().len(),
         6
     );
+}
+
+/// A failed run is retried long after it ended: its record still holds its inputs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_run_is_retried_after_an_unreferenced_file_would_expire() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![7u8; 1024 * 1024]).await;
+    let first = rig
+        .start_run("strict", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&first).await;
+    assert_eq!(done["state"], "failed", "{done}");
+
+    rig.c
+        .advance_all(i64::try_from(BLOB_IDLE_MS).unwrap() + 1000);
+    // Any later entry expires what nothing refers to.
+    let _other = rig.upload(b"a later file").await;
+    let retried = rig
+        .alice
+        .retry_pipeline_run(
+            &rig.app,
+            &first,
+            json!({ "limits": { "a": { "fuel": 400_000_000u64 } } }),
+        )
+        .await
+        .unwrap();
+    let done = rig.ended(retried["run"].as_str().unwrap()).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
 }
 
 /// Running out of fuel is deterministic: the item fails after one attempt instead of being retried

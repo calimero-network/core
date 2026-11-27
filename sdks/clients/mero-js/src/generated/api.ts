@@ -10846,7 +10846,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `OUTPUT_EXPIRED` */
+            /** @description `INPUT_EXPIRED` */
             410: {
                 headers: {
                     [name: string]: unknown;
@@ -11044,7 +11044,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `OUTPUT_EXPIRED` */
+            /** @description `INPUT_EXPIRED` */
             410: {
                 headers: {
                     [name: string]: unknown;

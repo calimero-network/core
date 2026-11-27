@@ -6231,7 +6231,7 @@
             ]
           },
           "410": {
-            "description": "`OUTPUT_EXPIRED`",
+            "description": "`INPUT_EXPIRED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6240,7 +6240,7 @@
               }
             },
             "x-calimero-codes": [
-              "OUTPUT_EXPIRED"
+              "INPUT_EXPIRED"
             ]
           },
           "421": {
@@ -6584,7 +6584,7 @@
             ]
           },
           "410": {
-            "description": "`OUTPUT_EXPIRED`",
+            "description": "`INPUT_EXPIRED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6593,7 +6593,7 @@
               }
             },
             "x-calimero-codes": [
-              "OUTPUT_EXPIRED"
+              "INPUT_EXPIRED"
             ]
           },
           "421": {

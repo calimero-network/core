@@ -1334,8 +1334,8 @@ impl AppMachine {
         self.settle_pipeline(tx, pipeline, ts_ms);
     }
 
-    /// Ends the run once every step is settled: releases its inputs and keeps its id among the
-    /// finished ones, dropping the oldest records and their holds. The caller writes the record.
+    /// Ends the run once every step is settled and keeps its id among the finished ones, dropping
+    /// the oldest records and their input and output holds. The caller writes the record.
     fn settle_pipeline(&mut self, tx: &mut StateTx<'_>, pipeline: &mut PipelineRun, ts_ms: u64) {
         let settled = pipeline.steps.values().all(|s| s.status.is_settled());
         if pipeline.state != PipelineState::Running || !settled {
@@ -1353,8 +1353,6 @@ impl AppMachine {
             PipelineState::Failed
         };
         pipeline.end_ts_ms = Some(ts_ms);
-        let files: BTreeSet<&String> = pipeline.inputs.values().flatten().collect();
-        self.pin_files(tx, files, -1, ts_ms);
         let head = &mut self.state.component.head;
         let _was = head.active_pipelines.remove(&pipeline.id);
         head.finished_pipelines.push_back(pipeline.id.clone());
@@ -1366,6 +1364,8 @@ impl AppMachine {
                 Self::drop_step_proofs(tx, &dropped);
                 let outputs = Self::drop_step_items(tx, &dropped);
                 self.pin_files(tx, &outputs, -1, ts_ms);
+                let inputs: BTreeSet<&String> = dropped.inputs.values().flatten().collect();
+                self.pin_files(tx, inputs, -1, ts_ms);
             }
             tx.delete_hidden(rows::CPIPE, old.as_bytes());
         }
