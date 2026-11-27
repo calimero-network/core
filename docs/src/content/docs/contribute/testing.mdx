@@ -691,7 +691,13 @@ guest and fixture in `target/app-components`, built once through
 app-build's own test builds in `target/tmp`; the SDK's compile-fail cases in
 `target/tests/trybuild`) are cached apart, saved from master, whose push runs
 `Rust tests (1/4)`; that push runs every shard (shards 2-4 stop after the restore
-when nothing is left for master to run).
+when nothing is left for master to run). That cache records its own commit
+(`$RUNNER_TEMP/test-apps-cache-commit/commit`) and the files changed since it are
+touched after the restore: it can be older than the rust-cache's commit, and a
+crate changed in between would otherwise keep the old mtime, so cargo would reuse
+a stale build (trybuild once ran `calimero-sdk-macros` from before its messages
+changed). With no commit recorded, `target/tmp` and `target/tests/trybuild`
+start fresh.
 
 A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
 (`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace
