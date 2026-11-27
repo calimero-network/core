@@ -419,7 +419,7 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
           restore-keys: test-apps-v2-
 
       # Every test app the tests build, compiled before them into the component cache, so a
@@ -494,7 +494,7 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
 
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests
