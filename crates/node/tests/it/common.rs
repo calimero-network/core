@@ -197,6 +197,8 @@ impl Cluster {
                     read_wait: Duration::from_secs(2),
                     sys_read_lease: Duration::ZERO,
                     refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
+                    // Tests sign up many accounts on one node; a test of the pace sets its own.
+                    sign_ups_per_minute: 100_000,
                     tee_release: None,
                     tee_profile: None,
                     peer_measurements: calimero_client::Measurements::None,

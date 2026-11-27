@@ -147,10 +147,12 @@ async fn begin_rp_id(node: &Node, origin: Option<&str>) -> Result<String, ApiErr
 }
 
 /// Refuse a sign-up the cluster's policy would refuse (`403
-/// SIGN_UP_REFUSED`), before a challenge is made or spent. A refusal is
+/// SIGN_UP_REFUSED`), or this node's sign-up rate (`429 RATE_LIMITED`,
+/// [`super::SignUpLimit`]), before a challenge is made or spent. A refusal is
 /// judged again on fresh state, so a replica behind a policy change or a new
 /// invite does not refuse what the log would take; `apply` decides in the end.
 async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiError> {
+    node.sign_up_limit.check(Instant::now())?;
     let key = invite.map(crate::proof::invite_key);
     let now = now_secs();
     let judge = |s: &SystemState| s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ());
@@ -435,6 +437,8 @@ async fn sign_up_confirmed(
             org_id: typed_id::<16>(),
             release: Some(node.own_release()),
         });
+    // Spent once the new passkey has signed the account, whatever the log then answers.
+    node.sign_up_limit.take(Instant::now())?;
     let invite = invite.map(|token| crate::system::SignUpRedemption {
         invite_key: crate::proof::invite_key(token),
         now,

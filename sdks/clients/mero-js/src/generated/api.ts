@@ -1743,7 +1743,7 @@ export interface paths {
         put?: never;
         /**
          * Start a sign-up
-         * @description Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+         * @description Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429 RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
          *
          *     **Who:** anyone.
          */
@@ -8601,7 +8601,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -13761,7 +13761,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -13870,7 +13870,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -13956,6 +13956,15 @@ export interface operations {
             };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14385,7 +14394,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;

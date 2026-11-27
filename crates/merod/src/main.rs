@@ -610,6 +610,9 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         read_wait: std::time::Duration::from_secs(2),
         sys_read_lease: std::time::Duration::from_millis(args.sys_read_lease_ms.unwrap_or(0)),
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
+        sign_ups_per_minute: args
+            .sign_ups_per_minute
+            .unwrap_or(calimero_node::api::SIGN_UPS_PER_MINUTE),
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
         peer_measurements,

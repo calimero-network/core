@@ -75,9 +75,10 @@ def sync_detailed(
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
-    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up.
-    `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape
-    is WebAuthn's.
+    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429
+    RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute
+    (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to
+    hand to the browser as they are: free-form here, their shape is WebAuthn's.
 
     **Who:** anyone.
 
@@ -111,9 +112,10 @@ def sync(
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
-    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up.
-    `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape
-    is WebAuthn's.
+    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429
+    RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute
+    (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to
+    hand to the browser as they are: free-form here, their shape is WebAuthn's.
 
     **Who:** anyone.
 
@@ -142,9 +144,10 @@ async def asyncio_detailed(
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
-    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up.
-    `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape
-    is WebAuthn's.
+    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429
+    RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute
+    (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to
+    hand to the browser as they are: free-form here, their shape is WebAuthn's.
 
     **Who:** anyone.
 
@@ -176,9 +179,10 @@ async def asyncio(
     """Start a sign-up
 
      Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token,
-    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up.
-    `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape
-    is WebAuthn's.
+    which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429
+    RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute
+    (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to
+    hand to the browser as they are: free-form here, their shape is WebAuthn's.
 
     **Who:** anyone.
 

@@ -556,7 +556,7 @@ const COMMON_CODES: &[(u16, &str, &str)] = &[
     (
         429,
         "RATE_LIMITED",
-        "a node's limit on open streams or ceremonies",
+        "a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`)",
     ),
     (503, "UNAVAILABLE", "the cluster cannot answer now"),
 ];
@@ -2384,7 +2384,7 @@ fn operations() -> Vec<Op> {
             .ok("#SignUpPublic"),
         // ---------------------------------------------------------------- accounts
         post("/auth/passkey/register/begin", "register_begin", Anyone, "Start a sign-up")
-            .about("Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
+            .about("Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429 RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
             .json::<super::RegisterBegin>("{ name?: string, origin?: string, invite?: string }")
             .ok("#PasskeyChallenge")
             .errors(&[(403, "SIGN_UP_REFUSED"), (429, "RATE_LIMITED")]),
@@ -2393,7 +2393,7 @@ fn operations() -> Vec<Op> {
             .json::<super::RegisterFinish>("{ challengeId: string, registration: #Registration, invite?: string, confirm?: #Confirm, holderKey?: string }")
             .ok("#Session")
             .step_up_uv_preferred()
-            .errors(&[(400, "BAD_HOLDER_KEY"), (400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_UP_REFUSED"), (409, "FEATURE_NOT_ACTIVE"), (421, "WRONG_NODE")]),
+            .errors(&[(400, "BAD_HOLDER_KEY"), (400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_UP_REFUSED"), (409, "FEATURE_NOT_ACTIVE"), (421, "WRONG_NODE"), (429, "RATE_LIMITED")]),
         post("/auth/passkey/login/begin", "login_begin", Anyone, "Start a sign-in")
             .about("A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
             .opt_json::<super::LoginBegin>("{ origin?: string, holderKey?: string }")

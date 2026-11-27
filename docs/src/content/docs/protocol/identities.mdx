@@ -31,7 +31,9 @@ instance, or one it is invited to (see
 same entry, `CreateAccount { personalOrg }`). Who may sign up is the
 cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
 default; the operator's `maxAccounts` quota bounds how many accounts a cluster
-takes), `invite` or `closed`. `CreateAccount` carries the invite a person signs
+takes), `invite` or `closed`. Under any policy a node creates at most 30
+accounts a minute by default (`--sign-ups-per-minute`), invited or not, and refuses more `429 RATE_LIMITED`
+([Node limits](/protocol/limits/#node-limits)). `CreateAccount` carries the invite a person signs
 up with, as the token key's signature over the new account and the time, and
 `apply` judges it against the policy.
 

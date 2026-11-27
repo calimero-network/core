@@ -207,6 +207,9 @@ pub struct Config {
     /// (`api::REFRESH_ROTATE_AFTER` in production). Zero: every refresh
     /// exchanges it, a system write each.
     pub refresh_rotate_after: Duration,
+    /// Accounts this node creates per minute, a minute's worth at once
+    /// (`api::SIGN_UPS_PER_MINUTE` by default; merod's `--sign-ups-per-minute`).
+    pub sign_ups_per_minute: u32,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
     /// On TDX, `run` refuses to start unless the TD's own registers match
@@ -621,6 +624,8 @@ pub struct Node {
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
     /// How many exports each account has asked of this node lately.
     pub(crate) export_limits: crate::api::ExportLimits,
+    /// The accounts this node created lately (`api::SignUpLimit`).
+    pub(crate) sign_up_limit: crate::api::SignUpLimit,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
     /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
@@ -1177,6 +1182,7 @@ impl Node {
         let compiler = crate::compile::Compiler::default();
         #[cfg(feature = "testing")]
         let compiler = compiler.for_node(&config.public_url);
+        let sign_up_limit = crate::api::SignUpLimit::new(config.sign_ups_per_minute);
         let node = Arc::new(Self {
             cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
@@ -1201,6 +1207,7 @@ impl Node {
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
+            sign_up_limit,
             visitor_limits: crate::api::VisitorLimits::default(),
             unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]

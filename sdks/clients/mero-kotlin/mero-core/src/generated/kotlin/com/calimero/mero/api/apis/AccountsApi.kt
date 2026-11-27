@@ -2160,7 +2160,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/passkey/register/begin
      * Start a sign-up
-     * Creation options for a new passkey. &#x60;invite&#x60; is an organization or cluster sign-up invite token, which the policy may require; &#x60;403 SIGN_UP_REFUSED&#x60; when the policy would refuse the sign-up. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
+     * Creation options for a new passkey. &#x60;invite&#x60; is an organization or cluster sign-up invite token, which the policy may require; &#x60;403 SIGN_UP_REFUSED&#x60; when the policy would refuse the sign-up; &#x60;429 RATE_LIMITED&#x60;, with &#x60;Retry-After&#x60;, while this node has taken as many sign-ups as it takes per minute (the retry of &#x60;register/finish&#x60; spends one, invited or not). &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param registerBeginRequest 
      * @return PasskeyChallenge
      * @throws IllegalStateException If the request is not correctly configured
@@ -2192,7 +2192,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/passkey/register/begin
      * Start a sign-up
-     * Creation options for a new passkey. &#x60;invite&#x60; is an organization or cluster sign-up invite token, which the policy may require; &#x60;403 SIGN_UP_REFUSED&#x60; when the policy would refuse the sign-up. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
+     * Creation options for a new passkey. &#x60;invite&#x60; is an organization or cluster sign-up invite token, which the policy may require; &#x60;403 SIGN_UP_REFUSED&#x60; when the policy would refuse the sign-up; &#x60;429 RATE_LIMITED&#x60;, with &#x60;Retry-After&#x60;, while this node has taken as many sign-ups as it takes per minute (the retry of &#x60;register/finish&#x60; spends one, invited or not). &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param registerBeginRequest 
      * @return ApiResponse<PasskeyChallenge?>
      * @throws IllegalStateException If the request is not correctly configured
