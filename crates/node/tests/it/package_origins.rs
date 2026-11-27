@@ -360,7 +360,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     let tag = public["passkeyTag"].as_str().unwrap().to_owned();
     assert_eq!(
         begin["options"]["user"]["name"],
-        format!("carol · {NOTES} ({} · {tag})", c.name),
+        format!("{} · carol ({NOTES}) · {tag}", c.name),
         "{begin}"
     );
     let s = carol

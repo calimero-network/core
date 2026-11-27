@@ -58,7 +58,7 @@ export class LoginRequired extends CalimeroError {
  * signing in again with the same passkey fails the same way. Offer to sign up
  * on this cluster, or point the person to the app link for the cluster their
  * account is on; the passkey's name in their password manager names that
- * cluster (`alice · eu-shared-1`). The node does not say which cluster or
+ * cluster (`eu-shared-1 · alice`). The node does not say which cluster or
  * account the passkey belongs to: it only knows its own.
  */
 export class PasskeyUnknownHere extends CalimeroError {
