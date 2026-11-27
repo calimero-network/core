@@ -60,3 +60,5 @@ if hits=$(git ls-files -- ':(glob)**/mod.rs' | grep -vE '(^|/)tests/common/mod\.
 fi
 
 exit $status
+
+# timing measurement ctrl-1
