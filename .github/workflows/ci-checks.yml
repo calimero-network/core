@@ -411,7 +411,7 @@ jobs:
       # calimero_app_build::build_in_repo_cache), app-build's own test builds
       # (CARGO_TARGET_TMPDIR, target/tmp) and the SDK's compile-fail cases (trybuild's
       # target/tests/trybuild). Most of the slowest tests' time was these builds. Saved from
-      # master below. v3: the entries now record the commit they were built from (next step).
+      # master below, with the commit they were built from (next step).
       - name: Restore the test apps' builds
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -419,24 +419,26 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-            ${{ runner.temp }}/test-apps-cache-commit
-          key: test-apps-v3-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
-          restore-keys: test-apps-v3-
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
+          restore-keys: test-apps-v2-
 
       # target/tmp and target/tests/trybuild are cargo target dirs, which cargo judges
       # fresh by mtime. setup-rust-ci touched only what changed since the rust-cache's
       # commit, but this cache can come from an older commit (a restore-keys fallback),
       # so a crate changed in between kept its old mtime and cargo reused a stale build:
       # trybuild ran calimero-sdk-macros as it was before its messages changed. Touch
-      # what changed since this cache's own commit too; with none recorded, drop those
-      # two dirs (app-components is keyed by source hash, never by mtime).
+      # what changed since this cache's own commit (recorded inside it, so the cached
+      # paths and their key stay as they were). With none recorded, trybuild forgets the
+      # workspace crates' builds but keeps their dependencies' (a cold build of those is
+      # over refused_declarations' time limit), and target/tmp starts fresh;
+      # app-components is keyed by source hash, never by mtime.
       - name: Mark what changed since the cached test apps
         shell: bash
         run: |
           set -uo pipefail
           # A local run (scripts/check-like-ci.py) restored no cache: nothing to mark.
           [ -n "${GITHUB_ACTIONS:-}" ] || exit 0
-          marker="$RUNNER_TEMP/test-apps-cache-commit/commit"
+          marker=target/tests/trybuild/.ci-test-apps-commit
           base=$(cat "$marker" 2>/dev/null || true)
           if [ -n "$base" ] && { git cat-file -e "$base^{commit}" 2>/dev/null \
                || git fetch -q --no-tags --depth=1 origin "$base"; } \
@@ -444,8 +446,14 @@ jobs:
             printf '%s\n' "$changed" | grep -v '^$' | while IFS= read -r f; do touch -c -h -- "$f"; done
             echo "test apps built from $base; $(printf '%s\n' "$changed" | grep -c . || true) files changed since"
           else
-            rm -rf target/tmp target/tests/trybuild
-            echo "no test-apps commit to compare with${base:+ ($base unreachable)}: their cargo builds start fresh"
+            names=$(cargo metadata --no-deps --format-version 1 \
+              | python3 -c 'import json, sys; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))')
+            find target/tests/trybuild -type d -name .fingerprint -prune 2>/dev/null \
+              | while IFS= read -r fp; do
+                  for name in $names; do rm -rf -- "${fp:?}/${name:?}"-????????????????; done
+                done
+            rm -rf target/tmp
+            echo "no test-apps commit to compare with${base:+ ($base unreachable)}: the workspace crates rebuild"
           fi
           mkdir -p "$(dirname "$marker")"
           git rev-parse HEAD > "$marker"
@@ -522,8 +530,7 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-            ${{ runner.temp }}/test-apps-cache-commit
-          key: test-apps-v3-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
 
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests
