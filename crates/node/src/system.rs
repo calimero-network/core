@@ -627,6 +627,28 @@ impl PackageVersion {
 }
 
 impl PackageRecord {
+    /// The newest release version (semver) that ships exactly `bundle` and `compute` in one
+    /// service (a release with only a compute part ships it as both).
+    #[must_use]
+    pub fn shipping(&self, bundle: &str, compute: Option<&str>) -> Option<String> {
+        self.versions
+            .values()
+            .filter(|v| {
+                v.services.keys().chain(v.compute.keys()).any(|name| {
+                    let part = v.services.get(name).or(v.compute.get(name));
+                    part.map(String::as_str) == Some(bundle)
+                        && v.compute.get(name).map(String::as_str) == compute
+                })
+            })
+            .filter_map(|v| {
+                semver::Version::parse(&v.version)
+                    .ok()
+                    .map(|s| (s, &v.version))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, v)| v.clone())
+    }
+
     /// Whether `v` keeps the package's upgrade declarations in order: in
     /// version order, `publisher` releases first, then `owner` ones, so a
     /// release never takes upgrades back from owners.
@@ -3629,24 +3651,9 @@ impl SystemState {
         bundle: &str,
         compute: Option<&str>,
     ) -> Option<String> {
-        let record = self.packages.get(&lineage.package)?;
-        record
-            .versions
-            .values()
-            .filter(|v| {
-                v.services.keys().chain(v.compute.keys()).any(|name| {
-                    let part = v.services.get(name).or(v.compute.get(name));
-                    part.map(String::as_str) == Some(bundle)
-                        && v.compute.get(name).map(String::as_str) == compute
-                })
-            })
-            .filter_map(|v| {
-                semver::Version::parse(&v.version)
-                    .ok()
-                    .map(|s| (s, &v.version))
-            })
-            .max_by(|a, b| a.0.cmp(&b.0))
-            .map(|(_, v)| v.clone())
+        self.packages
+            .get(&lineage.package)?
+            .shipping(bundle, compute)
     }
 
     /// The release version of its lineage a pinned `app` runs: its record's, else the newest one
