@@ -31,6 +31,14 @@ use crate::node::SYSTEM_GROUP;
 use crate::system::Area;
 use crate::types::{AccountId, AppId, OrgId};
 
+/// The first Raft group id a tenant group may take. App groups climb from 2
+/// ([`SYSTEM_GROUP`] is 1) and never reach this, so tenant groups live in their
+/// own high id range: an org's tenant group gets a stable id here without
+/// shifting any app group id, and the two id spaces never collide. A monotonic
+/// counter (`SystemState::next_tenant_group`) hands them out and never reuses
+/// one, so a deleted org's id is never aliased to a new group.
+pub(crate) const TENANT_GROUP_BASE: GroupId = 1 << 32;
+
 /// Which control-plane shard a piece of state lives in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ShardId {

@@ -741,7 +741,9 @@ fn import_holder(
         let _kept = state.packages.entry(name).or_insert(package);
     }
     if let Some(org) = slice.org {
-        let _prev = state.orgs.insert(org.org_id.clone(), org);
+        let org_id = org.org_id.clone();
+        let _prev = state.orgs.insert(org_id.clone(), org);
+        super::orgs::bind_tenant_group(state, &org_id);
     }
     let mut groups = Vec::new();
     for app in apps {

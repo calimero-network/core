@@ -801,6 +801,12 @@ pub struct SystemState {
     /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tenant_groups: BTreeMap<OrgId, u64>,
+    /// Root-owned: the next tenant group id to hand out, monotonic across org
+    /// deletions so a tenant group id is never reused. Starts from
+    /// [`shard::TENANT_GROUP_BASE`]; left out of a snapshot while unset, so state
+    /// written before sharding reads and writes as it did.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_tenant_group: u64,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
     /// Instance invites ([`crate::types::AppInvite`]), by the token's Ed25519 public key:

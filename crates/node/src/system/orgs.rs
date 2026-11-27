@@ -686,13 +686,31 @@ fn create_org(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejectio
     // are made under a new organization's default; a refused team removes the org.
     let _prev = state.orgs.insert(org_id.clone(), org);
     let Some(package) = app_team else {
+        bind_tenant_group(state, &org_id);
         set_new_orgs_default(state, &org_id, capabilities);
         return Ok(json!(OrgCreated {
             org_id,
             team_id: None
         }));
     };
-    make_app_team(state, &org_id, package, &actor, capabilities)
+    // `make_app_team` removes the org when it refuses the team, so bind the
+    // tenant group only once it has succeeded — never leaving a binding for an
+    // org that was rolled back.
+    let created = make_app_team(state, &org_id, package, &actor, capabilities)?;
+    bind_tenant_group(state, &org_id);
+    Ok(created)
+}
+
+/// Allocate and record an organization's tenant group: the Raft group its own
+/// control plane lives in once the system group is sharded by tenant. The id
+/// comes from the dedicated tenant range ([`shard::TENANT_GROUP_BASE`]) through a
+/// monotonic counter, so it never shifts an app group id and is never reused
+/// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+pub(super) fn bind_tenant_group(state: &mut SystemState, org_id: &str) {
+    use crate::system::shard;
+    let gid = state.next_tenant_group.max(shard::TENANT_GROUP_BASE);
+    state.next_tenant_group = gid + 1;
+    state.tenant_groups.insert(org_id.to_owned(), gid);
 }
 
 /// The account exists.
@@ -796,6 +814,9 @@ fn delete_org(state: &mut SystemState, org: &str, actor: &str) -> Result<Value, 
         return Err(OWNS_A_DEPLOYMENT);
     }
     let _gone = state.orgs.remove(org);
+    // Drop the org's tenant-group binding; its id is never reused
+    // (`next_tenant_group` stays monotonic), so no new group can alias it.
+    let _unbound = state.tenant_groups.remove(org);
     state.invites.retain(|_, invite| invite.org != org);
     unbind_publishers(state, org);
     let apps: Vec<String> = state
