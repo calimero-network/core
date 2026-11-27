@@ -170,6 +170,15 @@ directory logs `UpgradeApp`, and `UpgradeApp` is judged once more where it
 applies. Who approves the upgrade is unchanged: the lineage says only where it
 may go.
 
+The app's group switches code before the directory records the upgrade, so a
+switch whose record never followed (a crash, a refusal at apply) leaves the
+group ahead: a later upgrade judged on the recorded code is refused
+`BundleMoved`, which names the bundle the group runs. Upgrading to that release
+repairs it: nothing runs, the record catches up and no restore point is taken.
+If that release was uninstalled meanwhile, install it again first (or undo, or
+restore); the directory knows only what it recorded, so it cannot keep that
+release installed for the group.
+
 A pinning release is installed only from cluster version 1.0.0-rc.39
 (`409 FEATURE_NOT_ACTIVE` below it), and must name a semver version.
 
