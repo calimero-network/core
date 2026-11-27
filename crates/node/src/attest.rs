@@ -386,12 +386,12 @@ pub async fn refresh_interval_quotes(
             .await
         {
             Ok(()) => INTERVAL_QUOTE_EVERY,
-            Err(e) => {
-                let reason = match e {
-                    QuoteError::Busy => "busy",
-                    QuoteError::Failed(_) => "failed",
-                };
-                tracing::warn!(reason, "no interval quote made; trying again");
+            Err(QuoteError::Busy) => {
+                tracing::warn!("no interval quote made (busy); trying again");
+                INTERVAL_QUOTE_RETRY
+            }
+            Err(QuoteError::Failed(_)) => {
+                tracing::warn!("no interval quote made (failed); trying again");
                 INTERVAL_QUOTE_RETRY
             }
         };
