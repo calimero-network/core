@@ -4831,6 +4831,8 @@ fn invites_are_redeemed_with_the_tokens_key() {
         signature,
         free_when_unchanged: true,
         clamp_grants: false,
+        org: None,
+        redeemer: None,
     };
     assert!(m.run(redeem(String::new())).is_err(), "no signature");
     let forged = crate::proof::sign_invite_redeem("inv_guess", "carol", 10);
@@ -4868,6 +4870,8 @@ fn redemption(token: &str, account: &str, now: u64) -> SystemCmd {
         signature: crate::proof::sign_invite_redeem(token, account, now),
         free_when_unchanged: true,
         clamp_grants: true,
+        org: None,
+        redeemer: None,
     }
 }
 
@@ -8296,6 +8300,7 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     };
@@ -9660,6 +9665,7 @@ fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> Sy
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     }
