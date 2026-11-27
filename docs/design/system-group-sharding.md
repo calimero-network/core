@@ -325,6 +325,99 @@ span two orgs without re-minting; account-level actions fall back to root.
 - **`payer_file_bytes` split** needs a key discriminator (org vs account payer)
   the current flat `String` key does not carry.
 
+## Implementation plan (S2–S8)
+
+Concrete build order with the files and functions each slice touches. The hard
+constraint, proven while building S1: **S2 + S3 + S5 must land as one unit** —
+role-aware `apply` either breaks every org/app command (if it refuses them before
+tenant groups and routing exist) or does nothing (if it doesn't). So the "core"
+below is one coordinated change, validated on a live cluster; S4 interleaves with
+it, and S6–S8 follow.
+
+### S2 — role-aware `SystemMachine` (`system.rs`)
+
+- Add `role: ShardId` to `SystemMachine` (`Root` | `Tenant(OrgId)`);
+  `SystemMachine::new(cluster, role)`. Keep one `SystemState` type (code reuse),
+  but each instance only writes the fields its role owns (the partition table
+  above).
+- `SystemMachine::run`/`apply` dispatch by `SystemCmd::area` + `role`: a root
+  instance applies root-owned commands, a tenant instance its org's. A command on
+  the wrong role is a routing bug (S5 guarantees it won't arrive), logged and
+  failed, never applied as a no-op.
+- `authorize` reads only this shard's state plus the facts baked into the entry
+  (S4). No live cross-shard read inside `apply` — the determinism rule holds.
+
+### S3 — tenant-group lifecycle (`node.rs`, `system/orgs.rs`, `placement.rs`)
+
+- Root state gains `tenant_groups: BTreeMap<OrgId, u64>` (root-owned). `CreateOrg`
+  apply (root) allocates a group id from `next_group` and records the mapping;
+  `DeleteOrg` removes it.
+- The node watches the root applied log; when the root state names this node a
+  voter of a tenant group it does not host, it calls
+  `engine.start_group(gid, SystemMachine::new(cluster, Tenant(org)))` and places
+  voters across zones (`placement.rs`, `membership::grow_voters`, reusing the
+  app-group machinery). At startup it opens every tenant group it should host.
+- `Node::system_shard` already resolves `Tenant(org)` → the hosted group;
+  populate `Node::tenants` here.
+
+### S4 — resolve-at-propose (`system.rs`, `api/apps.rs`, `node.rs`)
+
+- For each coupled command, the entry node reads its cross-shard dependencies at
+  a system read index and bakes the values into the `SystemCmd` variant before
+  proposing. `CreateApp`: read root `quotas`/`org_quotas` (the quota) and root
+  `packages` (the release facts); the tenant `orgs` membership is this shard's own
+  read. Add `quota_snapshot` / `release_facts` fields to `CreateApp` (and the
+  equivalent to `UpgradeApp`, `InstallPackage`, …); `apply` checks the logged
+  values, so every replica reaches the same answer.
+- This is the standard "a leader may measure, then logs what it saw" pattern
+  already used across `system/*`.
+
+### S5 — route each command/read to its shard (`node.rs`, `api/*`)
+
+- Implement `scope_of(&SystemCmd) -> Scope`, exhaustive over the enum (mirrors
+  `SystemCmd::area`). For `OfApp`/`OfAccount` the owning org is read from the root
+  directory at propose.
+- `Node::sys_write`/`sys_propose` compute `scope_of(cmd)` →
+  `shard::shard_for(true, tenant_of(scope, root_lookup))` → `system_shard` → write
+  to that group. Reads that target tenant state (`sys` callers) take a scope; root
+  reads stay on root.
+- Genesis starts empty, so there is no bulk migration: new orgs create their
+  tenant group (S3) and their commands route there from the first.
+
+### S6 — access gate across shards (`node.rs`, `api.rs`)
+
+- `Node::sys_fresh`/`sys_round` become per-shard (one read-index round per shard a
+  request touches, under O2's lease model). The gate reads the account identity
+  from root and the session/membership from the acting org's tenant, each fresh.
+- `api::gate`/`principal` carry the request's org context so the membership read
+  targets the right tenant.
+
+### S7 — per-shard snapshots, recovery, backup (`log/machine.rs`, `backup.rs`, `recovery_disk.rs`)
+
+- Each system shard is an `IN_MEMORY` machine checkpointed in its own snapshot;
+  raise `SNAPSHOT_FORMAT` to tag a snapshot with its shard. Backup, recovery and
+  `restore` iterate every system shard (root + tenants), not only group 1.
+- Replace the remaining `SYSTEM_GROUP`-single assumptions (`member_addr`,
+  `status`, `subscribe_applied`, metrics) with per-shard or root-only forms.
+
+### S8 — tests, flip on, delete the old path (`tests/`)
+
+- Multi-tenant cluster tests (`tests/it/`): two orgs' state lands in different
+  groups led by different nodes; a cross-org operation is root-coordinated;
+  failover of a tenant group keeps its org's control plane; a cross-shard access
+  read is fresh under the lease. Process-suite tests for placement and failover.
+- Fix the existing suite (much of it assumes one system group), then remove the
+  single-group fallback: sharding is the only path.
+
+### What validates where
+
+The in-process cluster harness (`tests/it/cluster.rs`, real Raft + sealed
+channels) proves functional correctness of each slice; **failover, placement
+across zones, and split-brain safety of tenant groups need real `merod`
+processes** (`tests/fault/`) and a multi-node deployment. That cluster validation
+is why S2–S5 land as one reviewed unit on infrastructure this design note's
+author did not have — it is the gate between this plan and production.
+
 ## Open questions / risks
 
 - **Root read freshness vs. a tenant write's latency.** Reading the fleet quota
