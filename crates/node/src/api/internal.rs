@@ -258,7 +258,20 @@ fn admit_raft(
             "a Raft message names another node than the one that sent it",
         ));
     }
-    if group != crate::node::SYSTEM_GROUP {
+    if group >= crate::system::shard::TENANT_GROUP_BASE {
+        // A tenant system group (its id is in the dedicated high range) is
+        // placed on the system voters, so its members are the system group's.
+        // Admit a fellow system member by that authoritative list — known
+        // before the tenant group's own Raft membership has synced, as an app
+        // group admits by its `replicas` — with no lock on the app-group path.
+        let status = node.system.status();
+        let member = status.voters.contains(&caller.node) || status.learners.contains(&caller.node);
+        if !member {
+            return Err(ApiError::forbidden(
+                "the calling node is not a member of that tenant group",
+            ));
+        }
+    } else if group != crate::node::SYSTEM_GROUP {
         // Every heartbeat of every app group comes through here: an index
         // probe and a cached decision, no scan of the apps and no clone.
         let (approved, replica) = node

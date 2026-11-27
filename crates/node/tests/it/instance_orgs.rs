@@ -132,6 +132,51 @@ async fn new_org(owner: &Client, name: &str) -> String {
         .unwrap()["orgId"])
 }
 
+/// An organization's tenant group is formed and then seeded with its own record
+/// and a projection of its members' passkeys — the identity the tenant group
+/// verifies its members' consent against, from its log alone, once commands
+/// route to it. (Tenant-sharding backbone; the groups are hosted but nothing
+/// routes to them yet.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_orgs_tenant_group_is_seeded_with_its_record_and_members() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let org = new_org(&alice, "Acme").await;
+
+    // The owner's account id, read from the root directory.
+    let owner = c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .sys(|st| st.orgs[&org].members.keys().next().cloned())
+        .expect("the new org has an owner");
+
+    // The tenant group forms and seeds in the background (reconcile). Wait for a
+    // node hosting it to hold the org record and the owner's projected passkey.
+    let mut done = false;
+    for _ in 0..200 {
+        done = c
+            .nodes
+            .iter()
+            .flatten()
+            .any(|r| r.node.tenant_seed(&org, &owner) == Some((true, true)));
+        if done {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let states: Vec<_> = c
+        .nodes
+        .iter()
+        .flatten()
+        .map(|r| r.node.tenant_seed(&org, &owner))
+        .collect();
+    assert!(
+        done,
+        "the org's tenant group should hold its record and the owner's passkey; per-node tenant_seed(org, owner) = {states:?}"
+    );
+}
+
 /// A sign-up makes no organization; each mode places an instance as its
 /// release declares, for a creator in none, one or several organizations,
 /// naming one or not, or asking for a new one.

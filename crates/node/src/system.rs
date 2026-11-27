@@ -5757,6 +5757,7 @@ impl SystemCmd {
             Self::SetOutboundApproval { .. } => Area::Approvals,
             Self::SetEgress { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
+            Self::SeedTenant { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
             Self::SetAppMetadata { .. } => Area::Apps,
@@ -5834,6 +5835,8 @@ impl SystemCmd {
             | Self::StartRecovery { org, .. }
             | Self::CancelRecovery { org, .. }
             | Self::FinishRecovery { org, .. } => Scope::Org(org.clone()),
+            // Seeded into the organization's own tenant group.
+            Self::SeedTenant { org, .. } => Scope::Org(org.org_id.clone()),
             // A new app carries its org directly.
             Self::CreateApp { app, .. } => Scope::Org(app.org.clone()),
             // Commands on an existing app → the app's owning org (resolved from
@@ -7345,6 +7348,17 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+    },
+    /// Node-written, never from a client: seeds an organization's own record and
+    /// a projection of its members' account identity (their passkeys) into the
+    /// organization's tenant group when the node forms it, so the tenant group
+    /// can authorize its own commands from the log alone — `consent_of` reads the
+    /// member passkeys this carries. Applied only on the matching tenant machine,
+    /// and idempotent (re-seeding is a no-op). The tenant-sharding backbone
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    SeedTenant {
+        org: Box<crate::types::Org>,
+        members: Vec<crate::types::Account>,
     },
     SetOrgMetadata {
         org: OrgId,

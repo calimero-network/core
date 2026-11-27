@@ -489,6 +489,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
     match cmd {
         cmd @ SystemCmd::CreateOrg { .. } => create_org(state, cmd),
         SystemCmd::DeleteOrg { org, actor, .. } => delete_org(state, &org, &actor),
+        SystemCmd::SeedTenant { org, members } => seed_tenant(state, *org, members),
         SystemCmd::RenameOrg {
             org, name, actor, ..
         } => rename_org(state, org, name, &actor),
@@ -706,6 +707,29 @@ fn create_org(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejectio
 /// comes from the dedicated tenant range ([`shard::TENANT_GROUP_BASE`]) through a
 /// monotonic counter, so it never shifts an app group id and is never reused
 /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+/// Seed an organization's own record and a projection of its members' account
+/// identity into its tenant group. Applied only on the organization's tenant
+/// machine (the node writes it to that group alone), and idempotent: a member
+/// or the org already present is left as it is, so a re-seed on a later node
+/// reconcile changes nothing. The member projection carries each member's
+/// passkeys so the tenant can verify that member's consent from the log alone
+/// (`Proofs::consent_of`), the identity the root account directory holds
+/// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+fn seed_tenant(
+    state: &mut SystemState,
+    org: crate::types::Org,
+    members: Vec<crate::types::Account>,
+) -> Result<Value, Rejection> {
+    let _kept = state.orgs.entry(org.org_id.clone()).or_insert(org);
+    for account in members {
+        let _kept = state
+            .accounts
+            .entry(account.account_id.clone())
+            .or_insert(account);
+    }
+    Ok(Value::Null)
+}
+
 pub(super) fn bind_tenant_group(state: &mut SystemState, org_id: &str) {
     use crate::system::shard;
     let gid = state.next_tenant_group.max(shard::TENANT_GROUP_BASE);

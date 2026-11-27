@@ -894,6 +894,8 @@ impl SystemCmd {
                 ..
             } => vec![Feature::SessionHolders],
             Self::RedeemInvite { .. } => Vec::new(),
+            // Node-written seed; hard cutover, never gated.
+            Self::SeedTenant { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
             }

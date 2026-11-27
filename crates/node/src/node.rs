@@ -1522,6 +1522,29 @@ impl Node {
         }
     }
 
+    /// Test hook: the tenant group's own view of its seeding — `None` when this
+    /// node does not host it, else whether it holds the org record and whether
+    /// `account` is projected with a usable passkey (the identity the tenant
+    /// verifies consent against).
+    #[cfg(feature = "testing")]
+    pub fn tenant_seed(&self, org: &crate::types::OrgId, account: &str) -> Option<(bool, bool)> {
+        self.tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .map(|g| {
+                g.read_local(|m, _| {
+                    (
+                        m.state.orgs.contains_key(org),
+                        m.state
+                            .accounts
+                            .get(account)
+                            .is_some_and(|a| !a.passkeys.is_empty()),
+                    )
+                })
+            })
+    }
+
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
     /// version ([`Node::require_features`]).
@@ -2748,8 +2771,45 @@ impl Node {
                     .collect()
             });
             for (org, group) in tenants {
-                if let Err(e) = self.ensure_tenant_group(&org, group).await {
-                    warn!(org = %org, group, error = %format!("{e:#}"), "could not host tenant group");
+                let g = match self.ensure_tenant_group(&org, group).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        warn!(org = %org, group, error = %format!("{e:#}"), "could not host tenant group");
+                        continue;
+                    }
+                };
+                // Seed the tenant group once with its org record and a
+                // projection of its members' passkeys, so it can authorize its
+                // own commands from the log alone. The leader writes it (read
+                // from the root directory); apply is idempotent, so a re-seed on
+                // a later reconcile or another node changes nothing.
+                let seeded = g.read_local(|m, _| m.state.orgs.contains_key(&org));
+                if !seeded && g.status().is_leader {
+                    if let Some((record, members)) = self.sys(|s| {
+                        s.orgs.get(&org).map(|o| {
+                            let members: Vec<crate::types::Account> = o
+                                .members
+                                .keys()
+                                .filter_map(|a| s.accounts.get(a).cloned())
+                                .collect();
+                            (o.clone(), members)
+                        })
+                    }) {
+                        let cmd = SystemCmd::SeedTenant {
+                            org: Box::new(record),
+                            members,
+                        };
+                        match serde_json::to_vec(&cmd) {
+                            Ok(bytes) => {
+                                if let Err(e) = g.write(bytes).await {
+                                    debug!(org = %org, group, error = %e, "tenant seed not yet written");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(org = %org, error = %e, "a tenant seed does not serialize");
+                            }
+                        }
+                    }
                 }
             }
         }
