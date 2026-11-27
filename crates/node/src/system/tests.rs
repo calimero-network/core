@@ -9874,6 +9874,26 @@ fn an_older_compute_part_is_older_code() {
     }
 }
 
+/// Code two releases ship is as new as the newer one: restoring it is not older, and the floor
+/// rises to that release.
+#[test]
+fn code_two_releases_ship_is_judged_at_the_newer() {
+    let mut m = pinned_proven();
+    let mut later = m.state.packages["p"].versions["1.0.5"].clone();
+    later.version = "1.3.0".into();
+    let _prev = m
+        .state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .insert("1.3.0".into(), later);
+    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+        "computeBundle": "c0" });
+    let _ok = m.run(signed_restore("b1", Some("c0"), &args)).unwrap();
+    assert_eq!(m.state.apps["app"].lineage.as_ref().unwrap().floor, "1.3.0");
+}
+
 /// The operator's signature on a pinned instance's restore names the bundle and compute part
 /// it runs, and both must ship in one release of the lineage.
 #[test]
@@ -10054,6 +10074,58 @@ fn an_import_keeps_a_pinned_instance_on_its_lineage() {
         m.state.apps["kv"].lineage, pinned,
         "pinned as this cluster holds it"
     );
+    // Held here as pinning under another signer: refused, nothing written.
+    let mut m = fresh(Some("did:key:other"));
+    let bundles = serde_json::to_value(&m.state.bundles).unwrap();
+    assert!(m.run_unproven(import(&unflagged)).is_err());
+    assert_eq!(
+        serde_json::to_value(&m.state.bundles).unwrap(),
+        bundles,
+        "no bundle record written"
+    );
+    assert!(!m.state.apps.contains_key("kv"));
+    // A floor that does not parse takes the release the record runs, and moves on from there.
+    let mut garbled = slice.clone();
+    garbled
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .floor = "nightly".into();
+    let mut m = fresh(None);
+    let _ok = m.run_unproven(import(&garbled)).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage, pinned,
+        "floor normalized to 1.1.0"
+    );
+    m.state.apps.get_mut("kv").unwrap().restore = None;
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+    // Neither the floor nor the release it runs parses: refused.
+    let mut hopeless = garbled.clone();
+    let mut nightly = hopeless.packages["p"].versions["1.1.0"].clone();
+    nightly.version = "nightly".into();
+    let _prev = hopeless
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .insert("nightly".into(), nightly);
+    hopeless
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .release
+        .as_mut()
+        .unwrap()
+        .version = "nightly".into();
+    let mut m = fresh(None);
+    let bundles = serde_json::to_value(&m.state.bundles).unwrap();
+    assert!(m.run_unproven(import(&hopeless)).is_err());
+    assert_eq!(serde_json::to_value(&m.state.bundles).unwrap(), bundles);
     // A kept lineage of another package than the release it runs is refused.
     let mut crossed = slice.clone();
     crossed

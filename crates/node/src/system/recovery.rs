@@ -50,6 +50,11 @@ const CODE_IN_USE: Rejection =
     Rejection::new(RejectionKind::Rejected, "that recovery code is in use");
 /// Removing a recovery code from an account that has none.
 const NO_CODE_SET: Rejection = Rejection::new(RejectionKind::Rejected, "no recovery code is set");
+/// An imported pinned app with no floor that parses and no release version to set one from.
+const UNFLOORED_IMPORT: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an imported pinned app has neither a floor nor a release version that parses",
+);
 /// An imported app's release that does not ship its bundle as this cluster holds the package.
 const RELEASE_NOT_SHIPPED_HERE: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -762,19 +767,6 @@ fn import_holder(
     for app in apps {
         let mut record = slice.apps[&app.app_id].clone();
         record.lineage = pins.remove(&app.app_id).flatten();
-        if let Some(l) = record.lineage.as_mut() {
-            // At least the release it runs (named, else the one its bundle ships in here).
-            let runs = record
-                .release
-                .as_ref()
-                .map(|r| r.version.clone())
-                .or_else(|| {
-                    state.lineage_shipping(l, &record.bundle, record.compute_bundle.as_deref())
-                });
-            if let Some(r) = runs {
-                l.raise_floor(&r);
-            }
-        }
         let group = state.next_group.max(1) + 1;
         state.next_group = group;
         record.group = group;
@@ -883,11 +875,31 @@ fn imported_lineage(
         .packages
         .get(&pin.package)
         .or(slice.packages.get(&pin.package));
-    if held.is_some_and(|p| p.signer_id == pin.signer_id) {
-        Ok(Some(pin))
-    } else {
-        Err(OUTSIDE_LINEAGE)
+    let theirs = slice.packages.get(&pin.package);
+    if !held.is_some_and(|p| p.signer_id == pin.signer_id)
+        || theirs.is_some_and(|p| p.signer_id != pin.signer_id)
+    {
+        return Err(OUTSIDE_LINEAGE);
     }
+    let mut pin = pin;
+    floor_at_least_runs(&mut pin, release.map(|r| r.version.as_str()))?;
+    Ok(Some(pin))
+}
+
+/// Raise an imported pin's floor to the release the record runs; where the floor is missing or
+/// does not parse, that release's version becomes it, and with none that parses the import is
+/// refused.
+///
+/// # Errors
+/// [`UNFLOORED_IMPORT`].
+fn floor_at_least_runs(pin: &mut AppLineage, runs: Option<&str>) -> Result<(), Rejection> {
+    let parses = |v: &str| semver::Version::parse(v).is_ok();
+    match runs.filter(|v| parses(v)) {
+        Some(v) => pin.raise_floor(v),
+        None if !parses(&pin.floor) => return Err(UNFLOORED_IMPORT),
+        None => {}
+    }
+    Ok(())
 }
 
 /// An import is of an organization or account this cluster does not hold,

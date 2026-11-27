@@ -193,8 +193,11 @@ rolled back, and a fix ships as a newer release. The operator's signature names
 the bundle and compute component the restore runs. A holder's import keeps the
 pin, takes it again from the record's release in the slice where the record
 lost it, and is refused where this cluster holds that package under another
-publisher, or not at all. Every one of them, and moving the instance to another
-organization, keeps the record's `lineage`, and its floor only rises.
+publisher, or not at all. It raises the floor to the release the record runs;
+a floor that is missing or does not parse takes that release's version, and
+with no version that parses the import is refused. A floor is never set to a
+version that does not parse. Every one of them, and moving the instance to
+another organization, keeps the record's `lineage`, and its floor only rises.
 
 A pinning release is installed only from cluster version 1.0.0-rc.39
 (`409 FEATURE_NOT_ACTIVE` below it), and must name a semver version.
