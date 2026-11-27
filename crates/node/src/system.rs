@@ -792,6 +792,15 @@ pub struct SystemState {
     pub refresh: BTreeMap<String, RefreshRecord>,
     pub revoked_sessions: BTreeSet<String>,
     pub orgs: BTreeMap<OrgId, Org>,
+    /// Root-owned: the system shard that carries each organization's own state.
+    /// An org's tenant group is allocated from `next_group` when the org is
+    /// created and dropped when it is deleted, so a tenant's control plane lives
+    /// in its own Raft group rather than the single system group. Empty until the
+    /// first org is created under sharding; left out of a snapshot while empty, so
+    /// state written before sharding reads and writes as it did
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tenant_groups: BTreeMap<OrgId, u64>,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
     /// Instance invites ([`crate::types::AppInvite`]), by the token's Ed25519 public key:
