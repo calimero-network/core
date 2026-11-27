@@ -680,6 +680,12 @@ not_covered("Apps", "An xcall chain ending at its budget (`MAX_XCALL_CHAIN`, `Fe
             "chain stores is an outbox row and a dead letter, whose old shapes (no budget) the `xcall` case reads "
             "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` (`component_cluster.rs`) covers it on one "
             "build")
+not_covered("Apps", "A full outbox keeping its queue (`MAX_OUTBOX`, `Feature::XcallKeepsQueue`): an xcall past it is "
+            "dead-lettered alone",
+            "filling an outbox takes 10,000 undelivered messages, which the published kv fixture the old release seeds "
+            "with cannot hold back from delivery; what it stores is an outbox row and a dead letter, whose shapes the "
+            "`xcall` case reads back. `a_full_outbox_keeps_its_queued_messages` and "
+            "`a_full_outbox_entry_logged_before_replays_as_it_applied` (`component.rs`) cover it on one build")
 not_covered("Apps", "A pinned instance (`lineage: pinned`, `AppRecord::lineage`) held to its package, publisher and "
             "forward order",
             "no release before 1.0.0-rc.39 installs a pinning release (`Feature::PinnedLineage`), so the old build "

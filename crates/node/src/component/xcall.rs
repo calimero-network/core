@@ -149,18 +149,38 @@ impl XcallHead {
     }
 
     /// Append an `Ok` entry's xcalls sent at `ts_ms`; one past [`MAX_OUTBOX`], or one with
-    /// no budget left, is dead-lettered at once.
-    pub fn send(&mut self, tx: &mut StateTx<'_>, xcalls: &[XcallOut], ts_ms: u64) {
+    /// no budget left, is dead-lettered at once. With `keep_queue` (the entry's
+    /// `Outcome::keep_queue`) one past a full outbox goes alone; without it, as an earlier
+    /// release applied it, the outbox also skips every message queued before it.
+    pub fn send(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        xcalls: &[XcallOut],
+        keep_queue: bool,
+        ts_ms: u64,
+    ) {
         for x in xcalls {
             if x.budget == Some(0) {
                 // Never queued, so it takes no sequence number: the outbox keeps no gap.
                 self.dead(tx, self.next, &x.app, &x.method, XCALL_CHAIN_SPENT, ts_ms);
                 continue;
             }
+            if keep_queue && self.pending() >= MAX_OUTBOX {
+                // Never queued, so it takes no sequence number, and the queue stays whole.
+                self.dead(
+                    tx,
+                    self.next,
+                    &x.app,
+                    &x.method,
+                    "the outbox is full",
+                    ts_ms,
+                );
+                continue;
+            }
             let seq = self.next;
             self.next += 1;
             if self.next - self.first > MAX_OUTBOX {
-                // Never queued: it leaves the sequence at once.
+                // An earlier release's entry: it skips the queued messages as it did then.
                 self.first = self.next;
                 self.dead(tx, seq, &x.app, &x.method, "the outbox is full", ts_ms);
                 continue;

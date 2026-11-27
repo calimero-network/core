@@ -282,10 +282,17 @@ pub enum Feature {
     /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop, and
     /// `UpgradeApp` and `ApproveUpgrade` whose class carries a `pinsLineage` reason.
     PinnedLineage,
+    /// `outcome.keepQueue` in an app's entry: an xcall past a full outbox
+    /// ([`MAX_OUTBOX`](crate::component::xcall::MAX_OUTBOX)) goes to the dead letters alone
+    /// and the messages queued before it stay queued
+    /// ([Outbox](https://calimero-network.github.io/core/protocol/xcall/#outbox)). An earlier
+    /// release ignores the field and would skip every queued message. An app's entry, not a
+    /// system one: the leader writes the field from the logged version.
+    XcallKeepsQueue,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 61] = [
+pub const FEATURES: [Feature; 62] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -347,6 +354,7 @@ pub const FEATURES: [Feature; 61] = [
     Feature::MeteredBlobs,
     Feature::XcallBudget,
     Feature::PinnedLineage,
+    Feature::XcallKeepsQueue,
 ];
 
 impl Feature {
@@ -415,12 +423,14 @@ impl Feature {
             Self::MeteredBlobs => "meteredBlobs",
             Self::XcallBudget => "xcallBudget",
             Self::PinnedLineage => "pinnedLineage",
+            Self::XcallKeepsQueue => "xcallKeepsQueue",
         }
     }
 
     /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
     /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
-    /// the logged version, and `MeteredBlobs` and `XcallBudget` are fields of an app's entry,
+    /// the logged version, and `MeteredBlobs`, `XcallBudget` and `XcallKeepsQueue` are fields
+    /// of an app's entry,
     /// which the leader shapes from the logged version: no system entry names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
@@ -432,6 +442,7 @@ impl Feature {
                 | Self::StateCaps
                 | Self::MeteredBlobs
                 | Self::XcallBudget
+                | Self::XcallKeepsQueue
         )
     }
 
@@ -499,7 +510,8 @@ impl Feature {
             | Self::StateCaps
             | Self::MeteredBlobs
             | Self::XcallBudget
-            | Self::PinnedLineage => "1.0.0-rc.39",
+            | Self::PinnedLineage
+            | Self::XcallKeepsQueue => "1.0.0-rc.39",
         }
     }
 }
@@ -1513,7 +1525,8 @@ mod tests {
             | Feature::BackupKeyApprovers
             | Feature::StateCaps
             | Feature::MeteredBlobs
-            | Feature::XcallBudget => unreachable!("no system entry names {feature:?}"),
+            | Feature::XcallBudget
+            | Feature::XcallKeepsQueue => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
