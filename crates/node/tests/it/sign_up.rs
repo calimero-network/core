@@ -443,3 +443,45 @@ async fn each_added_passkey_gets_a_user_handle_of_its_own() {
     assert_ne!(a["id"], b["id"], "{first} {second}");
     assert_eq!(a["name"], format!("{} · alice · {tag}", c.name), "{first}");
 }
+
+/// A node creates a burst of accounts at once, then paces them (`SIGN_UP_BURST`, 30, then
+/// `SIGN_UPS_PER_MINUTE`, one per 2 s): past that a sign-up is refused `429 RATE_LIMITED`
+/// before its ceremony and creates nothing, while another node of the cluster still takes
+/// one; once the wait has passed the node takes one again. Invited sign-ups count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_node_paces_the_accounts_it_creates() {
+    const BURST: usize = 30;
+    let c = Cluster::start(3).await;
+    let ops = ops(&c).await;
+    // Every sign-up on node 0 redeems this invite, so the ones counted are invited.
+    let _invite = operator_invite(&ops, "inv_many", 2 * BURST as u32).await;
+    let accounts = || c.nodes[0].as_ref().unwrap().node.sys(|s| s.accounts.len());
+    let first = accounts();
+    let started = std::time::Instant::now();
+    let mut taken = 0;
+    let refusal = loop {
+        match sign_up(&c, 0, &format!("p{taken}"), Some("inv_many")).await {
+            Ok(_) => taken += 1,
+            Err(e) => break e,
+        }
+        assert!(taken <= 2 * BURST, "never refused");
+    };
+    assert_eq!(refusal.code(), Some("RATE_LIMITED"), "{refusal}");
+    // The bucket refills while the burst signs up, one token per 2 s.
+    let refilled = started.elapsed().as_secs() as usize / 2 + 1;
+    assert!(
+        (BURST..=BURST + refilled).contains(&taken),
+        "{taken} sign-ups before the refusal"
+    );
+    // Another node's bucket is its own; the refused sign-up made no account.
+    let _elsewhere = sign_up(&c, 1, "elsewhere", None).await.unwrap();
+    harness::poll::until(harness::poll::EVENTUALLY, "the accounts made", || {
+        accounts() == first + taken + 1
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert_eq!(accounts(), first + taken + 1, "a refused sign-up made an account");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let _later = sign_up(&c, 0, "later", None).await.unwrap();
+}

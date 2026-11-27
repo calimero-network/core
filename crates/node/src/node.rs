@@ -612,6 +612,8 @@ pub struct Node {
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
     /// How many exports each account has asked of this node lately.
     pub(crate) export_limits: crate::api::ExportLimits,
+    /// The accounts this node created lately (`api::SignUpLimit`).
+    pub(crate) sign_up_limit: crate::api::SignUpLimit,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
     /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
@@ -1192,6 +1194,7 @@ impl Node {
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
+            sign_up_limit: crate::api::SignUpLimit::default(),
             visitor_limits: crate::api::VisitorLimits::default(),
             unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]

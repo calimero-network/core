@@ -115,6 +115,7 @@ pub(crate) use orgs::{
 };
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use public_links::VisitorLimits;
+pub(crate) use sign_up::SignUpLimit;
 pub(crate) use update_policies::{approve_upgrade, approver_of, set_upgrade_policy};
 pub(crate) use upgrades::{
     move_class, owner_approves, refuse_stalled, unclassified_gate, unit_plan, update_view,
