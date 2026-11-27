@@ -12,6 +12,14 @@ const MAX_KEY_FOLLOW_UPS: usize = 4;
 const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
 /// What a follow-up's arguments write for the key being made: `key:<its id>`.
 const KEY_PLACEHOLDER: &str = "key:$key";
+/// The longest account name a sign-up takes, in characters: a sign-up's
+/// ceremony holds it until its challenge expires, so it is bounded before
+/// anything is held ([`account_name_fits`]).
+pub const MAX_ACCOUNT_NAME_CHARS: usize = 64;
+/// The largest request body a passkey ceremony's route (`/auth/passkey/*`)
+/// takes: a name, an origin, an invite and a registration or assertion fit in
+/// a few KiB.
+pub const MAX_PASSKEY_CEREMONY_BYTES: usize = 64 * 1024;
 /// The bytes of each follow-up's salt.
 const FOLLOW_UP_SALT_BYTES: usize = 16;
 /// How often a follow-up whose outcome is unknown (a 5xx) is sent again under its key.
@@ -122,6 +130,20 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
     node.sys(judge).map_err(crate::node::rejected)
 }
 
+/// Refuse an account name past [`MAX_ACCOUNT_NAME_CHARS`], `400
+/// NAME_TOO_LONG`: judged before a ceremony holds it or the log is asked to
+/// create the account.
+fn account_name_fits(name: &str) -> Result<(), ApiError> {
+    // A name past the limit in bytes is past it in characters too.
+    if name.len() > 4 * MAX_ACCOUNT_NAME_CHARS || name.chars().count() > MAX_ACCOUNT_NAME_CHARS {
+        return Err(ApiError::bad_request(
+            "NAME_TOO_LONG",
+            &format!("an account's name is at most {MAX_ACCOUNT_NAME_CHARS} characters"),
+        ));
+    }
+    Ok(())
+}
+
 async fn register_begin(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
@@ -215,6 +237,8 @@ async fn register_finish(
             "not a registration challenge",
         ));
     };
+    // Begun on a node that did not bound it, perhaps (`internal/challenge/take`).
+    account_name_fits(&name)?;
     // Signing up on a package's frontend opens a session bound to it.
     let app = claimed_app(&node, &body.registration.client_data_json).await;
     let cred = verify_registration(
@@ -299,6 +323,8 @@ async fn sign_up_confirmed(
             "not a sign-up confirmation",
         ));
     };
+    // The account the log is asked to create, whichever node held its ceremony.
+    account_name_fits(&account.name)?;
     let cred = account
         .passkeys
         .first()
@@ -1852,6 +1878,8 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/auth/passkey/register/finish", post(register_finish))
         .route("/auth/passkey/login/begin", post(login_begin))
         .route("/auth/passkey/login/finish", post(login_finish))
+        // Anyone may begin these, so their bodies stay small (the router's
+        // own limit, inside which this one applies, is the sealed envelope's).
         .route("/auth/passkeys/add/begin", post(passkey_add_begin))
         .route("/auth/passkeys/add/finish", post(passkey_add_finish))
         .route(
