@@ -2950,13 +2950,15 @@ impl Node {
     /// Switch a component app to another component, code only, on this node, the
     /// app group's leader. A named migration is refused (`MigrationsNotSupported`):
     /// a migration rebuilds the state, and this node runs code-only upgrades. Who may
-    /// upgrade was judged by the API.
+    /// upgrade was judged by the API, on the group running `judged_on`: if it has moved
+    /// since (another upgrade got there first), it is refused (`BundleMoved`).
     pub(super) async fn upgrade_component(
         &self,
         g: &Group<AppMachine>,
         bundle: &str,
         compute_bundle: Option<&str>,
         migrate: Option<&str>,
+        judged_on: Option<&JudgedOn>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
             index: g.applied(),
@@ -2979,6 +2981,30 @@ impl Node {
         };
         let p = g
             .propose_led(|m, _, _| {
+                // `base_index` holds this to the state read here, so a race retries into it.
+                let runs = m.state.bundle.as_deref();
+                let runs_compute = m.state.component.head.compute_bundle.as_deref();
+                // Already there: nothing runs. A record naming other code catches up (the repair
+                // for the refusal below); a release sharing the code is an upgrade as any other.
+                if runs == Some(bundle) && runs_compute == compute_bundle {
+                    let mut done = crate::component::host_answer(m.state.last_index, true, "");
+                    if judged_on.is_some_and(|j| !j.is(Some(bundle), compute_bundle)) {
+                        done.result = json!({ "caughtUp": true });
+                    }
+                    return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
+                }
+                if judged_on.is_some_and(|j| runs.is_some() && !j.is(runs, runs_compute)) {
+                    let mut refused = crate::component::host_answer(m.state.last_index, false, "");
+                    refused.error = json!({
+                        "code": "BundleMoved",
+                        "fields": {
+                            "message": "the app runs other code than the one this upgrade was judged on: upgrade it to the release that ships `runs` first",
+                            "runs": runs,
+                            "runsCompute": runs_compute,
+                        },
+                    });
+                    return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
+                }
                 let is_result = |name: &String| {
                     target
                         .abi
@@ -3010,6 +3036,54 @@ impl Node {
         let a = to_host_applied(a);
         self.count_conflict(&a);
         Ok(a)
+    }
+}
+
+/// The code an upgrade was judged on (`__upgrade`'s `from`): the app's bundle and, where the
+/// proposer stated it, its compute part (`None`: a node that sent the bundle alone).
+pub(crate) struct JudgedOn {
+    bundle: String,
+    compute: Option<Option<String>>,
+}
+
+impl JudgedOn {
+    /// `from` as sent. With `strict` (the cluster brings lineages, so every node sends both), a
+    /// bare bundle or one without its compute part is refused.
+    ///
+    /// # Errors
+    /// The shape `strict` refuses.
+    pub(crate) fn parse(from: &Value, strict: bool) -> Result<Option<Self>, &'static str> {
+        let judged = match from {
+            Value::String(bundle) => Self {
+                bundle: bundle.clone(),
+                compute: None,
+            },
+            Value::Object(o) => {
+                let Some(bundle) = o.get("bundle").and_then(Value::as_str) else {
+                    return Ok(None);
+                };
+                Self {
+                    bundle: bundle.to_owned(),
+                    compute: o
+                        .get("computeBundle")
+                        .map(|c| c.as_str().map(str::to_owned)),
+                }
+            }
+            _ => return Ok(None),
+        };
+        if strict && judged.compute.is_none() {
+            return Err("an upgrade names the compute part it was judged on beside the bundle");
+        }
+        Ok(Some(judged))
+    }
+
+    /// Whether the group running `bundle` and `compute` is still on this code.
+    fn is(&self, bundle: Option<&str>, compute: Option<&str>) -> bool {
+        bundle == Some(self.bundle.as_str())
+            && self
+                .compute
+                .as_ref()
+                .is_none_or(|c| c.as_deref() == compute)
     }
 }
 
@@ -3557,6 +3631,30 @@ fn to_host_applied(a: Applied) -> crate::app::Applied {
 fn print_app_logs(app: &str, kind: InvocationKind, method: &str, logs: &[String]) {
     for line in logs {
         tracing::info!(target: "app_log", %app, ?kind, %method, "{line}");
+    }
+}
+
+#[cfg(test)]
+mod judged_on_tests {
+    use serde_json::json;
+
+    use super::JudgedOn;
+
+    /// Below the version that brings lineages an earlier node's bare bundle, or an object
+    /// without its compute part, is read as it was; from it, only the full shape is.
+    #[test]
+    fn from_names_the_compute_part_once_lineages_are_on() {
+        let bare = json!("b1");
+        let partial = json!({ "bundle": "b1" });
+        let full = json!({ "bundle": "b1", "computeBundle": null });
+        for from in [&bare, &partial, &full] {
+            assert!(JudgedOn::parse(from, false).is_ok(), "{from}");
+        }
+        assert!(JudgedOn::parse(&bare, true).is_err());
+        assert!(JudgedOn::parse(&partial, true).is_err());
+        let judged = JudgedOn::parse(&full, true).unwrap().unwrap();
+        assert!(judged.is(Some("b1"), None));
+        assert!(!judged.is(Some("b1"), Some("c1")));
     }
 }
 

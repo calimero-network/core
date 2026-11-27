@@ -86,11 +86,11 @@ Generated from core's `docs/public/openapi.json`.
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
-| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
+| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 OUTSIDE_LINEAGE`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
 | `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 LINEAGE_OLDER_RELEASE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_LINEAGE`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 | `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `400 NO_REGISTRY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |
 | `upload_begin(app, size)` | `POST /apps/{app}/files/uploads` | Begin a file upload. *Refusals:* `429 QUOTA_EXCEEDED` |
@@ -210,7 +210,7 @@ Generated from core's `docs/public/openapi.json`.
 | `release_deadline(version, after=…, operator_proof=None)` | `POST /ops/releases/{version}/deadline` | Set a release deadline. **operator** |
 | `release_deadline_lift(version, operator_proof=None)` | `DELETE /ops/releases/{version}/deadline` | Lift a release deadline. **operator** |
 | `remove_node(id, operator_proof=None)` | `DELETE /ops/nodes/{id}` | Remove a node. **operator**. *Refusals:* `400 LAST_NODE` |
-| `restore(app, backup=…, recovery=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
+| `restore(app, backup=…, recovery=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 LINEAGE_OLDER_RELEASE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 OUTSIDE_LINEAGE`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
 | `served()` | `GET /ops/served-origins` | Custom domains to serve |
 | `set_backup_key(public_key, operator_proof=None)` | `POST /ops/backup-key` | Set the operator's backup key. **operator**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
 | `set_replicas(app, replicas, operator_proof=None)` | `POST /ops/apps/{app}/replicas` | Move an app's replicas. **operator**. *Refusals:* `400 DUPLICATE_REPLICA`, `400 JOB_NODE`, `400 TOO_FEW`, `400 UNKNOWN_NODE`, `409 MOVE_IN_PROGRESS`, `409 RUNTIME_TOO_OLD` |
@@ -220,7 +220,7 @@ Generated from core's `docs/public/openapi.json`.
 | `sign_up_invite_revoke_post(key, operator_proof=None)` | `POST /ops/sign-up/invites/{key}/revoke` | Withdraw a cluster sign-up invite (POST). **operator** |
 | `sign_up_set(policy, operator_proof=None)` | `POST /ops/sign-up` | Set the sign-up policy. **operator** |
 | `status()` | `GET /ops/status` | The node and the cluster |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, operator_proof=None)` | `POST /ops/apps/{app}/upgrade` | Upgrade an app as the operator. **operator**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `409 NOT_INSTALLED`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, operator_proof=None)` | `POST /ops/apps/{app}/upgrade` | Upgrade an app as the operator. **operator**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `409 LINEAGE_OLDER_RELEASE`, `409 NOT_INSTALLED`, `409 OUTSIDE_LINEAGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 
 ## `client.orgs`
 
@@ -298,4 +298,4 @@ Generated from core's `docs/public/openapi.json`.
 | `health()` | `GET /health` | Node health |
 | `publisher_binding(signer)` | `GET /publishers/{signer}` | Whether a signing key is bound |
 | `releases_public()` | `GET /releases` | The cluster's releases |
-| `restore_recover_holder(holder, slice_, apps=…, code=…, operator_proof=None)` | `POST /recover/holder` | Bring an organization's or account's apps back from its recovery files. **operator**. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 FEATURE_NOT_ACTIVE`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING` |
+| `restore_recover_holder(holder, slice_, apps=…, code=…, operator_proof=None)` | `POST /recover/holder` | Bring an organization's or account's apps back from its recovery files. **operator**. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 FEATURE_NOT_ACTIVE`, `409 NO_BACKUP_DIR`, `409 OUTSIDE_LINEAGE`, `409 RECOVERY_SEGMENTS_MISSING` |

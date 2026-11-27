@@ -56,6 +56,7 @@ from .app_invite_list import AppInviteList
 from .app_invite_made import AppInviteMade
 from .app_invite_revoke_response_200 import AppInviteRevokeResponse200
 from .app_invite_view import AppInviteView
+from .app_lineage import AppLineage
 from .app_link_body import AppLinkBody
 from .app_link_list import AppLinkList
 from .app_links import AppLinks
@@ -733,6 +734,8 @@ from .update_reason_type_6 import UpdateReasonType6
 from .update_reason_type_6_code import UpdateReasonType6Code
 from .update_reason_type_7 import UpdateReasonType7
 from .update_reason_type_7_code import UpdateReasonType7Code
+from .update_reason_type_8 import UpdateReasonType8
+from .update_reason_type_8_code import UpdateReasonType8Code
 from .update_view import UpdateView
 from .update_view_approvers import UpdateViewApprovers
 from .update_view_available_type_0 import UpdateViewAvailableType0
@@ -834,6 +837,7 @@ __all__ = (
     "AppInviteView",
     "Applied",
     "AppliedStatus",
+    "AppLineage",
     "AppLinkBody",
     "AppLinkList",
     "AppLinks",
@@ -1457,6 +1461,8 @@ __all__ = (
     "UpdateReasonType6Code",
     "UpdateReasonType7",
     "UpdateReasonType7Code",
+    "UpdateReasonType8",
+    "UpdateReasonType8Code",
     "UpdateView",
     "UpdateViewApprovers",
     "UpdateViewAvailableType0",

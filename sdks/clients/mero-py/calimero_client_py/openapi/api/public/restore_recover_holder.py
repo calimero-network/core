@@ -91,7 +91,9 @@ def sync_detailed(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -132,7 +134,9 @@ def sync(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -168,7 +172,9 @@ async def asyncio_detailed(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -207,7 +213,9 @@ async def asyncio(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.

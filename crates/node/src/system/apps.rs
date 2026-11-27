@@ -362,10 +362,14 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             app_id,
             source,
             proof,
+            bundle,
+            compute_bundle,
             ..
         } => {
             let (statement, used) = proofs.fresh(proofs.operator(proof)?)?;
-            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            let args = proofs
+                .s
+                .restore_args(app_id, source, bundle, compute_bundle.as_deref());
             proofs.states(&statement, app_id, "__restore_app", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -662,7 +666,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             compute_bundle,
             source,
             ..
-        } => restore_app(state, app_id, replicas, bundle, compute_bundle, source),
+        } => restore_app(state, app_id, replicas, (bundle, compute_bundle), source),
         SystemCmd::FinishRestore { app_id, group } => finish_restore(state, app_id, group),
         SystemCmd::SetAccess {
             app_id,
@@ -755,6 +759,7 @@ fn create_app(
     state.next_group = state.next_group.max(1) + 1;
     app.group = state.next_group;
     app.restore = None;
+    app.lineage = state.lineage_of(app.release.as_ref(), &app.bundle, app.created_at);
     let out = json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
     let _prev = state.apps.insert(app.app_id.clone(), app);
     Ok(out)
@@ -1000,6 +1005,10 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             state.within_deployment(app, release.as_ref(), run.as_deref())?;
         }
     }
+    // A pinned instance stays on its lineage, whoever moves it.
+    if let Some(app) = state.apps.get(&app_id) {
+        state.within_lineage(app, release.as_ref())?;
+    }
     // An instance from no deployment enters another package only as its upgrader
     // could create one there; read from the logged version alone.
     if !by_operator && state.cluster_brings(cluster_version::Feature::OffersOnly) {
@@ -1061,6 +1070,7 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
         actor
     };
     let org = state.apps.get(&app_id).map(|app| app.org.clone());
+    let pins = state.lineage_of(release.as_ref(), &bundle, at);
     // A person who upgraded it themselves saw who runs its deployment now; an update
     // on its own, a key's, a run's or the operator's did not.
     let person_saw =
@@ -1106,9 +1116,14 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             file: taken.file,
             undone_at: None,
         });
+        if let (Some(l), Some(to)) = (app.lineage.as_mut(), release.as_ref()) {
+            l.raise_floor(&to.version);
+        }
         app.bundle = bundle;
         app.compute_bundle = compute_bundle;
         app.release = release;
+        // Pinned once it runs a pinning release; nothing clears it.
+        app.lineage = app.lineage.take().or(pins);
     }
     if let Some(org) = org {
         state.drop_spent_approvals(&org, at);
@@ -1426,8 +1441,7 @@ fn restore_app(
     state: &mut SystemState,
     app_id: AppId,
     replicas: Vec<u64>,
-    bundle: String,
-    compute_bundle: Option<String>,
+    (bundle, compute_bundle): (String, Option<String>),
     source: crate::types::RestoreSource,
 ) -> Result<Value, Rejection> {
     if !state.bundles.contains_key(&bundle) {
@@ -1445,12 +1459,22 @@ fn restore_app(
     {
         return Err(RESTORE_REPLICAS_DISTINCT);
     }
-    if !state.apps.contains_key(&app_id) {
-        return Err(NO_SUCH_APP);
+    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
+    state.ships_on_lineage(app, &bundle, compute_bundle.as_deref())?;
+    // A pinned store is not rolled back, whoever signs it: an undo is the owner's way back.
+    if state.restores_older(app, &bundle, compute_bundle.as_deref()) {
+        return Err(LINEAGE_OLDER_RELEASE);
     }
+    let restored = app
+        .lineage
+        .as_ref()
+        .and_then(|l| state.lineage_shipping(l, &bundle, compute_bundle.as_deref()));
     let group = state.next_group.max(1) + 1;
     state.next_group = group;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
+    if let (Some(l), Some(r)) = (app.lineage.as_mut(), restored) {
+        l.raise_floor(&r);
+    }
     if app.bundle != bundle {
         // Inferred from the bundle again (`report::release_of_bundle`).
         app.release = None;

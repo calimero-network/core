@@ -97,11 +97,15 @@ pub enum RejectionKind {
     TransferStale,
     /// `409 OFFERS_NOT_USABLE`: [`super::OFFERS_NOT_USABLE`].
     OffersNotUsable,
+    /// `409 OUTSIDE_LINEAGE`: [`super::OUTSIDE_LINEAGE`].
+    OutsideLineage,
+    /// `409 LINEAGE_OLDER_RELEASE`: [`super::LINEAGE_OLDER_RELEASE`].
+    LineageOlderRelease,
 }
 
 impl RejectionKind {
     /// Every kind, for reading one back from its code.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 43] = [
         Self::Rejected,
         Self::QuotaExceeded,
         Self::ReleaseDeadline,
@@ -143,6 +147,8 @@ impl RejectionKind {
         Self::NotHandingOver,
         Self::TransferStale,
         Self::OffersNotUsable,
+        Self::OutsideLineage,
+        Self::LineageOlderRelease,
     ];
 
     /// The code the API answers it with, and `apply`'s answer carries.
@@ -190,6 +196,8 @@ impl RejectionKind {
             Self::NotHandingOver => "FORBIDDEN",
             Self::TransferStale => "TRANSFER_STALE",
             Self::OffersNotUsable => "OFFERS_NOT_USABLE",
+            Self::OutsideLineage => "OUTSIDE_LINEAGE",
+            Self::LineageOlderRelease => "LINEAGE_OLDER_RELEASE",
         }
     }
 
@@ -233,7 +241,9 @@ impl RejectionKind {
             | Self::TransferPending
             | Self::TransferLapsed
             | Self::TransferStale
-            | Self::OffersNotUsable => 409,
+            | Self::OffersNotUsable
+            | Self::OutsideLineage
+            | Self::LineageOlderRelease => 409,
         }
     }
 
@@ -417,7 +427,7 @@ mod tests {
     /// `node::rejected` answered for it when it matched the message.
     #[test]
     fn each_named_refusal_keeps_its_status_and_code() {
-        let named: [(&Rejection, u16, &str); 36] = [
+        let named: [(&Rejection, u16, &str); 38] = [
             (&system::NOT_A_DEPLOYER, 403, "DEPLOY_NOT_GRANTED"),
             (&system::PERSONAL_ORG_EXISTS, 409, "PERSONAL_ORG_EXISTS"),
             (&system::GUESTS_NOT_ALLOWED, 409, "GUESTS_NOT_ALLOWED"),
@@ -466,6 +476,8 @@ mod tests {
             (&system::NOT_HANDING_OVER, 403, "FORBIDDEN"),
             (&system::TRANSFER_STALE, 409, "TRANSFER_STALE"),
             (&system::OFFERS_NOT_USABLE, 409, "OFFERS_NOT_USABLE"),
+            (&system::OUTSIDE_LINEAGE, 409, "OUTSIDE_LINEAGE"),
+            (&system::LINEAGE_OLDER_RELEASE, 409, "LINEAGE_OLDER_RELEASE"),
         ];
         for (refused, status, code) in named {
             let api = crate::node::rejected(refused);

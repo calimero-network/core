@@ -114,7 +114,9 @@ def sync_detailed(
     `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
     installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
     `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`)
+    goes back only to a release of its own package and publisher, an older one included: `409
+    OUTSIDE_LINEAGE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -163,7 +165,9 @@ def sync(
     `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
     installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
     `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`)
+    goes back only to a release of its own package and publisher, an older one included: `409
+    OUTSIDE_LINEAGE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -207,7 +211,9 @@ async def asyncio_detailed(
     `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
     installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
     `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`)
+    goes back only to a release of its own package and publisher, an older one included: `409
+    OUTSIDE_LINEAGE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -254,7 +260,9 @@ async def asyncio(
     `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
     installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
     `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`)
+    goes back only to a release of its own package and publisher, an older one included: `409
+    OUTSIDE_LINEAGE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

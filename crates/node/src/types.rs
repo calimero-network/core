@@ -562,6 +562,53 @@ pub struct AppRecord {
     /// (egress on, the default), so a record writes as it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub egress_off: bool,
+    /// The package and signer it is pinned to, set once it runs a release declaring
+    /// `lineage: pinned` and never cleared (`SystemState::within_lineage`). Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AppLineage>,
+}
+
+/// What a pinned instance stays on ([`AppRecord::lineage`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLineage {
+    pub package: String,
+    pub signer_id: String,
+    /// The newest release version it has been judged at, raised by every move that applies and
+    /// never lowered: nothing older is reachable again, whatever is installed. Empty in a record
+    /// written before it, which an import raises to the release it runs.
+    #[serde(default)]
+    pub floor: String,
+}
+
+impl AppLineage {
+    /// Whether `version` is no older than the floor and than `runs`, the release the instance
+    /// runs, all read as semver. An empty floor is none beyond `runs`; with neither, or a
+    /// version that does not parse, nothing is.
+    #[must_use]
+    pub fn at_least(&self, version: &str, runs: Option<&str>) -> bool {
+        let parse = |v: &str| semver::Version::parse(v).ok();
+        let Some(to) = parse(version) else {
+            return false;
+        };
+        let floor = (!self.floor.is_empty()).then(|| parse(&self.floor));
+        let runs = runs.map(parse);
+        (floor.is_some() || runs.is_some())
+            && floor.is_none_or(|f| f.is_some_and(|f| to >= f))
+            && runs.is_none_or(|r| r.is_some_and(|r| to >= r))
+    }
+
+    /// Raise the floor to `version` when it is newer, or set it where there is none (or none
+    /// that parses); a `version` that does not parse is never written.
+    pub fn raise_floor(&mut self, version: &str) {
+        if semver::Version::parse(version).is_err() {
+            return;
+        }
+        let unreadable = semver::Version::parse(&self.floor).is_err();
+        if unreadable || self.at_least(version, None) && version != self.floor {
+            self.floor = version.to_owned();
+        }
+    }
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the

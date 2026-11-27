@@ -50,6 +50,7 @@ mod instance_orgs;
 mod job_nodes;
 mod job_runs;
 mod key_follow_ups;
+mod lineage;
 mod move_app;
 mod org_app_teams;
 mod org_member_security;

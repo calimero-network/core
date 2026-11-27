@@ -50,6 +50,16 @@ const CODE_IN_USE: Rejection =
     Rejection::new(RejectionKind::Rejected, "that recovery code is in use");
 /// Removing a recovery code from an account that has none.
 const NO_CODE_SET: Rejection = Rejection::new(RejectionKind::Rejected, "no recovery code is set");
+/// An imported pinned app with no floor that parses and no release version to set one from.
+const UNFLOORED_IMPORT: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an imported pinned app has neither a floor nor a release version that parses",
+);
+/// An imported app's release that does not ship its bundle as this cluster holds the package.
+const RELEASE_NOT_SHIPPED_HERE: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an imported app's release does not ship its bundle on this cluster",
+);
 /// An organization recovery started for its owner.
 const OWNS_ALREADY: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -724,18 +734,28 @@ fn import_holder(
     {
         return Err(ALREADY_HERE.into());
     }
+    let mut pins = BTreeMap::new();
+    for app in &apps {
+        let record = &slice.apps[&app.app_id];
+        if !state.bundles.contains_key(&record.bundle)
+            && !slice.bundles.contains_key(&record.bundle)
+        {
+            return Err(RESTORE_BUNDLE_GONE.into());
+        }
+        let _prev = pins.insert(app.app_id.clone(), imported_lineage(state, &slice, record)?);
+        // Judged from the version that brings lineages, so an earlier entry replays as it did.
+        if state.cluster_brings(cluster_version::Feature::PinnedLineage)
+            && !imported_release_ships(state, &slice, record)
+        {
+            return Err(RELEASE_NOT_SHIPPED_HERE);
+        }
+    }
+    // Checked: from here nothing is refused.
     for (hash, bundle) in &slice.bundles {
         if !state.bundles.contains_key(hash) {
             let _prev = state.bundles.insert(hash.clone(), bundle.clone());
         }
     }
-    for app in &apps {
-        let record = &slice.apps[&app.app_id];
-        if !state.bundles.contains_key(&record.bundle) {
-            return Err(RESTORE_BUNDLE_GONE.into());
-        }
-    }
-    // Checked: from here nothing is refused.
     add_imported_accounts(state, &incoming);
     for (name, package) in slice.packages {
         let _kept = state.packages.entry(name).or_insert(package);
@@ -746,6 +766,7 @@ fn import_holder(
     let mut groups = Vec::new();
     for app in apps {
         let mut record = slice.apps[&app.app_id].clone();
+        record.lineage = pins.remove(&app.app_id).flatten();
         let group = state.next_group.max(1) + 1;
         state.next_group = group;
         record.group = group;
@@ -765,6 +786,127 @@ fn import_holder(
     };
     let _prev = state.backup_keys.insert(holder.key(), key);
     Ok(json!({ "apps": groups }))
+}
+
+/// Whether `record`'s release ships its bundle and compute part as this cluster will hold its
+/// package (here, else the slice's), under the signer the slice holds it under. A record that
+/// names no release is judged by the release its bundle is recorded from, which the slice must
+/// carry and, where this cluster records that bundle too, must agree with; a raw bundle passes.
+fn imported_release_ships(state: &SystemState, slice: &HolderSlice, record: &AppRecord) -> bool {
+    let attributed = |hash: &str| {
+        let theirs = slice.bundles.get(hash)?;
+        let ours = state.bundles.get(hash).unwrap_or(theirs);
+        (ours.package == theirs.package).then_some(theirs.package.clone())
+    };
+    let r = match &record.release {
+        Some(r) => r.clone(),
+        None => match attributed(&record.bundle) {
+            Some(Some(r)) => r,
+            Some(None) => return true,
+            None => return false,
+        },
+    };
+    if record
+        .compute_bundle
+        .as_deref()
+        .is_some_and(|c| record.release.is_none() && attributed(c).is_none())
+    {
+        return false;
+    }
+    let (Some(theirs), Some(held)) = (
+        slice.packages.get(&r.package),
+        state
+            .packages
+            .get(&r.package)
+            .or(slice.packages.get(&r.package)),
+    ) else {
+        return false;
+    };
+    let ships = |hash: &str| {
+        held.versions
+            .get(&r.version)
+            .is_some_and(|v| v.parts(&r.package).any(|(h, _)| h == hash))
+    };
+    theirs.signer_id == held.signer_id
+        && ships(&record.bundle)
+        && record.compute_bundle.as_deref().is_none_or(ships)
+}
+
+/// The lineage `record` keeps on import: its own, else its release's as the slice records it,
+/// and only where this cluster will hold that package under the same signer.
+///
+/// # Errors
+/// [`OUTSIDE_LINEAGE`] when the package is held under another signer, or by none.
+fn imported_lineage(
+    state: &SystemState,
+    slice: &HolderSlice,
+    record: &AppRecord,
+) -> Result<Option<AppLineage>, Rejection> {
+    let release = record
+        .release
+        .as_ref()
+        .or_else(|| slice.bundles.get(&record.bundle)?.package.as_ref());
+    // Pinning as the slice records the release, or as this cluster holds it.
+    let pinning = |r: &PackageRef| {
+        [
+            slice.packages.get(&r.package),
+            state.packages.get(&r.package),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|p| {
+            p.versions
+                .get(&r.version)
+                .is_some_and(|v| !v.lineage.is_free())
+        })
+        .map(|p| AppLineage {
+            package: r.package.clone(),
+            signer_id: p.signer_id.clone(),
+            floor: r.version.clone(),
+        })
+    };
+    let Some(pin) = record.lineage.clone().or_else(|| release.and_then(pinning)) else {
+        return Ok(None);
+    };
+    if release.is_some_and(|r| r.package != pin.package) {
+        return Err(OUTSIDE_LINEAGE);
+    }
+    let held = state
+        .packages
+        .get(&pin.package)
+        .or(slice.packages.get(&pin.package));
+    let theirs = slice.packages.get(&pin.package);
+    if !held.is_some_and(|p| p.signer_id == pin.signer_id)
+        || theirs.is_some_and(|p| p.signer_id != pin.signer_id)
+    {
+        return Err(OUTSIDE_LINEAGE);
+    }
+    // The release it runs: named, else the newest lineage release shipping its code here.
+    let runs = match &record.release {
+        Some(r) => r.version.clone(),
+        None => held
+            .and_then(|p| p.shipping(&record.bundle, record.compute_bundle.as_deref()))
+            .ok_or(OUTSIDE_LINEAGE)?,
+    };
+    let mut pin = pin;
+    floor_at_least_runs(&mut pin, Some(&runs))?;
+    Ok(Some(pin))
+}
+
+/// Raise an imported pin's floor to the release the record runs; where the floor is missing or
+/// does not parse, that release's version becomes it, and with none that parses the import is
+/// refused.
+///
+/// # Errors
+/// [`UNFLOORED_IMPORT`].
+fn floor_at_least_runs(pin: &mut AppLineage, runs: Option<&str>) -> Result<(), Rejection> {
+    let parses = |v: &str| semver::Version::parse(v).is_ok();
+    match runs.filter(|v| parses(v)) {
+        Some(v) => pin.raise_floor(v),
+        None if !parses(&pin.floor) => return Err(UNFLOORED_IMPORT),
+        None => {}
+    }
+    Ok(())
 }
 
 /// An import is of an organization or account this cluster does not hold,

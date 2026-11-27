@@ -109,6 +109,10 @@ pub fn reason_words(r: &Reason) -> String {
             None => format!("{}Newly {after}.", of(member)),
             Some(before) => format!("{}Now {after}; it {before}.", of(member)),
         },
+        Reason::PinsLineage { member, package } => format!(
+            "{}Pins it to {package} and its publisher: from then on it moves only to their newer releases, and never back.",
+            of(member)
+        ),
         Reason::Unclassified {
             member,
             package,
@@ -1046,6 +1050,24 @@ mod tests {
             None
         );
         assert_eq!(hold_words(&auto, None, false), None);
+    }
+
+    /// A move into a pinning release says it pins the instance, on the sheet and as the
+    /// one-line summary of a red update.
+    #[test]
+    fn a_pinning_update_says_it_pins_the_instance() {
+        let pins = Classification {
+            class: Class::Red,
+            reasons: vec![Reason::PinsLineage {
+                member: None,
+                package: "com.calimero.kv".into(),
+            }],
+            ..green(&[])
+        };
+        let words = reason_words(&pins.reasons[0]);
+        assert!(words.contains("com.calimero.kv"), "{words}");
+        assert!(words.contains("never back"), "{words}");
+        assert_eq!(update_summary(&pins), words.trim_end_matches('.'));
     }
 
     #[test]

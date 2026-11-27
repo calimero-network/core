@@ -362,7 +362,10 @@ pub(crate) async fn upgrade_app(
             .await?
         }
     };
-    if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref(), None)) {
+    if let Err(why) = node.sys(|s| {
+        s.within_deployment(&app, release.as_ref(), None)?;
+        s.within_lineage(&app, release.as_ref())
+    }) {
         return Err(crate::node::rejected(why));
     }
     let may = || {
@@ -545,7 +548,7 @@ async fn run_upgrade(
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
-    let refusal = node.sys(|s| {
+    let judge_upgrade = |s: &crate::system::SystemState| -> Option<ApiError> {
         let a = s.apps.get(&app_id)?;
         if who.auto {
             if let Err(why) = s.auto_update_allows(
@@ -567,6 +570,10 @@ async fn run_upgrade(
             ));
         }
         if let Err(why) = s.within_deployment(a, release.as_ref(), who.run.as_deref()) {
+            return Some(crate::node::rejected(why));
+        }
+        // The real gate: the app's group runs `__upgrade` before `UpgradeApp` is logged.
+        if let Err(why) = s.within_lineage(a, release.as_ref()) {
             return Some(crate::node::rejected(why));
         }
         if !who.by_operator
@@ -595,6 +602,14 @@ async fn run_upgrade(
         }
         s.stalled_for_release(to, &a.org, begun)
             .map(|stall| crate::node::stalled(&stall))
+    };
+    // The bundle judged is the one the group must still run when it switches (`BundleMoved`).
+    let (refusal, judged_on) = node.sys(|s| {
+        let judged_on = s
+            .apps
+            .get(&app_id)
+            .map(|a| json!({ "bundle": a.bundle, "computeBundle": a.compute_bundle }));
+        (judge_upgrade(s), judged_on)
     });
     // Every replica's node must run the runtime the target needs, or the
     // replicas below it could not run the app once it moved.
@@ -652,7 +667,7 @@ async fn run_upgrade(
         node.call(&CallRequest::host(
             app_id.clone(),
             "__upgrade",
-            json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate }),
+            json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate, "from": judged_on }),
             who.caller.clone(),
         ))
         .await
@@ -694,7 +709,9 @@ async fn run_upgrade(
             &applied.error,
         ));
     }
-    // The app now runs the new bundle: the directory says so too.
+    // The app now runs the new bundle: the directory says so too. Catching up ran nothing,
+    // and the snapshot is of the code it already ran, so it leaves no undo.
+    let restore_point = restore_point.filter(|_| applied.result["caughtUp"] != json!(true));
     let in_deployment = in_deployment_rule(node, &app_id).await;
     let _ok = node
         .sys_write(&SystemCmd::UpgradeApp {
@@ -1751,6 +1768,23 @@ pub(crate) async fn upgrade_unit(
 /// very unit (`upgrade-approvals` with `unit`). Asked before the passkey, by the route
 /// and the consent page alike.
 pub(crate) async fn unit_gate(node: &Node, plan: &UnitPlan, account: &str) -> Result<(), ApiError> {
+    // Every part at once: a member refused after its instance moved would split the unit.
+    node.sys(|s| {
+        s.within_lineage(&plan.app, Some(&plan.target))?;
+        plan.members.iter().try_for_each(|m| {
+            let Some(t) = plan.targets.get(&m.app_id) else {
+                return Ok(());
+            };
+            let to = PackageRef {
+                package: t.package.clone(),
+                version: t.version.clone(),
+                service: None,
+                compute: false,
+            };
+            s.within_lineage(m, Some(&to))
+        })
+    })
+    .map_err(crate::node::rejected)?;
     unclassified_gate(node, &plan.app, Some(&plan.target)).await?;
     let class = class_of(node, &plan.app.app_id, Some(&plan.target), true).await;
     let now = now_secs();

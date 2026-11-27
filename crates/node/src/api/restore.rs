@@ -424,6 +424,7 @@ async fn ops_restore_recovery(
             crate::system::RESTORE_BUNDLE_GONE,
         ));
     }
+    refuse_off_lineage(&node, &app, &bundle, compute_bundle.as_deref())?;
     let mut replicas = vec![me];
     replicas.extend(node.sys(|s| {
         app.replicas
@@ -452,7 +453,7 @@ async fn ops_restore_recovery(
         &node,
         &app_id,
         "__restore_app",
-        &json!({ "backup": source.name, "sha256": source.sha256 }),
+        &node.sys(|s| s.restore_args(&app_id, &source, &bundle, compute_bundle.as_deref())),
         signed,
     )?;
     let Some(guard) = node.begin_move(&app_id) else {
@@ -514,6 +515,24 @@ fn refused(e: &BackupError) -> ApiError {
     ApiError::new(status, e.code(), &e.to_string())
 }
 
+/// A pinned instance is restored only from a backup a release of its lineage ships, never one
+/// older than its floor; judged before the operator signs, and again at apply.
+fn refuse_off_lineage(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    bundle: &str,
+    compute: Option<&str>,
+) -> Result<(), ApiError> {
+    node.sys(|s| {
+        s.ships_on_lineage(app, bundle, compute)?;
+        if s.restores_older(app, bundle, compute) {
+            return Err(crate::system::LINEAGE_OLDER_RELEASE);
+        }
+        Ok(())
+    })
+    .map_err(crate::node::rejected)
+}
+
 /// Restore `app` from a backup this node holds; this node seeds it. Answers
 /// `{ app, group, rows, backup: { name, index, format, merod, release }, status }`
 /// once every replica holds the restored state.
@@ -573,6 +592,7 @@ pub(super) async fn ops_restore(
             crate::system::RESTORE_BUNDLE_GONE,
         ));
     }
+    refuse_off_lineage(&node, &app, &bundle, compute_bundle.as_deref())?;
     // The seed first, then the app's other replicas that are still registered,
     // as many as it had.
     let mut replicas = vec![me];
@@ -606,7 +626,7 @@ pub(super) async fn ops_restore(
         &node,
         &app_id,
         "__restore_app",
-        &json!({ "backup": source.name, "sha256": source.sha256 }),
+        &node.sys(|s| s.restore_args(&app_id, &source, &bundle, compute_bundle.as_deref())),
         b.operator_proof,
     )?;
     let Some(guard) = node.begin_move(&app_id) else {

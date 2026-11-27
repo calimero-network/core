@@ -3724,8 +3724,34 @@ impl Node {
                 conflict: false,
             });
         }
-        self.upgrade_component(g, &bundle, compute_bundle.as_deref(), migrate.as_deref())
-            .await
+        let strict =
+            self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::PinnedLineage));
+        let judged_on = match req
+            .args
+            .get("from")
+            .map(|f| component::JudgedOn::parse(f, strict))
+        {
+            None => None,
+            Some(Ok(judged)) => judged,
+            Some(Err(why)) => {
+                return Ok(Applied {
+                    index: g.applied(),
+                    status: Status::AppError,
+                    result: Value::Null,
+                    error: Value::String(why.to_owned()),
+                    events: Vec::new(),
+                    conflict: false,
+                })
+            }
+        };
+        self.upgrade_component(
+            g,
+            &bundle,
+            compute_bundle.as_deref(),
+            migrate.as_deref(),
+            judged_on.as_ref(),
+        )
+        .await
     }
 
     /// Run a call wherever the app's leader is.

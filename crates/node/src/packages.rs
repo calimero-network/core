@@ -628,6 +628,7 @@ impl Node {
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
                 upgrades,
+                lineage: manifest.lineage.unwrap_or_default(),
                 components: if only_compute {
                     Components::ComputeOnly
                 } else {

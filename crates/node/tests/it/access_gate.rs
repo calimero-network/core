@@ -1103,6 +1103,7 @@ fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,

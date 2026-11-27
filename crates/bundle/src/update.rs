@@ -82,6 +82,10 @@ pub struct Release {
     /// The methods its component's ABI declares; `None` when it embeds no ABI.
     #[serde(default)]
     pub methods: Option<BTreeSet<String>>,
+    /// Its manifest declares `lineage: pinned`; on the side an instance runs now, whether the
+    /// instance is pinned (the node reads it from the record).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 impl Release {
@@ -112,6 +116,7 @@ impl Release {
                     .map(|m| m.keys().cloned().collect())
                     .unwrap_or_default()
             }),
+            pinned: manifest.lineage == Some(crate::Lineage::Pinned),
         }
     }
 
@@ -276,6 +281,13 @@ pub enum Reason {
         before: Option<String>,
         after: String,
     },
+    /// It moves into a release declaring `lineage: pinned` while not pinned yet: from then
+    /// on it stays on `package` and its signer, never moving to an older release.
+    #[serde(rename_all = "camelCase")]
+    PinsLineage {
+        member: Option<String>,
+        package: String,
+    },
     /// Not classified: `package`@`version`, which the app (or the member) runs or moves to,
     /// is no longer installed, so what it declared cannot be read. Taken as red. The node
     /// says it (a release uninstalled while another ships its WASM); [`classify`] never
@@ -332,6 +344,12 @@ pub fn classify(before: &Unit, after: &Unit) -> Classification {
     let will: BTreeMap<&str, &Release> = after.parts().collect();
 
     for (path, to) in &will {
+        if to.pinned && !was.get(path).is_some_and(|f| f.pinned) {
+            reasons.push(Reason::PinsLineage {
+                member: member(path),
+                package: to.package.clone(),
+            });
+        }
         let Some(from) = was.get(path).filter(|f| f.package == to.package) else {
             continue;
         };
@@ -520,6 +538,35 @@ mod tests {
         assert_eq!(c.egress.after, c.egress.before);
         assert!(c.egress.added.is_empty() && c.egress.removed.is_empty());
         assert!(!c.signer_changed && !c.state_version_changed);
+    }
+
+    /// Moving into a release declaring `lineage: pinned` from one that does not is red: the
+    /// instance stays on that package and signer from then on. Between pinning releases, or
+    /// back to an unpinned one (the pin stays), nothing new is pinned.
+    #[test]
+    fn moving_into_a_pinning_release_is_red() {
+        let pinned = |mut u: Unit| {
+            u.app.pinned = true;
+            u
+        };
+        let c = classify(&local_unit("1.0.0"), &pinned(local_unit("1.1.0")));
+        assert_eq!(c.class, Class::Red);
+        assert_eq!(codes(&c), ["pinsLineage"]);
+        assert_eq!(
+            c.reasons[0],
+            Reason::PinsLineage {
+                member: None,
+                package: "com.acme.notes".into()
+            }
+        );
+        let mut member = local_unit("1.1.0");
+        member.members.get_mut("store").unwrap().pinned = true;
+        let c = classify(&local_unit("1.0.0"), &member);
+        assert_eq!(codes(&c), ["pinsLineage"]);
+        let again = classify(&pinned(local_unit("1.0.0")), &pinned(local_unit("1.1.0")));
+        assert_eq!(again.class, Class::Green, "{again:?}");
+        let back = classify(&pinned(local_unit("1.0.0")), &local_unit("1.1.0"));
+        assert_eq!(back.class, Class::Green, "{back:?}");
     }
 
     #[test]

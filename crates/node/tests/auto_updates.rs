@@ -74,6 +74,7 @@ fn release_of(
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,

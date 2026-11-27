@@ -16,9 +16,9 @@ use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Grant,
-    Invite, NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin,
-    TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppLineage, AppRecord, Audience, Components,
+    Grant, Invite, NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId,
+    TeamJoin, TeamRole,
 };
 
 mod accounts;
@@ -544,6 +544,11 @@ pub struct PackageVersion {
     /// manifest ([`UpgradeAuthority`]); left out when `owner`.
     #[serde(default, skip_serializing_if = "UpgradeAuthority::is_owner")]
     pub upgrades: UpgradeAuthority,
+    /// Where an instance of it may move, from its signed manifest
+    /// ([`calimero_bundle::Lineage`]); left out when `free`. A `pinned` release is installed
+    /// only from `Feature::PinnedLineage`.
+    #[serde(default, skip_serializing_if = "calimero_bundle::Lineage::is_free")]
+    pub lineage: calimero_bundle::Lineage,
     /// The oldest runtime its signed manifest says it runs on
     /// (`minRuntimeVersion`), kept so placement and the reports judge it
     /// without the `.mpk` ([`crate::runtime`]). Absent in releases recorded
@@ -638,6 +643,28 @@ impl PackageVersion {
 }
 
 impl PackageRecord {
+    /// The newest release version (semver) that ships exactly `bundle` and `compute` in one
+    /// service (a release with only a compute part ships it as both).
+    #[must_use]
+    pub fn shipping(&self, bundle: &str, compute: Option<&str>) -> Option<String> {
+        self.versions
+            .values()
+            .filter(|v| {
+                v.services.keys().chain(v.compute.keys()).any(|name| {
+                    let part = v.services.get(name).or(v.compute.get(name));
+                    part.map(String::as_str) == Some(bundle)
+                        && v.compute.get(name).map(String::as_str) == compute
+                })
+            })
+            .filter_map(|v| {
+                semver::Version::parse(&v.version)
+                    .ok()
+                    .map(|s| (s, &v.version))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, v)| v.clone())
+    }
+
     /// Whether `v` keeps the package's upgrade declarations in order: in
     /// version order, `publisher` releases first, then `owner` ones, so a
     /// release never takes upgrades back from owners.
@@ -1524,6 +1551,20 @@ pub struct SecretDeclarers {
 /// (`SystemState::within_deployment`).
 pub const OUTSIDE_DEPLOYMENT: Rejection =
     Rejection::new(RejectionKind::OutsideDeployment, "an instance from a deployment runs the release its deployment offers: its developer decides which, and its owner accepts it or not");
+
+/// Why a move of a pinned instance (`AppRecord::lineage`) is refused: it names a raw bundle, another
+/// package, or a package now signed by another key (`SystemState::within_lineage`).
+pub const OUTSIDE_LINEAGE: Rejection = Rejection::new(
+    RejectionKind::OutsideLineage,
+    "a pinned instance moves only to a release of its own package, signed by its own publisher",
+);
+
+/// Why a move of a pinned instance to an older release, or one whose version is not semver, is
+/// refused (`SystemState::within_lineage`).
+pub const LINEAGE_OLDER_RELEASE: Rejection = Rejection::new(
+    RejectionKind::LineageOlderRelease,
+    "a pinned instance never moves to an older release",
+);
 
 /// Why clearing a deployment's secret is refused: it holds no value of it.
 pub const NO_DEPLOYMENT_SECRET: Rejection = Rejection::new(
@@ -3514,6 +3555,156 @@ impl SystemState {
             return Err(OUTSIDE_DEPLOYMENT);
         }
         Ok(())
+    }
+
+    /// The package and signer an instance running `bundle` as `release` (else the release the
+    /// bundle is recorded from, taken by `at`) is pinned to, where it declares `lineage: pinned`.
+    #[must_use]
+    pub fn lineage_of(
+        &self,
+        release: Option<&PackageRef>,
+        bundle: &str,
+        at: u64,
+    ) -> Option<AppLineage> {
+        let r = release.or_else(|| self.governing(None, bundle, at))?;
+        let record = self.packages.get(&r.package)?;
+        let _pinned = record
+            .versions
+            .get(&r.version)
+            .filter(|v| !v.lineage.is_free())?;
+        Some(AppLineage {
+            package: r.package.clone(),
+            signer_id: record.signer_id.clone(),
+            floor: r.version.clone(),
+        })
+    }
+
+    /// Whether moving `app` to `release` keeps it on its lineage ([`AppRecord::lineage`]): a
+    /// release of its package, still signed by its signer, and no older by semver than its floor
+    /// or the release it runs. The operator is held to it too; an unpinned instance goes anywhere.
+    ///
+    /// # Errors
+    /// [`OUTSIDE_LINEAGE`], or [`LINEAGE_OLDER_RELEASE`] for an older or non-semver version.
+    pub fn within_lineage(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+    ) -> Result<(), Rejection> {
+        self.on_lineage(app, release)?;
+        let (Some(lineage), Some(to)) = (&app.lineage, release) else {
+            return Ok(());
+        };
+        let runs = self.lineage_runs(app, lineage);
+        if lineage.at_least(&to.version, runs.as_deref()) {
+            Ok(())
+        } else {
+            Err(LINEAGE_OLDER_RELEASE)
+        }
+    }
+
+    /// Whether `release` is of `app`'s lineage, in any order: a release of its package, still
+    /// signed by its signer. An undo goes back along it; an unpinned instance goes anywhere.
+    ///
+    /// # Errors
+    /// [`OUTSIDE_LINEAGE`].
+    pub fn on_lineage(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+    ) -> Result<(), Rejection> {
+        let Some(lineage) = &app.lineage else {
+            return Ok(());
+        };
+        release
+            .filter(|r| r.package == lineage.package && self.signs_lineage(lineage))
+            .map(|_| ())
+            .ok_or(OUTSIDE_LINEAGE)
+    }
+
+    /// Whether a restore of `app` onto `bundle` and `compute` stays on its lineage: one release
+    /// of its package, still signed by its signer, ships exactly that code (no compute part
+    /// matching only a release without one).
+    ///
+    /// # Errors
+    /// [`OUTSIDE_LINEAGE`].
+    pub fn ships_on_lineage(
+        &self,
+        app: &AppRecord,
+        bundle: &str,
+        compute: Option<&str>,
+    ) -> Result<(), Rejection> {
+        let Some(lineage) = &app.lineage else {
+            return Ok(());
+        };
+        if self.signs_lineage(lineage) && self.lineage_shipping(lineage, bundle, compute).is_some()
+        {
+            Ok(())
+        } else {
+            Err(OUTSIDE_LINEAGE)
+        }
+    }
+
+    /// Whether a restore of `app` onto `bundle` and `compute` takes it to older code: the
+    /// release of its lineage that ships exactly that code is older than its floor or the
+    /// release it runs. An unpinned instance: never.
+    #[must_use]
+    pub fn restores_older(&self, app: &AppRecord, bundle: &str, compute: Option<&str>) -> bool {
+        let Some(lineage) = &app.lineage else {
+            return false;
+        };
+        let runs = self.lineage_runs(app, lineage);
+        !self
+            .lineage_shipping(lineage, bundle, compute)
+            .is_some_and(|v| lineage.at_least(&v, runs.as_deref()))
+    }
+
+    /// The newest release version of `lineage`'s package that ships exactly `bundle` and
+    /// `compute` in one service (a release with only a compute part ships it as both).
+    #[must_use]
+    pub fn lineage_shipping(
+        &self,
+        lineage: &AppLineage,
+        bundle: &str,
+        compute: Option<&str>,
+    ) -> Option<String> {
+        self.packages
+            .get(&lineage.package)?
+            .shipping(bundle, compute)
+    }
+
+    /// The release version of its lineage a pinned `app` runs: its record's, else the newest one
+    /// that ships its code. Judged beside the floor, never instead of it.
+    #[must_use]
+    pub fn lineage_runs(&self, app: &AppRecord, lineage: &AppLineage) -> Option<String> {
+        app.release
+            .as_ref()
+            .map(|r| r.version.clone())
+            .or_else(|| self.lineage_shipping(lineage, &app.bundle, app.compute_bundle.as_deref()))
+    }
+
+    /// What the operator signs for a restore of `app_id`: the backup, and for a pinned instance
+    /// the bundle and compute part it will run too, judged where it applies.
+    #[must_use]
+    pub fn restore_args(
+        &self,
+        app_id: &str,
+        source: &crate::types::RestoreSource,
+        bundle: &str,
+        compute: Option<&str>,
+    ) -> Value {
+        if self.apps.get(app_id).is_some_and(|a| a.lineage.is_some()) {
+            json!({ "backup": source.name, "sha256": source.sha256, "bundle": bundle,
+                "computeBundle": compute })
+        } else {
+            json!({ "backup": source.name, "sha256": source.sha256 })
+        }
+    }
+
+    /// Whether `lineage`'s package is installed here, signed by its signer.
+    fn signs_lineage(&self, lineage: &AppLineage) -> bool {
+        self.packages
+            .get(&lineage.package)
+            .is_some_and(|p| p.signer_id == lineage.signer_id)
     }
 
     /// The secret values of the deployment `app_id` was created from, by name,
