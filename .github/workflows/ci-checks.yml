@@ -453,6 +453,13 @@ jobs:
       - name: Build the test apps
         run: cargo run -p calimero-app-build --example build-test-apps
 
+      # With no test-apps cache the compile-fail cases build the SDK from nothing inside the
+      # test, past its kill time; the build is this step's time. `--workspace`, as `Cargo test`
+      # resolves, so the build is the one the test reuses. A failing case is the test's to report.
+      - name: Build the compile-fail cases
+        if: steps.test-apps.outputs.cache-matched-key == ''
+        run: cargo nextest run --workspace --no-fail-fast -E 'binary_id(calimero-sdk::compile_fail)' || true
+
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
       # all.
       # Twice the cores: most slow tests wait on timers and the network, not the

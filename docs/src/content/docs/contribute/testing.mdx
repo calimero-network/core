@@ -698,7 +698,9 @@ differ from it too. The master push rebuilds the SDK's compile-fail cases and
 app-build's tests whichever quarter they fall in, so the marker holds for every
 build the cache carries. The rust-cache saves what sits under `target/` too, `target/tests/trybuild` among
 it, stamped with its own commit, so the job deletes those directories after the
-rust-cache restore and before this one: this cache alone supplies them.
+rust-cache restore and before this one: this cache alone supplies them. When it
+has no entry, a step builds the compile-fail cases first, as the test would
+otherwise compile the SDK from nothing past its kill time.
 
 A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
 (`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace
