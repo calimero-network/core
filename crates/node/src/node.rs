@@ -1568,6 +1568,66 @@ impl Node {
         self.sys(|s| f(s, owned.as_ref()))
     }
 
+    /// The organizations a release serves, each read from its own shard (its
+    /// tenant group), as the `extra` map the release-visibility `*_with` readers
+    /// take. A private release is visible to a member of an organization it
+    /// serves, and that membership lives in the organization's tenant group once
+    /// the control plane is sharded, so the node fans those organizations out
+    /// here rather than reading stale membership from root
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn release_org_view(
+        &self,
+        package: &str,
+    ) -> BTreeMap<crate::types::OrgId, crate::types::Org> {
+        self.sys(|s| s.release_serving_orgs(package))
+            .into_iter()
+            .filter_map(|o| self.org_of(&o).map(|org| (o, org)))
+            .collect()
+    }
+
+    /// Whether `who` may use a release of `package` ([`SystemState::package_used`]),
+    /// the serving organizations read fresh from their shards. `frontend`: a
+    /// session bound to the package's frontend.
+    #[must_use]
+    pub fn package_used_fresh(&self, package: &str, who: &str, frontend: bool) -> bool {
+        let extra = self.release_org_view(package);
+        self.sys(|s| s.package_used_with(package, who, frontend, &extra))
+    }
+
+    /// [`SystemState::sees_release`] with the organizations the release serves
+    /// read fresh from their shards.
+    #[must_use]
+    pub fn sees_release_fresh(&self, v: &crate::system::PackageVersion, who: &str) -> bool {
+        let extra: BTreeMap<crate::types::OrgId, crate::types::Org> = v
+            .orgs
+            .iter()
+            .filter_map(|o| self.org_of(o).map(|org| (o.clone(), org)))
+            .collect();
+        self.sys(|s| s.sees_release_with(v, who, &extra))
+    }
+
+    /// Whether `who` may use `package@version` ([`SystemState::release_used`]),
+    /// the serving organizations read fresh from their shards.
+    #[must_use]
+    pub fn release_used_fresh(&self, package: &str, version: &str, who: &str) -> bool {
+        let extra = self.release_org_view(package);
+        self.sys(|s| {
+            s.packages
+                .get(package)
+                .and_then(|p| p.versions.get(version))
+                .is_some_and(|v| s.sees_release_with(v, who, &extra))
+        })
+    }
+
+    /// Whether `who` is a member of `org`, read from the organization's own shard
+    /// (its tenant group).
+    #[must_use]
+    pub fn member_of_fresh(&self, org: &str, who: &str) -> bool {
+        self.org_of(org)
+            .and_then(|o| o.role(who))
+            .is_some_and(|r| r >= crate::types::OrgRole::Member)
+    }
+
     /// The system Raft group that serves a shard ([`crate::system::shard`]): the
     /// root group for [`ShardId::Root`] (today also the single system group), or
     /// an organization's tenant group once one exists. Until tenant groups are

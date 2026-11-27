@@ -2400,6 +2400,91 @@ impl SystemState {
             .is_some_and(|r| r >= OrgRole::Member)
     }
 
+    /// The organization record for `org`, preferring `extra` — organizations the
+    /// caller resolved from their own shards (their tenant groups) and passed in
+    /// — over this (root) state. Release visibility reads an organization's
+    /// membership, which lives in its tenant group once the control plane is
+    /// sharded, so the node fans those organizations out and passes them here
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    fn org_for<'a>(&'a self, org: &str, extra: &'a BTreeMap<OrgId, Org>) -> Option<&'a Org> {
+        extra.get(org).or_else(|| self.orgs.get(org))
+    }
+
+    /// [`Self::member_of`] reading the organization from `extra` when it holds it.
+    #[must_use]
+    pub fn member_of_with(&self, org: &str, who: &str, extra: &BTreeMap<OrgId, Org>) -> bool {
+        self.org_for(org, extra)
+            .and_then(|o| o.role(who))
+            .is_some_and(|r| r >= OrgRole::Member)
+    }
+
+    /// [`Self::sees_release`] reading the organizations a private release serves
+    /// from `extra` (their tenant groups), for the access gate. The legacy
+    /// (`visibility` absent) branch still reads root; genesis-sharded clusters
+    /// record visibility on every release.
+    #[must_use]
+    pub fn sees_release_with(
+        &self,
+        v: &PackageVersion,
+        who: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        if v.installed_by_any(OPERATOR) {
+            return true;
+        }
+        if who == OPERATOR {
+            return false;
+        }
+        match v.visibility {
+            Some(Visibility::Public) => true,
+            Some(Visibility::Private) if v.orgs.is_empty() => v.installed_by_any(who),
+            Some(Visibility::Private) => v.orgs.iter().any(|o| self.member_of_with(o, who, extra)),
+            None => self.sees_release(v, who),
+        }
+    }
+
+    /// [`Self::sees_release_from`] with the organizations resolved from `extra`.
+    #[must_use]
+    pub fn sees_release_from_with(
+        &self,
+        v: &PackageVersion,
+        who: &str,
+        frontend: bool,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        (frontend && v.visibility.is_none()) || self.sees_release_with(v, who, extra)
+    }
+
+    /// Whether `who` may use one of `package`'s releases ([`Self::package_used`]),
+    /// the serving organizations resolved from `extra`.
+    #[must_use]
+    pub fn package_used_with(
+        &self,
+        package: &str,
+        who: &str,
+        frontend: bool,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        self.packages.get(package).is_some_and(|p| {
+            p.versions
+                .values()
+                .any(|v| self.sees_release_from_with(v, who, frontend, extra))
+        })
+    }
+
+    /// The distinct organizations every release of `package` serves
+    /// ([`PackageVersion::orgs`]): the node fans these out through its shards to
+    /// build the `extra` map the `*_with` readers take.
+    #[must_use]
+    pub fn release_serving_orgs(&self, package: &str) -> BTreeSet<OrgId> {
+        self.packages.get(package).map_or_else(BTreeSet::new, |p| {
+            p.versions
+                .values()
+                .flat_map(|v| v.orgs.iter().cloned())
+                .collect()
+        })
+    }
+
     /// The organizations `v` was installed for that `who` is a member of: never another.
     pub fn release_orgs_of<'a>(
         &'a self,

@@ -682,10 +682,7 @@ async fn deployment_offer(
     let account = p.account()?;
     let _d = managed_deployment(&node, &p, &id).await?;
     node.refuse_undeployable(&account).await?;
-    let seen = node.sys(|s| {
-        s.release_used(&body.package, &body.version, &account)
-            .is_some()
-    });
+    let seen = node.release_used_fresh(&body.package, &body.version, &account);
     if !seen {
         return Err(ApiError::not_found(
             "no such release; install it before offering it",

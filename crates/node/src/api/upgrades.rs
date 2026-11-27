@@ -2097,7 +2097,7 @@ async fn member_targets_readable(
     let (Some(account), Some(running)) = (account, running) else {
         return false;
     };
-    if node.sys(|s| s.member_of(&app.org, account)) {
+    if node.member_of_fresh(&app.org, account) {
         return true;
     }
     let target = crate::system::PackageRef {
