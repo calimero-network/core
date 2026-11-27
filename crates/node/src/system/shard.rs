@@ -126,6 +126,27 @@ pub(crate) const fn resolve(_shard: &ShardId) -> GroupId {
     SYSTEM_GROUP
 }
 
+/// Whether a system machine of role `role` owns a command whose scope resolves
+/// to `tenant` (via [`tenant_of`]) under the sharding gate `active`: the
+/// apply-side mirror of [`shard_for`].
+///
+/// The invariant that makes the split deterministic: **a command is applied by
+/// exactly the shard its write routed to.** Routing a write picks
+/// `shard_for(active, tenant)`; the machine that owns — and so applies — the
+/// entry is the one whose role *is* that shard. So ownership is a single
+/// equality, with no second decision that could disagree with the router.
+///
+/// Gated like the router. With sharding off every command's shard is
+/// [`ShardId::Root`], so the root machine owns all and no tenant machine owns
+/// any — behaviour-preserving until the gate turns on. Org-directory lifecycle
+/// (`CreateOrg`, `DeleteOrg`) carries [`Scope::Cluster`], so it owns on the root
+/// even with the gate on: it allocates and frees the tenant group and writes the
+/// root directory, and the new tenant's own detail is initialised by a
+/// root-initiated follow-on entry on the tenant shard (resolve-at-propose).
+pub(crate) fn owns(role: &ShardId, tenant: Option<OrgId>, active: bool) -> bool {
+    shard_for(active, tenant) == *role
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +218,59 @@ mod tests {
     fn every_shard_resolves_to_the_single_group_today() {
         assert_eq!(resolve(&ShardId::Root), SYSTEM_GROUP);
         assert_eq!(resolve(&ShardId::Tenant("acme".into())), SYSTEM_GROUP);
+    }
+
+    #[test]
+    fn with_the_gate_off_the_root_owns_everything() {
+        // No tenant machine exists yet, and the root applies every command.
+        assert!(owns(&ShardId::Root, None, false));
+        assert!(owns(&ShardId::Root, Some("acme".into()), false));
+        // A tenant role (there is none yet) would own nothing.
+        assert!(!owns(
+            &ShardId::Tenant("acme".into()),
+            Some("acme".into()),
+            false
+        ));
+    }
+
+    #[test]
+    fn with_the_gate_on_each_command_is_owned_by_exactly_its_routed_shard() {
+        let active = true;
+        // An org-scoped command is owned by that org's tenant, no one else.
+        let acme = tenant_of(&Scope::Org("acme".into()), |_| None);
+        assert!(owns(&ShardId::Tenant("acme".into()), acme.clone(), active));
+        assert!(!owns(
+            &ShardId::Tenant("other".into()),
+            acme.clone(),
+            active
+        ));
+        assert!(!owns(&ShardId::Root, acme, active));
+        // A cluster-scoped command (fleet, packages, and org-directory
+        // lifecycle like CreateOrg/DeleteOrg) is owned by the root even on.
+        let cluster = tenant_of(&Scope::Cluster, |_| None);
+        assert!(owns(&ShardId::Root, cluster.clone(), active));
+        assert!(!owns(&ShardId::Tenant("acme".into()), cluster, active));
+    }
+
+    #[test]
+    fn ownership_is_exactly_the_routing_decision() {
+        // owns() must never disagree with shard_for(): applied-by == routed-to.
+        for active in [false, true] {
+            for tenant in [None, Some("acme".to_owned()), Some("other".to_owned())] {
+                let routed = shard_for(active, tenant.clone());
+                assert!(
+                    owns(&routed, tenant.clone(), active),
+                    "the routed shard must own it ({active}, {tenant:?})"
+                );
+                let not_routed = match &routed {
+                    ShardId::Root => ShardId::Tenant("elsewhere".into()),
+                    ShardId::Tenant(_) => ShardId::Root,
+                };
+                assert!(
+                    !owns(&not_routed, tenant.clone(), active),
+                    "no other shard may own it ({active}, {tenant:?})"
+                );
+            }
+        }
     }
 }
