@@ -574,6 +574,9 @@ pub struct AppRecord {
 pub struct AppLineage {
     pub package: String,
     pub signer_id: String,
+    /// The newest release version it has been judged at, raised by every move that applies and
+    /// never lowered: nothing older is reachable again, whatever is installed.
+    pub floor: String,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the

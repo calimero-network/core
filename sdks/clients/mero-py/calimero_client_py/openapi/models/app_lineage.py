@@ -15,10 +15,12 @@ class AppLineage:
     Attributes:
         package (str):
         signer_id (str):
+        floor (str):
     """
 
     package: str
     signer_id: str
+    floor: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -26,12 +28,15 @@ class AppLineage:
 
         signer_id = self.signer_id
 
+        floor = self.floor
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "package": package,
                 "signerId": signer_id,
+                "floor": floor,
             }
         )
 
@@ -44,9 +49,12 @@ class AppLineage:
 
         signer_id = d.pop("signerId")
 
+        floor = d.pop("floor")
+
         app_lineage = cls(
             package=package,
             signer_id=signer_id,
+            floor=floor,
         )
 
         app_lineage.additional_properties = d

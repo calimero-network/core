@@ -3553,12 +3553,13 @@ impl SystemState {
         Some(AppLineage {
             package: r.package.clone(),
             signer_id: record.signer_id.clone(),
+            floor: r.version.clone(),
         })
     }
 
     /// Whether moving `app` to `release` keeps it on its lineage ([`AppRecord::lineage`]): a
-    /// release of its package, still signed by its signer, and no older than the release it
-    /// runs by semver. The operator is held to it too; an unpinned instance goes anywhere.
+    /// release of its package, still signed by its signer, and no older by semver than its floor
+    /// or the release it runs. The operator is held to it too; an unpinned instance goes anywhere.
     ///
     /// # Errors
     /// [`OUTSIDE_LINEAGE`], or [`LINEAGE_OLDER_RELEASE`] for an older or non-semver version.
@@ -3578,10 +3579,10 @@ impl SystemState {
                     .is_some_and(|p| p.signer_id == lineage.signer_id)
             })
             .ok_or(OUTSIDE_LINEAGE)?;
-        let semver = |r: &PackageRef| semver::Version::parse(&r.version).ok();
-        let from = app.release.as_ref().or_else(|| self.governing_release(app));
-        match (from.and_then(semver), semver(to)) {
-            (Some(from), Some(to)) if to >= from => Ok(()),
+        let semver = |v: &str| semver::Version::parse(v).ok();
+        let runs = app.release.as_ref().and_then(|r| semver(&r.version));
+        match (semver(&lineage.floor), semver(&to.version)) {
+            (Some(floor), Some(to)) if to >= floor && runs.is_none_or(|r| to >= r) => Ok(()),
             _ => Err(LINEAGE_OLDER_RELEASE),
         }
     }

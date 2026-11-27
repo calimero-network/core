@@ -1111,6 +1111,11 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             file: taken.file,
             undone_at: None,
         });
+        if let (Some(l), Some(to)) = (app.lineage.as_mut(), release.as_ref()) {
+            if compare_versions(&to.version, &l.floor) == std::cmp::Ordering::Greater {
+                l.floor.clone_from(&to.version);
+            }
+        }
         app.bundle = bundle;
         app.compute_bundle = compute_bundle;
         app.release = release;

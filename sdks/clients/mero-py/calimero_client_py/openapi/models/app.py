@@ -38,7 +38,8 @@ class App:
     `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner
     or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST
     /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned`
-    pinned it to, absent while unpinned: it moves only to releases of that package, never an older one.
+    pinned it to, and `floor`, the newest version it has been judged at, absent while unpinned: it moves only to
+    releases of that package, never one older than `floor`.
 
         Attributes:
             app_id (str):

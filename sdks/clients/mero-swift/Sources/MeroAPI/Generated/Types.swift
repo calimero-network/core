@@ -15839,7 +15839,7 @@ public enum Components {
                 case targets
             }
         }
-        /// An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned` pinned it to, absent while unpinned: it moves only to releases of that package, never an older one.
+        /// An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned` pinned it to, and `floor`, the newest version it has been judged at, absent while unpinned: it moves only to releases of that package, never one older than `floor`.
         ///
         /// - Remark: Generated from `#/components/schemas/App`.
         public struct App: Codable, Hashable, Sendable {
@@ -15998,21 +15998,27 @@ public enum Components {
                 public var package: Swift.String
                 /// - Remark: Generated from `#/components/schemas/App/lineage/signerId`.
                 public var signerId: Swift.String
+                /// - Remark: Generated from `#/components/schemas/App/lineage/floor`.
+                public var floor: Swift.String
                 /// Creates a new `LineagePayload`.
                 ///
                 /// - Parameters:
                 ///   - package:
                 ///   - signerId:
+                ///   - floor:
                 public init(
                     package: Swift.String,
-                    signerId: Swift.String
+                    signerId: Swift.String,
+                    floor: Swift.String
                 ) {
                     self.package = package
                     self.signerId = signerId
+                    self.floor = floor
                 }
                 public enum CodingKeys: String, CodingKey {
                     case package
                     case signerId
+                    case floor
                 }
             }
             /// - Remark: Generated from `#/components/schemas/App/lineage`.
