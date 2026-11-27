@@ -121,6 +121,13 @@ pub struct Outcome {
     /// The active runs the run asked to cancel; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compute_cancels: Vec<String>,
+    /// Whether an xcall past a full outbox goes to the dead letters alone, the messages
+    /// queued before it staying queued; the leader sets it once the logged cluster version
+    /// brings `Feature::XcallKeepsQueue`. An entry without it (an earlier release's) applies
+    /// as that release did: the outbox skipped every queued message
+    /// ([Outbox](https://calimero-network.github.io/core/protocol/xcall/#outbox)).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_queue: bool,
 }
 
 /// One outbound request of a logged run and its response, as the entry records it:
@@ -482,6 +489,7 @@ impl Outcome {
             published: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
+            keep_queue: false,
         }
     }
 
@@ -1308,11 +1316,12 @@ impl AppMachine {
             self.apply_run_changes(tx, ts_ms, starter, outcome);
             self.note_touched(index, touched);
             if !outcome.xcalls.is_empty() {
-                self.state
-                    .component
-                    .head
-                    .xcall
-                    .send(tx, &outcome.xcalls, ts_ms);
+                self.state.component.head.xcall.send(
+                    tx,
+                    &outcome.xcalls,
+                    outcome.keep_queue,
+                    ts_ms,
+                );
             }
             if !outcome.actions.is_empty() {
                 let refused =
@@ -4155,6 +4164,67 @@ mod tests {
         assert_eq!(dead[0]["app"], json!("no-such-app"));
         assert_eq!(dead[0]["method"], json!("setFromApp"));
         assert_eq!(dead[0]["reason"], json!("the target app does not exist"));
+    }
+
+    /// A replica after an outbox filled to `MAX_OUTBOX`, one more xcall, and its head
+    /// delivered; the two sending entries carry `keep_queue`.
+    fn past_a_full_outbox(keep_queue: bool) -> Value {
+        let x = XcallOut {
+            app: "b".into(),
+            method: "m".into(),
+            args: json!({}),
+            on_behalf_of: None,
+            budget: None,
+        };
+        let full = usize::try_from(xcall::MAX_OUTBOX).unwrap();
+        let send = |base, xcalls| {
+            let mut cmd: ComponentCmd =
+                serde_json::from_slice(&sending(base, xcalls, vec![])).unwrap();
+            if let ComponentCmd::Call(c) = &mut cmd {
+                c.outcome.keep_queue = keep_queue;
+            }
+            host_cmd(&cmd)
+        };
+        let delivered = host_cmd(&ComponentCmd::XcallDone {
+            seq: 0,
+            dead: None,
+            ts_ms: 3,
+        });
+        replica_after(
+            &[
+                init(0),
+                send(1, vec![x.clone(); full]),
+                send(2, vec![x]),
+                delivered,
+            ],
+            false,
+        )
+    }
+
+    /// One xcall past a full outbox goes to the dead letters alone: the messages already
+    /// queued stay queued and are still delivered, in order.
+    #[test]
+    fn a_full_outbox_keeps_its_queued_messages() {
+        let r = past_a_full_outbox(true);
+        let head = &r["head"]["xcall"];
+        let dead = r["deadLetters"].as_array().unwrap();
+        assert_eq!(dead.len(), 1, "{dead:?}");
+        assert_eq!(dead[0]["reason"], json!("the outbox is full"));
+        assert_eq!(head["first"], json!(1), "the head is delivered: {head}");
+        assert_eq!(head["next"], json!(xcall::MAX_OUTBOX), "{head}");
+    }
+
+    /// An entry an earlier release logged (no `keepQueue`) replays as it applied then: the
+    /// outbox skipped its queued messages, so a replica replaying it ends where the others
+    /// did.
+    #[test]
+    fn a_full_outbox_entry_logged_before_replays_as_it_applied() {
+        let r = past_a_full_outbox(false);
+        let head = &r["head"]["xcall"];
+        assert_eq!(r["deadLetters"].as_array().unwrap().len(), 1, "{r}");
+        let past = xcall::MAX_OUTBOX + 1;
+        assert_eq!(head["first"], json!(past), "{head}");
+        assert_eq!(head["next"], json!(past), "{head}");
     }
 
     /// An action started, retried twice and failed within one batch ends as it did on

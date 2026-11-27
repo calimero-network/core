@@ -57,7 +57,12 @@ The target method names who may call it, `#[app::allow(app = "<source>")]` or
 A run's messages go to its outcome. When the entry ends `Ok`, they are
 appended, in order, to the source app's outbox, kept as hidden rows of the
 source app's group. A failed run sends nothing. The outbox holds at most
-`MAX_OUTBOX` (10,000) messages; one past it goes to the dead letters at once.
+`MAX_OUTBOX` (10,000) messages; one past it goes to the dead letters at once,
+and the messages already queued stay queued and are delivered in order.
+
+Before the logged cluster version brings `xcallKeepsQueue` (1.0.0-rc.39), an
+xcall past a full outbox also skipped every message queued before it; an entry
+logged then replays as it applied, so replicas keep one outbox.
 
 ## Delivery
 
@@ -276,6 +281,10 @@ The chain budget: the run's leader gives each `XcallOut` its `budget` in `Node::
 chain), only once `Feature::XcallBudget` is logged (`Node::shares_xcall_budget`); `Outgoing` and
 `XcallFrom` carry it on, and `XcallHead::send` dead-letters a `Some(0)` without taking a sequence
 number.
+A full outbox: the run's leader sets `Outcome::keep_queue` on an entry that sends xcalls once
+`Feature::XcallKeepsQueue` is logged (`Node::keeps_xcall_queue`), and `XcallHead::send` then
+dead-letters one past `MAX_OUTBOX` without taking a sequence number; an entry without the flag
+replays as an earlier release applied it.
 
 ### Synchronous xcalls
 

@@ -1055,6 +1055,7 @@ impl Node {
                 if self.shares_xcall_budget() {
                     share_budget(incoming_budget, &mut outcome.xcalls);
                 }
+                outcome.keep_queue = self.keeps_xcall_queue(&outcome);
                 Ran {
                     outcome,
                     blobs,
@@ -2710,9 +2711,10 @@ impl Node {
         })
         .await;
         match ran {
-            Ok((out, run)) => {
+            Ok((mut out, run)) => {
                 self.usage.ran(&meter, run);
                 crate::metrics::wasm_run(InvocationKind::Action, run.wall);
+                out.keep_queue = self.keeps_xcall_queue(&out);
                 out
             }
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
@@ -3229,6 +3231,20 @@ impl Node {
             )
             .is_ok()
         })
+    }
+
+    /// Whether a run's entry marks its xcalls to keep the outbox's queue when it is full
+    /// (`Outcome::keep_queue`): for a run that sent any, from the logged cluster version that
+    /// brings `Feature::XcallKeepsQueue` on, so every replica keeps it alike.
+    fn keeps_xcall_queue(&self, outcome: &Outcome) -> bool {
+        !outcome.xcalls.is_empty()
+            && self.sys(|s| {
+                crate::system::cluster_version::check(
+                    s.cluster_version.as_deref(),
+                    &[crate::system::cluster_version::Feature::XcallKeepsQueue],
+                )
+                .is_ok()
+            })
     }
 
     /// Whom `source`'s call of `method` on `target` runs as: `person` (and `via` = `source`)
