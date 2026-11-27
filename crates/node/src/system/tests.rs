@@ -10078,6 +10078,86 @@ fn an_import_refuses_a_release_that_does_not_ship_its_bundle_here() {
     assert!(!m.state.apps.contains_key("plain"));
 }
 
+/// A release-less record is judged by this cluster's own record of its bundle where it has one,
+/// which must agree with the slice's; the slice must carry the bundle and its package (the
+/// signer is always checked), and the release must ship the record's compute part too.
+#[test]
+fn an_import_judges_a_release_less_record_by_its_bundles_attribution() {
+    use super::{BackupHolder, ImportedApp};
+    let old = lineage_fixture();
+    let holder = BackupHolder::Org("org".into());
+    let mut slice = old.state.holder_slice(&holder);
+    slice.apps.get_mut("plain").unwrap().release = None;
+    let fresh = || {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
+        register(&mut m, 1, "replica");
+        m
+    };
+    let import = |slice: &super::HolderSlice| SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice.clone()),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 1,
+        apps: vec![ImportedApp {
+            app_id: "plain".into(),
+            replicas: vec![1],
+            source: crate::types::RestoreSource {
+                name: "app-plain.rbak".into(),
+                sha256: "ab".repeat(32),
+                index: 9,
+            },
+        }],
+        at: 7,
+        proof: Value::Null,
+    };
+    let refused = |m: &mut SystemMachine, slice: &super::HolderSlice, why: &str| {
+        let e = m.run_unproven(import(slice)).unwrap_err();
+        assert!(e.message().contains("ship"), "{why}: {e}");
+        assert!(!m.state.apps.contains_key("plain"), "{why}");
+    };
+    let _ok = fresh().run_unproven(import(&slice)).unwrap();
+
+    // Here the bundle is recorded from another release than the slice says.
+    let mut m = fresh();
+    let mut ours = old.state.bundles["b-q"].clone();
+    ours.package = Some(PackageRef {
+        package: "x".into(),
+        version: "9.0.0".into(),
+        service: None,
+        compute: false,
+    });
+    let _prev = m.state.bundles.insert("b-q".into(), ours);
+    refused(&mut m, &slice, "another attribution here");
+
+    let mut no_bundle = slice.clone();
+    let _gone = no_bundle.bundles.remove("b-q");
+    let mut m = fresh();
+    let _prev = m
+        .state
+        .bundles
+        .insert("b-q".into(), old.state.bundles["b-q"].clone());
+    refused(&mut m, &no_bundle, "no bundle entry in the slice");
+
+    // The package held here under another signer, the slice carrying none to compare.
+    let mut no_package = slice.clone();
+    let _gone = no_package.packages.remove("q");
+    let mut m = fresh();
+    let mut theirs = old.state.packages["q"].clone();
+    theirs.signer_id = "did:key:other".into();
+    let _prev = m.state.packages.insert("q".into(), theirs);
+    refused(&mut m, &no_package, "no package entry in the slice");
+
+    let mut compute = slice.clone();
+    compute.apps.get_mut("plain").unwrap().compute_bundle = Some("c-elsewhere".into());
+    refused(
+        &mut fresh(),
+        &compute,
+        "a compute part its release does not ship",
+    );
+}
+
 /// A run's upgrade is held to the lineage as any other: the rule is the instance's.
 #[test]
 fn a_runs_upgrade_keeps_a_pinned_instance_on_its_lineage() {
