@@ -28,6 +28,8 @@ mod cloud;
 mod context;
 mod deployment;
 mod dev;
+#[cfg(test)]
+mod doc_commands;
 mod env;
 mod file;
 mod group;

@@ -47,8 +47,8 @@ The member uploads first, then calls a method with the file's id, which a
 `BlobRef` parameter takes as a 64-hex string:
 
 ```bash
-meroctl file upload ./report.txt -c docs        # prints { id, size, sha256, index }
-meroctl call -c docs submit --args '{"file":"<id>"}'
+meroctl file upload ./report.txt -i docs        # prints { id, size, sha256, index }
+meroctl call -i docs submit --args '{"file":"<id>"}'
 ```
 
 ```ts
@@ -320,7 +320,7 @@ each pipeline's hash, worst-case fuel, pinned modules and canonical JSON.
   ]} />
 
 ```bash
-meroctl file upload ./a.txt -c docs                    # one id per file
+id1=$(meroctl file upload ./a.txt -i docs | jq -r .id)  # one id per file
 meroctl cloud compute pipeline estimate docs wordcount --input docs=<id1>,<id2>,<id3>
 meroctl cloud compute pipeline run docs wordcount --input docs=<id1>,<id2>,<id3> \
   --param min-len=4 --max-cost 5000000 --wait

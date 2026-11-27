@@ -403,7 +403,7 @@ judge.
 - name: What users will see
   run: |
     meroctl app check --mpk dist/release.mpk --against dist/last.mpk \
-      --fail-on egress $ALLOW_EGRESS   # e.g. "--allow-egress https://api.acme.com/" from the PR
+      --fail-on egress   # add "--allow-egress https://api.acme.com/" when the PR allows a new destination
 ```
 
 ## The signer key is the update authority

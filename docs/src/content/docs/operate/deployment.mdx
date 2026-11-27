@@ -200,7 +200,7 @@ node on 1.0.0-rc.20 or later, else `409 FEATURE_NOT_ACTIVE`):
 meroctl ops recovery-keygen --out operator-backup.key
 # prints { "publicKey": "<64 hex>", "secretKeyFile": "operator-backup.key" }
 meroctl --ops-token "$OPS_TOKEN" --operator-key-file operator.key \
-  ops backup-key --public-key <64 hex>
+  ops backup-key --public-key <publicKey>
 meroctl --ops-token "$OPS_TOKEN" ops backup-key     # check: { holder, key, apps }
 ```
 
