@@ -525,7 +525,7 @@ fn refuse_off_lineage(
 ) -> Result<(), ApiError> {
     node.sys(|s| {
         s.ships_on_lineage(app, bundle, compute)?;
-        if s.restores_older(app, bundle) {
+        if s.restores_older(app, bundle, compute) {
             return Err(crate::system::LINEAGE_OLDER_RELEASE);
         }
         Ok(())

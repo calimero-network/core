@@ -9790,12 +9790,18 @@ fn pinned_proven() -> SystemMachine {
                 "1.0.0": { "version": "1.0.0", "mpk": "a", "mpkSize": 1, "source": "upload",
                     "services": { "": "b0" }, "installedBy": "alice", "installedAt": 0,
                     "lineage": "pinned" },
+                "1.0.5": { "version": "1.0.5", "mpk": "c", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "compute": { "": "c0" }, "installedBy": "alice",
+                    "installedAt": 0, "lineage": "pinned" },
+                "1.0.6": { "version": "1.0.6", "mpk": "d", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "installedBy": "alice", "installedAt": 0,
+                    "lineage": "pinned" },
                 "1.1.0": { "version": "1.1.0", "mpk": "b", "mpkSize": 1, "source": "upload",
                     "services": { "": "b1" }, "compute": { "": "c1" }, "installedBy": "alice",
                     "installedAt": 0, "lineage": "pinned" } } }))
         .unwrap(),
     );
-    for hash in ["b0", "b1", "c1", "c9"] {
+    for hash in ["b0", "b1", "c0", "c1", "c9"] {
         let _prev = m.state.bundles.insert(
             hash.into(),
             serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
@@ -9845,6 +9851,27 @@ fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
     let refused = m.run(signed_restore("b0", None, &args)).unwrap_err();
     assert_eq!(refused, super::LINEAGE_OLDER_RELEASE);
     assert_eq!(m.state.apps["app"].bundle, "b1");
+}
+
+/// A restore's age is judged on the release that ships its exact code, compute part included:
+/// older compute under the same app bundle, or no compute at all, is older code.
+#[test]
+fn an_older_compute_part_is_older_code() {
+    let mut m = pinned_proven();
+    for (why, compute) in [("older compute", Some("c0")), ("no compute", None)] {
+        let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+            "computeBundle": compute });
+        assert_eq!(
+            m.run(signed_restore("b1", compute, &args)).unwrap_err(),
+            super::LINEAGE_OLDER_RELEASE,
+            "{why}"
+        );
+        assert_eq!(
+            m.state.apps["app"].compute_bundle.as_deref(),
+            Some("c1"),
+            "{why}"
+        );
+    }
 }
 
 /// The operator's signature on a pinned instance's restore names the bundle and compute part

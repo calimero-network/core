@@ -1453,18 +1453,18 @@ fn restore_app(
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
     state.ships_on_lineage(app, &bundle, compute_bundle.as_deref())?;
     // A pinned store is not rolled back, whoever signs it: an undo is the owner's way back.
-    if state.restores_older(app, &bundle) {
+    if state.restores_older(app, &bundle, compute_bundle.as_deref()) {
         return Err(LINEAGE_OLDER_RELEASE);
     }
     let restored = app
         .lineage
         .as_ref()
-        .and_then(|l| state.lineage_release_of(l, &bundle));
+        .and_then(|l| state.lineage_shipping(l, &bundle, compute_bundle.as_deref()));
     let group = state.next_group.max(1) + 1;
     state.next_group = group;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
     if let (Some(l), Some(r)) = (app.lineage.as_mut(), restored) {
-        SystemState::raise_floor(l, &r.version);
+        l.raise_floor(&r);
     }
     if app.bundle != bundle {
         // Inferred from the bundle again (`report::release_of_bundle`).

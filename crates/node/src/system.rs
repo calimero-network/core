@@ -3557,7 +3557,7 @@ impl SystemState {
             return Ok(());
         };
         let runs = self.lineage_runs(app, lineage);
-        if lineage.at_least(&to.version, runs.as_ref().map(|r| r.version.as_str())) {
+        if lineage.at_least(&to.version, runs.as_deref()) {
             Ok(())
         } else {
             Err(LINEAGE_OLDER_RELEASE)
@@ -3583,8 +3583,9 @@ impl SystemState {
             .ok_or(OUTSIDE_LINEAGE)
     }
 
-    /// Whether `bundle` ships in a release of `app`'s lineage: a restore names a backup's
-    /// bundle, not a release.
+    /// Whether a restore of `app` onto `bundle` and `compute` stays on its lineage: one release
+    /// of its package, still signed by its signer, ships exactly that code (no compute part
+    /// matching only a release without one).
     ///
     /// # Errors
     /// [`OUTSIDE_LINEAGE`].
@@ -3597,68 +3598,65 @@ impl SystemState {
         let Some(lineage) = &app.lineage else {
             return Ok(());
         };
-        let ships = self.signs_lineage(lineage)
-            && self.packages[&lineage.package].versions.values().any(|v| {
-                let mut parts = v.parts(&lineage.package).map(|(h, _)| h);
-                let has = |want: &str| v.parts(&lineage.package).any(|(h, _)| h == want);
-                parts.any(|h| h == bundle) && compute.is_none_or(has)
-            });
-        if ships {
+        if self.signs_lineage(lineage) && self.lineage_shipping(lineage, bundle, compute).is_some()
+        {
             Ok(())
         } else {
             Err(OUTSIDE_LINEAGE)
         }
     }
 
-    /// Whether a restore of `app` onto `bundle` takes it to older code: no release of its
-    /// lineage that ships `bundle` (as its app or compute part) is as new as its floor or the
+    /// Whether a restore of `app` onto `bundle` and `compute` takes it to older code: the
+    /// release of its lineage that ships exactly that code is older than its floor or the
     /// release it runs. An unpinned instance: never.
     #[must_use]
-    pub fn restores_older(&self, app: &AppRecord, bundle: &str) -> bool {
+    pub fn restores_older(&self, app: &AppRecord, bundle: &str, compute: Option<&str>) -> bool {
         let Some(lineage) = &app.lineage else {
             return false;
         };
         let runs = self.lineage_runs(app, lineage);
-        let at_least = |v: &str| {
-            compare_versions(v, &lineage.floor) != std::cmp::Ordering::Less
-                && runs
-                    .as_ref()
-                    .is_none_or(|r| compare_versions(v, &r.version) != std::cmp::Ordering::Less)
-        };
         !self
-            .lineage_release_of(lineage, bundle)
-            .is_some_and(|r| at_least(&r.version))
+            .lineage_shipping(lineage, bundle, compute)
+            .is_some_and(|v| lineage.at_least(&v, runs.as_deref()))
     }
 
-    /// The newest release of `lineage`'s package that ships `bundle`, as an app or a compute part.
+    /// The newest release version of `lineage`'s package that ships exactly `bundle` and
+    /// `compute` in one service (a release with only a compute part ships it as both).
     #[must_use]
-    pub fn lineage_release_of(&self, lineage: &AppLineage, bundle: &str) -> Option<PackageRef> {
+    pub fn lineage_shipping(
+        &self,
+        lineage: &AppLineage,
+        bundle: &str,
+        compute: Option<&str>,
+    ) -> Option<String> {
         let record = self.packages.get(&lineage.package)?;
         record
             .versions
             .values()
-            .filter_map(|v| {
-                v.parts(&lineage.package)
-                    .find(|(h, _)| *h == bundle)
-                    .map(|(_, at)| at)
+            .filter(|v| {
+                v.services.keys().chain(v.compute.keys()).any(|name| {
+                    let part = v.services.get(name).or(v.compute.get(name));
+                    part.map(String::as_str) == Some(bundle)
+                        && v.compute.get(name).map(String::as_str) == compute
+                })
             })
-            .max_by(|a, b| compare_versions(&a.version, &b.version))
+            .filter_map(|v| {
+                semver::Version::parse(&v.version)
+                    .ok()
+                    .map(|s| (s, &v.version))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, v)| v.clone())
     }
 
-    /// The release of its lineage a pinned `app` runs: its record's, else the newest one that
-    /// ships its bundle. Judged beside the floor, never instead of it.
+    /// The release version of its lineage a pinned `app` runs: its record's, else the newest one
+    /// that ships its code. Judged beside the floor, never instead of it.
     #[must_use]
-    pub fn lineage_runs(&self, app: &AppRecord, lineage: &AppLineage) -> Option<PackageRef> {
+    pub fn lineage_runs(&self, app: &AppRecord, lineage: &AppLineage) -> Option<String> {
         app.release
-            .clone()
-            .or_else(|| self.lineage_release_of(lineage, &app.bundle))
-    }
-
-    /// Raise `lineage`'s floor to `version` when it is newer; it is never lowered.
-    pub fn raise_floor(lineage: &mut AppLineage, version: &str) {
-        if compare_versions(version, &lineage.floor) == std::cmp::Ordering::Greater {
-            lineage.floor = version.to_owned();
-        }
+            .as_ref()
+            .map(|r| r.version.clone())
+            .or_else(|| self.lineage_shipping(lineage, &app.bundle, app.compute_bundle.as_deref()))
     }
 
     /// What the operator signs for a restore of `app_id`: the backup, and for a pinned instance

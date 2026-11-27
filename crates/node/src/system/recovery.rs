@@ -761,10 +761,13 @@ fn import_holder(
             // At least the release it runs (named, else the one its bundle ships in here).
             let runs = record
                 .release
-                .clone()
-                .or_else(|| state.lineage_release_of(l, &record.bundle));
+                .as_ref()
+                .map(|r| r.version.clone())
+                .or_else(|| {
+                    state.lineage_shipping(l, &record.bundle, record.compute_bundle.as_deref())
+                });
             if let Some(r) = runs {
-                SystemState::raise_floor(l, &r.version);
+                l.raise_floor(&r);
             }
         }
         let group = state.next_group.max(1) + 1;
