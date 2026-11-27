@@ -1325,7 +1325,7 @@ extension CalimeroClient {
 
         /// Refresh a session: `POST /auth/refresh` (`refresh`).
         ///
-        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
         ///
         /// **Who:** anyone.
         @discardableResult

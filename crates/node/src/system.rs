@@ -6682,10 +6682,16 @@ pub enum SystemCmd {
         actor: AccountId,
         now: u64,
     },
-    /// An exchanged refresh token came back: revoke its session.
+    /// An exchanged refresh token came back: revoke its session. When the token was bound to a
+    /// holder key, `holder_proof` is that key's proof for it, made within
+    /// [`crate::proof::HOLDER_PROOF_SKEW_SECS`] of `now` and checked at apply: a copy of an
+    /// old token taken off the device cannot end the session it belonged to. Absent for an
+    /// unbound token, and in every entry logged before holder keys.
     RefreshReused {
         hash: String,
         now: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holder_proof: Option<crate::types::HolderProof>,
     },
     /// A passkey's counter moved: carries the assertion that moved it,
     /// which only the authenticator signs.
