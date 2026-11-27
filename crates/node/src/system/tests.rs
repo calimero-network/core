@@ -17691,3 +17691,32 @@ fn an_origin_without_a_registration_is_refused_once_registrations_exist() {
     let refused = m.run_unproven(package).unwrap_err();
     assert!(refused.message().contains("registration"), "{refused}");
 }
+
+/// One organization's instances register a share of the cluster's instance origins, not all
+/// of them: filled, its next instance is refused, and another organization's still fit.
+#[test]
+fn one_orgs_instances_fill_only_their_share_of_origins() {
+    const _: () =
+        assert!(crate::origins::MAX_APP_ORIGINS_PER_ORG < crate::origins::MAX_APP_ORIGINS);
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let held = m.state.package_origins.remove(NOTES).unwrap();
+    let instance = m.state.apps["a"].clone();
+    for i in 0..crate::origins::MAX_APP_ORIGINS_PER_ORG {
+        let _prev = m.state.apps.insert(format!("app{i}"), instance.clone());
+        let _prev = m.state.package_origins.insert(
+            format!("https://s{i}.example.com"),
+            crate::origins::PackageOrigin {
+                app: Some(format!("app{i}")),
+                ..held.clone()
+            },
+        );
+    }
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(refused.is_quota(), "{refused}");
+
+    for i in 0..crate::origins::MAX_APP_ORIGINS_PER_ORG {
+        m.state.apps.get_mut(&format!("app{i}")).unwrap().org = "elsewhere".into();
+    }
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+}

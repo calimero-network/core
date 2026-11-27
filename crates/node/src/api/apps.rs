@@ -2414,6 +2414,16 @@ async fn app_origin_add(
                 ),
             ));
         }
+        if s.apps.get(&app).is_some_and(|r| s.org_origins_full(&r.org)) {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                &format!(
+                    "an organization's instances register at most {} origins",
+                    crate::origins::MAX_APP_ORIGINS_PER_ORG
+                ),
+            ));
+        }
         if s.origins_full(true) {
             return Err(ApiError::new(
                 429,

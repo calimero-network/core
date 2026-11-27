@@ -48,6 +48,10 @@ pub const MAX_PACKAGE_ORIGINS: usize = 4096;
 /// How many instances' origins a cluster keeps, apart from packages' own.
 pub const MAX_APP_ORIGINS: usize = 4096;
 
+/// How many instances' origins one organization's instances register: a
+/// sixty-fourth of [`MAX_APP_ORIGINS`], so no one organization fills it.
+pub const MAX_APP_ORIGINS_PER_ORG: usize = 64;
+
 /// Refuses an entry naming no [`PackageOrigin::registration`], which no re-registration would change.
 const NO_REGISTRATION: &str = "an origin's registration is empty";
 /// Refuses taking back an instance's origin for a package no publisher is bound to.
@@ -295,6 +299,16 @@ impl SystemState {
             >= cap
     }
 
+    /// Whether the instances of `org` hold as many origins as one organization's take.
+    pub(crate) fn org_origins_full(&self, org: &str) -> bool {
+        self.package_origins
+            .values()
+            .filter_map(|o| o.app.as_ref())
+            .filter(|app| self.apps.get(app.as_str()).is_some_and(|r| r.org == org))
+            .count()
+            >= MAX_APP_ORIGINS_PER_ORG
+    }
+
     /// The origins registered for app instance `app`, by origin.
     pub fn origins_of_app<'a>(
         &'a self,
@@ -458,6 +472,13 @@ impl SystemState {
         }
         if self.origins_of_app(&app).count() >= MAX_ORIGINS_PER_APP {
             return Err(Rejection::quota("origins per app"));
+        }
+        if self
+            .apps
+            .get(&app)
+            .is_some_and(|r| self.org_origins_full(&r.org))
+        {
+            return Err(Rejection::quota("instance origins per organization"));
         }
         if self.origins_full(true) {
             return Err(Rejection::quota("origins"));
