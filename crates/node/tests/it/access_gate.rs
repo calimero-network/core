@@ -1257,6 +1257,62 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
     );
 }
 
+/// With a non-zero `sys_read_lease`, authenticated requests arriving within the
+/// lease share one system read-index round instead of each running its own —
+/// and the reuse is of the read index only, never of the credential check, so a
+/// forged session is still refused within the same window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_read_index_lease_reuses_a_round_without_skipping_the_credential() {
+    let entry = 1;
+    let c = ProxiedCluster::start_with(|cfg| {
+        cfg.sys_read_lease = Duration::from_millis(500);
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, entry, "alice").await;
+
+    // One authenticated read confirms a fresh index and caches it; ten more in
+    // quick succession, well within the lease, reuse it rather than running a
+    // round each.
+    alice.auth().me().await.unwrap();
+    let before = rounds(&c);
+    for _ in 0..10 {
+        alice
+            .auth()
+            .me()
+            .await
+            .expect("a valid session authenticates");
+    }
+    let reused = rounds(&c) - before;
+    assert!(
+        reused <= 2,
+        "the lease did not reuse the round: {reused} rounds for 10 reads"
+    );
+
+    // A forged session presented within that same lease is still refused: the
+    // lease reuses the read index, it does not skip judging the credential.
+    let forged = calimero_identity::mint_session(
+        &[7; 32],
+        &calimero_identity::SessionClaims {
+            account: "alice".into(),
+            session: "s1".into(),
+            expires_at: u64::MAX,
+            passkey: None,
+            app: None,
+            origin: None,
+            node: c.nodes[entry].node.config.node_id,
+            key: calimero_identity::b64url(&c.nodes[entry].node.receipt_public()),
+        },
+    );
+    let forger = c.client(entry);
+    forger.use_api_key(&forged).await;
+    let e = forger
+        .auth()
+        .me()
+        .await
+        .expect_err("a forged session is refused");
+    assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
+}
+
 /// A credential that cannot be valid is refused before the request costs a
 /// read-index round on the system group, and is not held open: junk, a
 /// malformed API key, a visitor credential whose signature does not hold and a

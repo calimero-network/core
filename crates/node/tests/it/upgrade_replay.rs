@@ -113,6 +113,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         restore_from: None,
         raft: calimero_log::Config::default(),
         read_wait: Duration::from_secs(2),
+        sys_read_lease: Duration::ZERO,
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
         tee_release: None,
         tee_profile: None,

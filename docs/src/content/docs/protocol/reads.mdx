@@ -162,6 +162,22 @@ Every request carrying a credential, every gated request, an anonymous `GET /app
 every client call's leader read the system state through `sys_fresh` (a read index), so a removal
 committed elsewhere holds before the next request; an event stream judges each event the same way
 ([events](/protocol/execution/)).
+
+By default every newly-arrived request runs its own read-index round (requests waiting at the same
+moment share one, `ReadRounds`), so a removal, revocation or demotion is enforced the moment its
+write commits. A node may instead be given a **read-index lease** (`Config::sys_read_lease`,
+`--sys-read-lease-ms`, zero by default): within the lease a check serves access from the last
+confirmed index rather than running a round of its own (`Node::sys_round`). The lease is the
+**maximum a revocation may lag on a replica that has not yet applied it** — a write committed during
+the lease is enforced once the lease lapses and a fresh round runs, or sooner once the write has
+replicated and applied to that node (a check reads the local applied state, which a round only sets
+a floor under). It never weakens the leader or an up-to-date replica, which apply the write at once,
+and never skips judging the credential; it is a governance trade of a bounded revocation delay for
+fewer rounds, so set it only to a bound the deployment accepts. The bound is two-sided and
+fail-closed: a just-written credential (a session or grant committed on another node) may be judged
+against the pre-write view and refused until it replicates here or the lease lapses, so a lease
+longer than a client's own retry spacing can transiently reject a credential it just rotated — the
+default zero keeps every credential judged the moment it commits.
 The owner, admin and read-only checks made after `gate` (`manages_app`, `may_handle_files`,
 `read_only_in`) read the app's record again from that state (`api::fresh_record`), never the one the
 handler read before the round, so a transfer or move committed elsewhere holds too.
