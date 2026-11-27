@@ -374,7 +374,7 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
     // identity, so a cluster made again under its old name gets another tag
     // (`backup::tests`: another cluster key, another identity key).
     assert_eq!(tag, passkey_tag(&away).await);
-    let shown = format!("alice · {} · {tag}", home.name);
+    let shown = format!("{} · alice · {tag}", home.name);
     let begin = home
         .client(0)
         .auth()
@@ -441,5 +441,5 @@ async fn each_added_passkey_gets_a_user_handle_of_its_own() {
     let (a, b) = (&first["options"]["user"], &second["options"]["user"]);
     assert!(a["id"].as_str().is_some_and(|id| !id.is_empty()), "{first}");
     assert_ne!(a["id"], b["id"], "{first} {second}");
-    assert_eq!(a["name"], format!("alice · {} · {tag}", c.name), "{first}");
+    assert_eq!(a["name"], format!("{} · alice · {tag}", c.name), "{first}");
 }

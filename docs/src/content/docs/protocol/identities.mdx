@@ -73,10 +73,10 @@ on every other one. Two things keep that from confusing anyone:
 
 - **The name it is made under.** A registration's `user.name` and
   `user.displayName` (sign-up, adding a device, recovery) are the person's name
-  and the cluster's (`--cluster`) with its tag, `alice · eu-shared-1 · 3f2a`; a
-  sign-up begun on a package's frontend (a served or registered origin, `origin`
-  on `register/begin`) names the app too, `alice · kv-store (eu-shared-1 ·
-  3f2a)`: the
+  and the cluster's (`--cluster`) with its tag, cluster first,
+  `eu-shared-1 · alice · 3f2a`; a sign-up begun on a package's frontend (a
+  served or registered origin, `origin` on `register/begin`) names the app too,
+  `eu-shared-1 · alice (kv-store) · 3f2a`: the
   newest release's display name, else the package id. Each part is cut at 32
   characters (`MAX_PASSKEY_NAME_PART_CHARS`). The account's own name is the
   person's alone. The tag is the first 2 bytes of the cluster's identity key
@@ -596,7 +596,7 @@ The design and its reasons are above; a module's own detail is in its `//!` doc,
 
 Code: `api/passkeys.rs`.
 
-- A registration's `user.name` and `displayName` are `passkey_user_name`: person · `config.cluster` · `cluster_tag`, plus the app's name for a sign-up begun on a package origin.
+- A registration's `user.name` and `displayName` are `passkey_user_name`: `config.cluster` · person · `cluster_tag`, plus the app's name after the person for a sign-up begun on a package origin.
 - `cluster_tag` is the first 2 bytes of the cluster identity key, public in `GET /sign-up` as `passkeyTag`.
 - Every user handle is random, since a shared one makes a password manager replace the earlier passkey.
 - An unknown credential is `401 PASSKEY_UNKNOWN_HERE` (`unknown_here`, from `check_assertion_for`).
