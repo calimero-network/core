@@ -34,7 +34,7 @@ mod recovery;
 mod rejection;
 mod routing;
 /// The tenant-shard placement seam: see the module's own documentation.
-mod shard;
+pub(crate) mod shard;
 mod sign_up;
 mod updates;
 
