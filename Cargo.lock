@@ -829,6 +829,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-connector-nearai"
+version = "0.0.0"
+dependencies = [
+ "calimero-app-build",
+ "calimero-sdk",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "calimero-git-hooks"
 version = "0.0.0"
 

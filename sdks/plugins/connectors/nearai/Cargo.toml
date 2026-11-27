@@ -1,0 +1,22 @@
+[package]
+name = "calimero-connector-nearai"
+description = "NEAR AI Cloud chat completions from a Calimero app's action"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+calimero-sdk.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-build.workspace = true
+calimero-sdk = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true
