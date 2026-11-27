@@ -78,6 +78,12 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         .unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     let e = alice
+        .apps()
+        .origin_add(&store, "https://flags.acme.co.uk", Some("co.uk"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_RP_ID"), "a public suffix: {e}");
+    let e = alice
         .transport()
         .json(
             Request::new(Method::POST, format!("apps/{store}/origins"))

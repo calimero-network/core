@@ -360,7 +360,7 @@ a developer's domain, so each registered origin carries its own `rpId`: the
 origin's host by default, or a parent domain of it that the manager names
 (`https://app.example.com` with `example.com`). The cluster's rp-id, or a
 parent of it, is refused, so the cluster's own passkeys never answer on a
-developer's site. A person signing in there makes a passkey for that site;
+developer's site. So is a public suffix (`co.uk`, `github.io`), as a browser refuses it. A person signing in there makes a passkey for that site;
 the account it opens is an ordinary cluster account whose sessions from that
 origin are always bound to the package. WebAuthn's Related Origin Requests
 (one rp-id, a `/.well-known/webauthn` list of origins) was not chosen:

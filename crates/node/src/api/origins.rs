@@ -219,6 +219,12 @@ pub(super) fn registrable(
         }
         Err(r) => return Err(ApiError::bad_request("BAD_RP_ID", r.message())),
     };
+    if crate::origins::is_public_suffix(&rp_id) {
+        return Err(ApiError::bad_request(
+            "BAD_RP_ID",
+            "an rpId is not a public suffix (co.uk, github.io): a browser refuses it",
+        ));
+    }
     // `origin_host` accepted `http` only for a localhost name; this node
     // takes one only in development.
     if origin.starts_with("http://") && !node.config.allow_package_uploads {

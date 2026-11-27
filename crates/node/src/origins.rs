@@ -229,6 +229,13 @@ pub fn resolve_rp_id(origin: &str, rp_id: Option<&str>) -> Result<String, Refusa
     Ok(rp.to_owned())
 }
 
+/// Whether `rp_id` is a public suffix (`co.uk`, `github.io`), which a browser refuses as an rp-id.
+/// Checked at the API only: the list changes between releases, so apply never reads it.
+#[must_use]
+pub fn is_public_suffix(rp_id: &str) -> bool {
+    rp_id != "localhost" && psl::domain_str(rp_id).is_none()
+}
+
 /// Whether `rp_id` is `cluster_rp_id` or a parent domain of it: one whose
 /// ceremonies the cluster's own passkeys could answer. `localhost` (a
 /// development cluster) is everyone's.
@@ -661,6 +668,13 @@ mod tests {
         ] {
             assert_eq!(resolve_rp_id(o, Some(bad)), Err(Refusal::RpId), "{bad}");
         }
+        let o = "https://app.example.co.uk";
+        assert_eq!(
+            resolve_rp_id(o, Some("example.co.uk")).unwrap(),
+            "example.co.uk"
+        );
+        // Apply takes a public suffix: only the API consults the list.
+        assert_eq!(resolve_rp_id(o, Some("co.uk")).unwrap(), "co.uk");
         assert_eq!(
             resolve_rp_id("http://localhost:3000", Some("localhost")).unwrap(),
             "localhost"
@@ -704,6 +718,16 @@ mod tests {
         let served = add_args("https://kv.example.com", "kv.example.com", true);
         assert_eq!(served["served"], true);
         assert_ne!(plain, served);
+    }
+
+    #[test]
+    fn a_public_suffix_is_no_rp_id() {
+        for suffix in ["co.uk", "github.io", "com"] {
+            assert!(is_public_suffix(suffix), "{suffix}");
+        }
+        for name in ["example.co.uk", "kv.github.io", "localhost", "kv.localhost"] {
+            assert!(!is_public_suffix(name), "{name}");
+        }
     }
 
     #[test]
