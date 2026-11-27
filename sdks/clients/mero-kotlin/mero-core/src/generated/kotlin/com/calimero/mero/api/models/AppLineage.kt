@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param `package` 
  * @param signerId 
+ * @param floor 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class AppLineage (
     val `package`: kotlin.String,
 
     @SerialName(value = "signerId")
-    val signerId: kotlin.String
+    val signerId: kotlin.String,
+
+    @SerialName(value = "floor")
+    val floor: kotlin.String
 
 ) {
 

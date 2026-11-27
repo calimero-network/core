@@ -1130,7 +1130,7 @@ mod tests {
             "source": "upload", "services": { "": "b" }, "installedBy": "alice",
             "installedAt": 0 });
         if record {
-            app["lineage"] = json!({ "package": "p", "signerId": "did:key:z" });
+            app["lineage"] = json!({ "package": "p", "signerId": "did:key:z", "floor": "1.0.0" });
         } else {
             release["lineage"] = json!("pinned");
         }

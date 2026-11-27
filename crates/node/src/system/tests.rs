@@ -9412,7 +9412,8 @@ fn a_pinned_instance_moves_only_forward_on_its_package_and_signer() {
         m.state.apps["kv"].lineage,
         Some(crate::types::AppLineage {
             package: "p".into(),
-            signer_id: "did:key:z".into()
+            signer_id: "did:key:z".into(),
+            floor: "1.1.0".into(),
         })
     );
 
@@ -9469,6 +9470,50 @@ fn a_pinned_instance_moves_only_forward_on_its_package_and_signer() {
         .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
         .unwrap();
     assert_eq!(m.state.apps["kv"].bundle, "b-1.2.0");
+    assert_eq!(m.state.apps["kv"].lineage.as_ref().unwrap().floor, "1.2.0");
+    // The floor is the instance's own: a record that names no release is judged by it.
+    m.state.apps.get_mut("kv").unwrap().release = None;
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+            .unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+}
+
+/// A pinned instance of a release with only a compute component moves forward as any other.
+#[test]
+fn a_compute_only_pinned_instance_moves_forward() {
+    let mut m = deploying(super::Deployments::Open);
+    for version in ["1.0.0", "1.1.0"] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            release.services.clear();
+            release.components = crate::types::Components::ComputeOnly;
+            let _prev = release
+                .compute
+                .insert(String::new(), format!("c-{version}"));
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    let mut create = instance("job", "alice", "c-1.0.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.components = crate::types::Components::ComputeOnly;
+        app.compute_bundle = Some("c-1.0.0".into());
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    assert!(m.state.apps["job"].lineage.is_some());
+    let mut up = upgrade_to("job", "alice", "c-1.1.0", Some(("p", "1.1.0")));
+    if let SystemCmd::UpgradeApp { compute_bundle, .. } = &mut up {
+        *compute_bundle = Some("c-1.1.0".into());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    assert_eq!(m.state.apps["job"].lineage.as_ref().unwrap().floor, "1.1.0");
 }
 
 /// A pinning release names a semver version, so its instances can move forward; a release
