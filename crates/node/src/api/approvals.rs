@@ -310,11 +310,14 @@ pub(super) async fn app_set_egress(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app_id = node.canonical_app_id(&app_id);
+    let org_rec = node
+        .sys(|s| s.apps.get(&app_id).map(|a| a.org.clone()))
+        .and_then(|o| node.org_of(&o));
     let org = node
         .sys(|s| {
             s.apps
                 .get(&app_id)
-                .filter(|a| s.may_reach(a, Some(&account)))
+                .filter(|a| s.may_reach(a, Some(&account), org_rec.as_ref()))
                 .map(|a| a.org.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such app"))?;

@@ -699,7 +699,13 @@ impl Principal {
     /// key's own scope) is not. A visitor opens no stream (`*` refuses it). A session token's
     /// own expiry does not end a stream: it is a refresh, not a revocation. For a stream,
     /// through [`still_admitted`].
-    fn admitted_on(&self, s: &SystemState, app_id: &str, now: u64) -> bool {
+    fn admitted_on(
+        &self,
+        s: &SystemState,
+        app_id: &str,
+        now: u64,
+        org: Option<&crate::types::Org>,
+    ) -> bool {
         let Some(app) = s.apps.get(app_id) else {
             return false;
         };
@@ -727,7 +733,7 @@ impl Principal {
             }
             (None, None) => !matches!(self.caller, Caller::Visitor { .. }),
         };
-        credential && s.may_reach(app, self.caller.account())
+        credential && s.may_reach(app, self.caller.account(), org)
     }
 
     /// Whether the caller is an upgrade key ([`ApiKeyRecord::upgrades`]).
@@ -1424,8 +1430,16 @@ async fn attestation(
             // which release it runs. Read at once after the round: an unknown id
             // does not wait for the directory to name it.
             let _fresh = node.sys_fresh().await;
+            let org = node
+                .sys(|s| s.apps.get(app).map(|a| a.org.clone()))
+                .and_then(|o| node.org_of(&o));
             let rec = node
-                .sys(|s| s.apps.get(app).filter(|a| s.may_reach(a, None)).cloned())
+                .sys(|s| {
+                    s.apps
+                        .get(app)
+                        .filter(|a| s.may_reach(a, None, org.as_ref()))
+                        .cloned()
+                })
                 .ok_or_else(|| ApiError::not_found("no such app"))?;
             hex::decode(&rec.bundle)
                 .ok()
@@ -1721,7 +1735,8 @@ fn fresh_record<'s>(
 /// read, so the record in hand can predate a grant or revocation committed
 /// through another node; this reads it again.
 fn reaches(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    node.sys(|s| fresh_record(s, app).is_some_and(|now| s.may_reach(now, account)))
+    let org = node.org_of(&app.org);
+    node.sys(|s| fresh_record(s, app).is_some_and(|now| s.may_reach(now, account, org.as_ref())))
 }
 
 async fn gate(
@@ -1997,7 +2012,10 @@ async fn step_up(
 /// `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
 /// `a_removed_member_stops_receiving_a_runs_events`.
 pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> bool {
-    node.sys_caught_up().await && node.sys(|s| p.admitted_on(s, app_id, now_secs()))
+    let org = node
+        .sys(|s| s.apps.get(app_id).map(|a| a.org.clone()))
+        .and_then(|o| node.org_of(&o));
+    node.sys_caught_up().await && node.sys(|s| p.admitted_on(s, app_id, now_secs(), org.as_ref()))
 }
 
 /// How many events that reached this replica together one freshness round
@@ -2055,10 +2073,13 @@ fn local_events(
             if !node.sys_caught_up().await {
                 return None;
             }
+            let org = node
+                .sys(|s| s.apps.get(&app).map(|a| a.org.clone()))
+                .and_then(|o| node.org_of(&o));
             node.sys(|s| {
                 if principal
                     .as_ref()
-                    .is_some_and(|p| !p.admitted_on(s, &app, now_secs()))
+                    .is_some_and(|p| !p.admitted_on(s, &app, now_secs(), org.as_ref()))
                 {
                     return None;
                 }
@@ -2068,7 +2089,13 @@ fn local_events(
                         .filter(|e| match &e.audience {
                             None => true,
                             Some(audience) => s.apps.get(&app).is_some_and(|a| {
-                                s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
+                                s.receives(
+                                    a,
+                                    audience,
+                                    e.caller.as_deref(),
+                                    subscriber.as_deref(),
+                                    org.as_ref(),
+                                )
                             }),
                         })
                         .collect::<Vec<_>>(),
@@ -2485,6 +2512,17 @@ async fn scope_report(
     let runtimes = node.runtimes(&nodes).await;
     let bound = p.bound_app();
     let key_apps = p.api_key.as_ref().and_then(|k| k.apps.as_ref());
+    // Each app's organization, read from its shard, for the reach check below.
+    let org_recs: std::collections::HashMap<crate::types::OrgId, crate::types::Org> = node
+        .sys(|s| {
+            s.apps
+                .values()
+                .map(|a| a.org.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .into_iter()
+        .filter_map(|o| node.org_of(&o).map(|r| (o, r)))
+        .collect();
     let mut out = node.sys(|s| {
         let owner_approves = s.owner_approves(false);
         let keep = |a: &crate::types::AppRecord| {
@@ -2495,7 +2533,8 @@ async fn scope_report(
                 None => a.owner == account,
             };
             in_scope
-                && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account, owner_approves))
+                && (s.may_reach(a, Some(account), org_recs.get(&a.org))
+                    || s.may_upgrade(a, account, owner_approves))
                 && bound.is_none_or(|pkg| {
                     report::release_of_app(s, a, Reader::Account(account))
                         .is_some_and(|r| r.package == pkg)

@@ -240,8 +240,9 @@ pub(super) async fn public_link_create(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor)) {
+        if !s.may_reach(&app, Some(&actor), org.as_ref()) {
             return Err(ApiError::not_found("no such app"));
         }
         if !s.manages_grants(&app, &actor) {
@@ -351,8 +352,9 @@ pub(super) async fn public_link_list(
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
     let now = now_secs();
+    let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
+        if !s.may_reach(&app, Some(&actor), org.as_ref()) || !s.manages_grants(&app, &actor) {
             return Err(ApiError::not_found("no such app"));
         }
         let links = app

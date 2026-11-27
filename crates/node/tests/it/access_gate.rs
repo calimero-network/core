@@ -354,7 +354,7 @@ async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
         follower_node.sys(|s| s
             .apps
             .get(&app)
-            .is_some_and(|a| !s.may_reach(a, Some(&bob_id)))),
+            .is_some_and(|a| !s.may_reach_self(a, Some(&bob_id)))),
         "the follower must still hold the record without the grant"
     );
 
@@ -428,7 +428,7 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
             follower_node.sys(|s| {
                 s.apps
                     .get(&app)
-                    .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
+                    .is_some_and(|a| s.may_reach_self(a, Some(&bob_id)))
             })
         },
     )
@@ -452,7 +452,7 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
         follower_node.sys(|s| s
             .apps
             .get(&app)
-            .is_some_and(|a| s.may_reach(a, Some(&bob_id)))),
+            .is_some_and(|a| s.may_reach_self(a, Some(&bob_id)))),
         "the follower must still hold the record with the grant"
     );
     let call = tokio::spawn({
@@ -1017,7 +1017,7 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
         leader_node.sys(|s| {
             s.apps
                 .get(&app)
-                .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
+                .is_some_and(|a| s.may_reach_self(a, Some(&bob_id)))
         })
     };
     crate::harness::poll::until(

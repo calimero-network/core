@@ -2714,7 +2714,7 @@ async fn an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_
         held.sys(|s| s
             .apps
             .get(&app)
-            .is_some_and(|r| s.may_reach(r, Some(&bob_id)))),
+            .is_some_and(|r| s.may_reach_self(r, Some(&bob_id)))),
         "the held replica must still hold Bob's membership"
     );
     let _r = alice

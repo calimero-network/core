@@ -978,6 +978,17 @@ async fn app_list(
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
     let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
     let key = p.as_ref().and_then(|p| p.api_key.clone());
+    // Each app's organization, read from its shard, for the reach filter below.
+    let org_recs: std::collections::HashMap<crate::types::OrgId, crate::types::Org> = node
+        .sys(|s| {
+            s.apps
+                .values()
+                .map(|a| a.org.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .into_iter()
+        .filter_map(|o| node.org_of(&o).map(|r| (o, r)))
+        .collect();
     let apps: Vec<AppEntry> = node.sys(|s| {
         s.apps
             .values()
@@ -986,7 +997,7 @@ async fn app_list(
                     .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
             })
             .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
-            .filter(|a| s.may_reach(a, account.as_deref()))
+            .filter(|a| s.may_reach(a, account.as_deref(), org_recs.get(&a.org)))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
             .map(|a| (a, crate::report::release_of_app(s, a, reader)))
             // Releases may share a WASM: filter by the release the row names, not the bundle's.
@@ -1092,7 +1103,8 @@ async fn app_get(
     let mut v = serde_json::to_value(&app).unwrap_or_default();
     // A guest sees none of the organization's people: only their own grant.
     if let Some(a) = account {
-        if node.sys(|s| s.is_guest(&app, a)) {
+        let org = node.org_of(&app.org);
+        if node.sys(|s| s.is_guest(&app, a, org.as_ref())) {
             v["grants"] = json!(app.access.only(a));
         }
     }
@@ -1124,8 +1136,9 @@ fn refuse_app_invite(
     app: &crate::types::AppRecord,
     actor: &str,
 ) -> Result<(), ApiError> {
+    let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(app, Some(actor)) {
+        if !s.may_reach(app, Some(actor), org.as_ref()) {
             return Err(ApiError::not_found("no such app"));
         }
         if !s.manages_grants(app, actor) {
@@ -1247,8 +1260,9 @@ async fn app_invite_list(
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
     let now = now_secs();
+    let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
+        if !s.may_reach(&app, Some(&actor), org.as_ref()) || !s.manages_grants(&app, &actor) {
             return Err(ApiError::not_found("no such app"));
         }
         let invites: Vec<AppInviteView> = s
@@ -1740,8 +1754,12 @@ pub(crate) async fn delegation_plan(
     let source = node.app(source_id).await?;
     let target = node.app(target_id).await?;
     let account = account.to_owned();
-    let reaches =
-        node.sys(|s| s.may_reach(&source, Some(&account)) && s.may_reach(&target, Some(&account)));
+    // source and target share an org (checked below), so one lookup serves both.
+    let org = node.org_of(&source.org);
+    let reaches = node.sys(|s| {
+        s.may_reach(&source, Some(&account), org.as_ref())
+            && s.may_reach(&target, Some(&account), org.as_ref())
+    });
     if !reaches || source_id == target_id || source.org != target.org {
         return Err(ApiError::new(
             404,

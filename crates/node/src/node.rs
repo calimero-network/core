@@ -1521,6 +1521,16 @@ impl Node {
         }
     }
 
+    /// Organization `org`'s record, read from the shard that owns it
+    /// ([`Node::sys_org`]). The membership methods on [`SystemState`] take the
+    /// org this returns, so they read an app's organization from its tenant
+    /// group while reading the fleet, packages and guest records from root —
+    /// the cross-shard access read the sharded control plane performs.
+    #[must_use]
+    pub fn org_of(&self, org: &crate::types::OrgId) -> Option<crate::types::Org> {
+        self.sys_org(org, |s| s.orgs.get(org).cloned())
+    }
+
     /// The system Raft group that serves a shard ([`crate::system::shard`]): the
     /// root group for [`ShardId::Root`] (today also the single system group), or
     /// an organization's tenant group once one exists. Until tenant groups are

@@ -728,7 +728,7 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
     .unwrap();
     let _prev = m.state.apps.insert("x".into(), app);
     let v = m.state.packages["p"].versions["1.0.0"].clone();
-    assert!(m.state.may_reach(&m.state.apps["x"], Some("carol")));
+    assert!(m.state.may_reach_self(&m.state.apps["x"], Some("carol")));
     assert!(m.state.reads_release("p", &v, "carol") && !m.state.sees_release(&v, "carol"));
     assert!(!m.state.reads_release("p", &v, OPERATOR));
 
@@ -3744,9 +3744,9 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
         }))
         .unwrap()
     };
-    assert!(m.state.may_reach(&shared(&mine), Some("carol")));
-    assert!(!m.state.may_reach(&shared(&mine), Some("bob")));
-    assert!(!m.state.may_reach(&shared("team"), Some("carol")));
+    assert!(m.state.may_reach_self(&shared(&mine), Some("carol")));
+    assert!(!m.state.may_reach_self(&shared(&mine), Some("bob")));
+    assert!(!m.state.may_reach_self(&shared("team"), Some("carol")));
 
     // An app there handed to someone outside it goes to their personal
     // organization, `team` access becoming the organization's.
@@ -3880,8 +3880,8 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
     );
 
     // Its listed accounts still reach it without being members.
-    assert!(m.state.may_reach(&m.state.apps["gift"], Some("carol")));
-    assert!(!m.state.may_reach(&m.state.apps["gift"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["gift"], Some("carol")));
+    assert!(!m.state.may_reach_self(&m.state.apps["gift"], Some("bob")));
 }
 
 /// Guests (`Feature::Guests`): an account named on an instance (an `account` grant)
@@ -3930,8 +3930,9 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     ] {
         let _prev = m.state.apps.insert(a.app_id.clone(), a);
     }
-    let reaches =
-        |m: &SystemMachine, id: &str, who: &str| m.state.may_reach(&m.state.apps[id], Some(who));
+    let reaches = |m: &SystemMachine, id: &str, who: &str| {
+        m.state.may_reach_self(&m.state.apps[id], Some(who))
+    };
 
     // Before the version, a listed outsider reaches nothing, as before.
     assert!(!reaches(&m, "open", "carol"));
@@ -3945,7 +3946,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     assert!(m.state.guests_on());
     // The release allows guests: carol reaches it and its unit's member, not the rest.
     assert!(reaches(&m, "open", "carol"));
-    assert!(m.state.is_guest(&m.state.apps["open"], "carol"));
+    assert!(m.state.is_guest_self(&m.state.apps["open"], "carol"));
     assert!(
         reaches(&m, "member", "carol"),
         "a unit's member, by its instance's list"
@@ -4187,8 +4188,8 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
     let forms = &m.state.apps["forms"];
     assert_eq!(forms.access.link(&key).unwrap().created_by, "alice");
     assert_eq!(forms.access.grants()[0], crate::types::Grant::Org);
-    assert!(m.state.may_reach(forms, Some("bob")));
-    assert!(!m.state.may_reach(forms, None));
+    assert!(m.state.may_reach_self(forms, Some("bob")));
+    assert!(!m.state.may_reach_self(forms, None));
     // Setting the grants keeps the link as it is; a link it does not hold is never made
     // that way.
     let set = |access: Value| SystemCmd::SetAccess {
@@ -4385,8 +4386,9 @@ fn an_instances_access_is_a_list_of_grants() {
     );
     assert_eq!(x.features(), [Feature::AccessGrants]);
     let _ok = m.run_unproven(x).unwrap();
-    let reaches =
-        |m: &SystemMachine, id: &str, who: Option<&str>| m.state.may_reach(&m.state.apps[id], who);
+    let reaches = |m: &SystemMachine, id: &str, who: Option<&str>| {
+        m.state.may_reach_self(&m.state.apps[id], who)
+    };
     // The team, a named member outside it, a guest; not another outsider, nor anyone signed
     // out, nor the owner outside the team (an owner is judged by the teams, as on `team`).
     for (who, want) in [
@@ -4400,7 +4402,7 @@ fn an_instances_access_is_a_list_of_grants() {
         assert_eq!(reaches(&m, "x", who), want, "{who:?}");
     }
     let xa = &m.state.apps["x"];
-    assert!(m.state.is_guest(xa, "carol") && !m.state.is_guest(xa, "dan"));
+    assert!(m.state.is_guest_self(xa, "carol") && !m.state.is_guest_self(xa, "dan"));
     assert_eq!(xa.access.scope_of("carol"), Some(&partners));
     assert_eq!(xa.access.the_team().map(String::as_str), Some("t"));
     // Anyone: every signed-in account, a member or not, never a caller without one.
@@ -4639,8 +4641,9 @@ fn a_team_deleted_keeping_its_instances_leaves_them_their_other_grants() {
     let out = m.run(delete("u", true, real)).unwrap();
     assert_eq!(out["keptApps"], json!(["e", "g", "m"]));
     assert_eq!(out["apps"], json!([]));
-    let reaches =
-        |m: &SystemMachine, id: &str, who: &str| m.state.may_reach(&m.state.apps[id], Some(who));
+    let reaches = |m: &SystemMachine, id: &str, who: &str| {
+        m.state.may_reach_self(&m.state.apps[id], Some(who))
+    };
     assert!(!m.state.orgs["org"].teams.contains_key("u"));
     assert_eq!(m.state.apps["g"].access, grants(json!([guest])));
     assert!(reaches(&m, "g", "erin"), "the guest keeps their way in");
@@ -5001,7 +5004,7 @@ fn a_team_removal_takes_the_rows_below_it() {
         .unwrap();
     let o = &m.state.orgs["org"];
     assert!(!o.in_team("bob", "t") && !o.in_team("bob", "c"));
-    assert!(!m.state.may_reach(&m.state.apps["inapp"], Some("bob")));
+    assert!(!m.state.may_reach_self(&m.state.apps["inapp"], Some("bob")));
 }
 
 /// Deleting a team that holds apps needs the deleter's passkey over
@@ -5261,22 +5264,25 @@ fn an_org_app_is_reached_only_by_current_members() {
     }))
     .unwrap();
     let s = &m.state;
-    assert!(s.may_reach(&listed, Some("alice")) && s.may_reach(&listed, Some("bob")));
+    assert!(s.may_reach_self(&listed, Some("alice")) && s.may_reach_self(&listed, Some("bob")));
     assert!(
-        !s.may_reach(&listed, Some("carol")),
+        !s.may_reach_self(&listed, Some("carol")),
         "listed, never a member"
     );
     let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
     let s = &m.state;
-    assert!(!s.may_reach(&listed, Some("bob")), "listed owner, removed");
-    assert!(!s.receives(&listed, &Audience::All, Some("alice"), Some("bob")));
-    assert!(s.receives(&listed, &Audience::All, Some("bob"), Some("alice")));
+    assert!(
+        !s.may_reach_self(&listed, Some("bob")),
+        "listed owner, removed"
+    );
+    assert!(!s.receives_self(&listed, &Audience::All, Some("alice"), Some("bob")));
+    assert!(s.receives_self(&listed, &Audience::All, Some("bob"), Some("alice")));
     // In its owner's personal organization, the list alone decides.
     let personal = AppRecord {
         org: p("bob"),
         ..listed
     };
-    assert!(m.state.may_reach(&personal, Some("carol")));
+    assert!(m.state.may_reach_self(&personal, Some("carol")));
 }
 
 /// An instance only named people reach (a DM, a private channel) of a package with an
@@ -5305,13 +5311,19 @@ fn an_accounts_instance_is_reached_only_through_its_app_team() {
     let m = fresh();
     let chat = m.state.apps["dm"].clone();
     let s = &m.state;
-    assert!(s.may_reach(&chat, Some("alice")) && s.may_reach(&chat, Some("bob")));
-    assert!(!s.may_reach(&chat, Some("carol")), "the owner, out of Chat");
-    assert!(!s.may_reach(&chat, Some("dave")), "listed, out of Chat");
-    assert!(!s.receives(&chat, &Audience::All, Some("bob"), Some("dave")));
+    assert!(s.may_reach_self(&chat, Some("alice")) && s.may_reach_self(&chat, Some("bob")));
+    assert!(
+        !s.may_reach_self(&chat, Some("carol")),
+        "the owner, out of Chat"
+    );
+    assert!(
+        !s.may_reach_self(&chat, Some("dave")),
+        "listed, out of Chat"
+    );
+    assert!(!s.receives_self(&chat, &Audience::All, Some("bob"), Some("dave")));
     // No app team for its package: the list alone, as before.
     let raw = dm("raw", "b1");
-    assert!(s.may_reach(&raw, Some("carol")) && s.may_reach(&raw, Some("dave")));
+    assert!(s.may_reach_self(&raw, Some("carol")) && s.may_reach_self(&raw, Some("dave")));
 
     // Moving the DM onto Chat's team gives rows to who reaches it: Alice and Bob.
     let scope = SystemCmd::ScopeApps {
@@ -5687,8 +5699,12 @@ fn a_new_app_team_gives_its_all_apps_members_a_row() {
         let t = &s.orgs["org"].teams[&team];
         assert_eq!(t.join, TeamJoin::Invite);
         assert_eq!(t.members.contains_key("dave"), flag, "{flag}");
-        assert_eq!(s.may_reach(&s.apps["notes"], Some("dave")), flag, "{flag}");
-        assert!(!s.may_reach(&s.apps["notes"], Some("carol")));
+        assert_eq!(
+            s.may_reach_self(&s.apps["notes"], Some("dave")),
+            flag,
+            "{flag}"
+        );
+        assert!(!s.may_reach_self(&s.apps["notes"], Some("carol")));
     }
     // Chat's team was there already: closing it again adds nobody.
     let mut m = fresh();
@@ -6321,7 +6337,7 @@ fn a_moved_app_takes_its_payer_access_and_people_to_the_target() {
     assert_eq!(o.role("bob"), Some(OrgRole::Member));
     assert_eq!(o.role("carol"), Some(OrgRole::Guest));
     for who in ["alice", "bob", "carol"] {
-        assert!(s.may_reach(app, Some(who)), "{who}");
+        assert!(s.may_reach_self(app, Some(who)), "{who}");
     }
     assert_eq!((s.file_bytes("org"), s.file_bytes("new")), (0, 100));
     assert_eq!(s.compute["oa"]["r"].payer, "new");
@@ -6361,8 +6377,8 @@ fn an_app_moves_without_its_people_only_to_where_its_owner_is() {
     assert_eq!(out["added"], json!([]), "{out}");
     let s = &m.state;
     assert_eq!(s.orgs["new"].role("carol"), None);
-    assert!(!s.may_reach(&s.apps["oa"], Some("carol")));
-    assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+    assert!(!s.may_reach_self(&s.apps["oa"], Some("carol")));
+    assert!(s.may_reach_self(&s.apps["oa"], Some("bob")));
 
     // Into a target whose app teams are all closed, without its people:
     // the owner still reaches (and manages) it, with a row of their own.
@@ -6380,7 +6396,7 @@ fn an_app_moves_without_its_people_only_to_where_its_owner_is() {
         crate::types::TeamJoin::Invite
     );
     assert_eq!(s.orgs["new"].teams[&team].members.get("bob"), Some(&false));
-    assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+    assert!(s.may_reach_self(&s.apps["oa"], Some("bob")));
     assert!(s.owner_acts(&s.apps["oa"], "bob"));
 }
 
@@ -6618,7 +6634,7 @@ fn a_moved_app_follows_the_targets_mode() {
         t.default_capabilities,
         Some(crate::types::caps::CREATE_CHILD_TEAM)
     );
-    assert!(m.state.may_reach(&m.state.apps["oa"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["oa"], Some("bob")));
 
     // A second instance goes onto the same team.
     let _prev = m.state.apps.insert("ob".into(), {
@@ -6647,7 +6663,7 @@ fn a_moved_app_follows_the_targets_mode() {
         .unwrap();
     assert_eq!(out["grants"], json!([{ "kind": "org" }]), "{out}");
     assert!(m.state.orgs["leg"].teams.is_empty());
-    assert!(m.state.may_reach(&m.state.apps["ob"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["ob"], Some("bob")));
 
     // One app team closed alone (another still open): the team made for
     // the moved app is open, as the other apps' are.
@@ -6715,7 +6731,7 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
     assert_eq!(team.members.get("bob"), Some(&false));
     assert_eq!(team.members.get("carol"), Some(&false));
     for who in ["bob", "carol"] {
-        assert!(s.may_reach(&s.apps["dm"], Some(who)), "{who}");
+        assert!(s.may_reach_self(&s.apps["dm"], Some(who)), "{who}");
     }
     assert!(s.owner_acts(&s.apps["dm"], "bob"));
 
@@ -6749,7 +6765,7 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
         s.orgs["new"].teams["np"].members.keys().collect::<Vec<_>>(),
         ["alice"]
     );
-    assert!(!s.may_reach(&s.apps["dm"], Some("bob")));
+    assert!(!s.may_reach_self(&s.apps["dm"], Some("bob")));
 
     // An open app team in the target: its members reach the DM already,
     // and nothing is added.
@@ -6771,7 +6787,7 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
         .unwrap();
     let s = &m.state;
     assert_eq!(s.orgs["new"].teams["np"].members.len(), 1);
-    assert!(s.may_reach(&s.apps["dm"], Some("bob")));
+    assert!(s.may_reach_self(&s.apps["dm"], Some("bob")));
 }
 
 /// A personal app moves into an organization its owner administers,
@@ -6926,7 +6942,7 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     set(&mut m, team(&["bob"], TeamJoin::Invite));
     m.state.apps.get_mut("oa").unwrap().access = Access::team("t".into());
     let app = m.state.apps["oa"].clone();
-    assert!(m.state.may_reach(&app, Some("bob")));
+    assert!(m.state.may_reach_self(&app, Some("bob")));
     assert!(m.state.owner_acts(&app, "bob"));
     let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
 
@@ -6937,7 +6953,7 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     for out in [team(&[], TeamJoin::Invite), barred] {
         set(&mut m, out);
         let app = &m.state.apps["oa"];
-        assert!(!m.state.may_reach(app, Some("bob")));
+        assert!(!m.state.may_reach_self(app, Some("bob")));
         assert!(!m.state.owner_acts(app, "bob"));
         assert!(!m.state.manages_app(app, "bob"));
         assert!(!m.state.may_upgrade(app, "bob", false));
@@ -6959,7 +6975,7 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     let _ok = m.run(old(set_app_metadata("oa", "bob"))).unwrap();
     // Open to the organization again: Bob, a member, is in it.
     set(&mut m, team(&[], TeamJoin::Everyone));
-    assert!(m.state.may_reach(&m.state.apps["oa"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["oa"], Some("bob")));
     assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
     set(&mut m, team(&["carol"], TeamJoin::Invite));
     let _ok = m

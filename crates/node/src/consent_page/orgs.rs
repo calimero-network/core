@@ -291,7 +291,7 @@ fn member_apps(s: &SystemState, org: &str, account: &str) -> Vec<String> {
     s.apps
         .values()
         .filter(|a| a.org == org && !a.access.anyone())
-        .filter(|a| s.may_reach(a, Some(account)))
+        .filter(|a| s.may_reach(a, Some(account), s.orgs.get(&a.org)))
         .map(|a| a.name.clone())
         .collect()
 }

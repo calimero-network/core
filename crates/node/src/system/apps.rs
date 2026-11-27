@@ -1531,7 +1531,9 @@ fn set_delegation(
     if source == target {
         return Err(SELF_DELEGATION);
     }
-    if !state.may_reach(from, Some(&account)) || !state.may_reach(to, Some(&account)) {
+    if !state.may_reach(from, Some(&account), state.orgs.get(&from.org))
+        || !state.may_reach(to, Some(&account), state.orgs.get(&to.org))
+    {
         return Err(DELEGATION_NEEDS_REACH);
     }
     let distinct: BTreeSet<&String> = methods.iter().collect();
@@ -1726,7 +1728,7 @@ fn redeem_app_invite(
         .get(&app.org)
         .and_then(|o| o.role(&account))
         .is_some();
-    if !member && !state.guests_allowed(app) {
+    if !member && !state.guests_allowed(app, state.orgs.get(&app.org)) {
         return Err(super::GUESTS_NOT_ALLOWED);
     }
     let answer = json!(super::InviteRedeemed {

@@ -2352,15 +2352,16 @@ impl SystemState {
                             r.package == package && r.version == v.version
                         })
                         && v.app_parts().values().any(|h| *h == a.bundle)
-                        && self.may_reach(a, Some(who))
+                        && self.may_reach(a, Some(who), self.orgs.get(&a.org))
                 }))
     }
 
     /// Whether `who` reaches an app running one of `v`'s services.
     fn reaches_release(&self, v: &PackageVersion, who: &str) -> bool {
-        self.apps
-            .values()
-            .any(|a| v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who)))
+        self.apps.values().any(|a| {
+            v.app_parts().values().any(|h| *h == a.bundle)
+                && self.may_reach(a, Some(who), self.orgs.get(&a.org))
+        })
     }
 
     /// [`Self::sees_release`] for a session bound to the package's frontend (`frontend`):
@@ -3585,7 +3586,7 @@ impl SystemState {
     /// bundle, or none, does not) and its organization does not turn them off
     /// ([`crate::types::Org::allow_guests`]). The stricter switch wins.
     #[must_use]
-    pub fn guests_allowed(&self, app: &AppRecord) -> bool {
+    pub fn guests_allowed(&self, app: &AppRecord, org: Option<&Org>) -> bool {
         let release = app.release.as_ref().and_then(|r| {
             self.packages
                 .get(&r.package)
@@ -3593,7 +3594,7 @@ impl SystemState {
         });
         let developer =
             release.and_then(|v| v.guests) == Some(calimero_bundle::GuestPolicy::Allowed);
-        developer && self.orgs.get(&app.org).is_some_and(|o| o.allow_guests)
+        developer && org.is_some_and(|o| o.allow_guests)
     }
 
     /// The instance whose guest list judges `app`: the top of its unit (the app whose
@@ -3616,23 +3617,19 @@ impl SystemState {
     /// ([`Self::guests_allowed`]). Judged on the state of the moment, so a guest taken off
     /// the list, or a switch turned off, stops reaching it at once.
     #[must_use]
-    pub fn guest_reaches(&self, app: &AppRecord, account: &str) -> bool {
+    pub fn guest_reaches(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
         if !self.guests_on() {
             return false;
         }
         let holder = self.guest_holder(app);
-        holder.access.names(account) && self.guests_allowed(holder)
+        holder.access.names(account) && self.guests_allowed(holder, org)
     }
 
     /// Whether `account` is a guest of `app` and not a member of its organization: it
     /// reaches the app only as a guest ([`Self::guest_reaches`]).
     #[must_use]
-    pub fn is_guest(&self, app: &AppRecord, account: &str) -> bool {
-        self.orgs
-            .get(&app.org)
-            .and_then(|o| o.role(account))
-            .is_none()
-            && self.guest_reaches(app, account)
+    pub fn is_guest(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
+        org.and_then(|o| o.role(account)).is_none() && self.guest_reaches(app, account, org)
     }
 
     /// The scope of `account`'s grant on `app` ([`crate::types::Grant::Account`]): on `app`
@@ -4108,19 +4105,18 @@ impl SystemState {
             return false;
         };
         o.role(account).is_some_and(|r| r >= OrgRole::Member)
-            && (rule == OwnerRule::InOrg || self.owner_in_team(app, account))
+            && (rule == OwnerRule::InOrg
+                || self.owner_in_team(app, account, self.orgs.get(&app.org)))
     }
 
     /// Whether `app`'s team, if it is on one, holds `owner`: an owner reaches
     /// and manages an app on a team only while they are in it.
-    fn owner_in_team(&self, app: &AppRecord, owner: &str) -> bool {
+    fn owner_in_team(&self, app: &AppRecord, owner: &str, org: Option<&Org>) -> bool {
         let teams = app.access.teams();
         if teams.is_empty() || app.access.org_wide() || app.access.names(owner) {
             return true;
         }
-        self.orgs
-            .get(&app.org)
-            .is_some_and(|o| teams.into_iter().any(|t| o.in_team(owner, t)))
+        org.is_some_and(|o| teams.into_iter().any(|t| o.in_team(owner, t)))
     }
 
     /// Whether `account` manages `app` as a whole (transfers or deletes it,
@@ -4531,7 +4527,7 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| self.may_reach(a, Some(m.as_str())))
+                        .filter(|m| self.may_reach(a, Some(m.as_str()), self.orgs.get(&a.org)))
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -4832,7 +4828,7 @@ impl SystemState {
             Some(o) if bring_members => o
                 .members
                 .iter()
-                .filter(|(m, _)| self.may_reach(app, Some(m.as_str())))
+                .filter(|(m, _)| self.may_reach(app, Some(m.as_str()), self.orgs.get(&app.org)))
                 .map(|(m, r)| (m.clone(), *r))
                 .collect(),
             _ => Vec::new(),
@@ -4841,7 +4837,7 @@ impl SystemState {
         // app team (an owner reaches an app on a team only while in it), so
         // a move never takes their app away without their consent.
         let owner_keeps = self
-            .may_reach(app, Some(app.owner.as_str()))
+            .may_reach(app, Some(app.owner.as_str()), self.orgs.get(&app.org))
             .then(|| app.owner.clone());
         let joins: Vec<(AccountId, OrgRole)> = reached
             .iter()
@@ -5313,8 +5309,34 @@ impl SystemState {
     /// Whether `account` may reach `app` at all: through one of its grants
     /// (`Self::grants_reach`). Nobody without an account does.
     #[must_use]
-    pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
-        account.is_some_and(|a| self.grants_reach(app, a))
+    pub fn may_reach(&self, app: &AppRecord, account: Option<&str>, org: Option<&Org>) -> bool {
+        account.is_some_and(|a| self.grants_reach(app, a, org))
+    }
+
+    /// [`Self::may_reach`] reading the app's organization from this state. For a
+    /// state that holds the org (tests, and a tenant machine applying its own
+    /// org's entry); the gate passes the org from its shard explicitly.
+    #[must_use]
+    pub fn may_reach_self(&self, app: &AppRecord, account: Option<&str>) -> bool {
+        self.may_reach(app, account, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::is_guest`] reading the app's organization from this state.
+    #[must_use]
+    pub fn is_guest_self(&self, app: &AppRecord, account: &str) -> bool {
+        self.is_guest(app, account, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::receives`] reading the app's organization from this state.
+    #[must_use]
+    pub fn receives_self(
+        &self,
+        app: &AppRecord,
+        audience: &Audience,
+        emitter: Option<&str>,
+        account: Option<&str>,
+    ) -> bool {
+        self.receives(app, audience, emitter, account, self.orgs.get(&app.org))
     }
 
     /// Whether `account` lets `source`'s runs for them call `method` of `target` as them.
@@ -5386,23 +5408,27 @@ impl SystemState {
     /// only) or through a grant: the organization (an `app_only` guest of it never), a team
     /// they are in, or their name; a name, and the owner of an instance only names admit, only
     /// while they are in the package's app team where it has one.
-    fn grants_reach(&self, app: &AppRecord, a: &str) -> bool {
+    fn grants_reach(&self, app: &AppRecord, a: &str, org: Option<&Org>) -> bool {
         let grants = app.access.grants();
         if app.access.anyone() {
             return true;
         }
-        let Some(o) = self.orgs.get(&app.org) else {
+        // The app's organization comes from its shard (its tenant group when the
+        // control plane is sharded), not from `self`, which holds the fleet,
+        // packages and guest records this still reads
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let Some(o) = org else {
             return false;
         };
         if o.role(a).is_none() {
-            return (o.personal && app.access.names(a)) || self.guest_reaches(app, a);
+            return (o.personal && app.access.names(a)) || self.guest_reaches(app, a, org);
         }
         let in_app_team = || {
-            self.app_team_of(app)
-                .is_none_or(|(o, team)| o.in_team(a, &team.team_id))
+            self.app_team_of(app, org)
+                .is_none_or(|team| o.in_team(a, &team.team_id))
         };
         if a == app.owner
-            && self.owner_in_team(app, a)
+            && self.owner_in_team(app, a, org)
             && (!app.access.named_only() || in_app_team())
         {
             return true;
@@ -5417,13 +5443,12 @@ impl SystemState {
         })
     }
 
-    /// The app team of `app`'s package in `app`'s organization, with the
-    /// organization, if both are there.
+    /// The app team of `app`'s package in its organization `org` (its shard's),
+    /// if both are there. `self` provides the package the app instances.
     #[must_use]
-    pub fn app_team_of(&self, app: &AppRecord) -> Option<(&Org, &Team)> {
-        let o = self.orgs.get(&app.org)?;
-        let team = o.app_team(self.package_of(app)?)?;
-        Some((o, team))
+    pub fn app_team_of<'a>(&self, app: &AppRecord, org: Option<&'a Org>) -> Option<&'a Team> {
+        let o = org?;
+        o.app_team(self.package_of(app)?)
     }
 
     /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
@@ -5437,19 +5462,20 @@ impl SystemState {
         audience: &Audience,
         emitter: Option<&str>,
         account: Option<&str>,
+        org: Option<&Org>,
     ) -> bool {
-        if !self.may_reach(app, account) {
+        if !self.may_reach(app, account, org) {
             return false;
         }
-        let org = |id: &str| (app.org == id).then(|| self.orgs.get(id)).flatten();
+        // Every audience below names the app's own organization, which comes
+        // from its shard; an event cannot address another organization's roster.
+        let org = |id: &str| (app.org == id).then_some(org).flatten();
         match (audience, account) {
             (Audience::All, _) => true,
             (_, None) => false,
             (Audience::Caller, Some(a)) => emitter == Some(a),
             (Audience::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
-            (Audience::Team { team }, Some(a)) => {
-                self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
-            }
+            (Audience::Team { team }, Some(a)) => org(&app.org).is_some_and(|o| o.in_team(a, team)),
             (Audience::OrgMembers { org: id }, Some(a)) => {
                 org(id).is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
             }

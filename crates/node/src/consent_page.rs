@@ -3012,13 +3012,21 @@ fn app_invite_model(
     key: &str,
     now: u64,
 ) -> Option<Result<Value, ApiError>> {
+    let org = node
+        .sys(|s| {
+            s.app_invites
+                .get(key)
+                .and_then(|inv| s.apps.get(&inv.app))
+                .map(|a| a.org.clone())
+        })
+        .and_then(|o| node.org_of(&o));
     let found = node.sys(|s| {
         let inv = s.app_invites.get(key)?.clone();
         let app = s.apps.get(&inv.app)?;
-        let o = s.orgs.get(&app.org);
+        let o = org.as_ref();
         let org_name = o.map(|o| o.name.clone());
         let member = o.and_then(|o| o.role(account)).is_some();
-        let allowed = member || s.guests_allowed(app);
+        let allowed = member || s.guests_allowed(app, o);
         Some((inv, app.clone(), org_name, allowed, member))
     })?;
     let (inv, app, org_name, allowed, member) = found;

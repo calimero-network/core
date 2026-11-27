@@ -79,13 +79,16 @@ fn component_answer(
         return e.into_response();
     }
     let account = caller.account();
+    let org = node
+        .sys(|s| s.apps.get(app_id).map(|a| a.org.clone()))
+        .and_then(|o| node.org_of(&o));
     let events: Vec<AppEvent> = node.sys(|s| {
         let Some(app) = s.apps.get(app_id) else {
             return Vec::new();
         };
         a.events
             .iter()
-            .filter(|e| s.receives(app, &e.audience, account, account))
+            .filter(|e| s.receives(app, &e.audience, account, account, org.as_ref()))
             .map(|e| AppEvent {
                 kind: e.kind.clone(),
                 data: e.data.clone(),
