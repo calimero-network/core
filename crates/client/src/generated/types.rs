@@ -4724,7 +4724,7 @@ pub struct NodeRecord {
     pub extra: Map<String, Value>,
 }
 
-/// The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.
+/// The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Quotas {
     #[serde(rename = "maxAppsPerAccount")]
@@ -4746,6 +4746,12 @@ pub struct Quotas {
     /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     pub max_fuel_per_developer_per_day: String,
+    #[serde(rename = "maxTeamsPerOrg")]
+    pub max_teams_per_org: u64,
+    #[serde(rename = "maxMetadataBytesPerOrg")]
+    pub max_metadata_bytes_per_org: u64,
+    #[serde(rename = "maxMetadataBytesPerAccount")]
+    pub max_metadata_bytes_per_account: u64,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -4791,6 +4797,12 @@ pub struct QuotaSettings {
     /// an unsigned 64-bit integer as a decimal string, exact past 2^53
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     pub max_fuel_per_developer_per_day: String,
+    #[serde(rename = "maxTeamsPerOrg")]
+    pub max_teams_per_org: u64,
+    #[serde(rename = "maxMetadataBytesPerOrg")]
+    pub max_metadata_bytes_per_org: u64,
+    #[serde(rename = "maxMetadataBytesPerAccount")]
+    pub max_metadata_bytes_per_account: u64,
     pub orgs: BTreeMap<String, OrgQuotas>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -6405,6 +6417,20 @@ pub struct Org {
         with = "crate::route::present"
     )]
     pub new_work_stopped: Option<Option<OrgNewWorkStopped>>,
+    #[serde(rename = "nextTeamsAfter")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub next_teams_after: Option<Option<String>>,
+    #[serde(rename = "nextMembersAfter")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub next_members_after: Option<Option<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -7191,6 +7217,15 @@ pub struct QuotaChanges {
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fuel_per_developer_per_day: Option<String>,
+    #[serde(rename = "maxTeamsPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_teams_per_org: Option<u64>,
+    #[serde(rename = "maxMetadataBytesPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_metadata_bytes_per_org: Option<u64>,
+    #[serde(rename = "maxMetadataBytesPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_metadata_bytes_per_account: Option<u64>,
     #[serde(rename = "maxConcurrentRuns")]
     #[serde(
         default,
@@ -8173,6 +8208,15 @@ pub struct OpsQuotasSetRequest {
     #[serde(rename = "maxFuelPerDeveloperPerDay")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fuel_per_developer_per_day: Option<String>,
+    #[serde(rename = "maxTeamsPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_teams_per_org: Option<u64>,
+    #[serde(rename = "maxMetadataBytesPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_metadata_bytes_per_org: Option<u64>,
+    #[serde(rename = "maxMetadataBytesPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_metadata_bytes_per_account: Option<u64>,
     #[serde(rename = "maxConcurrentRuns")]
     #[serde(
         default,

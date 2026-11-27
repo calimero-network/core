@@ -145,7 +145,11 @@ fn slot_bytes(org: &Org, slot: MetadataSlot<'_>) -> u64 {
 pub fn org_metadata_bytes(org: &Org) -> u64 {
     json_bytes(&org.metadata)
         + org.member_metadata.values().map(json_bytes).sum::<u64>()
-        + org.teams.values().map(|t| json_bytes(&t.metadata)).sum::<u64>()
+        + org
+            .teams
+            .values()
+            .map(|t| json_bytes(&t.metadata))
+            .sum::<u64>()
 }
 
 /// A metadata value's size as JSON; `null` (no metadata) is 0.
@@ -219,7 +223,10 @@ mod tests {
     }
 
     fn refused_as_quota(m: &mut SystemMachine, cmd: SystemCmd) {
-        assert_eq!(m.state.check_state_caps(&cmd).map_err(|r| r.kind()), Err(RejectionKind::QuotaExceeded));
+        assert_eq!(
+            m.state.check_state_caps(&cmd).map_err(|r| r.kind()),
+            Err(RejectionKind::QuotaExceeded)
+        );
         let refused = m.run_authorized(cmd).unwrap_err();
         assert_eq!(refused.kind(), RejectionKind::QuotaExceeded, "{refused:?}");
     }

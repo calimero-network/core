@@ -212,7 +212,10 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     refused(&reads(&carol, &closed).await.unwrap_err(), "404");
     // Nothing else of the organization, and she manages nothing.
     refused(&reads(&carol, &other).await.unwrap_err(), "404");
-    refused(&carol.orgs().get(&acme, None, None, None).await.unwrap_err(), "404");
+    refused(
+        &carol.orgs().get(&acme, None, None, None).await.unwrap_err(),
+        "404",
+    );
     refused(
         &carol.orgs().apps(&acme, None, None).await.unwrap_err(),
         "404",
@@ -250,7 +253,12 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     // The organization turns guests off: refused at her next request; on again: back.
     guests_switch(&alice, &mut a, &acme, false).await;
     assert_eq!(
-        alice.orgs().get(&acme, None, None, None).await.map(wire).unwrap()["allowGuests"],
+        alice
+            .orgs()
+            .get(&acme, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["allowGuests"],
         json!(false)
     );
     refused(&reads(&carol, &open).await.unwrap_err(), "404");

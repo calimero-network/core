@@ -115,7 +115,12 @@ async fn an_open_cluster_takes_anyone() {
     );
     let (org, token) = org_invite(&alice, &mut a).await;
     let (bob, _b) = sign_up(&c, 2, "bob", Some(&token)).await.unwrap();
-    let orgs = bob.orgs().get(&org, None, None, None).await.map(wire).unwrap();
+    let orgs = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(orgs["members"][account_of(&bob).await], "member", "{orgs}");
 }
 
@@ -173,7 +178,12 @@ async fn an_invite_only_cluster_takes_invited_people() {
 
     let (org, token) = org_invite(&alice, &mut a).await;
     let (bob, _b) = sign_up(&c, 2, "bob", Some(&token)).await.unwrap();
-    let o = bob.orgs().get(&org, None, None, None).await.map(wire).unwrap();
+    let o = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["members"][account_of(&bob).await], "member", "{o}");
     refused(
         sign_up(&c, 0, "eve", Some(&token)).await,

@@ -69,11 +69,7 @@ async fn teams_and_metadata_are_bounded_per_organization_and_account() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 
     // 15 000 + 15 000 fit the organization's 30 000; a third does not.
-    let _ok = alice
-        .orgs()
-        .metadata(&org, metadata(15_000))
-        .await
-        .unwrap();
+    let _ok = alice.orgs().metadata(&org, metadata(15_000)).await.unwrap();
     let _ok = alice
         .orgs()
         .team_update(&org, &t1, None, None, None, Some(metadata(15_000)))
@@ -99,13 +95,14 @@ async fn teams_and_metadata_are_bounded_per_organization_and_account() {
         .await
         .unwrap();
     // Shrinking always passes.
-    let _ok = alice
-        .orgs()
-        .metadata(&org, metadata(10))
-        .await
-        .unwrap();
+    let _ok = alice.orgs().metadata(&org, metadata(10)).await.unwrap();
 
-    let o = alice.orgs().get(&org, None, None, None).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["teams"].as_object().unwrap().len(), 2, "{o}");
     assert_eq!(o["metadata"], metadata(10));
 }
@@ -134,7 +131,12 @@ async fn an_organization_answers_its_teams_and_members_in_pages() {
     }
     teams.sort();
 
-    let all = alice.orgs().get(&org, None, None, None).await.map(wire).unwrap();
+    let all = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(all["teams"].as_object().unwrap().len(), 3, "{all}");
     assert_eq!(all["members"].as_object().unwrap().len(), 2, "{all}");
     assert_eq!(all["nextTeamsAfter"], Value::Null, "{all}");
@@ -173,7 +175,12 @@ async fn an_organization_answers_its_teams_and_members_in_pages() {
             break;
         }
     }
-    let want: Vec<String> = all["members"].as_object().unwrap().keys().cloned().collect();
+    let want: Vec<String> = all["members"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
     assert_eq!(members, want);
 
     let err = alice

@@ -197,7 +197,12 @@ async fn an_instance_goes_where_its_release_says() {
     assert!(orgs(&zed).await.is_empty(), "no refusal made one");
     let home = create(&zed, EITHER, "Notes", json!({})).await.unwrap();
     assert_eq!(orgs(&zed).await, std::slice::from_ref(&home));
-    let org = zed.orgs().get(&home, None, None, None).await.map(wire).unwrap();
+    let org = zed
+        .orgs()
+        .get(&home, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(org["name"], "Notes", "named after the instance: {org}");
     assert_eq!(
         org["members"][&s(&zed.auth().me().await.map(wire).unwrap()["accountId"])],
@@ -213,7 +218,11 @@ async fn an_instance_goes_where_its_release_says() {
         .unwrap();
     assert_ne!(own, home);
     assert_eq!(
-        zed.orgs().get(&own, None, None, None).await.map(wire).unwrap()["name"],
+        zed.orgs()
+            .get(&own, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["name"],
         "Board",
         "the instance's name made to fit"
     );
@@ -236,7 +245,11 @@ async fn an_instance_goes_where_its_release_says() {
         .await
         .unwrap();
     assert_eq!(
-        zed.orgs().get(&fresh, None, None, None).await.map(wire).unwrap()["name"],
+        zed.orgs()
+            .get(&fresh, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["name"],
         "Fresh"
     );
     let named = create(
@@ -248,7 +261,11 @@ async fn an_instance_goes_where_its_release_says() {
     .await
     .unwrap();
     assert_eq!(
-        zed.orgs().get(&named, None, None, None).await.map(wire).unwrap()["name"],
+        zed.orgs()
+            .get(&named, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["name"],
         "Named"
     );
     refused(
