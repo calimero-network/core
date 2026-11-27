@@ -1837,6 +1837,13 @@ export function createRoutes(api: RouteClient) {
       capabilities: (args: operations['package_capabilities']['parameters']['path'] & NonNullable<operations['package_capabilities']['parameters']['query']>, options?: MethodOptions): Promise<operations['package_capabilities']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/packages/{package}/{version}/capabilities","pathParams":["package","version"],"query":["service"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_capabilities']['responses'][200]['content']['application/json']>,
       /**
+       * A release's frontend files.
+       *
+       * `GET /packages/{package}/{version}/frontend` (`package_frontend`). **Who:** anyone.
+       */
+      frontend: (args: operations['package_frontend']['parameters']['path'], options?: MethodOptions): Promise<operations['package_frontend']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/packages/{package}/{version}/frontend","pathParams":["package","version"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_frontend']['responses'][200]['content']['application/json']>,
+      /**
        * One package.
        *
        * `GET /packages/{package}` (`package_get`). **Who:** signed in (a session or an API key).

@@ -669,3 +669,7 @@ not_covered("Apps", "The consent page's install sheet (`install`), update sheets
             "`update-classes-approvals` cases'. "
             "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
             "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build")
+not_covered("Apps", "A view's arguments held to `MAX_ARGS_BYTES` (`413 ARGS_TOO_LARGE` before it runs, as a call's)",
+            "it adds a refusal of a request, not a stored shape: a view logs nothing, and the API refuses before any "
+            "node runs it, so there is no data to carry across releases. "
+            "`oversized_view_args_are_refused_before_running` (`component_cluster.rs`) covers it on one build")

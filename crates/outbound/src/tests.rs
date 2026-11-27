@@ -405,6 +405,67 @@ fn only_public_addresses() {
     }
 }
 
+/// IPv6 special-purpose ranges (the IANA IPv6 Special-Purpose Address Registry)
+/// that are not globally reachable, and IPv6 forms that embed an IPv4 address,
+/// are classified like the address or range they stand for.
+#[test]
+fn ipv6_special_purpose_and_embedded_ipv4_addresses_are_not_public() {
+    for (addr, public) in [
+        // IPv4-compatible (deprecated): the embedded IPv4 decides.
+        ("::127.0.0.1", false),
+        ("::10.0.0.1", false),
+        ("::169.254.169.254", false),
+        ("::192.168.1.1", false),
+        ("::1.1.1.1", true),
+        // IPv4-mapped: the embedded IPv4 decides.
+        ("::ffff:127.0.0.1", false),
+        ("::ffff:1.1.1.1", true),
+        ("::", false),
+        ("::1", false),
+        // Site-local (deprecated), fec0::/10.
+        ("fec0::1", false),
+        ("feff:ffff::1", false),
+        // NAT64, 64:ff9b::/96 and 64:ff9b:1::/48.
+        ("64:ff9b::1.1.1.1", false),
+        ("64:ff9b:1::1", false),
+        // Discard-only, 100::/64, and the dummy prefix 100:0:0:1::/64.
+        ("100::1", false),
+        ("100:0:0:1::1", false),
+        // IETF protocol assignments, 2001::/23: Teredo 2001::/32,
+        // benchmarking 2001:2::/48, ORCHIDv2 2001:20::/28 among them.
+        ("2001::1", false),
+        ("2001:0:4136:e378:8000:63bf:f5ff:fffe", false),
+        ("2001:2::1", false),
+        ("2001:20::1", false),
+        ("2001:1ff::1", false),
+        // 6to4, 2002::/16.
+        ("2002:a00:1::1", false),
+        ("2002:101:101::1", false),
+        // Documentation, 2001:db8::/32 and 3fff::/20.
+        ("2001:db8::1", false),
+        ("3fff::1", false),
+        ("3fff:fff::1", false),
+        // Segment Routing SIDs, 5f00::/16.
+        ("5f00::1", false),
+        // Reserved, outside the global unicast 2000::/3.
+        ("400::1", false),
+        ("4000::1", false),
+        // Unique local, link-local, multicast.
+        ("fc00::1", false),
+        ("fe80::1", false),
+        ("ff02::1", false),
+        // Global unicast stays public.
+        ("2001:200::1", true),
+        ("2001:4860:4860::8888", true),
+        ("2606:4700::1111", true),
+        ("2a00:1450:4001::1", true),
+        ("3ffe::1", true),
+        ("3fff:1000::1", true),
+    ] {
+        assert_eq!(is_public(addr.parse::<IpAddr>().unwrap()), public, "{addr}");
+    }
+}
+
 #[test]
 fn the_operator_config_is_checked_at_start() {
     let off = OutboundSettings::default();
