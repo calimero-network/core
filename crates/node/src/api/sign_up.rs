@@ -6,37 +6,43 @@
 )]
 use super::*;
 
-/// Accounts one node creates per minute, its sign-ups' refill rate: account creation is a
-/// replicated system write that grows every node's state, so its rate is bounded. See
+/// Accounts one node creates per minute by default (`Config::sign_ups_per_minute`, merod's
+/// `--sign-ups-per-minute`): account creation is a replicated system write that grows every
+/// node's state, so its rate is bounded. See
 /// [Node limits](https://calimero-network.github.io/core/protocol/limits/#node-limits).
-pub(crate) const SIGN_UPS_PER_MINUTE: f64 = 30.0;
-/// Sign-ups one node takes at once before [`SIGN_UPS_PER_MINUTE`] paces them.
-pub(crate) const SIGN_UP_BURST: f64 = 30.0;
+pub const SIGN_UPS_PER_MINUTE: u32 = 30;
 
-/// A token bucket over the accounts this node creates ([`SIGN_UPS_PER_MINUTE`],
-/// [`SIGN_UP_BURST`]), node-local: nothing of it is logged. Every sign-up counts, invited or
-/// not. The ceremony is refused while the bucket is empty, before a challenge is made or
+/// A token bucket over the accounts this node creates: a minute's worth at once, refilled
+/// evenly over the minute. Node-local: nothing of it is logged. Every sign-up counts, invited
+/// or not. The ceremony is refused while the bucket is empty, before a challenge is made or
 /// spent; a token is spent once the new passkey has signed the account, before the log is
 /// asked to create it.
-pub struct SignUpLimit(Mutex<(f64, Instant)>);
-
-impl Default for SignUpLimit {
-    fn default() -> Self {
-        Self(Mutex::new((SIGN_UP_BURST, Instant::now())))
-    }
+pub struct SignUpLimit {
+    per_minute: f64,
+    bucket: Mutex<(f64, Instant)>,
 }
 
 impl SignUpLimit {
-    /// The tokens at `now`, and the bucket refilled to then.
+    /// `per_minute` sign-ups a minute, at least one; the bucket starts full.
+    #[must_use]
+    pub fn new(per_minute: u32) -> Self {
+        let per_minute = f64::from(per_minute.max(1));
+        Self {
+            per_minute,
+            bucket: Mutex::new((per_minute, Instant::now())),
+        }
+    }
+
+    /// The bucket refilled to `now`.
     fn refilled(&self, now: Instant) -> std::sync::MutexGuard<'_, (f64, Instant)> {
         let mut bucket = self
-            .0
+            .bucket
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let elapsed = now.saturating_duration_since(bucket.1).as_secs_f64();
         bucket.0 = elapsed
-            .mul_add(SIGN_UPS_PER_MINUTE / 60.0, bucket.0)
-            .min(SIGN_UP_BURST);
+            .mul_add(self.per_minute / 60.0, bucket.0)
+            .min(self.per_minute);
         bucket.1 = now;
         bucket
     }
@@ -44,54 +50,37 @@ impl SignUpLimit {
     /// `429 RATE_LIMITED` with `Retry-After` the seconds until the next token, if none is left.
     pub(super) fn check(&self, now: Instant) -> Result<(), ApiError> {
         let tokens = self.refilled(now).0;
-        refuse_below_one(tokens)
+        self.refuse_below_one(tokens)
     }
 
     /// Spend a token for one account, or refuse as [`Self::check`] does.
     pub(super) fn take(&self, now: Instant) -> Result<(), ApiError> {
         let mut bucket = self.refilled(now);
-        refuse_below_one(bucket.0)?;
+        self.refuse_below_one(bucket.0)?;
         bucket.0 -= 1.0;
         Ok(())
     }
-}
 
-/// This node's sign-up pace ([`SignUpLimit`]): `take` spends a token for the account about to
-/// be proposed, else the pace is only checked.
-pub(super) fn pace(node: &Node, take: bool) -> Result<(), ApiError> {
-    #[cfg(feature = "testing")]
-    if crate::testing::sign_ups_unpaced(&node.config.public_url) {
-        return Ok(());
+    fn refuse_below_one(&self, tokens: f64) -> Result<(), ApiError> {
+        if tokens >= 1.0 {
+            return Ok(());
+        }
+        let secs = ((1.0 - tokens) * 60.0 / self.per_minute).ceil().max(1.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "between 1 and 60, as `per_minute` is at least 1"
+        )]
+        let secs = secs as u32;
+        Err(ApiError {
+            retry_after: Some(secs),
+            ..ApiError::new(
+                429,
+                "RATE_LIMITED",
+                "this node has taken as many sign-ups as it takes for now; try again later or on another node",
+            )
+        })
     }
-    let now = Instant::now();
-    if take {
-        node.sign_up_limit.take(now)
-    } else {
-        node.sign_up_limit.check(now)
-    }
-}
-
-fn refuse_below_one(tokens: f64) -> Result<(), ApiError> {
-    if tokens >= 1.0 {
-        return Ok(());
-    }
-    let secs = ((1.0 - tokens) * 60.0 / SIGN_UPS_PER_MINUTE)
-        .ceil()
-        .max(1.0);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "between 1 and 60 / SIGN_UPS_PER_MINUTE rounded up"
-    )]
-    let secs = secs as u32;
-    Err(ApiError {
-        retry_after: Some(secs),
-        ..ApiError::new(
-            429,
-            "RATE_LIMITED",
-            "this node has taken as many sign-ups as it takes for now; try again later or on another node",
-        )
-    })
 }
 
 /// What a client reads before sign-up (`GET /sign-up`, no session): the
@@ -583,20 +572,15 @@ pub(super) fn routes() -> Router<Arc<Node>> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{SignUpLimit, SIGN_UPS_PER_MINUTE, SIGN_UP_BURST};
+    use super::{SignUpLimit, SIGN_UPS_PER_MINUTE};
 
-    /// A node takes its burst of sign-ups at once, refuses the next with `429 RATE_LIMITED`
-    /// and the wait in `Retry-After`, and takes one again once that wait has passed.
+    /// A node takes a minute's sign-ups at once, refuses the next with `429 RATE_LIMITED` and
+    /// the wait in `Retry-After`, and takes one again once that wait has passed.
     #[test]
     fn sign_ups_past_the_burst_wait_for_the_refill() {
+        let limit = SignUpLimit::new(SIGN_UPS_PER_MINUTE);
         let start = Instant::now();
-        let limit = SignUpLimit(std::sync::Mutex::new((SIGN_UP_BURST, start)));
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a small constant"
-        )]
-        for _ in 0..SIGN_UP_BURST as u32 {
+        for _ in 0..SIGN_UPS_PER_MINUTE {
             limit.take(start).unwrap();
         }
         let refused = limit.take(start).unwrap_err();
@@ -605,7 +589,7 @@ mod tests {
             (429, "RATE_LIMITED")
         );
         let wait = refused.retry_after.unwrap();
-        assert_eq!(f64::from(wait), (60.0 / SIGN_UPS_PER_MINUTE).ceil());
+        assert_eq!(wait, 60_u32.div_ceil(SIGN_UPS_PER_MINUTE));
         assert!(
             limit.check(start).is_err(),
             "a check spends nothing and still refuses"

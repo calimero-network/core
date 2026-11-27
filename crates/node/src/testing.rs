@@ -242,27 +242,6 @@ pub(crate) fn update_clock_shift() -> u64 {
     UPDATE_CLOCK_SHIFT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Nodes that create accounts without the sign-up pace, by public URL.
-static UNPACED_SIGN_UPS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Let the node at `public_url` take sign-ups past `api::SignUpLimit`'s pace, for a test that
-/// signs up more accounts on one node than a minute's burst. Set it in `Cluster::start_with`'s
-/// `configure`, before the node starts.
-pub fn unpaced_sign_ups(public_url: &str) {
-    if let Ok(mut u) = UNPACED_SIGN_UPS.lock() {
-        if !u.iter().any(|x| x == public_url) {
-            u.push(public_url.to_owned());
-        }
-    }
-}
-
-/// Whether [`unpaced_sign_ups`] was set for the node at `public_url`.
-pub(crate) fn sign_ups_unpaced(public_url: &str) -> bool {
-    UNPACED_SIGN_UPS
-        .lock()
-        .is_ok_and(|u| u.iter().any(|x| x == public_url))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

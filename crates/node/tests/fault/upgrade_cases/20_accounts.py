@@ -349,7 +349,7 @@ not_covered("Accounts", "A sign-up name past `MAX_ACCOUNT_NAME_CHARS`, or a pass
             "a refusal before any ceremony is held stores nothing, so an upgrade has nothing to carry; "
             "`tests/it/sessions.rs` covers it on one build")
 
-not_covered("Accounts", "A node's pace of sign-ups (`SIGN_UP_BURST`, `SIGN_UPS_PER_MINUTE`): past it `register/begin` "
+not_covered("Accounts", "A node's pace of sign-ups (`SIGN_UPS_PER_MINUTE`, `--sign-ups-per-minute`): past it `register/begin` "
             "and `register/finish` are refused `429 RATE_LIMITED` with `Retry-After`",
             "the bucket is node-local memory, never stored or logged, so an upgrade has nothing to carry; "
             "`tests/it/sign_up.rs` covers it on one build")

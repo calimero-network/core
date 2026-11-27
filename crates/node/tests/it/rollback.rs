@@ -59,6 +59,7 @@ fn config(dir: &Path, node_id: u64, counter: Option<Arc<MemoryCounter>>) -> Conf
         read_wait: Duration::from_secs(2),
         sys_read_lease: Duration::ZERO,
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
+        sign_ups_per_minute: calimero_node::api::SIGN_UPS_PER_MINUTE,
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,

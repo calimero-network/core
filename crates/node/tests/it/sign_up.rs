@@ -444,14 +444,18 @@ async fn each_added_passkey_gets_a_user_handle_of_its_own() {
     assert_eq!(a["name"], format!("{} · alice · {tag}", c.name), "{first}");
 }
 
-/// A node creates a burst of accounts at once, then paces them (`SIGN_UP_BURST`, 30, then
-/// `SIGN_UPS_PER_MINUTE`, one per 2 s): past that a sign-up is refused `429 RATE_LIMITED`
+/// A node creates a minute's accounts at once, then paces them (`SIGN_UPS_PER_MINUTE`, 30 at
+/// once, then one per 2 s): past that a sign-up is refused `429 RATE_LIMITED`
 /// before its ceremony and creates nothing, while another node of the cluster still takes
 /// one; once the wait has passed the node takes one again. Invited sign-ups count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_node_paces_the_accounts_it_creates() {
-    const BURST: usize = 30;
-    let c = Cluster::start(3).await;
+    const BURST: usize = calimero_node::api::SIGN_UPS_PER_MINUTE as usize;
+    // The harness lifts the pace for other tests; this one runs on the default.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.sign_ups_per_minute = calimero_node::api::SIGN_UPS_PER_MINUTE;
+    })
+    .await;
     let ops = ops(&c).await;
     // Every sign-up on node 0 redeems this invite, so the ones counted are invited.
     let _invite = operator_invite(&ops, "inv_many_sign_ups", 2 * BURST as u32).await;
