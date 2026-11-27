@@ -12590,7 +12590,7 @@
             }
           },
           "429": {
-            "description": "`QUOTA_EXCEEDED`",
+            "description": "`QUOTA_EXCEEDED`; `TOO_MANY_COMPILES`",
             "content": {
               "application/json": {
                 "schema": {
@@ -12599,7 +12599,8 @@
               }
             },
             "x-calimero-codes": [
-              "QUOTA_EXCEEDED"
+              "QUOTA_EXCEEDED",
+              "TOO_MANY_COMPILES"
             ]
           },
           "503": {
@@ -18170,6 +18171,19 @@
               }
             }
           },
+          "429": {
+            "description": "`TOO_MANY_COMPILES`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_COMPILES"
+            ]
+          },
           "503": {
             "description": "`BUSY`",
             "content": {
@@ -18371,6 +18385,19 @@
                 "$ref": "#/components/schemas/ServiceRefused"
               }
             }
+          },
+          "429": {
+            "description": "`TOO_MANY_COMPILES`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_COMPILES"
+            ]
           },
           "503": {
             "description": "`BUSY`",
@@ -26293,6 +26320,19 @@
               }
             }
           },
+          "429": {
+            "description": "`TOO_MANY_COMPILES`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_COMPILES"
+            ]
+          },
           "503": {
             "description": "`BUSY`",
             "content": {
@@ -26534,6 +26574,19 @@
                 "$ref": "#/components/schemas/ServiceRefused"
               }
             }
+          },
+          "429": {
+            "description": "`TOO_MANY_COMPILES`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_COMPILES"
+            ]
           },
           "503": {
             "description": "`BUSY`",

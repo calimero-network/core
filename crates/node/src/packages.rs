@@ -471,7 +471,7 @@ impl Node {
                 })?;
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
                 let (prepared, job) = self
-                    .compile(Engine::Compute, &job_hash, job)
+                    .compile(Engine::Compute, actor, &job_hash, job)
                     .await
                     .map_err(|e| compile_refusal(e, &service, true))?;
                 if !prepared
@@ -501,14 +501,14 @@ impl Node {
                 return Err(of_service(ApiError::unsupported_bundle(), &service, false));
             }
             let (main, bytes) = self
-                .compile(Engine::App, &hash, bytes)
+                .compile(Engine::App, actor, &hash, bytes)
                 .await
                 .map_err(|e| compile_refusal(e, &service, false))?;
             let mut job_caps = None;
             if let Some(job) = job {
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
                 let (prepared, job) = self
-                    .compile(Engine::Compute, &job_hash, job)
+                    .compile(Engine::Compute, actor, &job_hash, job)
                     .await
                     .map_err(|e| compile_refusal(e, &service, true))?;
                 compute_abi_agrees(&main.abi, &prepared.abi).map_err(|why| {

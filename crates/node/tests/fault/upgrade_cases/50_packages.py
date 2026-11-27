@@ -700,3 +700,7 @@ not_covered("Packages", "A release's frontend digests (`GET /packages/{package}/
             "the suite's packages carry no frontend, so the route answers 404 for every release they install; it reads the "
             "installed `.mpk` and stores nothing, and the cluster test "
             "`a_releases_frontend_digests_match_the_files_it_serves` checks each digest against the bytes served")
+
+not_covered("Packages", "One compile running or waiting per account at install and raw bundle upload (`429 TOO_MANY_COMPILES`)",
+            "a node-local admission limit that stores nothing and logs nothing, so a roll carries no data of it to read "
+            "back; `tests/it/slow_compile.rs`'s `one_account_filling_the_compile_queue_leaves_room_for_another` covers it")
