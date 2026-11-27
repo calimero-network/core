@@ -1667,7 +1667,7 @@ export interface paths {
         put?: never;
         /**
          * Start a sign-in
-         * @description A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+         * @description A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
          *
          *     **Who:** anyone.
          */
@@ -1731,7 +1731,7 @@ export interface paths {
         put?: never;
         /**
          * Finish a sign-up
-         * @description The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+         * @description The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
          *
          *     **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -1937,7 +1937,7 @@ export interface paths {
         put?: never;
         /**
          * Refresh a session
-         * @description A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+         * @description A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
          *
          *     **Who:** anyone.
          */
@@ -13289,6 +13289,7 @@ export interface operations {
             content: {
                 "application/json": {
                     origin?: string;
+                    holderKey?: string;
                 };
             };
         };
@@ -13300,6 +13301,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PasskeyChallenge"];
+                };
+            };
+            /** @description `BAD_HOLDER_KEY` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
@@ -13436,6 +13455,7 @@ export interface operations {
                     registration: components["schemas"]["Registration"];
                     invite?: string;
                     confirm?: components["schemas"]["Confirm"];
+                    holderKey?: string;
                 };
             };
         };
@@ -13449,7 +13469,7 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
-            /** @description `BAD_REGISTRATION`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
+            /** @description `BAD_HOLDER_KEY`; `BAD_REGISTRATION`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13469,6 +13489,15 @@ export interface operations {
             };
             /** @description `ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED`; `SIGN_UP_REFUSED` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14144,6 +14173,11 @@ export interface operations {
             content: {
                 "application/json": {
                     refreshToken: string;
+                    holderProof?: {
+                        /** Format: int64 */
+                        at: number;
+                        signature: string;
+                    };
                 };
             };
         };
@@ -14157,7 +14191,7 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
-            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            /** @description `BAD_HOLDER_PROOF`; `HOLDER_PROOF_REQUIRED`; `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
             401: {
                 headers: {
                     [name: string]: unknown;

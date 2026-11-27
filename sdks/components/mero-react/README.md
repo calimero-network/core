@@ -97,6 +97,7 @@ For local development against `merod local` (three `--dev` nodes with mock attes
 | `zone`, `directory` | `string` | With `cluster`: the zone whose nodes are tried first, and another node directory than mero-js `DEFAULT_DIRECTORY`. |
 | `appId` | `string` | The app instance that hooks default to. |
 | `sessionStore` | `SessionStore` | Where the session is kept. The default is `localStorageSessionStore`; `memorySessionStore()` keeps it for the tab's lifetime only. |
+| `holder` | `SessionHolder \| null` | The device key sessions are bound to. The default is mero-js `browserSessionHolder()`: a non-extractable WebCrypto key kept in IndexedDB, whose proof every refresh carries. `null` binds nothing. |
 | `passkey` | `PasskeyProvider` | The WebAuthn prompt. The default is mero-js `browserPasskey()`. |
 | `fetch`, `retry` | | Passed through to `CalimeroClient`. |
 | `client` | `CalimeroClient` | Use this client instead of building one, for tests or custom setups. |
@@ -124,7 +125,7 @@ const {
 } = useMero();
 ```
 
-**Sessions.** A 1.0 session is a session token (`v2.…`) that lasts 15 minutes, plus a refresh token (`rt_…`) that lasts 30 days and can be used once.
+**Sessions.** A 1.0 session is a session token (`v2.…`) that lasts 15 minutes, plus a refresh token (`rt_…`) that can be used once. The provider binds the session to this browser's holder key (`holder`): the refresh token is then used only with that key's signature, so a copy taken off the device (from `localStorage`, say) refreshes nothing, and it lasts 7 days. Without a holder key (`holder: null`, or a cluster older than 1.0.0-rc.39) it lasts 30 days and is a bearer credential.
 
 - The client refreshes by itself on a `401`. One refresh is shared by every request waiting on it, because reusing a refresh token revokes the session. When the node that issued the session is gone, the refresh goes to another node of the cluster (mero-js#318).
 - The provider saves every new session to `sessionStore`, so a reload resumes the session.

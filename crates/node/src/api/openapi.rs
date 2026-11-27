@@ -2352,16 +2352,16 @@ fn operations() -> Vec<Op> {
             .ok("#PasskeyChallenge")
             .errors(&[(403, "SIGN_UP_REFUSED"), (429, "RATE_LIMITED")]),
         post("/auth/passkey/register/finish", "register_finish", Anyone, "Finish a sign-up")
-            .about("The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.")
-            .json::<super::RegisterFinish>("{ challengeId: string, registration: #Registration, invite?: string, confirm?: #Confirm }")
+            .about("The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.")
+            .json::<super::RegisterFinish>("{ challengeId: string, registration: #Registration, invite?: string, confirm?: #Confirm, holderKey?: string }")
             .ok("#Session")
             .step_up_uv_preferred()
-            .errors(&[(400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_UP_REFUSED"), (421, "WRONG_NODE")]),
+            .errors(&[(400, "BAD_HOLDER_KEY"), (400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_UP_REFUSED"), (409, "FEATURE_NOT_ACTIVE"), (421, "WRONG_NODE")]),
         post("/auth/passkey/login/begin", "login_begin", Anyone, "Start a sign-in")
-            .about("A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
-            .opt_json::<super::LoginBegin>("{ origin?: string }")
+            .about("A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
+            .opt_json::<super::LoginBegin>("{ origin?: string, holderKey?: string }")
             .ok("#PasskeyChallenge")
-            .errors(&[(429, "RATE_LIMITED")]),
+            .errors(&[(400, "BAD_HOLDER_KEY"), (409, "FEATURE_NOT_ACTIVE"), (429, "RATE_LIMITED")]),
         post("/auth/passkey/login/finish", "login_finish", Anyone, "Finish a sign-in")
             .json::<super::AssertionBody>("{ challengeId: string, assertion: #Assertion }")
             .ok("#Session")
@@ -2424,10 +2424,10 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "WRONG_CHALLENGE"), (401, "UNAUTHENTICATED"), (409, "RECOVERY_NOT_READY"), (421, "WRONG_NODE")]),
         post("/auth/refresh", "refresh", Anyone, "Refresh a session")
-            .about("A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.")
-            .json::<super::RefreshBody>("{ refreshToken: string }")
+            .about("A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `\"calimero.refresh-holder.v1\\0\" ‖ b64url(SHA-256(refreshToken)) ‖ \"\\0\" ‖ at ‖ \"\\0\"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.")
+            .json::<super::RefreshBody>("{ refreshToken: string, holderProof?: { at: uint, signature: string } }")
             .ok("#Session")
-            .errors(&[(401, "UNAUTHENTICATED"), (421, "WRONG_NODE"), (503, "UNAVAILABLE")]),
+            .errors(&[(401, "BAD_HOLDER_PROOF"), (401, "HOLDER_PROOF_REQUIRED"), (401, "UNAUTHENTICATED"), (421, "WRONG_NODE"), (503, "UNAVAILABLE")]),
         post("/auth/logout", "logout", Session, "End this session").ok("{}"),
         post("/auth/logout-all", "logout_all", AccountHolder, "End every session of the account")
             .about("`revoked`: how many sessions ended.")

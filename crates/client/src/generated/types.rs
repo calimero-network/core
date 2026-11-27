@@ -7480,6 +7480,12 @@ pub struct ApikeyCreateRequest {
     pub then: Option<Vec<ApikeyCreateRequestThenItem>>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RefreshRequestHolderProof {
+    pub at: u64,
+    pub signature: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConsentPageCreateRequestReleaseScopeAccount {
     #[serde(rename = "account")]

@@ -10735,7 +10735,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Start a sign-in",
-        "description": "A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.\n\n**Who:** anyone.",
+        "description": "A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -10747,6 +10747,9 @@
                 "type": "object",
                 "properties": {
                   "origin": {
+                    "type": "string"
+                  },
+                  "holderKey": {
                     "type": "string"
                   }
                 }
@@ -10763,6 +10766,37 @@
                 "schema": {
                   "$ref": "#/components/schemas/PasskeyChallenge"
                 }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_HOLDER_KEY`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_HOLDER_KEY"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
               }
             }
           },
@@ -10965,7 +10999,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Finish a sign-up",
-        "description": "The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.\n\n**Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.\n\n**Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -10989,6 +11023,9 @@
                   },
                   "confirm": {
                     "$ref": "#/components/schemas/Confirm"
+                  },
+                  "holderKey": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -11011,7 +11048,7 @@
             }
           },
           "400": {
-            "description": "`BAD_REGISTRATION`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
+            "description": "`BAD_HOLDER_KEY`; `BAD_REGISTRATION`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11020,6 +11057,7 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_HOLDER_KEY",
               "BAD_REGISTRATION",
               "EXPIRED_CHALLENGE",
               "UNKNOWN_CHALLENGE",
@@ -11053,6 +11091,24 @@
               "SIGN_COUNT_REPLAYED",
               "SIGN_UP_REFUSED"
             ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "412": {
             "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
@@ -12167,7 +12223,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Refresh a session",
-        "description": "A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.\n\n**Who:** anyone.",
+        "description": "A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `\"calimero.refresh-holder.v1\\0\" ‖ b64url(SHA-256(refreshToken)) ‖ \"\\0\" ‖ at ‖ \"\\0\"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -12180,6 +12236,23 @@
                 "properties": {
                   "refreshToken": {
                     "type": "string"
+                  },
+                  "holderProof": {
+                    "type": "object",
+                    "properties": {
+                      "at": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "signature": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "at",
+                      "signature"
+                    ]
                   }
                 },
                 "required": [
@@ -12201,7 +12274,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "description": "`BAD_HOLDER_PROOF`; `HOLDER_PROOF_REQUIRED`; `UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12210,6 +12283,8 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_HOLDER_PROOF",
+              "HOLDER_PROOF_REQUIRED",
               "UNAUTHENTICATED"
             ]
           },

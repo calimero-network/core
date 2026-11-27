@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description = "The Calimero pipeline YAML language: compiled to canonical JSON, checked against a cluster and bounded by worst-case fuel and cost"
 publish = true
 
 [dependencies]

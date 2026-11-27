@@ -155,6 +155,40 @@ already used — makes requests fail with [`LoginRequired`](/clients/mero-js/ref
 Keep `client.session` after requests, not only after `signIn`: an automatic
 refresh replaces it, and the refresh token you stored before is then spent.
 
+### Bind the session to the device
+
+A refresh token is a bearer credential: a script on the page that copies it (a
+compromised dependency, a cross-site-scripting bug) could refresh the session
+from anywhere. Give the client a holder key and it cannot:
+
+```ts
+import { browserSessionHolder, CalimeroClient } from '@calimero-network/mero-js';
+
+const client = new CalimeroClient({ baseUrl, policy, holder: browserSessionHolder() });
+await client.signIn(passkey); // the session is bound to this browser's key
+```
+
+`browserSessionHolder()` makes a P-256 key with WebCrypto as
+**non-extractable** and keeps the `CryptoKey` itself in IndexedDB, so its
+private half never exists as bytes a script could send away, and a reload keeps
+it. A sign-in (or the first `signUp` finish) names its public key
+(`holderKey`); the passkey signs that binding with the session. Every refresh
+then carries a proof, the key's signature over the token's hash and the time
+(`holderProof`), which the node checks before it spends anything: a token
+without one is refused `401 HOLDER_PROOF_REQUIRED`, so a copy taken off the
+device refreshes nothing. A bound refresh token lives **7 days** rather than
+30, and an exchange carries the binding to the next token.
+
+A script running on the page can still use the session while it runs there,
+and copy the session token, which lives 15 minutes; see
+[What is not protected yet](/protocol/security-model/#what-is-not-protected-yet).
+A cluster whose nodes do not all take a holder key yet answers `409
+FEATURE_NOT_ACTIVE` to the sign-in, and the client signs in unbound, as without
+one. `forgetSessionHolder()` deletes the key, so the next sign-in binds a new
+one. [mero-react](https://www.npmjs.com/package/@calimero-network/mero-react)'s
+`MeroProvider` binds every session to `browserSessionHolder()` unless given
+`holder: null`.
+
 ```ts
 await client.signOut();           // this session
 await client.signOutEverywhere(); // every session of the account, on every device

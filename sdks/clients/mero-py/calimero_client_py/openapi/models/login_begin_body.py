@@ -17,19 +17,25 @@ class LoginBeginBody:
     """
     Attributes:
         origin (Union[Unset, str]):
+        holder_key (Union[Unset, str]):
     """
 
     origin: Union[Unset, str] = UNSET
+    holder_key: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         origin = self.origin
+
+        holder_key = self.holder_key
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
         if origin is not UNSET:
             field_dict["origin"] = origin
+        if holder_key is not UNSET:
+            field_dict["holderKey"] = holder_key
 
         return field_dict
 
@@ -38,8 +44,11 @@ class LoginBeginBody:
         d = dict(src_dict)
         origin = d.pop("origin", UNSET)
 
+        holder_key = d.pop("holderKey", UNSET)
+
         login_begin_body = cls(
             origin=origin,
+            holder_key=holder_key,
         )
 
         login_begin_body.additional_properties = d

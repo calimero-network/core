@@ -18,7 +18,7 @@ any credential.
 
 | Who | Credential | Lifetime |
 | --- | --- | --- |
-| A person | A WebAuthn passkey, which opens a session | session 15 minutes, refresh token 30 days |
+| A person | A WebAuthn passkey, which opens a session | session 15 minutes, refresh token 30 days (7, bound to a browser's holder key) |
 | A service | An API key, `cal_…` | `ttlSecs`, at most and by default 365 days |
 | The operator | The ops token | until the configuration changes |
 
@@ -187,7 +187,9 @@ refreshToken }`.
   new session and the refresh token to use next: the same one while it is
   younger than an hour (nothing is written to the system log), a new one
   after. Presenting a refresh token again after it was exchanged is recorded
-  and ends the session.
+  and ends the session. A browser binds its session to a non-extractable
+  holder key: that token lives 7 days and refreshes only with the key's
+  `holderProof` ([Sessions](/protocol/identities/#sessions)).
 - **Signing keys.** Each node signs with its receipt key, made on its first
   start and kept in its data directory wrapped under K_r: a restart or a
   rolling upgrade of the binary keeps the sessions it issued, and they verify

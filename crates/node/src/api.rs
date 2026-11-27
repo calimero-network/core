@@ -53,7 +53,6 @@ use crate::types::{
 };
 
 const SESSION_TTL: u64 = 15 * 60;
-const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 
 /// How long a refresh token is kept by the refreshes that present it
 /// (`Config::refresh_rotate_after`): younger, a refresh mints a session on the
@@ -1241,14 +1240,21 @@ pub struct NewSession {
     refresh: String,
     session: String,
     expires_at: u64,
+    /// The holder key the client asked to bind the session to
+    /// ([`RefreshRecord::holder`]). Absent from a pending ceremony an earlier release made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    holder: Option<String>,
 }
 
 impl NewSession {
-    fn new() -> Self {
+    /// A session bound to `holder` when one is given ([`RefreshRecord::holder`]), whose
+    /// refresh token then lives [`crate::types::HOLDER_REFRESH_TTL_SECS`].
+    fn new(holder: Option<String>) -> Self {
         Self {
             refresh: format!("rt_{}", b64url(&random::<32>())),
             session: b64url(&random::<16>()),
-            expires_at: now_secs() + REFRESH_TTL,
+            expires_at: now_secs() + crate::types::refresh_ttl(holder.is_some()),
+            holder,
         }
     }
 
@@ -1274,6 +1280,7 @@ impl NewSession {
             // Stated nowhere a passkey signs: each entry sets it
             // (`CreateRefresh`'s record, `CreateAccount::at`).
             opened_at: 0,
+            holder: self.holder.clone(),
         }
     }
 
@@ -1554,7 +1561,7 @@ const fn manifest() -> calimero_primitives::outbound::OutboundSelection {
 
 /// What the node knows of each account's use, from its live sessions: how
 /// many it holds and when the latest was last exchanged
-/// (`expires_at - REFRESH_TTL`), by account. One pass over the refresh
+/// ([`RefreshRecord::issued_at`]), by account. One pass over the refresh
 /// records, each session counted once.
 fn session_use(s: &SystemState, now: u64) -> BTreeMap<&str, (usize, u64)> {
     let mut seen: BTreeMap<&str, (&str, u64)> = BTreeMap::new();
@@ -1562,7 +1569,7 @@ fn session_use(s: &SystemState, now: u64) -> BTreeMap<&str, (usize, u64)> {
         if r.expires_at <= now || s.revoked_sessions.contains(&r.session) {
             continue;
         }
-        let at = r.expires_at.saturating_sub(REFRESH_TTL);
+        let at = r.issued_at();
         let _prev = seen
             .entry(r.session.as_str())
             .and_modify(|(_, t)| *t = (*t).max(at))
