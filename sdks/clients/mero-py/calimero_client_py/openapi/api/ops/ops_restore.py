@@ -98,9 +98,10 @@ def sync_detailed(
 ) -> Response[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
@@ -145,9 +146,10 @@ def sync(
 ) -> Optional[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
@@ -187,9 +189,10 @@ async def asyncio_detailed(
 ) -> Response[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
@@ -232,9 +235,10 @@ async def asyncio(
 ) -> Optional[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
