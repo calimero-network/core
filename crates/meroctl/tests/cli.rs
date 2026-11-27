@@ -637,6 +637,15 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     let key = s(&key["key"]);
+    // A copy of the passkey file from before that approval signs with a counter
+    // the cluster has seen: meroctl says so, not `UNKNOWN_CHALLENGE`.
+    let old = root.join("old-passkey.json");
+    let _ = std::fs::copy(pk, &old).unwrap();
+    let _ = alice.run(&["account", "api-key", "create", "--dev-passkey", pk]);
+    let refused = alice
+        .try_run(&["account", "api-key", "create", "--dev-passkey", path(&old)])
+        .unwrap_err();
+    assert!(refused.contains("403 SIGN_COUNT_REPLAYED"), "{refused}");
     let service = Meroctl {
         home: root.join("service"),
     };
