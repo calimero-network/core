@@ -422,7 +422,7 @@ pub struct PipelineRun {
     /// Per-step limits a retry raised; each replaces the same field of the pipeline's own.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub limits: BTreeMap<String, Limits>,
-    /// The hash of the idempotency key that started it ([`rows::CPKEY`]).
+    /// The hash of the idempotency key that started it (`rows::CPKEY`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
 }
