@@ -1,0 +1,213 @@
+# Design: system-group tenant sharding (O5)
+
+Status: **design + seam** (draft). This note specifies how the single
+control-plane group splits by tenant, and ships alongside the first code seam
+(`crates/node/src/system/shard.rs`). It changes no behaviour on its own; the
+migration it describes is a hard, versioned change that lands behind a feature
+gate and a declared cutover.
+
+This is the O5 item of the performance design. Read it with the system-group
+chapter (`docs/src/content/docs/protocol/system-group.mdx`) and the upgrades
+chapter (`docs/src/content/docs/protocol/upgrades.mdx`); the terms here are
+theirs.
+
+## The problem
+
+The control plane is a single Raft group of exactly three voters
+(`SYSTEM_GROUP` = group 1, `membership::SYSTEM_VOTERS`), an `IN_MEMORY` machine
+checkpointed through snapshots. It holds every area of control-plane state (11
+`Area`s, `SystemCmd::area`) and, until the read-index lease (O2), is also on the
+data-plane hot path: every credentialed or gated request reads it through a
+read-index round (`Node::sys_fresh`).
+
+Two pressures converge on that one group at fleet scale (hundreds to thousands
+of nodes):
+
+1. **Access reads** — one read-index round per credentialed request. O2
+   (`Config::sys_read_lease`) takes these off the group with a bounded-freshness
+   lease, which is the first and cheapest step of this ladder and is already
+   landed separately.
+2. **Control-plane writes** — sign-ups, sessions and refreshes, app and
+   organization creation, approvals. These are real log appends on one leader,
+   and one three-voter group's append rate is the ceiling. No lease helps a
+   write; the only way past it is to **shard the writes**.
+
+This note is about (2).
+
+## Why shard by tenant, not by area
+
+The state is already a clean partition into 11 areas (`SystemCmd::area`), so
+splitting the log along area boundaries (one group per area, or a few groups of
+grouped areas) looks natural. It is the wrong seam.
+
+A single `CreateApp` is not confined to the `Apps` area. It reads:
+
+- the **fleet** quota (`state.quotas.max_apps_per_account`, `Area::Fleet`),
+- the caller's **organization** membership (`Area::Orgs`), and
+- the **release** it instantiates (`Area::Packages`).
+
+Cutting between areas shears this one command across three groups, turning a
+single-group write into a distributed transaction. Many control-plane writes are
+coupled this way: the hot, coupled core is *a tenant's* apps, members and
+sessions reading *that tenant's* quotas and memberships.
+
+Sharding by **tenant** (organization) keeps the coupled core whole inside one
+shard and cuts only where the data is genuinely independent — one organization's
+control plane from another's. The cross-shard reads that remain are to
+**cluster-wide** state (the fleet quota, the package release), which changes
+rarely and can be read across shards or cached, not written transactionally.
+
+So the split is: a **root** group for cluster-wide state, and one **tenant
+shard** per organization for that organization's own state. Leaders then spread
+across nodes per tenant instead of funnelling through one.
+
+## Placement of the 11 areas
+
+`crates/node/src/system/shard.rs` encodes this as `area_placement(Area) ->
+Placement` (`Root`, `Tenant`, or `Scoped`), with `shard_for(area, scope)`
+resolving a specific command to a `ShardId`:
+
+| Area | Placement | Why |
+| --- | --- | --- |
+| `Fleet` | Root | Nodes, quotas, pools, genesis, the cluster version — cluster-wide. |
+| `Packages` | Root | Bundles, releases, publishers — shared by every tenant. |
+| `Compute` | Root | The compute queue and byte charges — a cluster resource. |
+| `SignUp` | Root | The sign-up policy and invites — a cluster policy. |
+| `Apps` | Tenant | An app instance belongs to one organization. |
+| `Orgs` | Tenant | An organization's members, teams and invites. |
+| `Accounts` | Tenant | Sessions, refreshes and API keys dominate the write rate and belong to the account's organization context (see below). |
+| `Recovery` | Tenant | Account and organization recovery, scoped to the organization. |
+| `Approvals` | Scoped | An org-scoped approval lives in that tenant's shard; a cluster-wide one in the root. |
+| `Deployments` | Scoped | A deployer grant within an org is tenant; the cluster owner and global policy are root. |
+| `Updates` | Scoped | An org's update policy is tenant; the cluster update policy is root. |
+
+`Accounts` is the subtle one. An account is a **cluster-wide identity**, but the
+write-heavy part — sessions, refreshes, API keys — is most of the control
+plane's write rate, and each belongs to the account's organization context, so
+the area places as `Tenant`. The identity records a tenant needs (does this
+account exist; is this passkey registered) are read across shards or cached, the
+same cross-shard read `CreateApp` already needs for the fleet quota and the
+release. This coupling, not the area boundary, is the whole argument for tenant
+sharding.
+
+### Step D: sessions
+
+Sessions are the largest single write source, and a login that must append to a
+global log is exactly the bottleneck tenant sharding removes. Two complementary
+moves, both compatible with O2:
+
+- **Fold session and refresh writes into the tenant shard** so a login writes
+  only to one organization's group, not a global one.
+- **Make revocation a leased check** (O2's model): a session is judged against
+  the tenant shard's state within a freshness bound, so a login needs no global
+  round. The revocation-latency bound is the same governance trade O2 documents.
+
+## Cross-shard invariants
+
+The migration is only sound if these hold across the root/tenant split. They are
+the acceptance criteria for the real implementation:
+
+1. **A tenant read of root state is at least as fresh as the rule requires.** The
+   fleet quota and a release are read from the root group (or a cached copy with
+   a bounded staleness that governance accepts), never a stale tenant-local
+   guess. This reuses O2's read-index machinery per group.
+2. **A command that writes one shard and depends on another's state judges that
+   dependency at a read index**, so two nodes applying the same tenant log reach
+   the same decision — the determinism rule (`crates/node/CLAUDE.md`, "Apply
+   reads only the log") must still hold **within** each shard's log.
+3. **Identity is global, authority is per tenant.** An account exists
+   cluster-wide (root or a replicated index); whether it may act in an
+   organization is the tenant shard's state. Authority is still judged twice
+   (API before the ceremony, `apply` on every replica), now in the owning shard.
+4. **Cross-tenant operations have a home.** Moving an app between organizations,
+   or a cluster-wide approval, is a root-group operation or a two-phase operation
+   the root coordinates; it never writes two tenant logs without a coordinator.
+
+## Membership and placement
+
+Each tenant shard is its own Raft group: three voters grown across failure zones
+exactly as the system group does today (`grow_voters`, `membership::SYSTEM_VOTERS`).
+The root group stays three voters. Placement of a tenant shard's voters reuses
+the app-placement machinery (`placement.rs`) so a tenant's leader need not sit on
+the same node as another's — the point of the exercise. O1 (the confirm window
+off the heartbeat batch) and O3 (initial-leader spread) already make many small
+groups affordable, which is what a shard-per-tenant fleet is.
+
+## The migration: a hard, versioned cutover
+
+Splitting the system log is a stored/replicated shape change, so it follows the
+compatibility rules exactly (`docs/src/content/docs/operate/compatibility.mdx`,
+`docs/src/content/docs/protocol/upgrades.mdx`):
+
+- **Feature gate.** The new log shapes (a tenant-shard entry, a root/tenant
+  routing record) are each a `Feature` in `system::cluster_version::FEATURES`
+  with the release they ship in, refused `409 FEATURE_NOT_ACTIVE` below the
+  cluster version. Old and new nodes share the single log through the rollout
+  until the cluster version rises.
+- **Declared cutover.** The point where the single group stops taking tenant
+  writes and the shards take over is a one-way door: a `[[cutover]]` entry in
+  `crates/node/api-deprecations.toml`, `!` in the release PR's title, and mdma's
+  `CUTOVERS` line. Before the cutover the shards are shadow-built and verified;
+  after it, the single group holds only root state.
+- **Format versions.** A new entry shape raises `ENTRY_FORMAT`; the system
+  group's snapshot gains the routing record, raising `SNAPSHOT_FORMAT`, with a
+  reader for the old (single-group) shape and a test that reads it.
+- **Upgrade-path case.** A cluster on the pinned release
+  (`.github/upgrade-from`) with data written to the single group rolls onto a
+  build that shards, and reads every tenant's state back — a new case in
+  `crates/node/tests/fault/upgrade_cases/`, and a `DeepCase` for the
+  user-visible multi-tenant behaviour.
+
+The migration itself: a one-time split that reads the single system state and
+writes each organization's slice into its new tenant group, leaving cluster-wide
+state in the root group, coordinated by the root leader while the cluster version
+holds the feature inactive for writers. The shards are built and digest-checked
+against the source before the cutover makes them authoritative.
+
+## The ladder (and where each step sits)
+
+| Step | What | Scales with | Status |
+| --- | --- | --- | --- |
+| A | Leased authz: access served locally within a freshness bound (= O2) | removes read pressure entirely | **landed** (`Config::sys_read_lease`) |
+| B | Shard by area | — | **not recommended**: the seam shears coupled commands (above) |
+| C | Shard by tenant + root group | control-plane **write** rate | **this design** |
+| D | Fold session writes into the tenant shard / leased revocation | login rate | folded into C |
+
+Do A first (done). Do C when the control-plane **write** rate — mostly sessions
+and app/org creation — outgrows one three-voter group, folding in D. Treat B as
+an interim only; it does not scale with tenants.
+
+## What is in code today
+
+`crates/node/src/system/shard.rs` is the placement seam and nothing more:
+
+- `ShardId` (`Root` | `Tenant(OrgId)`), `Scope` (`Cluster` | `Org`), `Placement`.
+- `area_placement(Area)` and `shard_for(area, scope)` — the table above, tested.
+- `resolve(&ShardId) -> GroupId` returns the single `SYSTEM_GROUP` for every
+  shard, so **routing is unchanged**. The migration gives each tenant shard its
+  own group id here and wires `resolve` into the system router
+  (`crates/node/src/system/routing.rs`) and `Node`'s read/write paths.
+
+Having the placement decision in one typed, tested place lets the rest of the
+node be written and reviewed against shards before any state is actually split.
+
+## Open questions / risks
+
+- **Root read freshness vs. a tenant write's latency.** Reading the fleet quota
+  from the root group on every `CreateApp` reintroduces a cross-group round;
+  caching it needs a staleness bound the quota semantics accept. Quantify before
+  committing to synchronous root reads.
+- **Account identity placement.** Whether the account-existence index lives in
+  the root group or is replicated per tenant changes the sign-in path; both
+  satisfy invariant 3 but with different latency.
+- **Rebalancing.** Organizations are created and deleted continuously; a
+  tenant-shard-per-org fleet needs the placement and move machinery to retire and
+  relocate shards, not only create them.
+- **Blast radius of the cutover.** The split touches the most central log in the
+  system. The shadow-build-and-verify step, the digest check against the source,
+  and the upgrade-path case are the safety net, and must come before any node
+  treats a shard as authoritative.
+
+This is the highest-risk item in the performance design and the last
+non-sharding ceiling; it is deliberately design-led, and this note plus the seam
+are its starting point, not a landable migration.
