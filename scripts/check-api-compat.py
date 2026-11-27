@@ -12,7 +12,9 @@ origin/master) and fails on:
   them) that no longer appears anywhere in it;
 - **the WIT changed without its version**: `crates/app-wit/wit/calimero-app.wit` changed
   while `package calimero:app@X.Y.Z` did not move; an additive change needs at least a
-  patch bump, a removed or changed line a minor bump and a declared cutover;
+  patch bump, a removed or changed line a minor bump and a declared cutover; going back
+  to the WIT of the release this tree is versioned at (its tag) passes, since what the
+  base added since then shipped in no release;
 - **an ABI version dropped**: `SUPPORTED_ABI_VERSIONS` (`crates/app-host/src/abi.rs`)
   losing a version, or not holding the SDK's `ABI_VERSION` (`crates/sdk-macros/src/logic.rs`).
 
@@ -346,7 +348,7 @@ def workspace_version(tree: Tree) -> str:
     return str(doc.get("workspace", {}).get("metadata", {}).get("workspaces", {}).get("version", ""))
 
 
-def compare(base: Tree, head: Tree) -> list[str]:
+def compare(base: Tree, head: Tree, released: Tree | None = None) -> list[str]:
     head_entries = head.read(DEPRECATIONS)
     problems = check_entries(head_entries)
     deprecated, cutovers = load_entries(base.read(DEPRECATIONS), head_entries)
@@ -368,7 +370,12 @@ def compare(base: Tree, head: Tree) -> list[str]:
     if old_wit and new_wit:
         ov, nv = wit_version(old_wit), wit_version(new_wit)
         old_lines, new_lines = wit_lines(old_wit), wit_lines(new_wit)
-        if ov and nv and old_lines != new_lines:
+        # Back to the WIT of the release this tree is versioned at: what the base added
+        # since shipped in no release, so withdrawing it breaks no released component.
+        at_release = released is not None and (rw := released.read(WIT)) is not None and (
+            wit_version(rw) == nv and wit_lines(rw) == new_lines
+        )
+        if ov and nv and old_lines != new_lines and not at_release:
             removed = [line for line in old_lines if line not in new_lines]
             label = f"calimero:app@{'.'.join(map(str, nv))}"
             if nv <= ov:
@@ -400,6 +407,21 @@ def default_base() -> str:
         return "HEAD^1"
 
 
+def release_tree(version: str) -> Tree | None:
+    """The tree of release `version` (its tag), fetched when a shallow CI checkout lacks it."""
+    tag = f"refs/tags/{version}"
+
+    def present() -> bool:
+        verify = ["git", "rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}"]
+        return subprocess.run(verify, cwd=ROOT, capture_output=True).returncode == 0
+
+    if not present():
+        # A depth on a full clone would truncate its history, so only a shallow checkout gets one.
+        depth = ["--depth=1"] if git("rev-parse", "--is-shallow-repository").strip() == "true" else []
+        subprocess.run(["git", "fetch", "--quiet", "--no-tags", *depth, "origin", f"{tag}:{tag}"], cwd=ROOT, capture_output=True)
+    return Tree(tag) if present() else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--base", help="the revision this tree merges into (default: merge base with origin/master)")
@@ -416,7 +438,9 @@ def main() -> int:
         print(f"abi supported {sorted(supported)} sdk {sdk_abi}")
         return 0
     base = Tree(args.base or default_base())
-    problems = compare(base, head)
+    # The base names the release: a head that lowers its own version cannot choose an older one.
+    released = release_tree(workspace_version(base)) if base.read(WIT) != head.read(WIT) else None
+    problems = compare(base, head, released)
     for p in problems:
         print(f"::error::{p}" if "GITHUB_ACTIONS" in os.environ else p, file=sys.stderr)
     if not problems:

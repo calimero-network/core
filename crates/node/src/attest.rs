@@ -21,6 +21,87 @@ pub const MAX_QUEUED_QUOTES: usize = 8;
 /// How long a waiting request waits for the slot before `503 BUSY`.
 pub const QUOTE_WAIT: Duration = Duration::from_secs(3);
 
+/// How many requests of this cluster's own nodes ([`Lane::Peer`]) may make or
+/// wait for a quote, apart from the [`MAX_QUEUED_QUOTES`] anyone may fill.
+pub const MAX_QUEUED_PEER_QUOTES: usize = 8;
+
+/// How long a [`Lane::Peer`] request waits for the slot before `503 BUSY`:
+/// it waits for at most the quote running, one anonymous request and the
+/// peers ahead of it, so longer than [`QUOTE_WAIT`].
+pub const PEER_QUOTE_WAIT: Duration = Duration::from_secs(10);
+
+/// The header a node sends with its `GET /attestation` of a peer of its
+/// cluster: [`peer_attest_tag`] over the request's nonce. A request whose
+/// header the answering node computes alike takes [`Lane::Peer`]; any other,
+/// or none (a client, a node of an older release), takes [`Lane::Anyone`].
+pub const PEER_ATTEST_HEADER: &str = "x-calimero-peer-attest";
+
+/// [`PEER_ATTEST_HEADER`]'s value for `nonce`: a MAC under a key derived from
+/// K_c, so only a node of `cluster` makes it, bound to the nonce so a value
+/// seen once serves no other request.
+#[must_use]
+pub fn peer_attest_tag(cluster_key: &[u8; 32], cluster: &str, nonce: &[u8; 32]) -> String {
+    let key = crate::backup::tag(cluster_key, format!("calimero.attest-peer.v1|{cluster}"));
+    calimero_identity::b64url(&crate::backup::tag(&key, nonce))
+}
+
+/// Whether `headers` carry [`PEER_ATTEST_HEADER`] for `nonce` under `cluster_key`.
+#[must_use]
+pub fn is_peer_attest(
+    headers: &axum::http::HeaderMap,
+    cluster_key: &[u8; 32],
+    cluster: &str,
+    nonce: &[u8; 32],
+) -> bool {
+    headers
+        .get(PEER_ATTEST_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            crate::api::ct_eq(
+                v.as_bytes(),
+                peer_attest_tag(cluster_key, cluster, nonce).as_bytes(),
+            )
+        })
+}
+
+/// Attests a peer of this cluster as [`HttpAttestor`] does, sending
+/// [`PEER_ATTEST_HEADER`] so the peer queues the quote in [`Lane::Peer`].
+#[derive(Debug, Clone)]
+pub struct PeerAttestor {
+    pub attestor: HttpAttestor,
+    pub cluster_key: [u8; 32],
+    pub cluster: String,
+}
+
+impl calimero_sealed::client::Attest for PeerAttestor {
+    fn attest_transport_key<'a>(
+        &'a self,
+        http: &'a reqwest::Client,
+        api_url: &'a url::Url,
+    ) -> futures_util::future::BoxFuture<'a, eyre::Result<[u8; 32]>> {
+        Box::pin(self.attestor.attest_with(http, api_url, |req, nonce| {
+            req.header(
+                PEER_ATTEST_HEADER,
+                peer_attest_tag(&self.cluster_key, &self.cluster, nonce),
+            )
+        }))
+    }
+}
+
+/// Which requests a quote is queued with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    /// Anyone: a client opening a sealed channel, or a caller that sends no
+    /// proof. [`MAX_QUEUED_QUOTES`] places, [`QUOTE_WAIT`], and at most one
+    /// of them waits for the slot at a time.
+    Anyone,
+    /// A node of this cluster ([`PEER_ATTEST_HEADER`]), or this node itself:
+    /// places of its own, and the slot before every anonymous request but the
+    /// one already waiting, so requests nobody vouches for never keep the
+    /// cluster's nodes from attesting each other.
+    Peer,
+}
+
 /// Why a [`Quoter`] made no quote.
 #[derive(Debug, thiserror::Error)]
 pub enum QuoteError {
@@ -49,12 +130,19 @@ impl From<QuoteError> for ApiError {
 /// quote runs on the blocking pool once it holds the one running slot;
 /// [`MAX_QUEUED_QUOTES`] more requests wait for it, each at most
 /// [`QUOTE_WAIT`], and the rest are [`QuoteError::Busy`] at once. Mock quotes
-/// take the same path.
+/// take the same path. Requests of the cluster's own nodes ([`Lane::Peer`])
+/// have places of their own and pass the anonymous queue: an anonymous
+/// request first takes `next`, so only one of them waits for the slot at a
+/// time, and a peer, which waits for the slot alone, is behind at most it.
 #[derive(Debug)]
 pub struct Quoter {
     mode: Mode,
-    /// Requests that make or wait for a quote.
+    /// Anonymous requests that make or wait for a quote.
     admitted: Arc<Semaphore>,
+    /// Peer requests that make or wait for a quote.
+    peers: Arc<Semaphore>,
+    /// The one anonymous request that may wait for the slot.
+    next: Arc<Semaphore>,
     /// Quotes being made.
     running: Arc<Semaphore>,
     /// The node `testing::slow_quotes` names (feature `testing`).
@@ -68,6 +156,8 @@ impl Quoter {
         Self {
             mode,
             admitted: Arc::new(Semaphore::new(MAX_CONCURRENT_QUOTES + MAX_QUEUED_QUOTES)),
+            peers: Arc::new(Semaphore::new(MAX_QUEUED_PEER_QUOTES)),
+            next: Arc::new(Semaphore::new(1)),
             running: Arc::new(Semaphore::new(MAX_CONCURRENT_QUOTES)),
             #[cfg(feature = "testing")]
             public_url: None,
@@ -82,9 +172,14 @@ impl Quoter {
         self
     }
 
-    /// A quote over `report`.
+    /// A quote over `report`, queued with anyone's ([`Lane::Anyone`]).
     pub async fn quote(&self, report: [u8; 64]) -> Result<Vec<u8>, QuoteError> {
-        self.run(move |mode| quote(mode, report)).await
+        self.quote_in(Lane::Anyone, report).await
+    }
+
+    /// A quote over `report`, queued in `lane`.
+    pub async fn quote_in(&self, lane: Lane, report: [u8; 64]) -> Result<Vec<u8>, QuoteError> {
+        self.run_in(lane, move |mode| quote(mode, report)).await
     }
 
     /// Run `f`, which makes a quote, on the blocking pool once the slot is
@@ -93,12 +188,34 @@ impl Quoter {
         &self,
         f: impl FnOnce(Mode) -> eyre::Result<T> + Send + 'static,
     ) -> Result<T, QuoteError> {
-        let Ok(admitted) = Arc::clone(&self.admitted).try_acquire_owned() else {
+        self.run_in(Lane::Anyone, f).await
+    }
+
+    /// [`Quoter::run`], queued in `lane`.
+    pub async fn run_in<T: Send + 'static>(
+        &self,
+        lane: Lane,
+        f: impl FnOnce(Mode) -> eyre::Result<T> + Send + 'static,
+    ) -> Result<T, QuoteError> {
+        let (places, wait) = match lane {
+            Lane::Anyone => (&self.admitted, QUOTE_WAIT),
+            Lane::Peer => (&self.peers, PEER_QUOTE_WAIT),
+        };
+        let Ok(admitted) = Arc::clone(places).try_acquire_owned() else {
             return Err(QuoteError::Busy);
         };
-        let Ok(Ok(running)) =
-            tokio::time::timeout(QUOTE_WAIT, Arc::clone(&self.running).acquire_owned()).await
-        else {
+        let running = tokio::time::timeout(wait, async {
+            // The slot's semaphore is fair: whoever waits first gets it, so an
+            // anonymous request waits its turn for `next` first, and a peer
+            // finds at most one of them ahead.
+            let _next = match lane {
+                Lane::Anyone => Some(Arc::clone(&self.next).acquire_owned().await?),
+                Lane::Peer => None,
+            };
+            Arc::clone(&self.running).acquire_owned().await
+        })
+        .await;
+        let Ok(Ok(running)) = running else {
             return Err(QuoteError::Busy);
         };
         let mode = self.mode;
@@ -383,6 +500,71 @@ mod tests {
         }
         assert_eq!(most.load(Ordering::SeqCst), 1, "two quotes ran at once");
         assert_eq!(q.quote([0; 64]).await.unwrap().len(), 256);
+    }
+
+    /// Anonymous requests that fill their queue, each sent again as soon as it
+    /// is answered, neither refuse a peer's request nor keep it waiting for
+    /// more than the quote running and the one anonymous request waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_peer_passes_a_full_anonymous_queue() {
+        const QUOTE: Duration = Duration::from_millis(200);
+        let q = Arc::new(Quoter::new(Mode::Mock));
+        let (in_flight, most) = (Arc::<AtomicUsize>::default(), Arc::default());
+        let until = Instant::now() + Duration::from_secs(3);
+        let flood: Vec<_> = (0..2 * (MAX_CONCURRENT_QUOTES + MAX_QUEUED_QUOTES))
+            .map(|_| {
+                let (q, in_flight, most) =
+                    (Arc::clone(&q), Arc::clone(&in_flight), Arc::clone(&most));
+                tokio::spawn(async move {
+                    while Instant::now() < until {
+                        if q.run(blocking(&in_flight, &most, QUOTE)).await.is_err() {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    }
+                })
+            })
+            .collect();
+        while q.admitted.available_permits() > 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            matches!(q.quote([0; 64]).await, Err(QuoteError::Busy)),
+            "the anonymous queue was not full"
+        );
+        for _ in 0..3 {
+            let started = Instant::now();
+            q.run_in(Lane::Peer, blocking(&in_flight, &most, QUOTE))
+                .await
+                .expect("a peer's quote");
+            let took = started.elapsed();
+            assert!(took < 4 * QUOTE, "a peer waited {took:?}");
+        }
+        for f in flood {
+            f.await.unwrap();
+        }
+        assert_eq!(most.load(Ordering::SeqCst), 1, "two quotes ran at once");
+    }
+
+    /// A [`PEER_ATTEST_HEADER`] takes [`Lane::Peer`] only for the nonce, the
+    /// cluster and the key it was made for.
+    #[test]
+    fn the_peer_header_binds_its_nonce_cluster_and_key() {
+        let headers = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            let _prev = h.insert(PEER_ATTEST_HEADER, v.parse().unwrap());
+            h
+        };
+        let tag = peer_attest_tag(&[7; 32], "c", &[1; 32]);
+        assert!(is_peer_attest(&headers(&tag), &[7; 32], "c", &[1; 32]));
+        assert!(!is_peer_attest(&headers(&tag), &[7; 32], "c", &[2; 32]));
+        assert!(!is_peer_attest(&headers(&tag), &[7; 32], "d", &[1; 32]));
+        assert!(!is_peer_attest(&headers(&tag), &[8; 32], "c", &[1; 32]));
+        assert!(!is_peer_attest(
+            &axum::http::HeaderMap::new(),
+            &[7; 32],
+            "c",
+            &[1; 32]
+        ));
     }
 
     /// A request that waits [`QUOTE_WAIT`] without getting the slot is busy.

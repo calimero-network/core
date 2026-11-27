@@ -30,6 +30,7 @@ fn open(dir: &std::path::Path) -> eyre::Result<Arc<Engine>> {
         election_min_ms: 150,
         election_max_ms: 300,
         snapshot_every: 1000,
+        snapshot_scale_bytes: None,
     };
     Engine::open(1, dir, &KEY, Arc::new(Nowhere), config)
 }
