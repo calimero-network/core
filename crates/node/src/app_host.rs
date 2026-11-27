@@ -933,6 +933,27 @@ mod tests {
         }
     }
 
+    /// The mirrors here are copies of mero-js's: if the two drift, a page's
+    /// client fetches a mirror its `connect-src` refuses and never verifies
+    /// its node.
+    #[test]
+    fn the_mirrors_match_mero_js() {
+        let directory = include_str!("../../../sdks/clients/mero-js/src/runtime/directory.ts");
+        let release = include_str!("../../../sdks/clients/mero-js/src/sealed/release.ts");
+        for line in [
+            format!("cloudUrl: '{STAGING_ATTESTATION_MIRROR}'"),
+            format!("appsDomain: '{STAGING_APPS_DOMAIN}'"),
+            "cloudUrl: DEFAULT_RELEASE_MIRROR".to_owned(),
+        ] {
+            assert!(directory.contains(&line), "directory.ts lacks `{line}`");
+        }
+        let production = format!("export const DEFAULT_RELEASE_MIRROR = '{ATTESTATION_MIRROR}';");
+        assert!(
+            release.contains(&production),
+            "release.ts lacks `{production}`"
+        );
+    }
+
     #[test]
     fn files_client_routes_and_relative_tails_resolve_like_v1() {
         let f = site();

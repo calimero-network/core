@@ -3317,6 +3317,72 @@ async fn a_releases_frontend_digests_match_the_files_it_serves() {
     }
 }
 
+/// A page served under staging's apps domain names staging's attestation
+/// mirror in its `connect-src`: mero-js on that page fetches the release and
+/// Intel's collateral there, and with production's mirror in the policy the
+/// browser refused both, so no staging page got past checking its node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_on_staging_may_reach_stagings_attestation_mirror() {
+    const STAGING: &str = "apps.relay.staging.cloud.calimero.network";
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.apps_domain = Some(STAGING.into());
+        cfg.registry = Some(url.clone());
+    })
+    .await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let html: &[u8] = b"<!doctype html><html><body></body></html>";
+    registry.publish(
+        "com.test.site",
+        "0.1.0",
+        mpk_full(
+            "com.test.site",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            &[("frontend/index.html", html)],
+            None,
+        ),
+    );
+    let _ = alice
+        .packages()
+        .install("com.test.site", "0.1.0", None)
+        .await
+        .unwrap();
+
+    let label = calimero_node::app_host::label("com.test.site");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let host = format!("{label}.{STAGING}");
+    let web = reqwest::Client::builder()
+        .resolve(&host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let page = web
+        .get(format!("http://{host}:{port}/0.1.0/"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 200);
+    let csp = page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        csp.contains("https://staging.cloud.calimero.network"),
+        "staging's mirror is reachable: {csp}"
+    );
+    assert!(
+        !csp.contains("https://cloud.calimero.network"),
+        "production's mirror is not staging's: {csp}"
+    );
+}
+
 /// App frontends: each package's frontend on its own origin (and on its
 /// cluster's host for it, `cluster_label`), served from the
 /// release's verified `.mpk` under a strict CSP, with client routes and deep
