@@ -1112,9 +1112,7 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             undone_at: None,
         });
         if let (Some(l), Some(to)) = (app.lineage.as_mut(), release.as_ref()) {
-            if compare_versions(&to.version, &l.floor) == std::cmp::Ordering::Greater {
-                l.floor.clone_from(&to.version);
-            }
+            l.raise_floor(&to.version);
         }
         app.bundle = bundle;
         app.compute_bundle = compute_bundle;

@@ -3563,11 +3563,11 @@ impl SystemState {
                     .is_some_and(|p| p.signer_id == lineage.signer_id)
             })
             .ok_or(OUTSIDE_LINEAGE)?;
-        let semver = |v: &str| semver::Version::parse(v).ok();
-        let runs = app.release.as_ref().and_then(|r| semver(&r.version));
-        match (semver(&lineage.floor), semver(&to.version)) {
-            (Some(floor), Some(to)) if to >= floor && runs.is_none_or(|r| to >= r) => Ok(()),
-            _ => Err(LINEAGE_OLDER_RELEASE),
+        let runs = app.release.as_ref().map(|r| r.version.as_str());
+        if lineage.at_least(&to.version, runs) {
+            Ok(())
+        } else {
+            Err(LINEAGE_OLDER_RELEASE)
         }
     }
 

@@ -579,6 +579,33 @@ pub struct AppLineage {
     pub floor: String,
 }
 
+impl AppLineage {
+    /// Whether `version` is no older than the floor and than `runs`, the release the instance
+    /// runs, all read as semver. An empty floor is none beyond `runs`; with neither, or a
+    /// version that does not parse, nothing is.
+    #[must_use]
+    pub fn at_least(&self, version: &str, runs: Option<&str>) -> bool {
+        let parse = |v: &str| semver::Version::parse(v).ok();
+        let Some(to) = parse(version) else {
+            return false;
+        };
+        let floor = (!self.floor.is_empty()).then(|| parse(&self.floor));
+        let runs = runs.map(parse);
+        (floor.is_some() || runs.is_some())
+            && floor.is_none_or(|f| f.is_some_and(|f| to >= f))
+            && runs.is_none_or(|r| r.is_some_and(|r| to >= r))
+    }
+
+    /// Raise the floor to `version` when it is newer, or set it where there is none (or none
+    /// that parses).
+    pub fn raise_floor(&mut self, version: &str) {
+        let unreadable = semver::Version::parse(&self.floor).is_err();
+        if unreadable || self.at_least(version, None) && version != self.floor {
+            self.floor = version.to_owned();
+        }
+    }
+}
+
 /// The backup a restore takes an app's state from (`crate::backup`): the
 /// snapshot file's name, its SHA-256 and the app log's index it was taken at.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
