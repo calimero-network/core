@@ -443,6 +443,7 @@ impl Outcome {
                 method: x.method,
                 args,
                 on_behalf_of: None,
+                budget: None,
             });
         }
         let mut started = Vec::with_capacity(actions.len());
@@ -4139,6 +4140,7 @@ mod tests {
             method: "setFromApp".into(),
             args: json!({}),
             on_behalf_of: None,
+            budget: None,
         };
         let done = ComponentCmd::XcallDone {
             seq: 0,

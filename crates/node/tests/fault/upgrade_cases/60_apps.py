@@ -673,3 +673,10 @@ not_covered("Apps", "A view's arguments held to `MAX_ARGS_BYTES` (`413 ARGS_TOO_
             "it adds a refusal of a request, not a stored shape: a view logs nothing, and the API refuses before any "
             "node runs it, so there is no data to carry across releases. "
             "`oversized_view_args_are_refused_before_running` (`component_cluster.rs`) covers it on one build")
+
+not_covered("Apps", "An xcall chain ending at its budget (`MAX_XCALL_CHAIN`, `Feature::XcallBudget`): a message sent "
+            "with none left is dead-lettered",
+            "the chain needs `hop`, which the published kv fixture the old release seeds with does not have; what a "
+            "chain stores is an outbox row and a dead letter, whose old shapes (no budget) the `xcall` case reads "
+            "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` (`component_cluster.rs`) covers it on one "
+            "build")

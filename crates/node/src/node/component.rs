@@ -56,7 +56,9 @@ use self::files::{blobs_of, stored_of_blobs, Blob, NodeFiles, PendingBytes, Stor
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
-use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
+use crate::component::xcall::{
+    backoff_ms, share_budget, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS,
+};
 use crate::component::{
     utc_day, Applied, CallEntry, ComponentCmd, DayUsage, Outcome, SysDirectory, TickEntry,
     UsageBook,
@@ -963,6 +965,7 @@ impl Node {
         // Whom this run serves, for the apps it calls (each call runs as them only with
         // their grant, `Node::caller_for`): its own caller when that is a person.
         let forward = forwarded(&invocation.caller);
+        let incoming_budget = extras.xcall_budget;
         let via = extras.via.clone();
         let searches = extras.searches.clone().unwrap_or_default();
         let xcalls = extras.key.and_then(|key| {
@@ -1046,6 +1049,11 @@ impl Node {
                     for x in &mut outcome.xcalls {
                         x.on_behalf_of.clone_from(&forward);
                     }
+                }
+                // Likewise its budget, once every replica dead-letters a spent one alike
+                // (`Feature::XcallBudget` logged).
+                if self.shares_xcall_budget() {
+                    share_budget(incoming_budget, &mut outcome.xcalls);
                 }
                 Ran {
                     outcome,
@@ -1568,6 +1576,7 @@ impl Node {
                                 via: None,
                                 secrets,
                                 searches: None,
+                                xcall_budget: None,
                             },
                         );
                         let outcome = ran.outcome;
@@ -1803,6 +1812,7 @@ impl Node {
                                     via: req.via.clone(),
                                     secrets,
                                     searches: None,
+                                    xcall_budget: req.xcall.as_ref().and_then(|x| x.budget),
                                 },
                             );
                             ran_for = Some(started.elapsed());
@@ -2415,6 +2425,7 @@ impl Node {
                         via,
                         secrets: crate::component::InstanceSecrets::new(),
                         searches,
+                        xcall_budget: None,
                     },
                     search,
                 )
@@ -2833,6 +2844,7 @@ impl Node {
             xcall: Some(XcallFrom {
                 source: source.to_owned(),
                 seq: msg.seq,
+                budget: msg.budget,
             }),
             via,
             ..CallRequest::new(
@@ -3132,6 +3144,19 @@ impl Node {
         })
     }
 
+    /// Whether a run's xcalls carry their chain's budget (`share_budget`): from the logged
+    /// cluster version that brings `Feature::XcallBudget` on, so every replica dead-letters
+    /// a spent one alike.
+    fn shares_xcall_budget(&self) -> bool {
+        self.sys(|s| {
+            crate::system::cluster_version::check(
+                s.cluster_version.as_deref(),
+                &[crate::system::cluster_version::Feature::XcallBudget],
+            )
+            .is_ok()
+        })
+    }
+
     /// Whom `source`'s call of `method` on `target` runs as: `person` (and `via` = `source`)
     /// where they granted `source` that method of `target` (`SystemState::delegates`) and
     /// still reach `target`; else `source` itself, with no person named. A grant exists only
@@ -3219,6 +3244,9 @@ struct RunExtras {
     /// (its caller's), shared with the run and the views its own xcalls reach; `None` is a
     /// fresh request (`MAX_SEARCHES_PER_RUN`).
     searches: Option<calimero_app_host::SearchBudget>,
+    /// A delivered message's budget (`XcallFrom::budget`), which the run's xcalls share;
+    /// `None` starts a chain ([`share_budget`]).
+    xcall_budget: Option<u32>,
 }
 
 /// How long a call, timer or delivery waits for one outbound response: within the
@@ -3569,6 +3597,7 @@ mod tests {
                 method: "set".into(),
                 args: Value::Null,
                 on_behalf_of: None,
+                budget: None,
             }],
             ..Outcome::default()
         };
