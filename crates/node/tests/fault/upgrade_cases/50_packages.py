@@ -702,3 +702,7 @@ not_covered("Packages", "Served frontends and served origins (custom domains)",
             "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
             "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
             "`app_frontends_are_served_and_their_sessions_are_bound` covers serving")
+
+not_covered("Packages", "One compile running or waiting per account at install and raw bundle upload (`429 TOO_MANY_COMPILES`)",
+            "a node-local admission limit that stores nothing and logs nothing, so a roll carries no data of it to read "
+            "back; `tests/it/slow_compile.rs`'s `one_account_filling_the_compile_queue_leaves_room_for_another` covers it")

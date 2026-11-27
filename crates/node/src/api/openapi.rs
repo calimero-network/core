@@ -2483,13 +2483,13 @@ fn operations() -> Vec<Op> {
             .about("A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles` or `--dev`. A WASM core module (SDK 0.12) is refused `400 UNSUPPORTED_BUNDLE`.")
             .raw("application/wasm", "the component")
             .ok("#BundleStored")
-            .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "QUOTA_EXCEEDED"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "QUOTA_EXCEEDED"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         post("/packages", "package_upload", Installer, "Upload a signed release")
             .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.")
             .query::<super::UploadQuery>("{ org?: string }")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("#PackageList"),
@@ -2497,7 +2497,7 @@ fn operations() -> Vec<Op> {
             .about("For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).")
             .json::<super::AccountInstallBody>("{ package: string, version: string, org?: string }")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "ACCOUNT_NOT_LINKED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "ACCOUNT_NOT_LINKED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
             .ok("#Package")
@@ -3280,12 +3280,12 @@ fn operations() -> Vec<Op> {
         post("/ops/packages", "ops_package_upload", Ops, "Install an uploaded release as the operator")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         get("/ops/packages", "ops_package_list", Ops, "The releases the operator installed").ok("#PackageList"),
         post("/ops/packages/install", "ops_package_install", Ops, "Install a release from the registry as the operator")
             .json::<super::InstallBody>("{ package: string, version: string }")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         delete("/ops/packages/{package}", "ops_package_uninstall", Ops, "Uninstall what the operator installed").ok("#Uninstalled"),
         delete("/ops/packages/{package}/{version}", "ops_package_version_uninstall", Ops, "Uninstall one operator-installed version").ok("#Uninstalled"),
         get("/ops/quotas", "ops_quotas_get", Ops, "The quotas")
