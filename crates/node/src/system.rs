@@ -2225,7 +2225,15 @@ impl SystemState {
     /// binding decides whose approvals cover the key's packages.
     #[must_use]
     pub fn holds_approve_releases(&self, org: &str, account: &str) -> bool {
-        self.orgs.get(org).is_some_and(|o| {
+        self.holds_approve_releases_at(self.orgs.get(org), account)
+    }
+
+    /// [`Self::holds_approve_releases`] reading the organization from its own
+    /// shard (its tenant group when sharded), for the access gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn holds_approve_releases_at(&self, org: Option<&Org>, account: &str) -> bool {
+        org.is_some_and(|o| {
             o.role(account).is_some_and(|r| r >= OrgRole::Member)
                 && o.may(account, None, crate::types::caps::APPROVE_RELEASES)
         })
@@ -5118,6 +5126,16 @@ impl SystemState {
     #[must_use]
     pub fn approves_releases(&self, org: &str, account: &str) -> bool {
         self.governance().releases == Authority::Owner && self.holds_approve_releases(org, account)
+    }
+
+    /// [`Self::approves_releases`] reading the organization from its own shard:
+    /// the cluster governance is root's (`self`), the member's capability is the
+    /// organization's, passed from the shard that owns it
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn approves_releases_at(&self, org: Option<&Org>, account: &str) -> bool {
+        self.governance().releases == Authority::Owner
+            && self.holds_approve_releases_at(org, account)
     }
 
     /// Who may approve `org`'s releases ([`Self::approves_releases`]).

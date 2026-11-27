@@ -558,10 +558,10 @@ async fn org_publisher(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let (member, holds, generation) = node.sys(|s| {
+    let (member, holds, generation) = node.sys_with_org(&org, |s, o| {
         (
-            s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
-            s.holds_approve_releases(&org, &account),
+            o.is_some_and(|o| o.role(&account).is_some()),
+            s.holds_approve_releases_at(o, &account),
             s.binding_generation(&body.signer_id),
         )
     });

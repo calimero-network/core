@@ -1525,8 +1525,12 @@ async fn invite_list(
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
     let org_rec = node.org_of(&org);
+    // The invite records live in the organization's tenant group (written there
+    // by `CreateInvite`), so list them from that shard; the membership check uses
+    // the org record read from the same shard
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     let v = node
-        .sys(|s| {
+        .sys_org(&org, |s| {
             org_rec.as_ref()?.role(&account)?;
             let invites = s
                 .invites
@@ -1564,7 +1568,7 @@ pub(crate) async fn revoke_invite(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let org_rec = node.org_of(&org);
-    let visible = node.sys(|s| {
+    let visible = node.sys_org(&org, |s| {
         s.invites
             .get(&key)
             .is_some_and(|i| i.org == org && s.sees_invite(i, &actor, org_rec.as_ref()))
@@ -1717,9 +1721,9 @@ async fn org_usage(
 ) -> ApiResult<Json<OrgUsage>> {
     let account = signed_in(&node, &headers).await?.account()?;
     node.sys_fresh().await;
-    let (role, apps, quotas) = node.sys(|s| {
+    let (role, apps, quotas) = node.sys_with_org(&org, |s, o| {
         (
-            s.orgs.get(&org).and_then(|o| o.role(&account)),
+            o.and_then(|o| o.role(&account)),
             s.apps
                 .values()
                 .filter(|a| crate::usage::Billed::of(s, a).developer == org)

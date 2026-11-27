@@ -1551,6 +1551,23 @@ impl Node {
         self.sys_org(org, |s| s.orgs.get(org).cloned())
     }
 
+    /// Read with the root system state and organization `org` together: `f`
+    /// takes the root state (fleet, packages, the account directory, the app
+    /// directory) and the organization record from its own shard (its tenant
+    /// group once the control plane is sharded). This is the cross-shard access
+    /// read — an authorization or detail check that judges an org's membership
+    /// or teams against root-held records reads both here, instead of a single
+    /// `sys` that finds the org missing from root once its area has moved off it
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn sys_with_org<R>(
+        &self,
+        org: &str,
+        f: impl FnOnce(&SystemState, Option<&crate::types::Org>) -> R,
+    ) -> R {
+        let owned = self.org_of(org);
+        self.sys(|s| f(s, owned.as_ref()))
+    }
+
     /// The system Raft group that serves a shard ([`crate::system::shard`]): the
     /// root group for [`ShardId::Root`] (today also the single system group), or
     /// an organization's tenant group once one exists. Until tenant groups are

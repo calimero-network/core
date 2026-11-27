@@ -1031,8 +1031,8 @@ async fn start_run_with(
             // Judged as `UpgradeApp { run }` judges it, before anything runs
             // on the app's group: an app on another package or a newer
             // release is noted as failed.
-            let refused = node.sys(|s| {
-                let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
+            let refused = node.sys_with_org(&org, |s, o| {
+                let r = o?.upgrade_runs.get(&run_id)?;
                 s.run_may_move(r, s.apps.get(&app.app_id)?).err()
             });
             if let Some(why) = refused {
@@ -1222,12 +1222,12 @@ async fn publisher_upgrade(
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     node.sys_fresh_from(p.sys_index).await;
-    let publishes = node.sys(|s| {
-        s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
+    let publishes = node.sys_with_org(&org, |s, o| {
+        o.is_some_and(|o| o.role(&account).is_some())
             && s.packages
                 .get(&package)
                 .and_then(|pk| s.publisher_of_signer(&pk.signer_id))
-                .is_some_and(|o| *o == org)
+                .is_some_and(|owner| *owner == org)
     });
     if !publishes {
         return Err(ApiError::not_found(
@@ -1349,8 +1349,8 @@ async fn org_upgrade_status(
 ) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
     let r = node
-        .sys(|s| {
-            let o = s.orgs.get(&org)?;
+        .sys_with_org(&org, |_, o| {
+            let o = o?;
             o.role(&account)?;
             o.upgrade_runs.get(&run).cloned()
         })
@@ -1367,7 +1367,7 @@ async fn org_upgrade_retry(
     body: Option<Json<Value>>,
 ) -> ApiResult {
     let prev = node
-        .sys(|s| s.orgs.get(&org)?.upgrade_runs.get(&run).cloned())
+        .sys_with_org(&org, |_, o| o?.upgrade_runs.get(&run).cloned())
         .ok_or_else(|| ApiError::not_found("no such upgrade"))?;
     let failed: Vec<crate::types::AppRecord> = node.sys(|s| {
         prev.failed

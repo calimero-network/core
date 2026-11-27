@@ -1453,8 +1453,8 @@ async fn app_transfer(
     .await?;
     // Make the new owner's personal organization first if they have none.
     let leaves_personal = !ordinary
-        && node.sys(|s| {
-            s.orgs.get(&app.org).is_some_and(|o| {
+        && node.sys_with_org(&app.org, |s, o| {
+            o.is_some_and(|o| {
                 o.personal && o.role(&body.to).is_none() && s.accounts.contains_key(&body.to)
             })
         });

@@ -250,7 +250,7 @@ pub(super) async fn public_link_create(
                 "only whoever may change the instance's access makes its public links",
             ));
         }
-        if !s.orgs.get(&app.org).is_some_and(|o| o.allow_public_links) {
+        if !org.as_ref().is_some_and(|o| o.allow_public_links) {
             return Err(ApiError::new(
                 409,
                 "PUBLIC_LINKS_OFF",
