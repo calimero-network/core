@@ -1012,28 +1012,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/apps/{app}/restore-consent": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Consent to restoring a pinned instance to older code
-         * @description An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
-         *
-         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-         */
-        post: operations["app_restore_consent"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/apps/{app}/runs": {
         parameters: {
             query?: never;
@@ -2465,7 +2443,7 @@ export interface paths {
         put?: never;
         /**
          * Restore an app from its sealed backup
-         * @description Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), and to code older than the release it runs only with `owner`, an owner's or admin's consent while an undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409 LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
+         * @description Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the signature is asked for.
          *
          *     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
@@ -6663,12 +6641,6 @@ export interface components {
             };
             /** Format: int64 */
             undoneAt?: number;
-        };
-        /** @description An owner's or admin's step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`POST /apps/{app}/restore-consent`; `point` is the restore point its open undo would revert, by its time, target and snapshot): the operator's restore carries it as `owner`, with the operator's signature naming the same bundle, to take a pinned instance (its record's `lineage`) from that backup onto that bundle, older than the release it runs, while that undo is open at a time no earlier than the upgrade and any upgrade logged since. Spent once. */
-        RestoreConsent: {
-            account: string;
-            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
-            consent: unknown;
         };
         /** @description One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a majority of the replicas the app is on now, the furthest counting, never from the restore point's node alone; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says). */
         UndoPart: {
@@ -11117,100 +11089,6 @@ export interface operations {
             };
             /** @description `NOT_FOUND`: no such object, or one the caller may not see */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
-            412: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    app_restore_consent: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                app: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    backup: string;
-                    sha256: string;
-                    bundle: string;
-                    confirm?: components["schemas"]["Confirm"];
-                };
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RestoreConsent"];
-                };
-            };
-            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `FEATURE_NOT_ACTIVE`; `UNDO_WINDOW_PASSED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16351,7 +16229,6 @@ export interface operations {
                         key: string;
                     };
                     operatorProof?: components["schemas"]["OperatorProof"];
-                    owner?: components["schemas"]["RestoreConsent"];
                 };
             };
         };

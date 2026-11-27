@@ -817,32 +817,6 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
-    /// Consent to restoring a pinned instance to older code.
-    ///
-    /// `POST /apps/{app}/restore-consent` (`app_restore_consent`). Who: an account holder (a passkey session not bound to an app's frontend).
-    ///
-    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn restore_consent(
-        self,
-        app: &str,
-        backup: &str,
-        sha256: &str,
-        bundle: &str,
-        passkey: Option<&mut dyn Passkey>,
-    ) -> Result<RestoreConsent> {
-        let mut fields = Map::new();
-        route::put(&mut fields, "backup", &backup)?;
-        route::put(&mut fields, "sha256", &sha256)?;
-        route::put(&mut fields, "bundle", &bundle)?;
-        let body = Value::Object(fields);
-        let req = Request::new(
-            Method::POST,
-            format!("apps/{}/restore-consent", route::segment(app)),
-        )
-        .json(body);
-        route::json(self.client.transport(), req, passkey, None, false).await
-    }
-
     /// One compute run.
     ///
     /// `GET /apps/{app}/runs/{run}` (`app_run`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
@@ -2595,13 +2569,11 @@ impl Ops<'_> {
         app: &str,
         backup: Option<&str>,
         recovery: Option<OpsRestoreRequestRecovery>,
-        owner: Option<RestoreConsent>,
         operator: Option<&OperatorSigner<'_>>,
     ) -> Result<AppRestored> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "backup", backup)?;
         route::put_some(&mut fields, "recovery", recovery)?;
-        route::put_some(&mut fields, "owner", owner)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,

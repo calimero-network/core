@@ -365,56 +365,8 @@ async fn app_undo(
     })))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct RestoreConsentBody {
-    backup: String,
-    sha256: String,
-    /// The bundle the restore runs: the one the backup's state names.
-    bundle: String,
-    #[serde(default)]
-    confirm: Option<ConfirmBody>,
-}
-
-/// An owner's or admin's step-up letting the operator restore a pinned instance from
-/// `backup` to older code while an undo of its last upgrade is open
-/// (`crate::system::RestoreConsent`, which the operator's restore carries as `owner`).
-async fn app_restore_consent(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Path(app_id): Path<String>,
-    Json(body): Json<RestoreConsentBody>,
-) -> ApiResult<Json<crate::system::RestoreConsent>> {
-    let (app, _p) = super::upgrades::readable_app(&node, &headers, &app_id).await?;
-    let p = holder(&node, &headers).await?;
-    let account = p.account()?;
-    node.sys_fresh_from(p.sys_index).await;
-    if !node.sys(|s| s.approves_upgrades(&app.org, &account)) {
-        return Err(ApiError::forbidden(crate::system::NOT_AN_UPGRADE_APPROVER));
-    }
-    node.require_features(&[Feature::PinnedLineage]).await?;
-    let at = crate::types::update_now();
-    if !app.restore_point.as_ref().is_some_and(|r| r.open_at(at)) {
-        return Err(crate::node::rejected(crate::system::UNDO_WINDOW_PASSED));
-    }
-    let args =
-        node.sys(|s| s.restore_older_args(&app.app_id, &body.backup, &body.sha256, &body.bundle));
-    let consent = consent(
-        &node,
-        &p,
-        &app.app_id,
-        "__restore_older",
-        &args,
-        body.confirm,
-    )
-    .await?;
-    Ok(Json(crate::system::RestoreConsent { account, consent }))
-}
-
 pub(super) fn routes() -> Router<Arc<Node>> {
-    Router::new()
-        .route("/apps/{app}/undo", get(app_undo_view).post(app_undo))
-        .route("/apps/{app}/restore-consent", post(app_restore_consent))
+    Router::new().route("/apps/{app}/undo", get(app_undo_view).post(app_undo))
 }
 
 #[cfg(test)]

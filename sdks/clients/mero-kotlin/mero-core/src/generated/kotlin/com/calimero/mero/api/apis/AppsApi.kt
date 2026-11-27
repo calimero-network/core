@@ -45,7 +45,6 @@ import com.calimero.mero.api.models.AppList
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMoveRequest
 import com.calimero.mero.api.models.AppMoved
-import com.calimero.mero.api.models.AppRestoreConsentRequest
 import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets
 import com.calimero.mero.api.models.AppSetEgressRequest
@@ -94,7 +93,6 @@ import com.calimero.mero.api.models.PresencePublishRequest
 import com.calimero.mero.api.models.PublicLinkCreateRequest
 import com.calimero.mero.api.models.PublicLinkMade
 import com.calimero.mero.api.models.PublicLinks
-import com.calimero.mero.api.models.RestoreConsent
 import com.calimero.mero.api.models.Run
 import com.calimero.mero.api.models.RunEstimate
 import com.calimero.mero.api.models.RunList
@@ -1885,83 +1883,6 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.POST,
             path = "/apps/{app}/upgrade-policy".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
-            query = localVariableQuery,
-            headers = localVariableHeaders,
-            requiresAuthentication = true,
-            body = localVariableBody
-        )
-    }
-
-    /**
-     * POST /apps/{app}/restore-consent
-     * Consent to restoring a pinned instance to older code
-     * An owner or admin of the app&#39;s organization, while an undo of its last upgrade is open, with a step-up over &#x60;&lt;app&gt; / __restore_older / { backup, sha256, bundle, point }&#x60; (&#x60;bundle&#x60;: what the backup&#39;s state runs; &#x60;point&#x60;: the restore point the open undo would revert): answers the consent the operator&#39;s restore (&#x60;POST /ops/apps/{app}/restore&#x60;, &#x60;owner&#x60;) carries to restore a pinned instance (its record&#39;s &#x60;lineage&#x60;) from that backup to code older than the release it runs. &#x60;403 FORBIDDEN&#x60; for anyone else and &#x60;409 UNDO_WINDOW_PASSED&#x60; once the undo closed, before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.39.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param app 
-     * @param appRestoreConsentRequest 
-     * @return RestoreConsent
-     * @throws IllegalStateException If the request is not correctly configured
-     * @throws IOException Rethrows the OkHttp execute method exception
-     * @throws UnsupportedOperationException If the API returns an informational or redirection response
-     * @throws ClientException If the API returns a client error response
-     * @throws ServerException If the API returns a server error response
-     */
-    @Suppress("UNCHECKED_CAST")
-    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appRestoreConsent(app: kotlin.String, appRestoreConsentRequest: AppRestoreConsentRequest) : RestoreConsent = withContext(Dispatchers.IO) {
-        val localVarResponse = appRestoreConsentWithHttpInfo(app = app, appRestoreConsentRequest = appRestoreConsentRequest)
-
-        return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RestoreConsent
-            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
-            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
-            ResponseType.ClientError -> {
-                val localVarError = localVarResponse as ClientError<*>
-                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
-            }
-            ResponseType.ServerError -> {
-                val localVarError = localVarResponse as ServerError<*>
-                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
-            }
-        }
-    }
-
-    /**
-     * POST /apps/{app}/restore-consent
-     * Consent to restoring a pinned instance to older code
-     * An owner or admin of the app&#39;s organization, while an undo of its last upgrade is open, with a step-up over &#x60;&lt;app&gt; / __restore_older / { backup, sha256, bundle, point }&#x60; (&#x60;bundle&#x60;: what the backup&#39;s state runs; &#x60;point&#x60;: the restore point the open undo would revert): answers the consent the operator&#39;s restore (&#x60;POST /ops/apps/{app}/restore&#x60;, &#x60;owner&#x60;) carries to restore a pinned instance (its record&#39;s &#x60;lineage&#x60;) from that backup to code older than the release it runs. &#x60;403 FORBIDDEN&#x60; for anyone else and &#x60;409 UNDO_WINDOW_PASSED&#x60; once the undo closed, before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.39.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param app 
-     * @param appRestoreConsentRequest 
-     * @return ApiResponse<RestoreConsent?>
-     * @throws IllegalStateException If the request is not correctly configured
-     * @throws IOException Rethrows the OkHttp execute method exception
-     */
-    @Suppress("UNCHECKED_CAST")
-    @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appRestoreConsentWithHttpInfo(app: kotlin.String, appRestoreConsentRequest: AppRestoreConsentRequest) : ApiResponse<RestoreConsent?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = appRestoreConsentRequestConfig(app = app, appRestoreConsentRequest = appRestoreConsentRequest)
-
-        return@withContext request<AppRestoreConsentRequest, RestoreConsent>(
-            localVariableConfig
-        )
-    }
-
-    /**
-     * To obtain the request config of the operation appRestoreConsent
-     *
-     * @param app 
-     * @param appRestoreConsentRequest 
-     * @return RequestConfig
-     */
-    fun appRestoreConsentRequestConfig(app: kotlin.String, appRestoreConsentRequest: AppRestoreConsentRequest) : RequestConfig<AppRestoreConsentRequest> {
-        val localVariableBody = appRestoreConsentRequest
-        val localVariableQuery: MultiValueMap = mutableMapOf()
-        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
-        localVariableHeaders["Content-Type"] = "application/json"
-        localVariableHeaders["Accept"] = "application/json"
-
-        return RequestConfig(
-            method = RequestMethod.POST,
-            path = "/apps/{app}/restore-consent".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
