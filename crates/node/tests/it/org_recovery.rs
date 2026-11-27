@@ -78,7 +78,12 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
         .as_str()
         .unwrap()
         .to_owned();
-    let o = bob.orgs().get(&org).await.map(wire).unwrap();
+    let o = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["recovery"]["publicKey"], json!(recovery_public(&seed)));
     assert_eq!(o["recovery"]["pending"], Value::Null);
 
@@ -93,7 +98,12 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
         RECOVERY_DELAY_SECS
     );
     // Every member sees it.
-    let o = bob.orgs().get(&org).await.map(wire).unwrap();
+    let o = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["recovery"]["pending"]["account"], json!(again_id));
     assert_eq!(o["recovery"]["pending"]["readyAt"], json!(ready));
 
@@ -120,7 +130,12 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
         .map(wire)
         .unwrap();
     assert_eq!(done["previousOwners"], json!([account_of(&alice).await]));
-    let o = again.orgs().get(&org).await.map(wire).unwrap();
+    let o = again
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["members"][&again_id], json!("owner"));
     assert_eq!(o["members"][&bob_id], json!("member"));
     assert!(o["members"].get(account_of(&alice).await).is_none());
@@ -128,7 +143,7 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
     // The app moved with the organization; the old account reaches neither.
     let a = again.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(a["owner"], json!(again_id));
-    assert!(alice.orgs().get(&org).await.is_err());
+    assert!(alice.orgs().get(&org, None, None, None).await.is_err());
     assert!(alice.apps().get(&app).await.is_err());
     // The new owner acts for the organization with the new passkey.
     let _ = again
@@ -165,7 +180,7 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
         .unwrap();
     assert!(alice
         .orgs()
-        .get(&org)
+        .get(&org, None, None, None)
         .await
         .map(wire)
         .unwrap()
@@ -268,7 +283,12 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
     assert_eq!(code(&e), Some("NOT_FOUND"), "{e}");
     let e = bob.start_recovery(&org, &bob_id, &seed).await.unwrap_err();
     assert_eq!(code(&e), Some("WRONG_RECOVERY_KEY"), "{e}");
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["members"][account_of(&alice).await], json!("owner"));
     assert_eq!(
         o["recovery"]["publicKey"],

@@ -192,6 +192,29 @@ pub fn args_bytes(args: &Value) -> Vec<u8> {
     }
 }
 
+/// The length of [`args_bytes`] without building it: a view or call over
+/// [`MAX_ARGS_BYTES`] is refused without copying its arguments again.
+#[must_use]
+pub fn args_len(args: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    if args.is_null() {
+        return 0;
+    }
+    let mut n = Count(0);
+    // Writing a `Value` to a writer that never fails cannot fail.
+    let _ = serde_json::to_writer(&mut n, args);
+    n.0
+}
+
 /// Why a run on this replica did not happen: the log's answer, or a refusal the
 /// replica made before running (its own checks, against its own state). Both
 /// executors' local calls answer with it.
@@ -2313,6 +2336,12 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
         abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        // `Node::view` refused these already; a view that reached this replica
+        // another way is held to the same limit before it runs.
+        let args = args_bytes(&req.args);
+        if args.len() > MAX_ARGS_BYTES {
+            return Err(args_too_large());
+        }
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
         let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
@@ -2339,7 +2368,7 @@ impl Node {
             Invocation {
                 kind: InvocationKind::View,
                 method: req.method.clone(),
-                args: args_bytes(&req.args),
+                args,
                 caller: req.caller.to_host(),
                 entry_ts_ms: ts_ms,
                 id_term: 0,

@@ -346,7 +346,12 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
     let e = carol.orgs().invite_redeem(&invite).await.unwrap_err();
     assert!(e.code().is_some());
 
-    let o: Value = bob.orgs().get(&org).await.map(wire).unwrap();
+    let o: Value = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["members"][&bob_id], json!("member"));
     assert_eq!(o["teams"][&team]["members"][&bob_id], json!(false));
 
@@ -1224,7 +1229,12 @@ async fn teams_work_like_v1_subgroups() {
     let err = set(&bob, &secret_app, "x").await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
     assert!(bob.orgs().team_get(&org, &secret).await.is_err());
-    let listed = bob.orgs().get(&org).await.map(wire).unwrap();
+    let listed = bob
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(listed["teams"].get(&secret).is_none(), "{listed}");
     assert!(listed["teams"].get(&open).is_some(), "{listed}");
     let _ok = alice
@@ -3373,6 +3383,115 @@ async fn oversized_args_are_refused_before_running() {
         (first.0, first.1 + 1),
         "{first:?} then {next:?}"
     );
+}
+
+/// A view's args over 512 KiB are refused `413 ARGS_TOO_LARGE` before anything
+/// runs, as a call's are: by `/views` (strong and stale), by
+/// `/intents` and `/methods/{method}` naming a view, and by `Node::view` itself
+/// (the path forwarded views and synchronous xcall views take). No node counts a
+/// view run for any of them; a view within the limit still runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_view_args_are_refused_before_running() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let big = json!({ "name": "x".repeat(calimero_node::node::MAX_ARGS_BYTES) });
+    let refused = |e: calimero_client::Error| {
+        assert_eq!(e.code(), Some("ARGS_TOO_LARGE"), "{e}");
+    };
+    for consistency in [
+        ViewsRequestConsistency::Strong,
+        ViewsRequestConsistency::Stale,
+    ] {
+        refused(
+            alice
+                .apps()
+                .view(&app, "linked", Some(big.clone()), Some(consistency), None)
+                .await
+                .unwrap_err(),
+        );
+    }
+    refused(
+        alice
+            .apps()
+            .call(&app, "linked", Some(big.clone()), None, None)
+            .await
+            .unwrap_err(),
+    );
+    refused(
+        alice
+            .apps()
+            .method(&app, "linked", typed(json!({ "args": big })), None)
+            .await
+            .unwrap_err(),
+    );
+    for r in c.nodes.iter().flatten() {
+        let e = r
+            .node
+            .view(&calimero_node::node::ViewRequest {
+                app_id: app.clone(),
+                method: "linked".to_owned(),
+                args: big.clone(),
+                caller: calimero_node::types::Caller::Account {
+                    account: alice_id.clone(),
+                },
+                strong: true,
+                min_index: 0,
+                via: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!((e.status, e.code.as_str()), (413, "ARGS_TOO_LARGE"));
+    }
+    // Within the limit, the same view runs.
+    let ok = alice
+        .apps()
+        .view(&app, "linked", Some(json!({ "name": "x" })), None, None)
+        .await
+        .unwrap();
+    assert_eq!(ok.result, Value::Null);
+
+    // One view ran in all: the one within the limit.
+    let http = reqwest::Client::new();
+    let mut views = 0.0;
+    for r in c.nodes.iter().flatten() {
+        let text = http
+            .get(format!("http://{}/metrics", r.metrics_addr.unwrap()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        views += text
+            .lines()
+            .filter(|l| {
+                l.starts_with("calimero_app_calls_total{")
+                    && l.contains(&format!("app=\"{app}\""))
+                    && l.contains("kind=\"view\"")
+            })
+            .map(|l| l.rsplit(' ').next().unwrap().parse::<f64>().unwrap())
+            .sum::<f64>();
+    }
+    assert_eq!(views, 1.0, "views ran with args over the limit");
 }
 
 /// Args within the limit whose writes push the entry over 1 MiB: the call is
@@ -9802,6 +9921,7 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     for v in ["a", "b", "c"] {
         set(&alice, &in_org, v).await.unwrap();
     }
+    applied_everywhere(&c, &in_org).await;
     let app_fuel = figure(&app_usage(&alice, &in_org).await["today"]["fuel"]);
     assert!(app_fuel > 0);
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
@@ -9825,6 +9945,7 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         .map(|a| a.app_id)
         .unwrap();
     set(&alice, &personal, "p").await.unwrap();
+    applied_everywhere(&c, &personal).await;
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
     let home = alice.apps().get(&personal).await.map(wire).unwrap()["org"]
         .as_str()
@@ -11257,7 +11378,12 @@ async fn an_api_keys_scope_holds_on_every_route_not_only_calls() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
-    let o: Value = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o: Value = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_ne!(o["metadata"]["label"], json!("taken"), "{o}");
     let a: Value = alice.apps().get(other).await.map(wire).unwrap();
     assert_ne!(a["metadata"]["label"], json!("taken"), "{a}");

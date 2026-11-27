@@ -11,6 +11,8 @@
 )]
 use super::*;
 
+use super::state_caps::MetadataSlot;
+
 /// What `CreateOrg` answers: the new organization, and its app team when it is made with one
 /// (the consent page's `createOrg` for a package).
 #[derive(Debug, Serialize, Deserialize)]
@@ -848,12 +850,16 @@ fn set_org_metadata(
     actor: &str,
 ) -> Result<Value, Rejection> {
     metadata_fits(&metadata)?;
-    let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
+    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
     if organization.role(actor) < Some(OrgRole::Admin)
         && !organization.may(actor, None, crate::types::caps::MANAGE_METADATA)
     {
         return Err(MAY_NOT_SET_ORG_METADATA);
     }
+    if state.caps_state() {
+        state.check_metadata(org, MetadataSlot::Org, &metadata)?;
+    }
+    let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     organization.metadata = metadata;
     Ok(Value::Null)
 }
@@ -867,13 +873,17 @@ fn set_member_metadata(
     actor: &str,
 ) -> Result<Value, Rejection> {
     metadata_fits(&metadata)?;
-    let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
+    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
     if organization.role(&account).is_none() {
         return Err(NOT_A_MEMBER);
     }
     if actor != account && organization.role(actor) < Some(OrgRole::Admin) {
         return Err(MEMBER_METADATA_THEIRS);
     }
+    if state.caps_state() {
+        state.check_metadata(org, MetadataSlot::Member(&account), &metadata)?;
+    }
+    let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     if metadata.is_null() {
         let _gone = organization.member_metadata.remove(&account);
     } else {
@@ -960,7 +970,7 @@ fn create_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         // SAFETY: `apply` sends only a `CreateTeam` here.
         unreachable!("create_team applies a CreateTeam")
     };
-    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
+    let organization = state.orgs.get(&org).ok_or(NO_SUCH_ORG)?;
     if organization.teams.contains_key(&team_id) {
         return Err(TEAM_EXISTS);
     }
@@ -973,6 +983,10 @@ fn create_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
     ) {
         return Err(MAY_NOT_CREATE_TEAM);
     }
+    if state.caps_state() {
+        state.check_new_team(&org)?;
+    }
+    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
     let members = BTreeMap::from([(actor, true)]);
     let _prev = organization.teams.insert(
         team_id.clone(),
@@ -1108,7 +1122,7 @@ fn update_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         // SAFETY: `apply` sends only an `UpdateTeam` here.
         unreachable!("update_team applies an UpdateTeam")
     };
-    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
+    let organization = state.orgs.get(&org).ok_or(NO_SUCH_ORG)?;
     if !organization.teams.contains_key(&team) {
         return Err(NO_SUCH_TEAM);
     }
@@ -1120,6 +1134,10 @@ fn update_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         join.is_some(),
         metadata.as_ref(),
     )?;
+    if let Some(metadata) = metadata.as_ref().filter(|_| state.caps_state()) {
+        state.check_metadata(&org, MetadataSlot::Team(&team), metadata)?;
+    }
+    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
     let current = organization.teams.get(&team).ok_or(NO_SUCH_TEAM)?;
     let parent_after = parent.clone().unwrap_or_else(|| current.parent.clone());
     let package_before = current.app_package().map(str::to_owned);

@@ -326,7 +326,7 @@ class OrgsFacade internal constructor(
     /**
      * One organization
      *
-     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -336,8 +336,11 @@ class OrgsFacade internal constructor(
      */
     suspend fun get(
         org: kotlin.String,
+        limit: kotlin.Long? = null,
+        teamsAfter: kotlin.String? = null,
+        membersAfter: kotlin.String? = null,
     ): Org =
-        api(null, null, emptySet()).organizations.orgGet(org = org)
+        api(null, null, emptySet()).organizations.orgGet(org = org, limit = limit, teamsAfter = teamsAfter, membersAfter = membersAfter)
 
     /**
      * Members' lockout risk

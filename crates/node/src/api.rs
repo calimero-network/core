@@ -70,6 +70,7 @@ mod account_proof;
 mod approvals;
 pub(crate) mod apps;
 mod auth;
+pub use auth::{MAX_ACCOUNT_NAME_CHARS, MAX_PASSKEY_CEREMONY_BYTES};
 mod backup_keys;
 mod calls;
 mod deployments;
@@ -140,7 +141,7 @@ use {
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgSettingsBody, RenameOrgBody,
+        AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgQuery, OrgSettingsBody, RenameOrgBody,
         ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
         TeamUpdateBody,
     },
@@ -332,6 +333,16 @@ impl Ceremonies {
     /// The ceremony `id` names, if this node holds it.
     pub fn get(&self, id: &str) -> Option<&Pending> {
         self.held.get(id).map(|h| &h.pending)
+    }
+
+    /// How many ceremonies this node holds open.
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Whether this node holds no ceremony open.
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
     }
 
     fn insert(&mut self, id: String, pending: Pending, session: Option<SealedSession>) {
@@ -1395,7 +1406,11 @@ struct AttestQuery {
     purpose: Option<String>,
 }
 
-async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>) -> ApiResult {
+async fn attestation(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<AttestQuery>,
+) -> ApiResult {
     let nonce: [u8; 32] = hex::decode(&q.nonce)
         .ok()
         .and_then(|v| v.try_into().ok())
@@ -1463,7 +1478,18 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     };
     // Off the async workers, one at a time, and only now: after the `app`
     // lookup, which may wait, so a request that waits there holds no slot.
-    let q = node.quoter.quote(report).await?;
+    // A node of this cluster queues apart from anyone (`attest::Lane`).
+    let lane = if crate::attest::is_peer_attest(
+        &headers,
+        node.cluster_key(),
+        &node.config.cluster,
+        &nonce,
+    ) {
+        crate::attest::Lane::Peer
+    } else {
+        crate::attest::Lane::Anyone
+    };
+    let q = node.quoter.quote_in(lane, report).await?;
     let doc = AttestationDoc {
         quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, q),
         transport_key: hex::encode(transport_key),
@@ -2279,8 +2305,7 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     gauge(
         "calimero_event_streams",
         "Event and presence streams open on this node.",
-        node.event_streams
-            .load(std::sync::atomic::Ordering::Relaxed) as u64,
+        node.event_streams.open() as u64,
     );
     gauge(
         "calimero_system_applied",

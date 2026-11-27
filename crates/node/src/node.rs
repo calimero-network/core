@@ -700,8 +700,8 @@ pub struct Node {
     compute: component::ComputeState,
     /// Wakes the compute driver: a call started or cancelled a run.
     pub runs_kick: Arc<tokio::sync::Notify>,
-    /// Event streams this node is serving (`/apps/{app}/events`).
-    pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Event and presence streams this node is serving, in total, by account and by app.
+    pub event_streams: std::sync::Arc<crate::event_streams::EventStreams>,
     /// Pipeline run event streams open on this node, by app.
     pub pipeline_subscribers: Mutex<HashMap<String, usize>>,
     /// Every app's ephemeral presence, in memory only.
@@ -1295,6 +1295,16 @@ impl Node {
         &self.cluster_key
     }
 
+    /// `attestor` for a peer of this cluster: its quote queues apart from
+    /// anyone's (`attest::Lane::Peer`).
+    fn peer_attestor(&self, attestor: HttpAttestor) -> crate::attest::PeerAttestor {
+        crate::attest::PeerAttestor {
+            attestor,
+            cluster_key: self.cluster_key,
+            cluster: self.config.cluster.clone(),
+        }
+    }
+
     /// The secret peers present on internal routes (inside sealed channels).
     #[must_use]
     pub fn cluster_secret(&self) -> &str {
@@ -1351,10 +1361,10 @@ impl Node {
         if let Ok(mut r) = self.peer_releases.lock() {
             let _prev = r.insert(addr.to_owned(), Arc::clone(&seen_release));
         }
-        let attestor = HttpAttestor {
+        let attestor = self.peer_attestor(HttpAttestor {
             seen_release,
             policy: self.config.peer_policy(),
-        };
+        });
         // Identified (Noise IK, with this node's transport key), so the peer
         // knows which node calls and can judge its release.
         let t = Arc::new(calimero_sealed::client::SealedTransport::identified_as(
@@ -1518,6 +1528,9 @@ impl Node {
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        // A write past a bound on the system state is refused before it is logged; apply
+        // judges it again ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)).
+        self.sys(|s| s.check_state_caps(cmd)).map_err(rejected)?;
         self.sys_propose(cmd).await
     }
 
@@ -1865,6 +1878,7 @@ impl Node {
             self.config.peer_policy(),
             Arc::clone(&self.identifying),
         );
+        let (cluster_key, cluster) = (self.cluster_key, self.config.cluster.clone());
         let node = self.this.lock().ok()?.clone();
         let identifying = detach(&self.identifications, (key, claimed), || {
             async move {
@@ -1873,9 +1887,13 @@ impl Node {
                     return Some(p);
                 }
                 let release = Arc::new(Mutex::new(None));
-                let attestor = HttpAttestor {
-                    seen_release: Arc::clone(&release),
-                    policy,
+                let attestor = crate::attest::PeerAttestor {
+                    attestor: HttpAttestor {
+                        seen_release: Arc::clone(&release),
+                        policy,
+                    },
+                    cluster_key,
+                    cluster,
                 };
                 let attested =
                     calimero_sealed::client::Attest::attest_transport_key(&attestor, &http, &url)
@@ -2402,10 +2420,10 @@ impl Node {
     async fn attests_as_replica(&self, id: NodeId, addr: &str) -> bool {
         let attested = async {
             let url: Url = addr.parse()?;
-            let attestor = HttpAttestor {
+            let attestor = self.peer_attestor(HttpAttestor {
                 policy: self.config.peer_policy(),
                 seen_release: Arc::default(),
-            };
+            });
             calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
                 .await
                 .map(|_key| ())
@@ -3878,6 +3896,12 @@ impl Node {
         req: &ViewRequest,
         searches: Option<&SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
+        // Every view (`/views`, `/intents` and `/methods` naming one, a forwarded
+        // one, a synchronous xcall's) comes through here: refuse oversize
+        // arguments before any lookup, forward or run.
+        if component::args_len(&req.args) > MAX_ARGS_BYTES {
+            return Err(component::args_too_large());
+        }
         let app = self.app(&req.app_id).await?;
         self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {

@@ -252,11 +252,34 @@ pub(crate) async fn create_org(
     Ok(Json(v))
 }
 
+/// The teams, and the members, one `GET /orgs/{org}` answers when it names no `limit`, and the
+/// most it answers with one: as many as an organization may hold teams
+/// (`system::state_caps::MAX_TEAMS_PER_ORG`), so a caller that reads one page reads them all.
+pub(super) const ORG_PAGE_LIMIT: usize = 1_000;
+
+/// `GET /orgs/{org}`'s pages: at most `limit` teams (by id, after `teamsAfter`) and `limit`
+/// members (by account, after `membersAfter`), each page's `next...` the cursor of the next.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OrgQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    teams_after: Option<String>,
+    #[serde(default)]
+    members_after: Option<String>,
+}
+
 async fn org_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
+    Query(q): Query<OrgQuery>,
 ) -> ApiResult {
+    let limit = q.limit.unwrap_or(ORG_PAGE_LIMIT);
+    if limit == 0 || limit > ORG_PAGE_LIMIT {
+        return Err(malformed("limit is 1 to 1000"));
+    }
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
@@ -288,6 +311,8 @@ async fn org_get(
     if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
         m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
     }
+    let teams_next = page_teams(&mut v, q.teams_after.as_deref(), limit);
+    let members_next = page_members(&mut v, &o, &account, q.members_after.as_deref(), limit);
     // Its settings, whatever they are: the state leaves a default out.
     v["allowGuests"] = json!(o.allow_guests);
     v["allowPublicLinks"] = json!(o.allow_public_links);
@@ -315,6 +340,8 @@ async fn org_get(
         let _prev = obj.insert("mode".into(), json!(o.mode()));
         let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
         let _prev = obj.insert("publishes".into(), json!(publishes));
+        let _prev = obj.insert("nextTeamsAfter".into(), json!(teams_next));
+        let _prev = obj.insert("nextMembersAfter".into(), json!(members_next));
         let _prev = obj.insert(
             "newWorkStopped".into(),
             stall.map_or(
@@ -324,6 +351,50 @@ async fn org_get(
         );
     }
     Ok(Json(v))
+}
+
+/// Keeps the page of `teams` after `after`, at most `limit`; the cursor of the next page, if any.
+fn page_teams(v: &mut Value, after: Option<&str>, limit: usize) -> Option<String> {
+    let teams = v.get_mut("teams").and_then(Value::as_object_mut)?;
+    let page: Vec<String> = teams
+        .keys()
+        .filter(|id| after.is_none_or(|after| id.as_str() > after))
+        .take(limit + 1)
+        .cloned()
+        .collect();
+    let next = (page.len() > limit).then(|| page[limit - 1].clone());
+    let kept: BTreeSet<&String> = page.iter().take(limit).collect();
+    teams.retain(|id, _| kept.contains(id));
+    next
+}
+
+/// Keeps the page of the members `account` sees after `after`, at most `limit`, in `members`,
+/// `capabilities`, `memberMetadata` and `allApps`; the cursor of the next page, if any.
+fn page_members(
+    v: &mut Value,
+    o: &crate::types::Org,
+    account: &str,
+    after: Option<&str>,
+    limit: usize,
+) -> Option<String> {
+    let page: Vec<&String> = o
+        .members
+        .keys()
+        .filter(|m| o.sees_member(account, m))
+        .filter(|m| after.is_none_or(|after| m.as_str() > after))
+        .take(limit + 1)
+        .collect();
+    let next = (page.len() > limit).then(|| page[limit - 1].clone());
+    let kept: BTreeSet<&str> = page.iter().take(limit).map(|m| m.as_str()).collect();
+    for field in ["members", "capabilities", "memberMetadata"] {
+        if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
+            m.retain(|a, _| kept.contains(a.as_str()));
+        }
+    }
+    if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
+        m.retain(|a| a.as_str().is_some_and(|a| kept.contains(a)));
+    }
+    next
 }
 
 async fn org_delete(

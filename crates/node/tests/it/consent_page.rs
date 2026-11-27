@@ -1384,7 +1384,12 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     // A request with no organization (`account`) is her personal one's.
     let mine = home_org(&alice).await;
     let approved = || async {
-        alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"]
+        alice
+            .orgs()
+            .get(&mine, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["approvedReleases"]
             .as_array()
             .unwrap()
             .clone()

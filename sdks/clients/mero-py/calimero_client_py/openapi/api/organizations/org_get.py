@@ -9,18 +9,35 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.org import Org
+from ...types import UNSET, Unset
 from typing import cast
+from typing import Union
 
 
 def _get_kwargs(
     org: str,
+    *,
+    limit: Union[Unset, int] = UNSET,
+    teams_after: Union[Unset, str] = UNSET,
+    members_after: Union[Unset, str] = UNSET,
 ) -> dict[str, Any]:
+
+    params: dict[str, Any] = {}
+
+    params["limit"] = limit
+
+    params["teamsAfter"] = teams_after
+
+    params["membersAfter"] = members_after
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
         "url": "/orgs/{org}".format(
             org=org,
         ),
+        "params": params,
     }
 
     return _kwargs
@@ -70,6 +87,9 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
+    limit: Union[Unset, int] = UNSET,
+    teams_after: Union[Unset, str] = UNSET,
+    members_after: Union[Unset, str] = UNSET,
 ) -> Response[Union[Error, Org]]:
     """One organization
 
@@ -77,12 +97,18 @@ def sync_detailed(
     see; and its `mode` (from its app teams), the accounts that may approve its releases
     (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release
     whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four
-    are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come
+    in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after
+    `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on
+    the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
 
     **Who:** signed in (a session or an API key).
 
     Args:
         org (str):
+        limit (Union[Unset, int]):
+        teams_after (Union[Unset, str]):
+        members_after (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -94,6 +120,9 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         org=org,
+        limit=limit,
+        teams_after=teams_after,
+        members_after=members_after,
     )
 
     response = client.get_httpx_client().request(
@@ -107,6 +136,9 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
+    limit: Union[Unset, int] = UNSET,
+    teams_after: Union[Unset, str] = UNSET,
+    members_after: Union[Unset, str] = UNSET,
 ) -> Optional[Union[Error, Org]]:
     """One organization
 
@@ -114,12 +146,18 @@ def sync(
     see; and its `mode` (from its app teams), the accounts that may approve its releases
     (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release
     whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four
-    are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come
+    in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after
+    `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on
+    the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
 
     **Who:** signed in (a session or an API key).
 
     Args:
         org (str):
+        limit (Union[Unset, int]):
+        teams_after (Union[Unset, str]):
+        members_after (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -132,6 +170,9 @@ def sync(
     return sync_detailed(
         org=org,
         client=client,
+        limit=limit,
+        teams_after=teams_after,
+        members_after=members_after,
     ).parsed
 
 
@@ -139,6 +180,9 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
+    limit: Union[Unset, int] = UNSET,
+    teams_after: Union[Unset, str] = UNSET,
+    members_after: Union[Unset, str] = UNSET,
 ) -> Response[Union[Error, Org]]:
     """One organization
 
@@ -146,12 +190,18 @@ async def asyncio_detailed(
     see; and its `mode` (from its app teams), the accounts that may approve its releases
     (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release
     whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four
-    are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come
+    in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after
+    `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on
+    the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
 
     **Who:** signed in (a session or an API key).
 
     Args:
         org (str):
+        limit (Union[Unset, int]):
+        teams_after (Union[Unset, str]):
+        members_after (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -163,6 +213,9 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         org=org,
+        limit=limit,
+        teams_after=teams_after,
+        members_after=members_after,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -174,6 +227,9 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
+    limit: Union[Unset, int] = UNSET,
+    teams_after: Union[Unset, str] = UNSET,
+    members_after: Union[Unset, str] = UNSET,
 ) -> Optional[Union[Error, Org]]:
     """One organization
 
@@ -181,12 +237,18 @@ async def asyncio(
     see; and its `mode` (from its app teams), the accounts that may approve its releases
     (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release
     whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four
-    are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come
+    in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after
+    `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on
+    the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
 
     **Who:** signed in (a session or an API key).
 
     Args:
         org (str):
+        limit (Union[Unset, int]):
+        teams_after (Union[Unset, str]):
+        members_after (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -200,5 +262,8 @@ async def asyncio(
         await asyncio_detailed(
             org=org,
             client=client,
+            limit=limit,
+            teams_after=teams_after,
+            members_after=members_after,
         )
     ).parsed

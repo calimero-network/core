@@ -112,6 +112,11 @@ impl SoftAuthenticator {
         b64url(&self.credential_id)
     }
 
+    /// Use `id` as the credential's id from now on.
+    pub fn set_credential_id(&mut self, id: Vec<u8>) {
+        self.credential_id = id;
+    }
+
     /// The frame the ceremonies claim to run in: `crossOrigin` and
     /// `topOrigin` of the client data, each left out when `None` (as an older
     /// browser does). A new passkey writes `crossOrigin: false` and no

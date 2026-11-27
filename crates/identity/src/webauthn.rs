@@ -18,6 +18,11 @@ const FLAG_UP: u8 = 0x01;
 const FLAG_UV: u8 = 0x04;
 const FLAG_AT: u8 = 0x40;
 
+/// The longest credential id a registration takes, in bytes: WebAuthn's own
+/// bound on `credentialIdLength`. A new credential is held in a sign-up's
+/// ceremony and logged with its account, so a longer one is refused.
+pub const MAX_CREDENTIAL_ID_BYTES: usize = 1023;
+
 /// A credential's public key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "alg", content = "key")]
@@ -285,6 +290,9 @@ pub fn verify_registration(
         .credential
         .as_ref()
         .ok_or(Error::Malformed("no attested credential"))?;
+    if id.len() > MAX_CREDENTIAL_ID_BYTES {
+        return Err(Error::Malformed("credential id"));
+    }
     Ok(Credential {
         id: enc(id),
         public_key: cose_public_key(key)?,
