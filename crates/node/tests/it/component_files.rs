@@ -3125,6 +3125,15 @@ async fn a_blob_upload_past_the_quota_is_refused_and_stores_nothing() {
     let e = f.blob_upload(2, 6_000, 35).await.unwrap_err();
     assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
     f.until_charged(6_000).await;
-    let listed = f.clients[0].apps().blob_list(&f.app).await.map(wire).unwrap();
-    assert_eq!(listed["blobs"].as_array().map(Vec::len), Some(1), "{listed}");
+    let listed = f.clients[0]
+        .apps()
+        .blob_list(&f.app)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        listed["blobs"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
 }

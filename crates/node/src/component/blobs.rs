@@ -414,8 +414,8 @@ impl BlobTable {
         due.into_iter()
             .filter_map(|(_, id)| {
                 let record = self.records.get(&id);
-                let charged =
-                    record.and_then(|r| (r.file.is_some() || r.charged || r.metered).then_some(r.size));
+                let charged = record
+                    .and_then(|r| (r.file.is_some() || r.charged || r.metered).then_some(r.size));
                 self.forget(tx, &id).then_some((id, charged))
             })
             .collect()

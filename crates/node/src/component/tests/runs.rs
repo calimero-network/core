@@ -2056,7 +2056,10 @@ fn upload_cmd(size: u64, metered: bool) -> ComponentCmd {
 fn a_metered_upload_holds_one_charge_and_its_delete_queues_it_for_release() {
     let mut w = done_world();
     let first = owner_cmd(&mut w, &upload_cmd(9, true));
-    assert_eq!((first.status, &first.result["metered"]), (Status::Ok, &json!(true)));
+    assert_eq!(
+        (first.status, &first.result["metered"]),
+        (Status::Ok, &json!(true))
+    );
     // The same bytes again: the record already holds a charge, so the uploader gives this one back.
     let again = owner_cmd(&mut w, &upload_cmd(9, true));
     assert_eq!(again.result["metered"], json!(false));
@@ -2074,7 +2077,10 @@ fn a_metered_upload_holds_one_charge_and_its_delete_queues_it_for_release() {
 fn an_unmetered_upload_takes_no_charge_and_releases_none() {
     let mut w = done_world();
     let a = owner_cmd(&mut w, &upload_cmd(9, false));
-    assert_eq!((a.status, &a.result["metered"]), (Status::Ok, &json!(false)));
+    assert_eq!(
+        (a.status, &a.result["metered"]),
+        (Status::Ok, &json!(false))
+    );
     let forget = ComponentCmd::BlobForget { id: plain(1) };
     assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
     assert!(w.r.machine.state.component.head.collect_files.is_empty());
@@ -2084,7 +2090,11 @@ fn an_unmetered_upload_takes_no_charge_and_releases_none() {
 fn an_upload_of_a_published_blobs_bytes_takes_no_second_charge() {
     let mut w = published_world();
     let a = owner_cmd(&mut w, &upload_cmd(out(1).size, true));
-    assert_eq!(a.result["metered"], json!(false), "the publish already charged it");
+    assert_eq!(
+        a.result["metered"],
+        json!(false),
+        "the publish already charged it"
+    );
     let forget = ComponentCmd::BlobForget { id: plain(1) };
     assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
     let head = &w.r.machine.state.component.head;
