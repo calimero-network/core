@@ -78,9 +78,11 @@ fn an_action_posts_the_prompt_with_no_key_and_returns_the_answer() {
     let req = &seen[0];
     assert_eq!(req.method, "POST");
     assert_eq!(req.url, "https://cloud-api.near.ai/v1/chat/completions");
+    let names: Vec<&str> = req.headers.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
-        req.headers,
-        [("content-type".to_owned(), "application/json".to_owned())]
+        names,
+        ["content-type", "idempotency-key"],
+        "no authorization header"
     );
     let body: Value = serde_json::from_slice(&req.body).expect("a JSON body");
     assert_eq!(body, prompt());

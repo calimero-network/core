@@ -95,13 +95,16 @@ fn ticket_call() -> Value {
 }
 
 #[test]
-fn a_prompt_is_posted_as_json_with_no_key() {
-    let request = http_request(&ask("Capital of France?"));
+fn a_prompt_is_posted_as_json_with_its_retry_key_and_no_api_key() {
+    let request = http_request(&ask("Capital of France?"), "run-7");
     assert_eq!(request.method, "POST");
     assert_eq!(request.url, ENDPOINT);
     assert_eq!(
         request.headers,
-        [("content-type".to_owned(), "application/json".to_owned())]
+        [
+            ("content-type".to_owned(), "application/json".to_owned()),
+            ("idempotency-key".to_owned(), "run-7".to_owned()),
+        ]
     );
     assert_eq!(
         body_of(&request),
@@ -117,7 +120,7 @@ fn a_prompt_is_posted_as_json_with_no_key() {
 fn temperature_and_tools_go_out_only_when_set() {
     let mut p = ask("hi");
     p.temperature = Some(0.2);
-    let body = body_of(&http_request(&p));
+    let body = body_of(&http_request(&p, "k"));
     assert_eq!(body["temperature"], json!(0.2));
     assert!(body.get("tools").is_none() && body.get("tool_choice").is_none());
 }
@@ -140,7 +143,7 @@ fn tools_and_a_tool_follow_up_go_out_byte_for_byte() {
             "model": MODEL, "max_tokens": 512, "messages": messages,
             "tools": [ticket_tool()], "tool_choice": choice
         }));
-        let request = http_request(&p);
+        let request = http_request(&p, "k");
         let body = body_of(&request);
         assert_eq!(body["messages"], messages);
         assert_eq!(body["tools"], json!([ticket_tool()]));
@@ -176,7 +179,10 @@ fn a_tool_call_comes_back_as_the_next_requests_assistant_message() {
     // Straight into the follow-up's messages.
     let mut follow_up = ask("The printer is broken");
     follow_up.messages.push(got.message);
-    assert_eq!(body_of(&http_request(&follow_up))["messages"][1], message);
+    assert_eq!(
+        body_of(&http_request(&follow_up, "k"))["messages"][1],
+        message
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@ One exchange with [NEAR AI Cloud](https://cloud-api.near.ai)'s chat completions 
 pub fn chat(ctx: &mut ActionCtx, request: &Prompt) -> Result<Answer, Error>
 ```
 
-`chat` posts the prompt to `https://cloud-api.near.ai/v1/chat/completions` with `content-type: application/json` and nothing else.
+`chat` posts the prompt to `https://cloud-api.near.ai/v1/chat/completions` with `content-type: application/json` and an `idempotency-key` that stays the same across the node's retries of the action, so a retried action is answered once.
 It never sends a key: the node attaches the instance's `NEAR_AI_API_KEY` through the manifest's credential binding, and the app never sees it.
 What an app keeps, who may ask and how much stay the app's own.
 

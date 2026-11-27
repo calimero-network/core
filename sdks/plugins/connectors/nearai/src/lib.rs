@@ -193,7 +193,7 @@ impl From<Error> for AppError {
 /// [`Error`]: not sent, an error status, or an answer with nothing to use.
 pub fn chat(ctx: &mut ActionCtx, request: &Prompt) -> Result<Answer, Error> {
     let response = ctx
-        .fetch(&http_request(request))
+        .fetch(&http_request(request, &ctx.key()))
         .map_err(|e| Error::NotSent {
             reason: fetch_reason(e),
         })?;
@@ -209,10 +209,13 @@ fn fetch_reason(e: AppError) -> String {
 }
 
 /// The POST of `prompt`; no `authorization`: the node attaches the bound key.
-fn http_request(prompt: &Prompt) -> Request {
+/// `retry_key` is stable across the node's retries of the action, so NEAR AI answers a retry once.
+fn http_request(prompt: &Prompt, retry_key: &str) -> Request {
     // SAFETY: every map key is a `String`, and serde_json writes a non-finite float as null.
     let body = serde_json::to_vec(prompt).expect("a prompt is JSON");
-    Request::post(ENDPOINT, body).header("content-type", "application/json")
+    Request::post(ENDPOINT, body)
+        .header("content-type", "application/json")
+        .header("idempotency-key", retry_key)
 }
 
 /// The part of NEAR AI's response kept; serde skips the rest.
