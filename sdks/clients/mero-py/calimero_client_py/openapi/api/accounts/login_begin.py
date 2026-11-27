@@ -40,6 +40,16 @@ def _parse_response(
 
         return response_200
 
+    if response.status_code == 400:
+        response_400 = Error.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 429:
         response_429 = Error.from_dict(response.json())
 
@@ -70,8 +80,11 @@ def sync_detailed(
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -105,8 +118,11 @@ def sync(
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -135,8 +151,11 @@ async def asyncio_detailed(
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -168,8 +187,11 @@ async def asyncio(
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 

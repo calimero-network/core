@@ -27,12 +27,14 @@ class RegisterFinishBody:
         invite (Union[Unset, str]):
         confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
             request sent again with it approves exactly that request.
+        holder_key (Union[Unset, str]):
     """
 
     challenge_id: str
     registration: "Registration"
     invite: Union[Unset, str] = UNSET
     confirm: Union[Unset, "Confirm"] = UNSET
+    holder_key: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +51,8 @@ class RegisterFinishBody:
         if not isinstance(self.confirm, Unset):
             confirm = self.confirm.to_dict()
 
+        holder_key = self.holder_key
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -61,6 +65,8 @@ class RegisterFinishBody:
             field_dict["invite"] = invite
         if confirm is not UNSET:
             field_dict["confirm"] = confirm
+        if holder_key is not UNSET:
+            field_dict["holderKey"] = holder_key
 
         return field_dict
 
@@ -83,11 +89,14 @@ class RegisterFinishBody:
         else:
             confirm = Confirm.from_dict(_confirm)
 
+        holder_key = d.pop("holderKey", UNSET)
+
         register_finish_body = cls(
             challenge_id=challenge_id,
             registration=registration,
             invite=invite,
             confirm=confirm,
+            holder_key=holder_key,
         )
 
         register_finish_body.additional_properties = d
