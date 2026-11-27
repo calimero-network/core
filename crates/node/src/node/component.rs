@@ -3047,20 +3047,34 @@ pub(crate) struct JudgedOn {
 }
 
 impl JudgedOn {
-    pub(crate) fn parse(from: &Value) -> Option<Self> {
-        match from {
-            Value::String(bundle) => Some(Self {
+    /// `from` as sent. With `strict` (the cluster brings lineages, so every node sends both), a
+    /// bare bundle or one without its compute part is refused.
+    ///
+    /// # Errors
+    /// The shape `strict` refuses.
+    pub(crate) fn parse(from: &Value, strict: bool) -> Result<Option<Self>, &'static str> {
+        let judged = match from {
+            Value::String(bundle) => Self {
                 bundle: bundle.clone(),
                 compute: None,
-            }),
-            Value::Object(o) => Some(Self {
-                bundle: o.get("bundle")?.as_str()?.to_owned(),
-                compute: o
-                    .get("computeBundle")
-                    .map(|c| c.as_str().map(str::to_owned)),
-            }),
-            _ => None,
+            },
+            Value::Object(o) => {
+                let Some(bundle) = o.get("bundle").and_then(Value::as_str) else {
+                    return Ok(None);
+                };
+                Self {
+                    bundle: bundle.to_owned(),
+                    compute: o
+                        .get("computeBundle")
+                        .map(|c| c.as_str().map(str::to_owned)),
+                }
+            }
+            _ => return Ok(None),
+        };
+        if strict && judged.compute.is_none() {
+            return Err("an upgrade names the compute part it was judged on beside the bundle");
         }
+        Ok(Some(judged))
     }
 
     /// Whether the group running `bundle` and `compute` is still on this code.
@@ -3617,6 +3631,30 @@ fn to_host_applied(a: Applied) -> crate::app::Applied {
 fn print_app_logs(app: &str, kind: InvocationKind, method: &str, logs: &[String]) {
     for line in logs {
         tracing::info!(target: "app_log", %app, ?kind, %method, "{line}");
+    }
+}
+
+#[cfg(test)]
+mod judged_on_tests {
+    use serde_json::json;
+
+    use super::JudgedOn;
+
+    /// Below the version that brings lineages an earlier node's bare bundle, or an object
+    /// without its compute part, is read as it was; from it, only the full shape is.
+    #[test]
+    fn from_names_the_compute_part_once_lineages_are_on() {
+        let bare = json!("b1");
+        let partial = json!({ "bundle": "b1" });
+        let full = json!({ "bundle": "b1", "computeBundle": null });
+        for from in [&bare, &partial, &full] {
+            assert!(JudgedOn::parse(from, false).is_ok(), "{from}");
+        }
+        assert!(JudgedOn::parse(&bare, true).is_err());
+        assert!(JudgedOn::parse(&partial, true).is_err());
+        let judged = JudgedOn::parse(&full, true).unwrap().unwrap();
+        assert!(judged.is(Some("b1"), None));
+        assert!(!judged.is(Some("b1"), Some("c1")));
     }
 }
 
