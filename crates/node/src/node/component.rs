@@ -2958,7 +2958,7 @@ impl Node {
         bundle: &str,
         compute_bundle: Option<&str>,
         migrate: Option<&str>,
-        judged_on: Option<&str>,
+        judged_on: Option<&JudgedOn>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
             index: g.applied(),
@@ -2983,24 +2983,24 @@ impl Node {
             .propose_led(|m, _, _| {
                 // `base_index` holds this to the state read here, so a race retries into it.
                 let runs = m.state.bundle.as_deref();
+                let runs_compute = m.state.component.head.compute_bundle.as_deref();
                 // Already there: nothing runs. A record naming other code catches up (the repair
-                // for the refusal below); a release sharing the bundle is an upgrade as any other.
-                if runs == Some(bundle)
-                    && m.state.component.head.compute_bundle.as_deref() == compute_bundle
-                {
+                // for the refusal below); a release sharing the code is an upgrade as any other.
+                if runs == Some(bundle) && runs_compute == compute_bundle {
                     let mut done = crate::component::host_answer(m.state.last_index, true, "");
-                    if judged_on.is_some_and(|j| j != bundle) {
+                    if judged_on.is_some_and(|j| !j.is(Some(bundle), compute_bundle)) {
                         done.result = json!({ "caughtUp": true });
                     }
                     return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
                 }
-                if judged_on.is_some_and(|j| runs.is_some_and(|r| r != j)) {
+                if judged_on.is_some_and(|j| runs.is_some() && !j.is(runs, runs_compute)) {
                     let mut refused = crate::component::host_answer(m.state.last_index, false, "");
                     refused.error = json!({
                         "code": "BundleMoved",
                         "fields": {
                             "message": "the app runs other code than the one this upgrade was judged on: upgrade it to the release that ships `runs` first",
                             "runs": runs,
+                            "runsCompute": runs_compute,
                         },
                     });
                     return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
@@ -3036,6 +3036,40 @@ impl Node {
         let a = to_host_applied(a);
         self.count_conflict(&a);
         Ok(a)
+    }
+}
+
+/// The code an upgrade was judged on (`__upgrade`'s `from`): the app's bundle and, where the
+/// proposer stated it, its compute part (`None`: a node that sent the bundle alone).
+pub(crate) struct JudgedOn {
+    bundle: String,
+    compute: Option<Option<String>>,
+}
+
+impl JudgedOn {
+    pub(crate) fn parse(from: &Value) -> Option<Self> {
+        match from {
+            Value::String(bundle) => Some(Self {
+                bundle: bundle.clone(),
+                compute: None,
+            }),
+            Value::Object(o) => Some(Self {
+                bundle: o.get("bundle")?.as_str()?.to_owned(),
+                compute: o
+                    .get("computeBundle")
+                    .map(|c| c.as_str().map(str::to_owned)),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the group running `bundle` and `compute` is still on this code.
+    fn is(&self, bundle: Option<&str>, compute: Option<&str>) -> bool {
+        bundle == Some(self.bundle.as_str())
+            && self
+                .compute
+                .as_ref()
+                .is_none_or(|c| c.as_deref() == compute)
     }
 }
 
