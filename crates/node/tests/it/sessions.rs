@@ -249,7 +249,7 @@ async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
     let flooding = &flood;
     let begun: Vec<Value> =
         futures_util::stream::iter(0..calimero_node::api::MAX_PENDING_CHALLENGES)
-            .map(|_| async move { flooding.auth().login_begin(None).await.map(wire) })
+            .map(|_| async move { flooding.auth().login_begin(None, None).await.map(wire) })
             .buffer_unordered(16)
             .collect::<Vec<_>>()
             .await

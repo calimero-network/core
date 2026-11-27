@@ -102,6 +102,7 @@ fn a_session_answers_as_before() {
         refresh: "rt_r".to_owned(),
         session: "s".to_owned(),
         expires_at: 9,
+        holder: None,
     };
     assert_eq!(
         text(&session_answer("acc", &("tok".to_owned(), 1_700_000_900), &new).0),
