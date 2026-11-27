@@ -1288,6 +1288,16 @@ impl Node {
         &self.cluster_key
     }
 
+    /// `attestor` for a peer of this cluster: its quote queues apart from
+    /// anyone's (`attest::Lane::Peer`).
+    fn peer_attestor(&self, attestor: HttpAttestor) -> crate::attest::PeerAttestor {
+        crate::attest::PeerAttestor {
+            attestor,
+            cluster_key: self.cluster_key,
+            cluster: self.config.cluster.clone(),
+        }
+    }
+
     /// The secret peers present on internal routes (inside sealed channels).
     #[must_use]
     pub fn cluster_secret(&self) -> &str {
@@ -1344,10 +1354,10 @@ impl Node {
         if let Ok(mut r) = self.peer_releases.lock() {
             let _prev = r.insert(addr.to_owned(), Arc::clone(&seen_release));
         }
-        let attestor = HttpAttestor {
+        let attestor = self.peer_attestor(HttpAttestor {
             seen_release,
             policy: self.config.peer_policy(),
-        };
+        });
         // Identified (Noise IK, with this node's transport key), so the peer
         // knows which node calls and can judge its release.
         let t = Arc::new(calimero_sealed::client::SealedTransport::identified_as(
@@ -1830,6 +1840,7 @@ impl Node {
             self.config.peer_policy(),
             Arc::clone(&self.identifying),
         );
+        let (cluster_key, cluster) = (self.cluster_key, self.config.cluster.clone());
         let node = self.this.lock().ok()?.clone();
         let identifying = detach(&self.identifications, (key, claimed), || {
             async move {
@@ -1838,9 +1849,13 @@ impl Node {
                     return Some(p);
                 }
                 let release = Arc::new(Mutex::new(None));
-                let attestor = HttpAttestor {
-                    seen_release: Arc::clone(&release),
-                    policy,
+                let attestor = crate::attest::PeerAttestor {
+                    attestor: HttpAttestor {
+                        seen_release: Arc::clone(&release),
+                        policy,
+                    },
+                    cluster_key,
+                    cluster,
                 };
                 let attested =
                     calimero_sealed::client::Attest::attest_transport_key(&attestor, &http, &url)
@@ -2367,10 +2382,10 @@ impl Node {
     async fn attests_as_replica(&self, id: NodeId, addr: &str) -> bool {
         let attested = async {
             let url: Url = addr.parse()?;
-            let attestor = HttpAttestor {
+            let attestor = self.peer_attestor(HttpAttestor {
                 policy: self.config.peer_policy(),
                 seen_release: Arc::default(),
-            };
+            });
             calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
                 .await
                 .map(|_key| ())

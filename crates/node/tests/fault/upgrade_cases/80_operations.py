@@ -480,3 +480,9 @@ not_covered("Governance", "A release deadline that passes while a cluster rolls 
             "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
             "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
             "(`cluster.rs`) covers retired nodes on one build")
+
+not_covered("Operations", "Peers' quotes queued apart from anonymous `/attestation` requests (`attest::Lane::Peer`, "
+            "`x-calimero-peer-attest`)",
+            "it stores nothing and changes no answer: a node of an earlier release sends no header and is queued with "
+            "anyone, as before, so a roll has no data to carry. `a_flood_of_attestations_does_not_keep_peers_from_attesting` "
+            "(`cluster.rs`) and `a_peer_passes_a_full_anonymous_queue` (`attest.rs`) cover it on one build")
