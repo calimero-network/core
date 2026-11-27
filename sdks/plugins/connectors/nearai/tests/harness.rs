@@ -104,3 +104,15 @@ fn near_ais_error_reaches_the_app_as_its_typed_code() {
         })
     );
 }
+
+#[test]
+fn a_request_the_node_cannot_send_is_not_sent_with_its_reason() {
+    let mut t = TestApp::new(component(), Org::new(), T0);
+    let got = t.as_("owner").action("ask", json!({ "prompt": prompt() }));
+    let Err(Failure::App { code, fields }) = got else {
+        panic!("expected an app error, got {got:?}");
+    };
+    assert_eq!(code, "NearAiNotSent");
+    let reason = fields["reason"].as_str().expect("a reason");
+    assert!(reason.contains(HOST), "{reason}");
+}
