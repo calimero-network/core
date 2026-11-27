@@ -118,6 +118,7 @@ async fn cluster() -> Cluster {
         election_min_ms: 300,
         election_max_ms: 600,
         snapshot_every: 1_000,
+        snapshot_scale_bytes: None,
     };
     let net = Arc::new(Net::default());
     let (mut dirs, mut engines, mut replicas) = (Vec::new(), BTreeMap::new(), Vec::new());

@@ -33,14 +33,13 @@ error the guest's host call returns.
 | Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
 | Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |
 | Outbound HTTP | 8 requests per run (an action, call, timer or delivery); bodies 1 MiB; 64 KiB of each body recorded in a logged run's entry; 100 headers; 1.5 s wait for a logged run's response (`CALL_FETCH_TIMEOUT`) | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
-| Connector calls | input 64 KiB; 64 values in one limit (metadata keys, models); each call counts as an outbound request | `MAX_CONNECTOR_INPUT`, `MAX_LIMIT_VALUES` |
 | Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
 | Declared secrets (credential bindings) | 16 per release; name 64 bytes; description 256 bytes; one host, 1 to 8 path prefixes of 256 bytes each, and one place each (a header, or a body field); header name or body field 64 bytes; header `format` 64 bytes with `{}` once; no two on one host's same place on a shared path | `MAX_SECRETS`, `MAX_SECRET_NAME_BYTES`, `MAX_SECRET_DESCRIPTION_BYTES`, `MAX_SECRET_PATHS`, `MAX_SECRET_PATH_BYTES`, `MAX_SECRET_FIELD_BYTES`, `MAX_SECRET_FORMAT_BYTES` |
 | Search | 100 hits at most; query 256 bytes; 32 searches per request, its sync xcall views included (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
 | Files | 16 open; 2 GiB each; 64 MiB written per run (2 GiB in a compute run); 1,000 new files per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_COMPUTE_FILE_BYTES`, `MAX_NEW_FILES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
-| Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
+| Call and view arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
 
 A soft limit answers a fixed string, which depends only on the run's own calls,
 so every node gives the same answer. `events.emit` answers `too many events`,
@@ -107,7 +106,7 @@ the same way. Compute runs on job nodes have their own caps
 | Outbound audit (`GET /apps/{app}/outbound-log`), in memory per node | 100 entries per instance, each 7 days at most, 1024 instances (the one whose last request is oldest goes first); a path cut at 128 bytes, 16 secret names an entry | `MAX_AUDIT_ENTRIES`, `AUDIT_RETENTION_MS`, `MAX_AUDIT_INSTANCES`, `MAX_AUDIT_PATH_BYTES`, `MAX_AUDIT_SECRET_NAMES` |
 | Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
 | Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
-| Event and presence streams per node | 4096 | `MAX_EVENT_STREAMS` |
+| Event and presence streams per node | 4096; of those, 64 per account (its sessions and API keys together) and 1024 per app; a caller without an account counts toward its app's and the node's only; each refused `429 RATE_LIMITED`, the message naming the limit | `MAX_EVENT_STREAMS`, `MAX_EVENT_STREAMS_PER_ACCOUNT`, `MAX_EVENT_STREAMS_PER_APP` |
 | Open passkey ceremonies per node | 10 000 sign-ins and sign-ups; apart from those, 8 per account and 10 000 across accounts, a new one displacing the oldest of the biggest holder; each 5 minutes | `MAX_PENDING_CHALLENGES`, `MAX_CHALLENGES_PER_ACCOUNT`, `MAX_ACCOUNT_CHALLENGES` |
 | Sealed sessions per node | 16 384 anonymous, 4096 identified (peers), each evicting its own; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `MAX_IDENTIFIED_SESSIONS`, `SESSION_LIFETIME` |
 | Sealed handshakes per node | anonymous 100/s (burst 200); identified 50/s (burst 100), apart | `HANDSHAKES_PER_SECOND`, `IDENTIFIED_HANDSHAKES_PER_SECOND` |
@@ -119,6 +118,7 @@ the same way. Compute runs on job nodes have their own caps
 | One component of a package release (a service's WASM or compute component, unpacked) | 47 MiB, as a blob: `413 TOO_LARGE` at install | `MAX_COMPONENT_BYTES` |
 | Compiles at install and raw bundle upload | 1 at a time, off the async workers; 4 more wait, each at most 10 s, past that `503 BUSY` with `Retry-After: 1`; one compile past 60 s is `422 COMPILE_TIMEOUT` | `MAX_CONCURRENT_COMPILES`, `MAX_QUEUED_COMPILES`, `COMPILE_WAIT`, `COMPILE_TIMEOUT` |
 | Quotes (`GET /attestation`, a job node's and a waiting node's, `merod attest --serve`) | 1 made at a time, off the async workers; 8 more wait, each at most 3 s; past that `503 BUSY` with `Retry-After: 1` | `MAX_CONCURRENT_QUOTES`, `MAX_QUEUED_QUOTES`, `QUOTE_WAIT` |
+| Quotes for the cluster's own nodes (`GET /attestation` with a valid `x-calimero-peer-attest`) | 8 places of their own, each waiting at most 10 s, ahead of every anonymous request but the one already waiting; past that `503 BUSY` | `MAX_QUEUED_PEER_QUOTES`, `PEER_QUOTE_WAIT` |
 | Sealed-file exports | 30 a minute per account per node | `MAX_EXPORTS_PER_MINUTE` |
 | Sessions listed (`GET /auth/sessions`) | 256 | `MAX_SESSIONS_LISTED` |
 | Deployments | 16 per owner, 10 000 per cluster, 64 apps each | `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT` |
@@ -149,7 +149,7 @@ that, or for a declared length past 1 GiB or a client waiting on
 | What | Lifetime |
 | --- | --- |
 | Session token | 15 minutes |
-| Refresh token | 30 days; exchanged by the first refresh once an hour old |
+| Refresh token | 30 days (7 bound to a holder key); exchanged by the first refresh once an hour old |
 | API key | Up to 1 year |
 | Passkey ceremony (sign-in, sign-up, step-up challenge) | 5 minutes |
 | Invite | 7 days by default; 1 use by default |

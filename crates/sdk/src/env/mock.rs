@@ -248,14 +248,6 @@ pub fn action_call(_method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, 
     Err(NO_ACTIONS.to_owned())
 }
 
-pub fn connector_call(
-    _connector: &str,
-    _operation: &str,
-    _input: &[u8],
-) -> std::result::Result<Vec<u8>, String> {
-    Err("connectors run only in a component (use the testing harness)".to_owned())
-}
-
 pub fn fetch(
     _request: &crate::action::Request,
 ) -> std::result::Result<crate::action::Response, String> {

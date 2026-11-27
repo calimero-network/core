@@ -350,7 +350,13 @@ impl Client {
         let registration = passkey.create(&begin.options);
         let s = self
             .auth()
-            .register_finish(&begin.challenge_id, registration, invite, Some(passkey))
+            .register_finish(
+                &begin.challenge_id,
+                registration,
+                invite,
+                None,
+                Some(passkey),
+            )
             .await?;
         self.use_session(s.clone()).await;
         Ok(s)
@@ -387,7 +393,7 @@ impl Client {
         passkey: &mut dyn Passkey,
         origin: Option<&str>,
     ) -> Result<Session> {
-        let begin = self.auth().login_begin(origin).await?;
+        let begin = self.auth().login_begin(origin, None).await?;
         let challenge =
             calimero_identity::from_b64url(begin.options["challenge"].as_str().unwrap_or_default())
                 .map_err(|e| eyre::eyre!("{e}"))?;

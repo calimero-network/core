@@ -265,6 +265,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./scripts/check-naming.sh
 
+      # crates.io refuses at upload what cargo only warns about (a missing description).
+      - name: Every publishable crate packages for crates.io
+        if: ${{ !cancelled() }}
+        run: ./scripts/check-publishable-crates.py
+
       # Fleet nodes run at INFO and every line ships to the operator, so info!, warn!
       # and error! must not carry user data or text from outside the node (F6).
       - name: No user data at info level

@@ -121,7 +121,7 @@ Generated from core's `docs/public/openapi.json`.
 | `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, then=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_FOLLOW_UP`, `400 BAD_UPGRADE_KEY`, `400 RESERVED_METHOD`, `409 FEATURE_NOT_ACTIVE`, `413 ARGS_TOO_LARGE`, `422 FOLLOW_UP_FAILED`, `429 QUOTA_EXCEEDED` |
 | `apikey_list()` | `GET /auth/apikeys` | The account's API keys |
 | `apikey_revoke(key, confirm=None)` | `DELETE /auth/apikeys/{key}` | Revoke an API key. **passkey** |
-| `login_begin(origin=…)` | `POST /auth/passkey/login/begin` | Start a sign-in |
+| `login_begin(origin=…, holder_key=…)` | `POST /auth/passkey/login/begin` | Start a sign-in. *Refusals:* `400 BAD_HOLDER_KEY`, `409 FEATURE_NOT_ACTIVE` |
 | `login_finish(challenge_id, assertion)` | `POST /auth/passkey/login/finish` | Finish a sign-in. *Refusals:* `401 PASSKEY_UNKNOWN_HERE` |
 | `logout()` | `POST /auth/logout` | End this session |
 | `logout_all()` | `POST /auth/logout-all` | End every session of the account |
@@ -132,9 +132,9 @@ Generated from core's `docs/public/openapi.json`.
 | `passkey_remove(cred, confirm=None)` | `DELETE /auth/passkeys/{cred}` | Remove a passkey. **passkey** |
 | `recovery_create(confirm=None)` | `POST /auth/recovery` | Make a recovery code. **passkey** |
 | `recovery_remove(confirm=None)` | `DELETE /auth/recovery` | Remove the recovery code. **passkey** |
-| `refresh(refresh_token)` | `POST /auth/refresh` | Refresh a session |
+| `refresh(refresh_token, holder_proof=…)` | `POST /auth/refresh` | Refresh a session. *Refusals:* `401 BAD_HOLDER_PROOF`, `401 HOLDER_PROOF_REQUIRED` |
 | `register_begin(name=…, origin=…, invite=…)` | `POST /auth/passkey/register/begin` | Start a sign-up. *Refusals:* `403 SIGN_UP_REFUSED` |
-| `register_finish(challenge_id, registration, invite=…, confirm=None)` | `POST /auth/passkey/register/finish` | Finish a sign-up. **passkey**. *Refusals:* `400 BAD_REGISTRATION`, `401 PASSKEY_UNKNOWN_HERE`, `403 SIGN_UP_REFUSED` |
+| `register_finish(challenge_id, registration, invite=…, holder_key=…, confirm=None)` | `POST /auth/passkey/register/finish` | Finish a sign-up. **passkey**. *Refusals:* `400 BAD_HOLDER_KEY`, `400 BAD_REGISTRATION`, `401 PASSKEY_UNKNOWN_HERE`, `403 SIGN_UP_REFUSED`, `409 FEATURE_NOT_ACTIVE` |
 | `session_revoke(session)` | `DELETE /auth/sessions/{session}` | End one session |
 | `sessions_list()` | `GET /auth/sessions` | The account's live sessions |
 | `usage()` | `GET /auth/usage` | The account's usage against its quotas |
@@ -278,6 +278,7 @@ Generated from core's `docs/public/openapi.json`.
 | --- | --- | --- |
 | `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `503 BUSY` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
+| `frontend(package, version)` | `GET /packages/{package}/{version}/frontend` | A release's frontend files |
 | `get(package)` | `GET /packages/{package}` | One package |
 | `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 ACCOUNT_NOT_LINKED`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `list()` | `GET /packages` | Installed packages |

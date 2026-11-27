@@ -312,7 +312,7 @@ async fn account_recovery_finish(
             }
             None => Vec::new(),
         };
-        let session = NewSession::new();
+        let session = NewSession::new(None);
         let statement = session.sign_in_statement();
         let challenge = statement.challenge().map_err(ApiError::internal)?;
         let id = put_pending(

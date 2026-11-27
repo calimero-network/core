@@ -803,7 +803,7 @@ public protocol APIProtocol: Sendable {
     func me(_ input: Operations.Me.Input) async throws -> Operations.Me.Output
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -828,7 +828,7 @@ public protocol APIProtocol: Sendable {
     func registerBegin(_ input: Operations.RegisterBegin.Input) async throws -> Operations.RegisterBegin.Output
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -923,7 +923,7 @@ public protocol APIProtocol: Sendable {
     func accountRecoveryStart(_ input: Operations.AccountRecoveryStart.Input) async throws -> Operations.AccountRecoveryStart.Output
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
     ///
     /// **Who:** anyone.
     ///
@@ -1648,6 +1648,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /packages/{package}/{version}/capabilities`.
     /// - Remark: Generated from `#/paths//packages/{package}/{version}/capabilities/get(package_capabilities)`.
     func packageCapabilities(_ input: Operations.PackageCapabilities.Input) async throws -> Operations.PackageCapabilities.Output
+    /// A release's frontend files
+    ///
+    /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+    ///
+    /// **Who:** anyone.
+    ///
+    /// - Remark: HTTP `GET /packages/{package}/{version}/frontend`.
+    /// - Remark: Generated from `#/paths//packages/{package}/{version}/frontend/get(package_frontend)`.
+    func packageFrontend(_ input: Operations.PackageFrontend.Input) async throws -> Operations.PackageFrontend.Output
     /// A release's pipelines
     ///
     /// The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the `modules` they pin and the canonical `pipeline`. `404` for a release the caller may not see.
@@ -3286,7 +3295,7 @@ extension APIProtocol {
     }
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -3335,7 +3344,7 @@ extension APIProtocol {
     }
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3516,7 +3525,7 @@ extension APIProtocol {
     }
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
     ///
     /// **Who:** anyone.
     ///
@@ -4966,6 +4975,23 @@ extension APIProtocol {
         try await packageCapabilities(Operations.PackageCapabilities.Input(
             path: path,
             query: query,
+            headers: headers
+        ))
+    }
+    /// A release's frontend files
+    ///
+    /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+    ///
+    /// **Who:** anyone.
+    ///
+    /// - Remark: HTTP `GET /packages/{package}/{version}/frontend`.
+    /// - Remark: Generated from `#/paths//packages/{package}/{version}/frontend/get(package_frontend)`.
+    public func packageFrontend(
+        path: Operations.PackageFrontend.Input.Path,
+        headers: Operations.PackageFrontend.Input.Headers = .init()
+    ) async throws -> Operations.PackageFrontend.Output {
+        try await packageFrontend(Operations.PackageFrontend.Input(
+            path: path,
             headers: headers
         ))
     }
@@ -10570,6 +10596,74 @@ public enum Components {
                 case createdBy
                 case createdAt
                 case token
+            }
+        }
+        /// `GET /packages/{package}/{version}/frontend`: the release's frontend entry and every file, by path relative to the frontend root, with its SHA-256 (lowercase hex) and size in bytes.
+        ///
+        /// - Remark: Generated from `#/components/schemas/FrontendDigests`.
+        public struct FrontendDigests: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/FrontendDigests/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FrontendDigests/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FrontendDigests/entry`.
+            public var entry: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FrontendDigests/files`.
+            public var files: [Components.Schemas.FrontendFileDigest]
+            /// Creates a new `FrontendDigests`.
+            ///
+            /// - Parameters:
+            ///   - package:
+            ///   - version:
+            ///   - entry:
+            ///   - files:
+            public init(
+                package: Swift.String,
+                version: Swift.String,
+                entry: Swift.String,
+                files: [Components.Schemas.FrontendFileDigest]
+            ) {
+                self.package = package
+                self.version = version
+                self.entry = entry
+                self.files = files
+            }
+            public enum CodingKeys: String, CodingKey {
+                case package
+                case version
+                case entry
+                case files
+            }
+        }
+        /// One frontend file: its path relative to the frontend root (served at `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes.
+        ///
+        /// - Remark: Generated from `#/components/schemas/FrontendFileDigest`.
+        public struct FrontendFileDigest: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/FrontendFileDigest/path`.
+            public var path: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FrontendFileDigest/sha256`.
+            public var sha256: Swift.String
+            /// - Remark: Generated from `#/components/schemas/FrontendFileDigest/size`.
+            public var size: Swift.Int64
+            /// Creates a new `FrontendFileDigest`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - sha256:
+            ///   - size:
+            public init(
+                path: Swift.String,
+                sha256: Swift.String,
+                size: Swift.Int64
+            ) {
+                self.path = path
+                self.sha256 = sha256
+                self.size = size
+            }
+            public enum CodingKeys: String, CodingKey {
+                case path
+                case sha256
+                case size
             }
         }
         /// `GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in uses to pick the person's passkey for it.
@@ -34454,7 +34548,7 @@ public enum Operations {
     }
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -34481,15 +34575,23 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/requestBody/json/origin`.
                     public var origin: Swift.String?
+                    /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/requestBody/json/holderKey`.
+                    public var holderKey: Swift.String?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - origin:
-                    public init(origin: Swift.String? = nil) {
+                    ///   - holderKey:
+                    public init(
+                        origin: Swift.String? = nil,
+                        holderKey: Swift.String? = nil
+                    ) {
                         self.origin = origin
+                        self.holderKey = holderKey
                     }
                     public enum CodingKeys: String, CodingKey {
                         case origin
+                        case holderKey
                     }
                 }
                 /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/requestBody/content/application\/json`.
@@ -34894,7 +34996,7 @@ public enum Operations {
     }
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -34927,6 +35029,8 @@ public enum Operations {
                     public var invite: Swift.String?
                     /// - Remark: Generated from `#/paths/auth/passkey/register/finish/POST/requestBody/json/confirm`.
                     public var confirm: Components.Schemas.Confirm?
+                    /// - Remark: Generated from `#/paths/auth/passkey/register/finish/POST/requestBody/json/holderKey`.
+                    public var holderKey: Swift.String?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
@@ -34934,22 +35038,26 @@ public enum Operations {
                     ///   - registration:
                     ///   - invite:
                     ///   - confirm:
+                    ///   - holderKey:
                     public init(
                         challengeId: Swift.String,
                         registration: Components.Schemas.Registration,
                         invite: Swift.String? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
+                        confirm: Components.Schemas.Confirm? = nil,
+                        holderKey: Swift.String? = nil
                     ) {
                         self.challengeId = challengeId
                         self.registration = registration
                         self.invite = invite
                         self.confirm = confirm
+                        self.holderKey = holderKey
                     }
                     public enum CodingKeys: String, CodingKey {
                         case challengeId
                         case registration
                         case invite
                         case confirm
+                        case holderKey
                     }
                 }
                 /// - Remark: Generated from `#/paths/auth/passkey/register/finish/POST/requestBody/content/application\/json`.
@@ -36477,7 +36585,7 @@ public enum Operations {
     }
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
     ///
     /// **Who:** anyone.
     ///
@@ -36504,15 +36612,46 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/refreshToken`.
                     public var refreshToken: Swift.String
+                    /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof`.
+                    public struct HolderProofPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof/at`.
+                        public var at: Swift.Int64
+                        /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof/signature`.
+                        public var signature: Swift.String
+                        /// Creates a new `HolderProofPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - at:
+                        ///   - signature:
+                        public init(
+                            at: Swift.Int64,
+                            signature: Swift.String
+                        ) {
+                            self.at = at
+                            self.signature = signature
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case at
+                            case signature
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof`.
+                    public var holderProof: Operations.Refresh.Input.Body.JsonPayload.HolderProofPayload?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - refreshToken:
-                    public init(refreshToken: Swift.String) {
+                    ///   - holderProof:
+                    public init(
+                        refreshToken: Swift.String,
+                        holderProof: Operations.Refresh.Input.Body.JsonPayload.HolderProofPayload? = nil
+                    ) {
                         self.refreshToken = refreshToken
+                        self.holderProof = holderProof
                     }
                     public enum CodingKeys: String, CodingKey {
                         case refreshToken
+                        case holderProof
                     }
                 }
                 /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/content/application\/json`.
@@ -48383,6 +48522,145 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.PackageCapabilities.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// A release's frontend files
+    ///
+    /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+    ///
+    /// **Who:** anyone.
+    ///
+    /// - Remark: HTTP `GET /packages/{package}/{version}/frontend`.
+    /// - Remark: Generated from `#/paths//packages/{package}/{version}/frontend/get(package_frontend)`.
+    public enum PackageFrontend {
+        public static let id: Swift.String = "package_frontend"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/packages/{package}/{version}/frontend/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/packages/{package}/{version}/frontend/GET/path/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/paths/packages/{package}/{version}/frontend/GET/path/version`.
+                public var version: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - package:
+                ///   - version:
+                public init(
+                    package: Swift.String,
+                    version: Swift.String
+                ) {
+                    self.package = package
+                    self.version = version
+                }
+            }
+            public var path: Operations.PackageFrontend.Input.Path
+            /// - Remark: Generated from `#/paths/packages/{package}/{version}/frontend/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PackageFrontend.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PackageFrontend.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.PackageFrontend.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.PackageFrontend.Input.Path,
+                headers: Operations.PackageFrontend.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/packages/{package}/{version}/frontend/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/packages/{package}/{version}/frontend/GET/responses/200/content/application\/json`.
+                    case json(Components.Schemas.FrontendDigests)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.FrontendDigests {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.PackageFrontend.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.PackageFrontend.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//packages/{package}/{version}/frontend/get(package_frontend)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.PackageFrontend.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.PackageFrontend.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

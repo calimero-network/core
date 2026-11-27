@@ -871,6 +871,25 @@ docker create --name m ghcr.io/calimero-network/merod:prerelease && docker cp m:
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
+### Advisories
+
+A pull request's `Rust supply chain` job runs `cargo deny check advisories bans
+licenses sources`, but only on that pull request. Advisories are published on
+their own schedule, so `.github/workflows/advisories.yml` checks master itself:
+daily, on a push to master that changes `Cargo.lock`, `deny.toml` or
+`sdks/pnpm-lock.yaml`, and by hand (`workflow_dispatch`). It runs
+`cargo deny check advisories` over the workspace and `pnpm audit --prod
+--audit-level high` over the SDKs' runtime dependencies (what mero-js and
+mero-react put in a user's page). A red run opens, or comments on, one issue
+titled `Advisories on master`, and the next green run closes it.
+
+Fix one by moving the lockfile past the affected range (`cargo update -p
+<crate>`, a pnpm override). When there is no fixed version, or nothing we run
+reaches the vulnerable code, add the id to `deny.toml`'s `[advisories] ignore`
+with what pulls the crate in and why it does not reach us; remove the entry as
+soon as it stops matching. A release cut while the issue is open ships the
+advisory, so the release pull request says why it is safe or waits.
+
 ### Flamegraphs
 
 Weekly, in Sunday's nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
@@ -1057,6 +1076,31 @@ view and refused until it replicated (fail-closed, the two-sided bound the
 [docs](/protocol/reads/#access-is-judged-fresh) describe). At the default zero
 every row is error-free; set a lease only to a freshness bound the deployment
 accepts, below a client's own refresh spacing.
+
+**Size-aware snapshot cadence.** A full snapshot re-seals the whole state, so
+building one every `snapshot_every` (1000) applied entries whatever the size is
+write amplification for a large app — it competes with the write path and is a
+root cause of the single-app throughput drop and p99 spikes as state grows.
+`Config::snapshot_scale_bytes` (`--snapshot-scale-bytes`, off by default) widens
+the interval in proportion to the state's size, so the whole-state re-seal stays
+a bounded fraction of the bytes written (`calimero-log`, [AGENTS.md](https://github.com/calimero-network/core/blob/master/crates/log/AGENTS.md)).
+`snapshot_amplification` measures it directly — every build calls
+`Machine::snapshot`, so the count is exactly the whole-state re-seals — over 400
+entries at a ~1 MiB state (`snapshot_every` 20, scale 128 KiB):
+
+| Cadence | Whole-state re-seals | Final snapshot covers |
+| --- | --- | --- |
+| fixed (`LogsSinceLast(20)`) | 20 | index 399 |
+| size-aware (scale 128 KiB) | 1 | index 401 |
+
+The fixed cadence re-sealed the ~1 MiB state 20 times for 400 small entries
+(~20 MiB of re-seal work); the size-aware one re-sealed it once and still purged
+the log (its single snapshot covers every entry). The precise interval math is
+unit-tested in `snapshot_cadence`; the engine-driven path (openraft's policy is
+`Never` when the cadence is size-aware) in
+`the_engine_drives_snapshots_when_the_cadence_is_size_aware`. End-to-end
+large-state throughput and leader RSS as a single app grows into the hundreds of
+MB are validated separately with the store-growth harness, not here.
 
 <Aside type="note" title="Fuzzing">
   `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,

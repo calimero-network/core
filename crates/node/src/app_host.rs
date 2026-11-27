@@ -184,6 +184,39 @@ pub struct Frontend {
     /// The entry's path, relative to the frontend root.
     entry: String,
     files: BTreeMap<String, Arc<[u8]>>,
+    /// Each file's SHA-256 (lowercase hex), by the same path: what
+    /// `GET /packages/{package}/{version}/frontend` answers, computed once at load
+    /// so a public request never hashes a release again.
+    digests: BTreeMap<String, String>,
+}
+
+impl Frontend {
+    /// A frontend of `entry` and `files` (paths relative to the frontend root), with
+    /// each file's digest.
+    fn new(entry: String, files: BTreeMap<String, Arc<[u8]>>) -> Self {
+        let digests = files
+            .iter()
+            .map(|(p, b)| (p.clone(), hex::encode(calimero_identity::sha256(b))))
+            .collect();
+        Self {
+            entry,
+            files,
+            digests,
+        }
+    }
+
+    /// The entry's path, relative to the frontend root.
+    pub(crate) fn entry(&self) -> &str {
+        &self.entry
+    }
+
+    /// Each file's path (relative to the frontend root), SHA-256 (hex) and size, by path.
+    pub(crate) fn digests(&self) -> impl Iterator<Item = (&str, &str, u64)> {
+        self.digests.iter().map(|(p, d)| {
+            let size = self.files.get(p).map_or(0, |b| b.len() as u64);
+            (p.as_str(), d.as_str(), size)
+        })
+    }
 }
 
 /// `(package, version)` -> (last use, the frontend, or `None` when the release
@@ -403,7 +436,7 @@ impl Node {
     }
 
     /// `package@version`'s frontend, verified; `None` when it ships none.
-    async fn frontend(
+    pub(crate) async fn frontend(
         &self,
         package: &str,
         version: &str,
@@ -426,14 +459,14 @@ impl Node {
                     .contents()
                     .map_err(|e| crate::error::ApiError::internal(&format!("{e:#}")))?;
                 let strip = |p: &str| p.strip_prefix(FRONTEND_ROOT).unwrap_or(p).to_owned();
-                Ok(Some(Arc::new(Frontend {
-                    entry: strip(&entry),
-                    files: contents
+                Ok(Some(Arc::new(Frontend::new(
+                    strip(&entry),
+                    contents
                         .frontend
                         .into_iter()
                         .map(|(p, b)| (strip(&p), b))
                         .collect(),
-                })))
+                ))))
             })
             .await
     }
@@ -754,15 +787,15 @@ mod tests {
     use super::*;
 
     fn site() -> Frontend {
-        Frontend {
-            entry: "index.html".into(),
-            files: [
+        Frontend::new(
+            "index.html".into(),
+            [
                 ("index.html".to_owned(), Arc::from(&b"<html>"[..])),
                 ("assets/app.js".to_owned(), Arc::from(&b"js"[..])),
             ]
             .into_iter()
             .collect(),
-        }
+        )
     }
 
     /// A release that ships no frontend is loaded once, however many requests

@@ -131,14 +131,13 @@ The `calimero:app` world (`crates/app-wit/wit/calimero-app.wit`):
 | `wasi:clocks`, `wasi:random` | The run's clock and randomness, served by the host ([Time and randomness](#time-and-randomness)) |
 | `wasi:cli/stdout`, `stderr` | The app's log ([Logging](/build/host-functions/#logging)); `wasi:cli/environment` is empty: no variables, no arguments |
 | `wasi:http` | Outbound HTTPS, from actions and as recorded requests of a call (below) |
-| `connector` | A first-party [connector](/build/guides/connectors/) operation the signed release declares: the node builds the request, attaches the key and answers only the declared fields; where `wasi:http` may send, counted with it and recorded in the entry as `CONNECTOR connector:<name>/<operation>` (0.5.8) |
 
 A package may also ship a **compute component** (world `compute`: `files`,
 `job` and WASI's clocks and randomness, no storage, no network), which job
 nodes run outside the log ([Compute actions](/protocol/compute-actions/)).
 
 A component imports this world and nothing else. Its WASI interfaces are
-pinned to 0.2.12 and `calimero:app` is 0.5.8; an import at an older patch of
+pinned to 0.2.12 and `calimero:app` is 0.5.7; an import at an older patch of
 the same minor (`wasi:*@0.2.z`, `calimero:app/*@0.5.z`) links as well, so an
 app built before a patch keeps installing and running. Nine WASI interfaces
 that Rust's standard library on `wasm32-wasip2` imports whatever the app does
@@ -207,7 +206,7 @@ rules:
   reaches the app's views only: a call to any other method is refused with `403`
   before it runs, so no run burns the developer's fuel uncounted.
 - **Entry size**: an entry over the log's cap is logged trapped (`HostDenied`),
-  and arguments over 512 KiB are `413 ARGS_TOO_LARGE`.
+  and arguments over 512 KiB, a call's or a view's, are `413 ARGS_TOO_LARGE`.
 - **Conflicts**: a run built on a state another entry has since moved past, or
   on a bundle an upgrade replaced, commits as a no-op and runs again.
 

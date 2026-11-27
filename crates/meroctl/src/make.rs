@@ -1161,20 +1161,6 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if let Some(uses) = uses_of(&meta, &package)? {
         let _ = manifest.insert("uses".into(), serde_json::to_value(&uses)?);
     }
-    // `[package.metadata.calimero.connectors.NAME] operations = [..], <limit> = [..]`: the
-    // node's first-party connectors the app calls (`calimero_sdk::connector`), checked for
-    // shape here and against the node's own connectors at install.
-    if let Some(connectors) = meta.table.get("connectors") {
-        let connectors: std::collections::BTreeMap<String, calimero_bundle::BundleConnector> =
-            serde_json::to_value(connectors)
-                .and_then(serde_json::from_value)
-                .wrap_err("[package.metadata.calimero.connectors]: each NAME takes operations = [..] and, per limit the operations take, a list of values (metadata, model)")?;
-        calimero_bundle::connectors::check(&connectors)
-            .map_err(|e| eyre!("[package.metadata.calimero.connectors]: {e}"))?;
-        if !connectors.is_empty() {
-            let _ = manifest.insert("connectors".into(), serde_json::to_value(&connectors)?);
-        }
-    }
     let upgrades = match a.upgrades {
         Some(Upgrades::Owner) => Some("owner".to_owned()),
         Some(Upgrades::Publisher) => Some("publisher".to_owned()),

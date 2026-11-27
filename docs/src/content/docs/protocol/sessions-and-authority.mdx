@@ -359,3 +359,19 @@ A refresh token younger than that mints a session from the system state at a rea
 (`sys_fresh`), live, its session not revoked, its passkey still the account's, and writes nothing;
 older, unkeyed, not caught up or not held fresh, it goes through `UseRefresh` as above.
 Every active session then writes once per rotation, not once per `SESSION_TTL`.
+
+### Holder-bound refresh tokens
+
+Code: `RefreshRecord::holder` (`types::HOLDER_REFRESH_TTL_SECS`, 7 days, against
+`REFRESH_TTL_SECS`; `RefreshRecord::ttl` and `issued_at` read the record's own),
+`api::auth::holder_for` (`400 BAD_HOLDER_KEY`, `409 FEATURE_NOT_ACTIVE` below
+`Feature::SessionHolders`), `NewSession::new(holder)` and `system::sign_in_args`
+(which names `holder` only when set, so an unbound sign-in signs the bytes it did),
+`api::auth::check_holder` before `kept_refresh` and `UseRefresh`, and
+`proof::verify_refresh_holder` (ECDSA P-256 `r ‖ s`, `HOLDER_PROOF_SKEW_SECS`).
+`accounts::authorize_exchange` refuses an exchange whose record changes `holder`.
+A reused bound token revokes its session only with the holder's proof: `api::auth::refresh`
+checks it against the exchanged record (`check_holder`) before it logs `RefreshReused`,
+which carries the proof (`holder_proof`, `Feature::SessionHolders`), and
+`accounts::authorize_reuse` checks it again at apply at the entry's time, so a replica that
+could not see the exchanged record cannot revoke without it either.

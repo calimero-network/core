@@ -28,10 +28,9 @@ pub use abi::{
     MAX_COMPUTE_WALL_SECS, SUPPORTED_ABI_VERSIONS,
 };
 pub use action::{
-    subcall_key, ActionHost, ActionStart, ConnectorHost, HttpExchange, HttpHost, HttpRequest,
-    HttpResponse, NoConnectors, NoHttp, CONNECTOR_METHOD, MAX_ACTION_SUBCALLS,
-    MAX_CONNECTOR_NAME_BYTES, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_RECORDED_BODY_BYTES,
-    MAX_STARTED_ACTIONS, NO_CONNECTORS,
+    subcall_key, ActionHost, ActionStart, HttpExchange, HttpHost, HttpRequest, HttpResponse,
+    NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_RECORDED_BODY_BYTES,
+    MAX_STARTED_ACTIONS,
 };
 pub use blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 pub use core::{

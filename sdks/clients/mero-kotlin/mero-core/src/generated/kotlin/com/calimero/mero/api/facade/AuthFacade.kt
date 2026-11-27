@@ -284,7 +284,7 @@ class AuthFacade internal constructor(
     /**
      * Start a sign-in
      *
-     * A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+     * A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
      *
      * **Who:** anyone.
      *
@@ -294,8 +294,9 @@ class AuthFacade internal constructor(
      */
     suspend fun loginBegin(
         origin: kotlin.String? = null,
+        holderKey: kotlin.String? = null,
     ): PasskeyChallenge =
-        api(null, null, emptySet()).accounts.loginBegin(loginBeginRequest = LoginBeginRequest(origin = origin))
+        api(null, null, emptySet()).accounts.loginBegin(loginBeginRequest = LoginBeginRequest(origin = origin, holderKey = holderKey))
 
     /**
      * Finish a sign-in
@@ -457,7 +458,7 @@ class AuthFacade internal constructor(
     /**
      * Refresh a session
      *
-     * A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+     * A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
      *
      * **Who:** anyone.
      *
@@ -467,8 +468,9 @@ class AuthFacade internal constructor(
      */
     suspend fun refresh(
         refreshToken: kotlin.String,
+        holderProof: RefreshRequestHolderProof? = null,
     ): Session =
-        api(null, null, emptySet()).accounts.refresh(refreshRequest = RefreshRequest(refreshToken = refreshToken))
+        api(null, null, emptySet()).accounts.refresh(refreshRequest = RefreshRequest(refreshToken = refreshToken, holderProof = holderProof))
 
     /**
      * Start a sign-up
@@ -491,7 +493,7 @@ class AuthFacade internal constructor(
     /**
      * Finish a sign-up
      *
-     * The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+     * The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
      *
      * **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -505,9 +507,10 @@ class AuthFacade internal constructor(
         challengeId: kotlin.String,
         registration: Registration,
         invite: kotlin.String? = null,
+        holderKey: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
     ): Session =
-        api(passkey, null, emptySet()).accounts.registerFinish(registerFinishRequest = RegisterFinishRequest(challengeId = challengeId, registration = registration, invite = invite))
+        api(passkey, null, emptySet()).accounts.registerFinish(registerFinishRequest = RegisterFinishRequest(challengeId = challengeId, registration = registration, invite = invite, holderKey = holderKey))
 
     /**
      * End one session

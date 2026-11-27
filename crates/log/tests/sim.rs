@@ -179,6 +179,7 @@ fn config() -> Config {
         election_min_ms: 300,
         election_max_ms: 600,
         snapshot_every: 15,
+        snapshot_scale_bytes: None,
     }
 }
 
