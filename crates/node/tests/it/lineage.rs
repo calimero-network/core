@@ -27,17 +27,33 @@ fn release(package: &str, version: &str, pinned: bool) -> Vec<u8> {
 
 /// [`release`] whose manifest declares `uses`, when not null.
 fn release_using(package: &str, version: &str, pinned: bool, uses: &Value) -> Vec<u8> {
+    let wasm = tagged(&format!("{package}@{version}"));
+    release_parts(package, version, pinned, uses, wasm, None)
+}
+
+/// A pinning release of `package@version` shipping `wasm` and, when given, `compute`.
+fn release_parts(
+    package: &str,
+    version: &str,
+    pinned: bool,
+    uses: &Value,
+    wasm: Vec<u8>,
+    compute: Option<Vec<u8>>,
+) -> Vec<u8> {
     use sha2::Digest;
     let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-    let wasm = tagged(&format!("{package}@{version}"));
+    let artifact = |path: &str, bytes: &[u8]| json!({ "path": path, "hash": hex::encode(sha2::Sha256::digest(bytes)), "size": bytes.len() });
     let mut manifest = json!({
         "version": "1.0",
         "package": package,
         "appVersion": version,
         "signerId": calimero_bundle::derive_signer_id_did_key(key.verifying_key().as_bytes()),
         "minRuntimeVersion": "0.1.0",
-        "wasm": { "path": "app.wasm", "hash": hex::encode(sha2::Sha256::digest(&wasm)), "size": wasm.len() },
+        "wasm": artifact("app.wasm", &wasm),
     });
+    if let Some(c) = &compute {
+        manifest["compute"] = artifact("compute.wasm", c);
+    }
     if pinned {
         manifest["lineage"] = json!("pinned");
     }
@@ -49,10 +65,12 @@ fn release_using(package: &str, version: &str, pinned: bool, uses: &Value) -> Ve
         Vec::new(),
         flate2::Compression::default(),
     ));
-    for (name, bytes) in [
+    let mut entries = vec![
         ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
         ("app.wasm", wasm),
-    ] {
+    ];
+    entries.extend(compute.map(|c| ("compute.wasm", c)));
+    for (name, bytes) in entries {
         let mut header = tar::Header::new_gnu();
         header.set_path(name).unwrap();
         header.set_size(bytes.len() as u64);
@@ -64,7 +82,11 @@ fn release_using(package: &str, version: &str, pinned: bool, uses: &Value) -> Ve
 
 /// The kv fixture with a custom section named `tag`: another module that runs the same.
 fn tagged(tag: &str) -> Vec<u8> {
-    let mut wasm = kv_wasm();
+    with_section(kv_wasm(), tag)
+}
+
+/// `wasm` with a custom section named `tag`.
+fn with_section(mut wasm: Vec<u8>, tag: &str) -> Vec<u8> {
     wasm.extend([
         0,
         u8::try_from(1 + tag.len()).unwrap(),
@@ -467,4 +489,114 @@ async fn a_half_finished_upgrade_is_repaired_by_upgrading_to_what_the_group_runs
     assert_eq!(up["status"], "ok", "{up}");
     let record = node.app(&app).await.unwrap().bundle;
     assert_eq!(group_bundle(&c, &app), Some(record));
+}
+
+/// The code `app`'s group runs on node 0: its bundle and compute part.
+fn group_code(c: &Cluster, app: &str) -> (Option<String>, Option<String>) {
+    c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .hosted(app)
+        .unwrap()
+        .read_local(|m, _| {
+            (
+                m.state.bundle.clone(),
+                m.state.component.head.compute_bundle.clone(),
+            )
+        })
+}
+
+/// Pinning releases 1.0.0 to 1.2.0 of the compute fixture: one app component, each its own
+/// compute part. Answers the cluster (the operator holding upgrades) and the app's id.
+async fn compute_lineage() -> (Cluster, String) {
+    use calimero_node::system::{Authority, Governance};
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance = Governance {
+            app_upgrades: Authority::Operator,
+            ..Governance::default()
+        };
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let both = crate::common::components("fixture-compute");
+    let compute = both.compute.clone().unwrap();
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let mpk = release_parts(
+            SEALED,
+            version,
+            true,
+            &Value::Null,
+            both.app.clone(),
+            Some(with_section(compute.clone(), version)),
+        );
+        let _ok = ops.ops().package_upload(mpk).await.unwrap();
+    }
+    let app = create(&alice, "1.0.0", None).await;
+    (c, app)
+}
+
+/// An upgrade judged on code whose compute part the group has since left is refused, as one
+/// whose bundle moved is: the group never goes back to older compute code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_judged_on_compute_the_group_left_is_refused() {
+    use calimero_node::node::CallRequest;
+    use calimero_node::types::Caller;
+    let (c, app) = compute_lineage().await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let parts = |version: &str| {
+        node.sys(|s| {
+            let v = &s.packages[SEALED].versions[version];
+            (v.services[""].clone(), v.compute[""].clone())
+        })
+    };
+    let (bundle, first) = parts("1.0.0");
+    let (_, next) = parts("1.1.0");
+    let judged = json!({ "bundle": bundle, "computeBundle": first });
+    let switch = |compute: &str| {
+        CallRequest::host(
+            app.clone(),
+            "__upgrade",
+            json!({ "bundle": bundle, "computeBundle": compute, "from": judged }),
+            Caller::System,
+        )
+    };
+    let moved = node.call(&switch(&next)).await.unwrap();
+    assert!(moved.error.is_null(), "{:?}", moved.error);
+    let late = node.call(&switch(&first)).await.unwrap();
+    assert_eq!(late.error["code"], "BundleMoved", "{:?}", late.error);
+    assert_eq!(group_code(&c, &app), (Some(bundle.clone()), Some(next)));
+}
+
+/// Two operator upgrades at once to releases sharing the app component: the group ends on the
+/// code, compute part included, the record names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_compute_upgrades_leave_the_group_on_the_recorded_code() {
+    let (c, _first) = compute_lineage().await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let (bob, _pk) = signed_up(&c, 2, "bob").await;
+    for round in 0..3 {
+        let app = create(&bob, "1.0.0", None).await;
+        let (a, b) = (c.client(1), c.client(2));
+        a.use_api_key("ops-secret").await;
+        b.use_api_key("ops-secret").await;
+        let path = format!("ops/apps/{app}/upgrade");
+        let (_x, _y) = tokio::join!(
+            harness::ops_signed(&a, &path, json!({ "version": "1.2.0" })),
+            harness::ops_signed(&b, &path, json!({ "version": "1.1.0" })),
+        );
+        let record = node.app(&app).await.unwrap();
+        let recorded = (Some(record.bundle), record.compute_bundle);
+        let mut group = (None, None);
+        for _ in 0..50 {
+            group = group_code(&c, &app);
+            if group == recorded {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(group, recorded, "round {round}");
+    }
 }
