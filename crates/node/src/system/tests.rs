@@ -13873,11 +13873,15 @@ fn an_upgrade_into_a_pinning_release_pins_the_instance() {
     let up = classified_upgrade("cora", "1.0.1", Some(pins), 10);
     assert!(up.features().contains(&Feature::PinnedLineage));
     let _ok = m.run_unproven(up).unwrap();
-    let pinned = Some(crate::types::AppLineage {
-        package: "p".into(),
-        signer_id: m.state.packages["p"].signer_id.clone(),
-    });
-    assert_eq!(m.state.apps["inst"].lineage, pinned);
+    let signer = m.state.packages["p"].signer_id.clone();
+    let pinned = |floor: &str| {
+        Some(crate::types::AppLineage {
+            package: "p".into(),
+            signer_id: signer.clone(),
+            floor: floor.into(),
+        })
+    };
+    assert_eq!(m.state.apps["inst"].lineage, pinned("1.0.1"));
     assert_eq!(
         m.run_unproven(classified_upgrade("cora", "1.0.0", None, 11)),
         Err(LINEAGE_OLDER_RELEASE)
@@ -13890,7 +13894,11 @@ fn an_upgrade_into_a_pinning_release_pins_the_instance() {
             12,
         ))
         .unwrap();
-    assert_eq!(m.state.apps["inst"].lineage, pinned, "nothing clears it");
+    assert_eq!(
+        m.state.apps["inst"].lineage,
+        pinned("1.1.0"),
+        "nothing clears it"
+    );
 }
 
 /// `pinsLineage` names a new pin only: an instance pinned already, now on a release that
@@ -13906,15 +13914,19 @@ fn an_instance_pinned_already_is_not_pinned_again() {
         .get_mut("1.0.1")
         .unwrap()
         .lineage = calimero_bundle::Lineage::Pinned;
-    let pinned = Some(crate::types::AppLineage {
-        package: "p".into(),
-        signer_id: m.state.packages["p"].signer_id.clone(),
-    });
-    m.state.apps.get_mut("inst").unwrap().lineage = pinned.clone();
+    let signer = m.state.packages["p"].signer_id.clone();
+    let pinned = |floor: &str| {
+        Some(crate::types::AppLineage {
+            package: "p".into(),
+            signer_id: signer.clone(),
+            floor: floor.into(),
+        })
+    };
+    m.state.apps.get_mut("inst").unwrap().lineage = pinned("1.0.0");
     let _ok = m
         .run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10))
         .unwrap();
-    assert_eq!(m.state.apps["inst"].lineage, pinned);
+    assert_eq!(m.state.apps["inst"].lineage, pinned("1.0.1"));
 }
 
 /// An organization's update policy, and an app's own over it, are set by an owner or
