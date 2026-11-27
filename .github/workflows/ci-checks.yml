@@ -284,6 +284,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/tests/check-like-ci.test.sh
 
+      - name: Test the mero-swift generator's retries
+        if: ${{ !cancelled() }}
+        run: bash scripts/tests/generate-openapi-retry.test.sh
+
       # ci-scope.py scopes jobs by this closure; one it misses is a source change
       # whose gate never runs.
       - name: Test path-dep-closure against cargo's resolve
