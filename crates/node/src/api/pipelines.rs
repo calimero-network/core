@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use calimero_identity::{b64url, sha256};
+use calimero_identity::sha256;
 use calimero_pipeline::{
     estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
     PriceTable, MAX_RUN_FILES,
@@ -21,7 +21,7 @@ use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult
 use crate::app::Status;
 use crate::component::{
     idem_key, parse_hex32, CostCap, FanOut, PipelineStartEntry, PipelineState, RunInputRef,
-    StepStatus, INPUT_NOT_HELD, KNOWN, TOO_MANY_PIPELINE_RUNS,
+    StepStatus, INPUT_NOT_HELD, KEY_TAKEN, TOO_MANY_PIPELINE_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
@@ -463,6 +463,7 @@ pub(super) async fn start(
 
 /// Everything a new pipeline run is made of: what a start takes from the request and the pinned
 /// release, or a retry from the run it repeats.
+#[derive(Clone)]
 struct Launch {
     name: String,
     version: String,
@@ -477,8 +478,8 @@ struct Launch {
     max_cost: Option<String>,
 }
 
-/// Checks the inputs are held, prices the cost cap and logs the start on the app's leader. With
-/// an idempotency key the run id is the key's, and a run it already started is answered again.
+/// Checks the inputs are held, prices the cost cap and logs the start on the app's leader. A
+/// run an idempotency key already started is answered again while the app keeps it.
 async fn start_launch(
     node: &Node,
     app: &AppRecord,
@@ -493,15 +494,13 @@ async fn start_launch(
             "an idempotency key is 1 to 256 bytes",
         ));
     }
-    let run = match key {
-        Some(key) => keyed_run(&app.app_id, &caller, key),
-        None => typed_id::<12>(),
-    };
-    if key.is_some() {
-        if let Some(answer) = started_before(node, app, &caller, &run, &launch).await? {
+    let key = key.map(|k| hex::encode(sha256(idem_key(&caller, k).as_bytes())));
+    if let Some(key) = &key {
+        if let Some(answer) = started_before(node, app, &caller, key, &launch).await? {
             return Ok((StatusCode::OK, Json(json!(answer))));
         }
     }
+    let run = typed_id::<12>();
     for id in launch.inputs.values().flatten() {
         let raw = parse_hex32(id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
@@ -515,6 +514,8 @@ async fn start_launch(
     let methods = module_methods(node, &launch.compute_bundle, &launch.modules).await?;
     let cost = cost_cap(node, &priced, &methods, launch.max_cost.as_deref()).await?;
     let retry_of = launch.retry_of.clone();
+    // A keyed start that loses a race is answered against the same request.
+    let raced = key.is_some().then(|| launch.clone());
     let entry = PipelineStartEntry {
         id: run.clone(),
         pipeline: launch.name,
@@ -532,10 +533,11 @@ async fn start_launch(
         cost,
         retry_of: launch.retry_of,
         limits: launch.limits,
+        key: key.clone(),
         ts_ms: 0,
     };
     let a = node
-        .start_pipeline_run(app, entry, caller, sys_index)
+        .start_pipeline_run(app, entry, caller.clone(), sys_index)
         .await?;
     match (a.status, a.error.as_str()) {
         (Status::Ok, _) => {
@@ -552,25 +554,20 @@ async fn start_launch(
             "this app has too many pipeline runs going; wait for one to end",
         )),
         (_, Some(INPUT_NOT_HELD)) => Err(expired()),
-        (_, Some(KNOWN)) if key.is_some() => Err(key_reused()),
+        // Another start with this key was applied first: answer its run.
+        (_, Some(KEY_TAKEN)) => {
+            let (Some(key), Some(launch)) = (key.as_deref(), raced.as_ref()) else {
+                return Err(ApiError::conflict(KEY_TAKEN));
+            };
+            match started_before(node, app, &caller, key, launch).await? {
+                Some(answer) => Ok((StatusCode::OK, Json(json!(answer)))),
+                None => Err(ApiError::unavailable("retry with the same idempotency key")),
+            }
+        }
         (status, why) => Err(ApiError::conflict(&format!(
             "the pipeline run was not started ({status:?}: {})",
             why.unwrap_or("no reason")
         ))),
-    }
-}
-
-/// The run id an idempotency key names: the same for the same app, caller and key, so a repeated
-/// start is the run the first one logged.
-fn keyed_run(app_id: &str, caller: &Caller, key: &str) -> String {
-    let mut seed = format!("pipeline-run|{app_id}|{}", idem_key(caller, key)).into_bytes();
-    loop {
-        let digest = sha256(&seed);
-        let id = b64url(&digest[..12]);
-        if !id.starts_with('-') {
-            return id;
-        }
-        seed = digest.to_vec();
     }
 }
 
@@ -582,20 +579,20 @@ fn key_reused() -> ApiError {
     )
 }
 
-/// The answer of the run this key already started, if any: its start again when the request
-/// matches the run's, a refusal when it does not.
+/// The answer of the run the key (its hash, [`PipelineStartEntry::key`]) started while the app
+/// keeps it: its start again when the request matches the run's, a refusal when it does not.
 async fn started_before(
     node: &Node,
     app: &AppRecord,
     caller: &Caller,
-    run: &str,
+    key: &str,
     launch: &Launch,
 ) -> Result<Option<PipelineStarted>, ApiError> {
     let known = node
         .view(&crate::node::ViewRequest {
             app_id: app.app_id.clone(),
             method: PIPELINE_VIEW.to_owned(),
-            args: json!({ "run": run, "files": false, "items": false }),
+            args: json!({ "key": key, "files": false, "items": false }),
             caller: caller.clone(),
             strong: true,
             min_index: 0,
@@ -621,7 +618,7 @@ async fn started_before(
         return Err(key_reused());
     }
     Ok(Some(PipelineStarted {
-        run: run.to_owned(),
+        run: known["id"].as_str().unwrap_or_default().to_owned(),
         worst_case: known["cost"]["worstCase"].as_str().map(str::to_owned),
         retry_of: launch.retry_of.clone(),
     }))

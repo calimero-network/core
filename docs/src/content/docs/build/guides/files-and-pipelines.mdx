@@ -366,9 +366,9 @@ What happens to the run:
   run starts that could take it past the cap, and the step that hits it fails
   with `COST_CAP`.
 - A start or retry with an `idempotencyKey` is the same run each time it is
-  sent: the run id is derived from the app, the caller and the key, and a
-  repeat answers the first one's `{ run }`, ended or not, while the app keeps
-  the run (its last 64 finished).
+  sent by the same caller: a repeat answers the first one's `{ run }`, ended
+  or not, while the app keeps the run (its last 64 finished).
+  Once the run is dropped the key is free, and a start with it is a new run.
   The same key with a different body is refused with `409 IDEMPOTENCY_KEY_REUSED`.
   The clients send a fresh key on every start and retry, which covers their own
   retries; a CI job that may start the same run again passes its own,

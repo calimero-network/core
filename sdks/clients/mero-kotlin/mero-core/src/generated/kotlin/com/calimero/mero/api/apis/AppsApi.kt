@@ -5067,7 +5067,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. With an &#x60;idempotencyKey&#x60; the run id is derived from the app, the caller and the key: a repeat answers the run it started while the app keeps it, and the same key with another body is &#x60;409 IDEMPOTENCY_KEY_REUSED&#x60;; a key is 1 to 256 bytes (&#x60;400 BAD_IDEMPOTENCY_KEY&#x60;).  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. With an &#x60;idempotencyKey&#x60; a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is &#x60;409 IDEMPOTENCY_KEY_REUSED&#x60;; a key is 1 to 256 bytes (&#x60;400 BAD_IDEMPOTENCY_KEY&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
@@ -5101,7 +5101,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. With an &#x60;idempotencyKey&#x60; the run id is derived from the app, the caller and the key: a repeat answers the run it started while the app keeps it, and the same key with another body is &#x60;409 IDEMPOTENCY_KEY_REUSED&#x60;; a key is 1 to 256 bytes (&#x60;400 BAD_IDEMPOTENCY_KEY&#x60;).  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. With an &#x60;idempotencyKey&#x60; a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is &#x60;409 IDEMPOTENCY_KEY_REUSED&#x60;; a key is 1 to 256 bytes (&#x60;400 BAD_IDEMPOTENCY_KEY&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
