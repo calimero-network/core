@@ -18,7 +18,11 @@ fn s(v: &Value) -> String {
         .to_owned()
 }
 
-async fn new_team(c: &Client, org: &str, name: &str) -> Result<String, calimero_client::Error> {
+async fn new_team(
+    c: &Client,
+    org: &str,
+    name: &str,
+) -> Result<String, Box<calimero_client::Error>> {
     let v = c
         .orgs()
         .team_create(org, name, TeamJoin::Invite, None)
