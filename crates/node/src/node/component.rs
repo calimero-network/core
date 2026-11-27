@@ -1988,28 +1988,82 @@ impl Node {
         Ok(a)
     }
 
-    /// `app`'s usage book (what it used per UTC day), from a replica: this node's if it
-    /// is one of the app's replicas, else one that is. An app recorded before components
-    /// (SDK 0.12, no longer run) has none.
+    /// `app`'s usage book (what it used per UTC day), read at the app group's read
+    /// index, so it counts every call acknowledged before the request arrived,
+    /// whichever node answers: this node's replica once it applied the index the
+    /// app's leader named ([`Self::usage_fresh_here`]), else a replica that did
+    /// (`internal/usage`), else, best effort, the first replica's applied state
+    /// (this node's first). An app recorded before components (SDK 0.12, no longer
+    /// run) has none. See
+    /// [Reads](https://calimero-network.github.io/core/protocol/reads/#usage).
     pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
         if app.executor != Executor::Component {
             return Ok(UsageBook::default());
         }
-        if let Some(g) = self.replica_group(app) {
-            return Ok(g.read_local(|m, _| m.state.component.head.usage.clone()));
-        }
-        let body = json!({ "app": app.app_id });
-        for id in &app.replicas {
-            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
-                continue;
-            };
-            if let Ok(v) = self.peer_forward(&addr, "internal/usage", &body).await {
-                if let Ok(book) = serde_json::from_value::<UsageBook>(v["usage"].clone()) {
-                    return Ok(book);
-                }
+        let here = self.replica_group(app);
+        let mut leader = None;
+        if let Some(g) = &here {
+            match self.usage_fresh_here(app, g).await {
+                Ok(book) => return Ok(book),
+                Err(addr) => leader = addr,
             }
         }
-        Err(ApiError::unavailable("no replica answered"))
+        let mut stale = here.map(|g| g.read_local(|m, _| m.state.component.head.usage.clone()));
+        let body = json!({ "app": app.app_id });
+        let others: Vec<String> = self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|id| **id != self.config.node_id)
+                .filter_map(|id| s.nodes.get(id).map(|n| n.addr.clone()))
+                .collect()
+        });
+        // The leader first: it answers from its own state, with no wait to apply.
+        let others = leader
+            .iter()
+            .cloned()
+            .chain(others.into_iter().filter(|a| leader.as_ref() != Some(a)));
+        for addr in others {
+            let Ok(v) = self.peer_forward(&addr, "internal/usage", &body).await else {
+                continue;
+            };
+            let Ok(book) = serde_json::from_value::<UsageBook>(v["usage"].clone()) else {
+                continue;
+            };
+            // A peer before this release answers its applied state and no `fresh`.
+            if v["fresh"].as_bool() == Some(true) {
+                return Ok(book);
+            }
+            stale.get_or_insert(book);
+        }
+        stale.ok_or_else(|| ApiError::unavailable("no replica answered"))
+    }
+
+    /// `app`'s usage book from this node's replica `g` at the app group's read
+    /// index: read on a confirmed leader, or on a follower once it applied the
+    /// index the leader named (`internal/app/index`, as a strong view's replica
+    /// does in `Node::view_once`); one heartbeat round of the app's group, no
+    /// log entry. When this replica cannot answer fresh within `Config::read_wait`,
+    /// the error names the leader's address, if known, to ask instead.
+    pub async fn usage_fresh_here(
+        &self,
+        app: &AppRecord,
+        g: &Group<AppMachine>,
+    ) -> Result<UsageBook, Option<String>> {
+        let usage = |m: &AppMachine, _: u64| m.state.component.head.usage.clone();
+        match g.read_strong(usage).await {
+            Ok(book) => Ok(book),
+            Err(WriteError::NotLeader {
+                leader: Some((id, addr)),
+            }) if id != self.config.node_id && !addr.is_empty() => {
+                match self.app_read_index(&addr, &app.app_id).await {
+                    Some(index) if g.wait_applied(index, self.config.read_wait).await => {
+                        Ok(g.read_local(usage))
+                    }
+                    _ => Err(Some(addr)),
+                }
+            }
+            Err(_) => Err(None),
+        }
     }
 
     /// What each component app this node replicates used on `day`, by app id: what a

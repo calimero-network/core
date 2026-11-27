@@ -444,6 +444,7 @@ Code: `component::RunUsage`, `DayUsage`.
 - Pruning keeps `USAGE_DAYS` back from the earlier of that day and the day after the newest held, so a far-future stamp never erases real days.
 - Not counted: timeouts (never logged), views, actions and compute runs.
 - The API gives every figure as a decimal string, so no client loses precision on a 64-bit value.
+- The API reads a book at its app group's read index, so it counts every call acknowledged before the read ([Reads](/protocol/reads/#usage)).
 
 ### What a component sees
 

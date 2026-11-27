@@ -114,6 +114,12 @@ and outbound requests. Instance-based billing on dedicated clusters needs none
 of it (it bills node lifetime, which the control plane knows from its VMs).
 Code: `crates/node/src/usage.rs`.
 
+These counters are per node and scraped. The usage the API answers is
+different: `GET /apps/{app}/usage`, `GET /orgs/{org}/usage` and
+`GET /auth/usage` read the usage books in the app groups' logs, each at its
+group's read index, so a read made right after a call counts it on any node
+([Reads](/protocol/reads/#usage)).
+
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `calimero_app_calls_total` | counter | `app`, `org`, `developer`, `kind` | WASM calls this node ran for the app whose answer stood. `kind` is `mutation` (a call through `/intents`, the app's `init`, an upgrade's migration), `view` (a view, strong or stale, and a declared `#[app::view]` called through `/intents`), `followup` (an event handler, a timer, an xcall, counted on the app it called) or `compute` (a compute run that ended with a job node's signed report). |
