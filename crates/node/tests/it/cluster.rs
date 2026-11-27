@@ -7368,8 +7368,9 @@ async fn a_flood_of_attestations_does_not_stall_the_node() {
 /// Anonymous `/attestation` requests that keep a node's quote queue full, each
 /// quote taking a second as a TDX quote does, must not keep the cluster's
 /// own nodes from attesting it: a node that restarts during the flood opens
-/// its channel to the flooded node (attesting it on the way) and reaches an
-/// internal route, while the anonymous requests past the queue are `503 BUSY`.
+/// its channel to the flooded node (attesting it on the way) and reaches a route
+/// every node answers (the system index is the leader's alone), while the
+/// anonymous requests past the queue are `503 BUSY`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     const FLOODERS: usize = 40;
@@ -7411,11 +7412,11 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     let started = std::time::Instant::now();
     let reached = tokio::time::timeout(
         Duration::from_secs(20),
-        c.nodes[1]
-            .as_ref()
-            .unwrap()
-            .node
-            .peer_post(&flooded, "internal/system/index", &json!({})),
+        c.nodes[1].as_ref().unwrap().node.peer_post(
+            &flooded,
+            "internal/usage/today",
+            &json!({ "day": 0 }),
+        ),
     )
     .await;
     let took = started.elapsed();
