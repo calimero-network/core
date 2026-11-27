@@ -590,6 +590,109 @@ fn abi_reads_method_attributes() {
     assert!(Abi::from_json(&json!({ "abiVersion": 1 })).is_err());
 }
 
+/// `subscribable` marks a view clients may watch; it is refused on any other kind.
+#[test]
+fn only_a_view_is_subscribable() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {
+            "result": { "kind": "view", "subscribable": true },
+            "plain": { "kind": "view" }
+        }
+    }))
+    .unwrap();
+    assert!(abi.methods["result"].subscribable);
+    assert!(!abi.methods["plain"].subscribable);
+    for kind in ["call", "init", "action"] {
+        let err = Abi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "x": { "kind": kind, "subscribable": true } }
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("only for views"), "{kind}: {err}");
+    }
+}
+
+/// The app sets how often a watch of a view may be sent a new answer, within 250 ms–10 s.
+#[test]
+fn a_subscribable_view_carries_its_watch_interval() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {
+            "fast": { "kind": "view", "subscribable": true, "watchIntervalMs": 250 },
+            "plain": { "kind": "view", "subscribable": true }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        abi.methods["fast"].watch_interval,
+        Some(Duration::from_millis(250))
+    );
+    assert_eq!(abi.methods["plain"].watch_interval, None);
+    for (method, why) in [
+        (
+            json!({ "kind": "view", "subscribable": true, "watchIntervalMs": 100 }),
+            "250 to 10000",
+        ),
+        (
+            json!({ "kind": "view", "subscribable": true, "watchIntervalMs": 20_000 }),
+            "250 to 10000",
+        ),
+        (
+            json!({ "kind": "view", "watchIntervalMs": 500 }),
+            "only for subscribable",
+        ),
+    ] {
+        let err =
+            Abi::from_json(&json!({ "abiVersion": 1, "methods": { "x": method } })).unwrap_err();
+        assert!(err.to_string().contains(why), "{err}");
+    }
+}
+
+/// A recorded view's read set holds the keys it got and the part of each range it scanned:
+/// a write past where a cursor stopped does not touch it.
+#[test]
+fn a_view_records_what_it_read() {
+    let state = base(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3"), (b"x", b"9")]);
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    assert_eq!(host.storage_get(b"x"), Ok(Some(b"9".to_vec())));
+    let cursor = host.range_open(b"a", b"d", false).unwrap();
+    assert_eq!(host.range_next(cursor, 2).unwrap().len(), 2);
+    host.range_close(cursor);
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    let set = out.read_set.unwrap();
+    assert!(set.unbounded().is_none());
+    let touched = |k: &[u8]| set.touches_key(&stored_key(GENERATION, k));
+    assert!(touched(b"x"));
+    assert!(touched(b"a"));
+    assert!(touched(b"b"));
+    assert!(touched(b"ab"));
+    assert!(!touched(b"c"));
+    assert!(!touched(b"y"));
+
+    // Without `with_read_set` nothing is recorded.
+    let host = core_for(&state, &inv(InvocationKind::View));
+    let _ = host.storage_get(b"x");
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(out.read_set.is_none());
+}
+
+/// A cursor read to its end covers its whole range, even when the view never closed it.
+#[test]
+fn an_exhausted_cursor_covers_its_range() {
+    let state = base(&[(b"a", b"1")]);
+    let mut host = core_for(&state, &inv(InvocationKind::View)).with_read_set();
+    let cursor = host.range_open(b"a", b"d", false).unwrap();
+    assert_eq!(host.range_next(cursor, 10).unwrap().len(), 1);
+    assert!(host.range_next(cursor, 10).unwrap().is_empty());
+    let set = host
+        .finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap();
+    assert!(set.touches_key(&stored_key(GENERATION, b"c")));
+    assert!(!set.touches_key(&stored_key(GENERATION, b"d")));
+}
+
 #[test]
 fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
     let abi = Abi::from_json(&json!({

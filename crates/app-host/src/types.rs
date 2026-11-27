@@ -240,6 +240,8 @@ pub struct Outcome {
     pub compute_starts: Vec<StartedRun>,
     pub compute_cancels: Vec<String>,
     pub usage: Usage,
+    /// What the run read, when it was asked to record it (`HostCore::with_read_set`).
+    pub read_set: Option<crate::read_set::ReadSet>,
 }
 
 impl fmt::Debug for Outcome {
@@ -362,6 +364,7 @@ mod tests {
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             usage: Usage::default(),
+            read_set: None,
         };
         for printed in [format!("{out:?}"), format!("{out:#?}")] {
             assert!(!printed.contains("secret diagnosis"), "{printed}");

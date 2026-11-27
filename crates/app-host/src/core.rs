@@ -1,7 +1,7 @@
 //! The host core: the only code that reads or writes app state, applies access policy or
 //! decides what an invocation may do. Engines map WIT calls onto it.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,6 +25,7 @@ use crate::fuel::{
     SEARCH_TOO_MANY,
 };
 use crate::overlay::{Cursor, Overlay};
+use crate::read_set::{table_records, CursorRead, ReadSet};
 use crate::runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN, NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN,
@@ -248,6 +249,10 @@ pub struct HostCore {
     deadline: Option<Instant>,
     /// Whether a host call met the deadline: `finish` answers `Timeout`.
     timed_out: bool,
+    /// What the run read (`with_read_set`); `None`: not recorded.
+    read_set: RefCell<Option<ReadSet>>,
+    /// While recording, what each open cursor has read so far.
+    cursor_reads: BTreeMap<u32, CursorRead>,
 }
 
 impl HostCore {
@@ -316,7 +321,24 @@ impl HostCore {
             searches: SearchBudget::default(),
             deadline: None,
             timed_out: false,
+            read_set: RefCell::new(None),
+            cursor_reads: BTreeMap::new(),
         })
+    }
+
+    /// Records what the run reads, for a live view: every key `storage_get` asks for and
+    /// every range a cursor scans, cut after the last key returned when the scan stopped
+    /// early. `finish` puts it on [`Outcome::read_set`].
+    #[must_use]
+    pub fn with_read_set(self) -> Self {
+        *self.read_set.borrow_mut() = Some(ReadSet::default());
+        self
+    }
+
+    fn give_up_read_set(&self, reason: &str) {
+        if let Some(set) = self.read_set.borrow_mut().as_mut() {
+            set.give_up(reason.to_owned());
+        }
     }
 
     /// When the run's wall clock ends. The engine's own deadline counts only while the
@@ -481,7 +503,11 @@ impl HostCore {
         self.burn_bytes(key.len());
         self.may_read()?;
         check_key(key)?;
-        let value = self.current(&stored_key(GENERATION, key));
+        let key = stored_key(GENERATION, key);
+        if let Some(set) = self.read_set.borrow_mut().as_mut() {
+            set.key(&key);
+        }
+        let value = self.current(&key);
         self.burn_call(FUEL_STATE_ACCESS, value.as_ref().map_or(0, Vec::len));
         Ok(value)
     }
@@ -593,6 +619,16 @@ impl HostCore {
             .next_cursor
             .checked_add(1)
             .ok_or_else(|| HostDenied::new("cursor ids exhausted"))?;
+        if self.read_set.borrow().is_some() {
+            let read = CursorRead {
+                start: start.clone(),
+                end: end.clone(),
+                reverse,
+                last: None,
+                exhausted: false,
+            };
+            let _ = self.cursor_reads.insert(id, read);
+        }
         let _ = self
             .cursors
             .insert(id, Cursor::new(start, end, reverse, self.overlay.seq()));
@@ -614,6 +650,14 @@ impl HostCore {
             MAX_RANGE_BATCH_BYTES,
             &mut self.peak_buffered,
         );
+        if let Some(read) = self.cursor_reads.get_mut(&id.0) {
+            match batch.last() {
+                Some((last, _)) => read.last = Some(last.clone()),
+                // Only an empty batch is the end.
+                None if max > 0 => read.exhausted = true,
+                None => {}
+            }
+        }
         let bytes = batch.iter().fold(0usize, |n, (k, v)| {
             n.saturating_add(k.len()).saturating_add(v.len())
         });
@@ -633,6 +677,11 @@ impl HostCore {
         // A resource's drop is not wrapped by the engine: its base is owed here.
         self.burn(FUEL_HOST_CALL);
         let _ = self.cursors.remove(&id.0);
+        if let Some(read) = self.cursor_reads.remove(&id.0) {
+            if let Some(set) = self.read_set.get_mut().as_mut() {
+                read.close(set);
+            }
+        }
     }
 
     // --- rebuild: refused, migrations are not enabled ----------------------------------
@@ -1131,6 +1180,7 @@ impl HostCore {
         if !self.may_xcall(crate::xcall::XcallKind::View) {
             return Err(self.denied("xcall.view"));
         }
+        self.give_up_read_set("the view reads another app");
         let host = match self.sync_target(app, method, args) {
             Ok(host) => host,
             Err(e) => return Ok(Err(e)),
@@ -1160,6 +1210,7 @@ impl HostCore {
         if !self.may_xcall(XcallKind::View) {
             return Err(self.denied("xcall.batch"));
         }
+        self.give_up_read_set("the view reads another app");
         if requests.iter().any(|r| r.kind == XcallKind::Call) && !self.may_xcall(XcallKind::Call) {
             return Err(self.denied("xcall.call"));
         }
@@ -1337,6 +1388,11 @@ impl HostCore {
         self.burn_bytes(query.table.len().saturating_add(query.text.len()));
         if self.inv.kind != InvocationKind::View {
             return Err(self.denied("search"));
+        }
+        if let Some(set) = self.read_set.get_mut().as_mut() {
+            // The hits depend on every record of the table.
+            let (start, end) = table_records(GENERATION, &query.table);
+            set.range(start, end);
         }
         if query.limit == 0 || query.limit > MAX_SEARCH_LIMIT {
             return Ok(Err(format!("limit must be 1 to {MAX_SEARCH_LIMIT}")));
@@ -1555,7 +1611,13 @@ impl HostCore {
     /// The outcome of the run. Anything but `Ok` drops the diff and the events; the
     /// result and the app log are kept. `usage.writes` is the core's own count.
     #[must_use]
-    pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+    pub fn finish(mut self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+        let mut read_set = self.read_set.get_mut().take();
+        if let Some(set) = &mut read_set {
+            for (_, read) in std::mem::take(&mut self.cursor_reads) {
+                read.close(set);
+            }
+        }
         let reported = match &status {
             Status::Ok => result.len(),
             Status::AppError { code, message } => code.len().saturating_add(message.len()),
@@ -1616,6 +1678,7 @@ impl HostCore {
                 writes: self.writes,
                 ..usage
             },
+            read_set,
         }
     }
 

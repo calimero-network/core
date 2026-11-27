@@ -346,6 +346,15 @@ impl Diff {
             ),
             (Severity::Compatible, "no longer allow(action) only"),
         );
+        flag(
+            o.subscribable,
+            n.subscribable,
+            (Severity::Compatible, "now subscribable"),
+            (
+                Severity::Breaking,
+                "no longer subscribable: its watches end and new ones are refused",
+            ),
+        );
         let lost: Vec<&String> = if n.allow_apps.iter().any(|a| a == "*") {
             Vec::new()
         } else {
@@ -375,6 +384,19 @@ impl Diff {
                     "rate {} -> {}",
                     o.rate.as_deref().unwrap_or("none"),
                     n.rate.as_deref().unwrap_or("none")
+                ),
+            );
+        }
+        // The app sets how often its watches update; clients only ever slow it.
+        if o.watch_interval_ms != n.watch_interval_ms {
+            let ms = |v: Option<u64>| v.map_or_else(|| "default".to_owned(), |v| format!("{v}ms"));
+            self.push(
+                Severity::Compatible,
+                subject,
+                format!(
+                    "watch interval {} -> {}",
+                    ms(o.watch_interval_ms),
+                    ms(n.watch_interval_ms)
                 ),
             );
         }
@@ -703,6 +725,36 @@ mod tests {
                 "method c: no longer public: callers who are not signed in are refused",
                 "method d: no longer accepts xcalls from y",
             ]
+        );
+    }
+
+    /// Watches of a view that is no longer subscribable end, and new ones are refused; a
+    /// new watch rate is the app's to set, and clients get it on their next frame.
+    #[test]
+    fn a_view_no_longer_subscribable_breaks_and_a_new_rate_does_not() {
+        let old = abi(json!({
+            "a": { "kind": "view", "params": [], "subscribable": true },
+            "b": { "kind": "view", "params": [] },
+            "c": { "kind": "view", "params": [], "subscribable": true, "watchIntervalMs": 250 },
+        }));
+        let new = abi(json!({
+            "a": { "kind": "view", "params": [] },
+            "b": { "kind": "view", "params": [], "subscribable": true },
+            "c": { "kind": "view", "params": [], "subscribable": true, "watchIntervalMs": 2000 },
+        }));
+        let r = diff(&old, &new);
+        assert_eq!(
+            breaking(&r),
+            ["method a: no longer subscribable: its watches end and new ones are refused"]
+        );
+        let all = r.to_string();
+        assert!(
+            all.contains("compatible method b: now subscribable"),
+            "{all}"
+        );
+        assert!(
+            all.contains("compatible method c: watch interval 250ms -> 2000ms"),
+            "{all}"
         );
     }
 

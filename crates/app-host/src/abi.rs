@@ -60,7 +60,17 @@ pub struct MethodAbi {
     pub action_only: bool,
     /// Receives a compute run's outcome; only the node invokes it.
     pub compute_result: bool,
+    /// A view clients may watch for its answer to change; views only.
+    pub subscribable: bool,
+    /// The most often a watch of it is sent a new answer (`watchIntervalMs`), set by the
+    /// app; subscribable views only, [`MIN_WATCH_INTERVAL`] to [`MAX_WATCH_INTERVAL`].
+    pub watch_interval: Option<Duration>,
 }
+
+/// The fastest watch interval an app may set.
+pub const MIN_WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// The slowest watch interval an app may set.
+pub const MAX_WATCH_INTERVAL: Duration = Duration::from_millis(10_000);
 
 impl MethodAbi {
     /// Whether a delivered xcall from `app` may run it.
@@ -145,6 +155,26 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         )));
     }
     let compute_result = flag(fields, "computeResult", name)?;
+    let subscribable = flag(fields, "subscribable", name)?;
+    if subscribable && kind != MethodKind::View {
+        return Err(bad(format!("{name}: `subscribable` is only for views")));
+    }
+    let watch_interval = match fields.get("watchIntervalMs") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let ms = v
+                .as_u64()
+                .map(Duration::from_millis)
+                .filter(|d| (MIN_WATCH_INTERVAL..=MAX_WATCH_INTERVAL).contains(d))
+                .ok_or_else(|| bad(format!("{name}: watchIntervalMs {v} is not 250 to 10000")))?;
+            if !subscribable {
+                return Err(bad(format!(
+                    "{name}: `watchIntervalMs` is only for subscribable views"
+                )));
+            }
+            Some(ms)
+        }
+    };
     if compute_result && kind != MethodKind::Call {
         return Err(bad(format!(
             "{name}: `computeResult` is only for call methods"
@@ -176,6 +206,8 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
             Some(other) => return Err(bad(format!("{name}: allowApps is not a list: {other}"))),
         },
         compute_result,
+        subscribable,
+        watch_interval,
     })
 }
 
