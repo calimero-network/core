@@ -88,7 +88,6 @@ fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
         services: None,
         pipelines: Vec::new(),
         signature: None,
-        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
@@ -184,7 +183,7 @@ async fn reaches(c: &Client, org: &str) -> Vec<String> {
 
 /// The accounts `c` sees in `org`'s member directory (`GET /orgs/{org}`).
 async fn directory(c: &Client, org: &str) -> Vec<String> {
-    let v = c.orgs().get(org).await.map(wire).unwrap();
+    let v = c.orgs().get(org, None, None, None).await.map(wire).unwrap();
     v["members"].as_object().unwrap().keys().cloned().collect()
 }
 
@@ -469,7 +468,12 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
     let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
     assert_eq!(
-        alice.orgs().get(&org).await.map(wire).unwrap()["mode"],
+        alice
+            .orgs()
+            .get(&org, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["mode"],
         "legacy"
     );
     for p in [&bob, &carol] {
@@ -544,7 +548,12 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     assert!(!seen.contains(&carol_id), "{seen:?}");
     assert!(!directory(&carol, &org).await.contains(&dave_id));
     assert_eq!(directory(&alice, &org).await.len(), 4);
-    let full = dave.orgs().get(&org).await.map(wire).unwrap();
+    let full = dave
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(
         !serde_json::to_string(&full).unwrap().contains(&carol_id),
         "{full}"
@@ -1327,7 +1336,12 @@ async fn an_all_apps_member_gets_every_app_added_later() {
     assert!(listed.iter().any(|i| i["allApps"] == true), "{listed:?}");
     join(&bob, &s(&token)).await;
     let bob_id = id(&bob).await;
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["allApps"], json!([bob_id]), "{o}");
     // Chat was there before: Bob is not in it.
     assert!(!reaches(&bob, &org).await.contains(&chat));
@@ -1373,7 +1387,12 @@ async fn an_all_apps_member_gets_every_app_added_later() {
         .await
         .map(wire)
         .unwrap();
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["allApps"], json!([carol_id]), "{o}");
 }
 

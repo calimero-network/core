@@ -1325,7 +1325,7 @@ extension CalimeroClient {
 
         /// Refresh a session: `POST /auth/refresh` (`refresh`).
         ///
-        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
         ///
         /// **Who:** anyone.
         @discardableResult
@@ -1982,12 +1982,12 @@ extension CalimeroClient {
 
         /// One organization: `GET /orgs/{org}` (`org_get`).
         ///
-        /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+        /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func get(org: Swift.String) async throws -> Components.Schemas.Org {
-            let input = Operations.OrgGet.Input(path: .init(org: org))
+        public func get(org: Swift.String, limit: Swift.Int64? = nil, teamsAfter: Swift.String? = nil, membersAfter: Swift.String? = nil) async throws -> Components.Schemas.Org {
+            let input = Operations.OrgGet.Input(path: .init(org: org), query: .init(limit: limit, teamsAfter: teamsAfter, membersAfter: membersAfter))
             return try await client.perform { api in
                 try await api.orgGet(input).ok.body.json
             }
@@ -2431,6 +2431,19 @@ extension CalimeroClient {
             let input = Operations.PackageCapabilities.Input(path: .init(package: package, version: version), query: .init(service: service))
             return try await client.perform { api in
                 try await api.packageCapabilities(input).ok.body.json
+            }
+        }
+
+        /// A release's frontend files: `GET /packages/{package}/{version}/frontend` (`package_frontend`).
+        ///
+        /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+        ///
+        /// **Who:** anyone.
+        @discardableResult
+        public func frontend(package: Swift.String, version: Swift.String) async throws -> Components.Schemas.FrontendDigests {
+            let input = Operations.PackageFrontend.Input(path: .init(package: package, version: version))
+            return try await client.perform { api in
+                try await api.packageFrontend(input).ok.body.json
             }
         }
 

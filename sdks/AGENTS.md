@@ -17,6 +17,8 @@ sdks/
 │   ├── mero-icons/          # React       npm  @calimero-network/mero-icons
 │   ├── mero-tokens/         # TypeScript  npm  @calimero-network/mero-tokens
 │   └── mero-charts/         # React       npm  @calimero-network/mero-charts (on mero-design)
+├── plugins/connectors/      # Rust crates an app compiles in to reach one external service
+│   └── nearai/              # calimero-connector-nearai: NEAR AI Cloud chat completions
 ├── abi/                     # apps' released ABIs the clients generate typed app clients from (SOURCE: where each comes from)
 ├── package.json             # the pnpm workspace of the JS SDKs (private)
 └── pnpm-workspace.yaml

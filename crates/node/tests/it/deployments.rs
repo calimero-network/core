@@ -75,7 +75,6 @@ fn mpk_using(
         services: None,
         pipelines: Vec::new(),
         signature: None,
-        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
@@ -346,7 +345,12 @@ async fn an_organization_deploys_only_holding_a_recovery_key() {
             .unwrap_err(),
     );
     recoverable(&alice, &mut alice_pk, &acme, [6; 32]).await;
-    let o = alice.orgs().get(&acme).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&acme, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(
         o["recovery"]["publicKey"],
         json!(calimero_identity::recovery::recovery_public(&[6; 32])),

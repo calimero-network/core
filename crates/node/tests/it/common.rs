@@ -192,6 +192,7 @@ impl Cluster {
                         election_min_ms: 500,
                         election_max_ms: 1000,
                         snapshot_every: 200,
+                        snapshot_scale_bytes: None,
                     },
                     read_wait: Duration::from_secs(2),
                     sys_read_lease: Duration::ZERO,
@@ -527,7 +528,6 @@ fn mpk_build(
             .map(|(name, yaml)| artifact(name, yaml.as_bytes()))
             .collect(),
         signature: None,
-        connectors: None,
     };
     if named_service {
         manifest.services = Some(vec![calimero_bundle::BundleService {

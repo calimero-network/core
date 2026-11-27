@@ -98,7 +98,6 @@ fn release_of(
         services: None,
         pipelines: Vec::new(),
         signature: None,
-        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
@@ -581,9 +580,6 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "minRuntimeVersion": { "from": "0.1.0", "to": "0.1.0" },
         },
     });
-    // Neither release declares a connector (kept out of the literal: `json!`'s recursion limit).
-    let mut expected = expected;
-    expected["upgrade"]["connectors"] = json!({ "added": [], "removed": [], "kept": [] });
     assert_eq!(
         snapshot,
         expected,
@@ -1388,7 +1384,12 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     // A request with no organization (`account`) is her personal one's.
     let mine = home_org(&alice).await;
     let approved = || async {
-        alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"]
+        alice
+            .orgs()
+            .get(&mine, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["approvedReleases"]
             .as_array()
             .unwrap()
             .clone()

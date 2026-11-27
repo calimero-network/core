@@ -222,6 +222,7 @@ from .openapi.api.packages import origins_add as _origins_add
 from .openapi.api.packages import origins_list as _origins_list
 from .openapi.api.packages import origins_remove as _origins_remove
 from .openapi.api.packages import package_capabilities as _package_capabilities
+from .openapi.api.packages import package_frontend as _package_frontend
 from .openapi.api.packages import package_get as _package_get
 from .openapi.api.packages import package_install as _package_install
 from .openapi.api.packages import package_list as _package_list
@@ -2899,7 +2900,7 @@ class Auth(Group):
     def refresh(self, *, refresh_token, holder_proof=UNSET):
         """Refresh a session (`POST /auth/refresh`, `refresh`).
 
-        A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\\0" ‖ at ‖ "\\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+        A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\\0" ‖ at ‖ "\\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
 
         **Who:** anyone.
 
@@ -4228,6 +4229,9 @@ class Ops(Group):
         max_concurrent_runs_per_org=UNSET,
         compute_fuel_per_org=UNSET,
         max_fuel_per_developer_per_day=UNSET,
+        max_teams_per_org=UNSET,
+        max_metadata_bytes_per_org=UNSET,
+        max_metadata_bytes_per_account=UNSET,
         max_concurrent_runs=UNSET,
         compute_fuel=UNSET,
         max_file_bytes=UNSET,
@@ -4251,6 +4255,9 @@ class Ops(Group):
             max_concurrent_runs_per_org: body `maxConcurrentRunsPerOrg`
             compute_fuel_per_org: body `computeFuelPerOrg`
             max_fuel_per_developer_per_day: body `maxFuelPerDeveloperPerDay`
+            max_teams_per_org: body `maxTeamsPerOrg`
+            max_metadata_bytes_per_org: body `maxMetadataBytesPerOrg`
+            max_metadata_bytes_per_account: body `maxMetadataBytesPerAccount`
             max_concurrent_runs: body `maxConcurrentRuns`
             compute_fuel: body `computeFuel`
             max_file_bytes: body `maxFileBytes`
@@ -4274,6 +4281,9 @@ class Ops(Group):
                 "maxConcurrentRunsPerOrg": max_concurrent_runs_per_org,
                 "computeFuelPerOrg": compute_fuel_per_org,
                 "maxFuelPerDeveloperPerDay": max_fuel_per_developer_per_day,
+                "maxTeamsPerOrg": max_teams_per_org,
+                "maxMetadataBytesPerOrg": max_metadata_bytes_per_org,
+                "maxMetadataBytesPerAccount": max_metadata_bytes_per_account,
                 "maxConcurrentRuns": max_concurrent_runs,
                 "computeFuel": compute_fuel,
                 "maxFileBytes": max_file_bytes,
@@ -5058,19 +5068,31 @@ class Orgs(Group):
         """
         return self._run(_ORG_EGRESS, (org,), {}, {"egress": egress}, confirm=confirm)
 
-    def get(self, *, org):
+    def get(self, *, org, limit=UNSET, teams_after=UNSET, members_after=UNSET):
         """One organization (`GET /orgs/{org}`, `org_get`).
 
-        As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+        As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
 
         **Who:** signed in (a session or an API key).
 
         Args:
             org: path
+            limit: query
+            teams_after: query
+            members_after: query
 
         Returns: Org
         """
-        return self._run(_ORG_GET, (org,), {}, None)
+        return self._run(
+            _ORG_GET,
+            (org,),
+            {
+                "limit": limit,
+                "teams_after": teams_after,
+                "members_after": members_after,
+            },
+            None,
+        )
 
     def invite_create(
         self,
@@ -5884,6 +5906,12 @@ _PACKAGE_CAPABILITIES = Operation(
     body="none",
     answer="json",
 )
+_PACKAGE_FRONTEND = Operation(
+    _package_frontend,
+    "package_frontend",
+    body="none",
+    answer="json",
+)
 _PACKAGE_GET = Operation(
     _package_get,
     "package_get",
@@ -5982,6 +6010,29 @@ class Packages(Group):
                 version,
             ),
             {"service": service},
+            None,
+        )
+
+    def frontend(self, *, package, version):
+        """A release's frontend files (`GET /packages/{package}/{version}/frontend`, `package_frontend`).
+
+        Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+
+        **Who:** anyone.
+
+        Args:
+            package: path
+            version: path
+
+        Returns: FrontendDigests
+        """
+        return self._run(
+            _PACKAGE_FRONTEND,
+            (
+                package,
+                version,
+            ),
+            {},
             None,
         )
 

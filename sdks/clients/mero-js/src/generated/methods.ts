@@ -1513,8 +1513,8 @@ export function createRoutes(api: RouteClient) {
        * `GET /orgs/{org}` (`org_get`). **Who:** signed in (a session or an API key).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      get: (args: operations['org_get']['parameters']['path'], options?: MethodOptions): Promise<operations['org_get']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"GET","path":"/orgs/{org}","pathParams":["org"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_get']['responses'][200]['content']['application/json']>,
+      get: (args: operations['org_get']['parameters']['path'] & NonNullable<operations['org_get']['parameters']['query']>, options?: MethodOptions): Promise<operations['org_get']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/orgs/{org}","pathParams":["org"],"query":["limit","teamsAfter","membersAfter"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_get']['responses'][200]['content']['application/json']>,
       /**
        * Make an invite.
        *
@@ -1836,6 +1836,13 @@ export function createRoutes(api: RouteClient) {
        */
       capabilities: (args: operations['package_capabilities']['parameters']['path'] & NonNullable<operations['package_capabilities']['parameters']['query']>, options?: MethodOptions): Promise<operations['package_capabilities']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/packages/{package}/{version}/capabilities","pathParams":["package","version"],"query":["service"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_capabilities']['responses'][200]['content']['application/json']>,
+      /**
+       * A release's frontend files.
+       *
+       * `GET /packages/{package}/{version}/frontend` (`package_frontend`). **Who:** anyone.
+       */
+      frontend: (args: operations['package_frontend']['parameters']['path'], options?: MethodOptions): Promise<operations['package_frontend']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/packages/{package}/{version}/frontend","pathParams":["package","version"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_frontend']['responses'][200]['content']['application/json']>,
       /**
        * One package.
        *

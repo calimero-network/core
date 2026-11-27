@@ -1937,7 +1937,7 @@ export interface paths {
         put?: never;
         /**
          * Refresh a session
-         * @description A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+         * @description A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
          *
          *     **Who:** anyone.
          */
@@ -3271,7 +3271,7 @@ export interface paths {
         };
         /**
          * One organization
-         * @description As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+         * @description As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -4204,6 +4204,28 @@ export interface paths {
          *     **Who:** signed in (a session or an API key).
          */
         get: operations["package_capabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/packages/{package}/{version}/frontend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A release's frontend files
+         * @description Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+         *
+         *     **Who:** anyone.
+         */
+        get: operations["package_frontend"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5585,6 +5607,20 @@ export interface components {
             createdAt: string;
             token: string;
         };
+        /** @description `GET /packages/{package}/{version}/frontend`: the release's frontend entry and every file, by path relative to the frontend root, with its SHA-256 (lowercase hex) and size in bytes. */
+        FrontendDigests: {
+            package: string;
+            version: string;
+            entry: string;
+            files: components["schemas"]["FrontendFileDigest"][];
+        };
+        /** @description One frontend file: its path relative to the frontend root (served at `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes. */
+        FrontendFileDigest: {
+            path: string;
+            sha256: string;
+            /** Format: int64 */
+            size: number;
+        };
         /** @description `GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in uses to pick the person's passkey for it. */
         SignUpPublic: {
             policy: components["schemas"]["SignUp"];
@@ -6425,7 +6461,7 @@ export interface components {
             role: components["schemas"]["NodeRole"];
             pool?: string;
         };
-        /** @description The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. */
+        /** @description The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`). */
         Quotas: {
             /** Format: int64 */
             maxAppsPerAccount: number;
@@ -6445,6 +6481,12 @@ export interface components {
             computeFuelPerOrg: number;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay: string;
+            /** Format: int64 */
+            maxTeamsPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerAccount: number;
         };
         /** @description One payer's limits in place of the cluster's; a limit left out is the cluster's. */
         OrgQuotas: {
@@ -6475,6 +6517,12 @@ export interface components {
             computeFuelPerOrg: number;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay: string;
+            /** Format: int64 */
+            maxTeamsPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerOrg: number;
+            /** Format: int64 */
+            maxMetadataBytesPerAccount: number;
             orgs: {
                 [key: string]: components["schemas"]["OrgQuotas"];
             };
@@ -7046,6 +7094,8 @@ export interface components {
                 release: string;
                 after: string;
             } | null;
+            nextTeamsAfter?: string | null;
+            nextMembersAfter?: string | null;
         };
         /** @description A team as its organization records it: `members` maps each direct row to whether it is a lead; `capabilities` are capability bits per row; `defaultCapabilities` is absent when unset. */
         Team: {
@@ -7330,6 +7380,12 @@ export interface components {
             computeFuelPerOrg?: number;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
             maxFuelPerDeveloperPerDay?: string;
+            /** Format: int64 */
+            maxTeamsPerOrg?: number;
+            /** Format: int64 */
+            maxMetadataBytesPerOrg?: number;
+            /** Format: int64 */
+            maxMetadataBytesPerAccount?: number;
             /** Format: int64 */
             maxConcurrentRuns?: number | null;
             /** @description an unsigned 64-bit integer as a decimal string, exact past 2^53 */
@@ -18636,7 +18692,11 @@ export interface operations {
     };
     org_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                teamsAfter?: string;
+                membersAfter?: string;
+            };
             header?: never;
             path: {
                 org: string;
@@ -22323,6 +22383,38 @@ export interface operations {
             };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    package_frontend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package: string;
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FrontendDigests"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -133,7 +133,10 @@ HOLDER_PROOF_REQUIRED`, before anything is spent or logged. So a refresh token
 copied off the device refreshes nothing, and such a token lives 7 days rather
 than 30. A proof replayed within its 120 seconds by someone who copied it with
 the token mints at most a session token, which the next exchange does not
-extend. Binding a session to a holder key is the `sessionHolders` feature
+extend. The same holds for a bound token presented again after it was
+exchanged: it ends its session only with the key's proof for it (`RefreshReused`
+carries the proof, judged again at apply), so a copy of an old token taken off
+the device cannot sign its owner out either. Binding a session to a holder key is the `sessionHolders` feature
 (1.0.0-rc.39): below that cluster version a sign-in naming one is refused `409
 FEATURE_NOT_ACTIVE`, and the clients sign in unbound.
 

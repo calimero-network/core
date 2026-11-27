@@ -197,8 +197,6 @@ pub struct HostCore {
     search: Arc<dyn SearchHost>,
     action: Option<Arc<dyn ActionHost>>,
     http: Arc<dyn HttpHost>,
-    /// The node's first-party connectors (`connector.call`); [`crate::NoConnectors`] refuses.
-    connectors: Arc<dyn crate::action::ConnectorHost>,
     /// Other apps this run may reach synchronously; `None`: it reaches none.
     xcall_host: Option<Arc<dyn crate::xcall::XcallHost>>,
     /// Synchronous xcalls made so far ([`crate::MAX_SYNC_XCALLS`]).
@@ -281,7 +279,6 @@ impl HostCore {
             search: Arc::new(NoSearch),
             action: None,
             http: Arc::new(NoHttp),
-            connectors: Arc::new(crate::action::NoConnectors),
             xcall_host: None,
             sync_xcalls: 0,
             sync_occurrences: BTreeMap::new(),
@@ -383,14 +380,6 @@ impl HostCore {
     #[must_use]
     pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
         self.http = http;
-        self
-    }
-
-    /// The node's first-party connectors for the run; without it every `connector.call` is
-    /// refused ([`crate::NO_CONNECTORS`]).
-    #[must_use]
-    pub fn with_connectors(mut self, connectors: Arc<dyn crate::action::ConnectorHost>) -> Self {
-        self.connectors = connectors;
         self
     }
 
@@ -1442,66 +1431,6 @@ impl HostCore {
             self.http_log.push(HttpExchange::record(request, &response));
         }
         Ok(response)
-    }
-
-    /// Calls `operation` of the node's first-party connector `connector` with the JSON
-    /// `input` (`connector.call`, WIT 0.5.8): where a run may send HTTP, and counted as one
-    /// of its [`MAX_HTTP_REQUESTS`]; views, `init` and migrations trap `HostDenied`. A name
-    /// over [`crate::MAX_CONNECTOR_NAME_BYTES`] or an input over [`MAX_HTTP_BODY_BYTES`] is
-    /// refused before the node sees it. A logged run records the call and its answer for its
-    /// entry as an [`HttpExchange`] ([`crate::CONNECTOR_METHOD`]), so no replay calls again.
-    pub fn connector_call(
-        &mut self,
-        connector: &str,
-        operation: &str,
-        input: &[u8],
-    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        self.burn_bytes(
-            connector
-                .len()
-                .saturating_add(operation.len())
-                .saturating_add(input.len()),
-        );
-        let logged = matches!(
-            self.inv.kind,
-            InvocationKind::Call | InvocationKind::Timer | InvocationKind::XcallDeliver
-        );
-        if self.is_compute() || (!logged && self.inv.kind != InvocationKind::Action) {
-            return Err(HostDenied::new(
-                "connector calls are not allowed in views, init or migrations",
-            ));
-        }
-        let max = crate::action::MAX_CONNECTOR_NAME_BYTES;
-        if connector.len() > max || operation.len() > max {
-            return Ok(Err(format!(
-                "a connector's or an operation's name is at most {max} bytes"
-            )));
-        }
-        if self.http_requests >= MAX_HTTP_REQUESTS {
-            return Ok(Err("too many requests in one run".to_owned()));
-        }
-        if input.len() > MAX_HTTP_BODY_BYTES {
-            return Ok(Err("connector input too large".to_owned()));
-        }
-        self.http_requests += 1;
-        let answer = self.blocking(|core| core.connectors.call(connector, operation, input))?;
-        self.burn_bytes(answer.as_ref().map_or_else(String::len, Vec::len));
-        if logged {
-            let request = HttpRequest {
-                method: crate::action::CONNECTOR_METHOD.to_owned(),
-                url: format!("connector:{connector}/{operation}"),
-                headers: Vec::new(),
-                body: input.to_vec(),
-            };
-            let response = answer.clone().map(|body| HttpResponse {
-                status: 200,
-                headers: Vec::new(),
-                body,
-            });
-            self.http_log
-                .push(HttpExchange::record(&request, &response));
-        }
-        Ok(answer)
     }
 
     fn action_host(&self) -> Result<Arc<dyn ActionHost>, HostDenied> {

@@ -29,7 +29,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.
+ * The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers. `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`).
  *
  * @param maxAppsPerAccount 
  * @param maxBundleBytesPerAccount 
@@ -40,6 +40,9 @@ import kotlinx.serialization.Contextual
  * @param maxConcurrentRunsPerOrg 
  * @param computeFuelPerOrg 
  * @param maxFuelPerDeveloperPerDay an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param maxTeamsPerOrg 
+ * @param maxMetadataBytesPerOrg 
+ * @param maxMetadataBytesPerAccount 
  */
 @Serializable
 
@@ -71,7 +74,16 @@ data class Quotas (
 
     /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "maxFuelPerDeveloperPerDay")
-    val maxFuelPerDeveloperPerDay: kotlin.String
+    val maxFuelPerDeveloperPerDay: kotlin.String,
+
+    @SerialName(value = "maxTeamsPerOrg")
+    val maxTeamsPerOrg: kotlin.Long,
+
+    @SerialName(value = "maxMetadataBytesPerOrg")
+    val maxMetadataBytesPerOrg: kotlin.Long,
+
+    @SerialName(value = "maxMetadataBytesPerAccount")
+    val maxMetadataBytesPerAccount: kotlin.Long
 
 ) {
 

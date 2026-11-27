@@ -12,6 +12,14 @@ const MAX_KEY_FOLLOW_UPS: usize = 4;
 const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
 /// What a follow-up's arguments write for the key being made: `key:<its id>`.
 const KEY_PLACEHOLDER: &str = "key:$key";
+/// The longest account name a sign-up takes, in characters: a sign-up's
+/// ceremony holds it until its challenge expires, so it is bounded before
+/// anything is held (`account_name_fits`).
+pub const MAX_ACCOUNT_NAME_CHARS: usize = 64;
+/// The largest request body a passkey ceremony's route (`/auth/passkey/*`)
+/// takes: a name, an origin, an invite and a registration or assertion fit in
+/// a few KiB.
+pub const MAX_PASSKEY_CEREMONY_BYTES: usize = 64 * 1024;
 /// The bytes of each follow-up's salt.
 const FOLLOW_UP_SALT_BYTES: usize = 16;
 /// How often a follow-up whose outcome is unknown (a 5xx) is sent again under its key.
@@ -141,11 +149,26 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
     node.sys(judge).map_err(crate::node::rejected)
 }
 
+/// Refuse an account name past [`MAX_ACCOUNT_NAME_CHARS`], `400
+/// NAME_TOO_LONG`: judged before a ceremony holds it or the log is asked to
+/// create the account.
+fn account_name_fits(name: &str) -> Result<(), ApiError> {
+    // A name past the limit in bytes is past it in characters too.
+    if name.len() > 4 * MAX_ACCOUNT_NAME_CHARS || name.chars().count() > MAX_ACCOUNT_NAME_CHARS {
+        return Err(ApiError::bad_request(
+            "NAME_TOO_LONG",
+            &format!("an account's name is at most {MAX_ACCOUNT_NAME_CHARS} characters"),
+        ));
+    }
+    Ok(())
+}
+
 async fn register_begin(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterBegin>,
 ) -> ApiResult<Json<PasskeyChallenge>> {
+    account_name_fits(&body.name)?;
     refuse_sign_up(&node, body.invite.as_deref()).await?;
     let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     let challenge = random::<32>();
@@ -239,6 +262,8 @@ async fn register_finish(
             "not a registration challenge",
         ));
     };
+    // Begun on a node that did not bound it, perhaps (`internal/challenge/take`).
+    account_name_fits(&name)?;
     // Signing up on a package's frontend opens a session bound to it.
     let app = claimed_app(&node, &body.registration.client_data_json).await;
     let cred = verify_registration(
@@ -323,6 +348,8 @@ async fn sign_up_confirmed(
             "not a sign-up confirmation",
         ));
     };
+    // The account the log is asked to create, whichever node held its ceremony.
+    account_name_fits(&account.name)?;
     let cred = account
         .passkeys
         .first()
@@ -659,16 +686,7 @@ pub(super) struct RefreshBody {
     /// The holder's signature, required for a token bound to a holder key
     /// ([`RefreshRecord::holder`]) and ignored for any other.
     #[serde(default)]
-    holder_proof: Option<HolderProof>,
-}
-
-/// A holder's proof that it uses the token: `signature` (base64url, `r ‖ s`) by the session's
-/// holder key over [`crate::proof::refresh_holder_message`] of the token's hash and `at`
-/// (Unix seconds, within [`crate::proof::HOLDER_PROOF_SKEW_SECS`] of the node's clock).
-#[derive(Deserialize)]
-pub(super) struct HolderProof {
-    at: u64,
-    signature: String,
+    holder_proof: Option<crate::types::HolderProof>,
 }
 
 /// A token bound to a holder key is used only with that key's proof: `401 HOLDER_PROOF_REQUIRED`
@@ -677,7 +695,7 @@ pub(super) struct HolderProof {
 fn check_holder(
     rec: &RefreshRecord,
     hash: &str,
-    proof: Option<&HolderProof>,
+    proof: Option<&crate::types::HolderProof>,
 ) -> Result<(), ApiError> {
     let Some(holder) = &rec.holder else {
         return Ok(());
@@ -716,12 +734,21 @@ async fn refresh(
         // refused at apply for a token never exchanged, so a replica that
         // could not catch up lets the system log decide rather than answer
         // "unknown" to a thief from a stale view.
-        let known_here = node.sys(|s| s.rotated_refresh.contains_key(&old_hash));
+        let rotated = node.sys(|s| s.rotated_refresh.get(&old_hash).cloned());
+        let known_here = rotated.is_some();
+        // A token bound to a holder key ends its session only with that key's proof: a copy
+        // of an old token taken off the device cannot sign its owner out. Judged here before
+        // anything is written, and again at apply (`accounts::authorize_reuse`), which also
+        // decides for a replica that could not catch up.
+        if let Some(rotated) = &rotated {
+            check_holder(rotated, &old_hash, body.holder_proof.as_ref())?;
+        }
         if known_here || !caught_up {
             let revoked = node
                 .sys_write(&SystemCmd::RefreshReused {
                     hash: old_hash,
                     now: now_secs(),
+                    holder_proof: body.holder_proof.clone(),
                 })
                 .await;
             if known_here || revoked.is_ok() {
@@ -799,6 +826,9 @@ async fn refresh(
             .sys_write(&SystemCmd::RefreshReused {
                 hash: old_hash,
                 now: now_secs(),
+                // Checked against this token's live record above (`check_holder`); the log
+                // judges it again against the exchanged one.
+                holder_proof: body.holder_proof.clone(),
             })
             .await;
         if revoked.is_ok() {
@@ -1914,6 +1944,11 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/auth/passkey/register/finish", post(register_finish))
         .route("/auth/passkey/login/begin", post(login_begin))
         .route("/auth/passkey/login/finish", post(login_finish))
+        // Anyone may begin these, so their bodies stay small (the router's
+        // own limit, inside which this one applies, is the sealed envelope's).
+        .route_layer(axum::extract::DefaultBodyLimit::max(
+            MAX_PASSKEY_CEREMONY_BYTES,
+        ))
         .route("/auth/passkeys/add/begin", post(passkey_add_begin))
         .route("/auth/passkeys/add/finish", post(passkey_add_finish))
         .route(

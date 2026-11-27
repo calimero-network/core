@@ -2926,8 +2926,23 @@ impl Orgs<'_> {
     /// One organization.
     ///
     /// `GET /orgs/{org}` (`org_get`). Who: signed in (a session or an API key).
-    pub async fn get(self, org: &str) -> Result<Org> {
-        let req = Request::new(Method::GET, format!("orgs/{}", route::segment(org)));
+    pub async fn get(
+        self,
+        org: &str,
+        limit: Option<u64>,
+        teams_after: Option<&str>,
+        members_after: Option<&str>,
+    ) -> Result<Org> {
+        let mut req = Request::new(Method::GET, format!("orgs/{}", route::segment(org)));
+        if let Some(v) = limit {
+            req = req.query("limit", v.to_string());
+        }
+        if let Some(v) = teams_after {
+            req = req.query("teamsAfter", v);
+        }
+        if let Some(v) = members_after {
+            req = req.query("membersAfter", v);
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -3702,6 +3717,21 @@ impl Packages<'_> {
         if let Some(v) = service {
             req = req.query("service", v);
         }
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// A release's frontend files.
+    ///
+    /// `GET /packages/{package}/{version}/frontend` (`package_frontend`). Who: anyone.
+    pub async fn frontend(self, package: &str, version: &str) -> Result<FrontendDigests> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "packages/{}/{}/frontend",
+                route::segment(package),
+                route::segment(version)
+            ),
+        );
         route::json(self.client.transport(), req, None, None, false).await
     }
 

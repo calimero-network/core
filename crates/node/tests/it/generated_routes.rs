@@ -24,10 +24,16 @@ async fn a_step_up_route_is_answered_with_the_passkey_given() {
 
     let refused = alice.orgs().delete(&org, None).await.unwrap_err();
     assert_eq!(refused.code(), Some("CONFIRM_REQUIRED"), "{refused:?}");
-    assert_eq!(alice.orgs().get(&org).await.unwrap().name, "acme");
+    assert_eq!(
+        alice.orgs().get(&org, None, None, None).await.unwrap().name,
+        "acme"
+    );
 
     let _deleted = alice.orgs().delete(&org, Some(&mut pk)).await.unwrap();
-    assert!(alice.orgs().get(&org).await.is_err(), "the org is gone");
+    assert!(
+        alice.orgs().get(&org, None, None, None).await.is_err(),
+        "the org is gone"
+    );
 }
 
 /// `x-calimero-operator`: without the operator's signer the node's `428` is the answer;

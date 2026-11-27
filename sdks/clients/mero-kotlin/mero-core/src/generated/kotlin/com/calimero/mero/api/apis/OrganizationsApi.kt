@@ -1348,8 +1348,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * GET /orgs/{org}
      * One organization
-     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).  **Who:** signed in (a session or an API key).
+     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of &#x60;limit&#x60; (1 to 1000, default 1000), by id after &#x60;teamsAfter&#x60; and by account after &#x60;membersAfter&#x60;; &#x60;nextTeamsAfter&#x60; and &#x60;nextMembersAfter&#x60; are the cursors of the next pages, &#x60;null&#x60; on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).  **Who:** signed in (a session or an API key).
      * @param org 
+     * @param limit  (optional)
+     * @param teamsAfter  (optional)
+     * @param membersAfter  (optional)
      * @return Org
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1359,8 +1362,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgGet(org: kotlin.String) : Org = withContext(Dispatchers.IO) {
-        val localVarResponse = orgGetWithHttpInfo(org = org)
+    suspend fun orgGet(org: kotlin.String, limit: kotlin.Long? = null, teamsAfter: kotlin.String? = null, membersAfter: kotlin.String? = null) : Org = withContext(Dispatchers.IO) {
+        val localVarResponse = orgGetWithHttpInfo(org = org, limit = limit, teamsAfter = teamsAfter, membersAfter = membersAfter)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as Org
@@ -1380,16 +1383,19 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * GET /orgs/{org}
      * One organization
-     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).  **Who:** signed in (a session or an API key).
+     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of &#x60;limit&#x60; (1 to 1000, default 1000), by id after &#x60;teamsAfter&#x60; and by account after &#x60;membersAfter&#x60;; &#x60;nextTeamsAfter&#x60; and &#x60;nextMembersAfter&#x60; are the cursors of the next pages, &#x60;null&#x60; on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).  **Who:** signed in (a session or an API key).
      * @param org 
+     * @param limit  (optional)
+     * @param teamsAfter  (optional)
+     * @param membersAfter  (optional)
      * @return ApiResponse<Org?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgGetWithHttpInfo(org: kotlin.String) : ApiResponse<Org?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgGetRequestConfig(org = org)
+    suspend fun orgGetWithHttpInfo(org: kotlin.String, limit: kotlin.Long?, teamsAfter: kotlin.String?, membersAfter: kotlin.String?) : ApiResponse<Org?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgGetRequestConfig(org = org, limit = limit, teamsAfter = teamsAfter, membersAfter = membersAfter)
 
         return@withContext request<Unit, Org>(
             localVariableConfig
@@ -1400,11 +1406,25 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgGet
      *
      * @param org 
+     * @param limit  (optional)
+     * @param teamsAfter  (optional)
+     * @param membersAfter  (optional)
      * @return RequestConfig
      */
-    fun orgGetRequestConfig(org: kotlin.String) : RequestConfig<Unit> {
+    fun orgGetRequestConfig(org: kotlin.String, limit: kotlin.Long?, teamsAfter: kotlin.String?, membersAfter: kotlin.String?) : RequestConfig<Unit> {
         val localVariableBody = null
-        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (limit != null) {
+                    put("limit", listOf(limit.toString()))
+                }
+                if (teamsAfter != null) {
+                    put("teamsAfter", listOf(teamsAfter.toString()))
+                }
+                if (membersAfter != null) {
+                    put("membersAfter", listOf(membersAfter.toString()))
+                }
+            }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Accept"] = "application/json"
 

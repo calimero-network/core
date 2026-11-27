@@ -34,6 +34,7 @@ mod recovery;
 mod rejection;
 mod routing;
 mod sign_up;
+mod state_caps;
 mod updates;
 
 pub use accounts::SessionsRevoked;
@@ -107,6 +108,16 @@ pub struct Quotas {
     /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_developer_per_day: u64,
+    /// Teams one organization holds, app teams included
+    /// (`state_caps::MAX_TEAMS_PER_ORG`). Checked at apply from cluster version
+    /// [`cluster_version::Feature::StateCaps`]; a change is written only from that version.
+    pub max_teams_per_org: u32,
+    /// Metadata bytes one organization holds: its own, its members' and its teams'
+    /// (`state_caps::MAX_METADATA_BYTES_PER_ORG`).
+    pub max_metadata_bytes_per_org: u64,
+    /// Metadata bytes of every organization one account owns, summed
+    /// (`state_caps::MAX_METADATA_BYTES_PER_ACCOUNT`).
+    pub max_metadata_bytes_per_account: u64,
 }
 
 /// A `u64` as a decimal string in JSON: digits only, no sign, no leading zero.
@@ -187,6 +198,9 @@ impl Default for Quotas {
             max_concurrent_runs_per_org: 4,
             compute_fuel_per_org: 10 * calimero_app_host::MAX_COMPUTE_FUEL,
             max_fuel_per_developer_per_day: 0,
+            max_teams_per_org: state_caps::MAX_TEAMS_PER_ORG,
+            max_metadata_bytes_per_org: state_caps::MAX_METADATA_BYTES_PER_ORG,
+            max_metadata_bytes_per_account: state_caps::MAX_METADATA_BYTES_PER_ACCOUNT,
         }
     }
 }
@@ -508,11 +522,6 @@ pub struct PackageVersion {
     /// `InstallPackage` an earlier release recorded is not read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, calimero_bundle::BundleSecret>,
-    /// The node's first-party connectors the release calls (`BundleManifest::connectors`),
-    /// checked against this node's at install (`calimero_outbound::check_grant`). Left out
-    /// when empty, so a record without them reads and writes as it did.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub connectors: BTreeMap<String, calimero_bundle::BundleConnector>,
     /// The apps the release references (`BundleManifest::uses`), by reference name: a
     /// deployment offering it may hold the secrets their releases declare
     /// ([`SystemState::deployment_uses_declare`]). Recorded only once every node applies it
@@ -567,52 +576,6 @@ pub struct PackageVersion {
 }
 
 impl PackageVersion {
-    /// What the release may do with each connector it declares.
-    #[must_use]
-    pub fn connector_grants(&self) -> Vec<calimero_outbound::ConnectorGrant> {
-        self.connectors
-            .iter()
-            .map(|(name, c)| calimero_outbound::ConnectorGrant::declared(name, c))
-            .collect()
-    }
-
-    /// The credentials the release's runs may carry, by name: those it binds
-    /// ([`Self::secrets`]), then each declared connector's own binding
-    /// (`calimero_outbound::Connector::binding`), so an instance's owner or its deployment
-    /// can set a connector's key as they set a declared secret. The outbound gate attaches
-    /// a connector's only to that connector's calls.
-    #[must_use]
-    pub fn secret_bindings(&self) -> BTreeMap<String, calimero_bundle::BundleSecret> {
-        let mut out = self.secrets.clone();
-        for name in self.connectors.keys() {
-            if let Some(c) = calimero_outbound::connector(name) {
-                let _ = out
-                    .entry(c.credential.secret.to_owned())
-                    .or_insert_with(|| c.binding());
-            }
-        }
-        out
-    }
-
-    /// The URL prefixes an approval of the release covers: its declared `outbound`, then
-    /// each declared connector's operation prefixes (a connector call needs its prefix
-    /// approved as a raw request does), without repeats.
-    #[must_use]
-    pub fn approvable_prefixes(&self) -> Vec<String> {
-        let mut out = self.outbound.clone();
-        for grant in self.connector_grants() {
-            let Some(c) = calimero_outbound::connector(&grant.name) else {
-                continue;
-            };
-            for p in c.prefixes(&grant) {
-                if !out.contains(&p) {
-                    out.push(p);
-                }
-            }
-        }
-        out
-    }
-
     /// Service name -> the bundle an app of this release runs: the app component, or the
     /// compute component when that is all the release has.
     #[must_use]
@@ -3384,7 +3347,7 @@ impl SystemState {
     pub fn deployment_declares(&self, d: &Deployment, name: &str) -> bool {
         d.apps.values().any(|o| {
             self.offered_release(o)
-                .is_some_and(|v| v.secret_bindings().contains_key(name))
+                .is_some_and(|v| v.secrets.contains_key(name))
         })
     }
 
@@ -3436,7 +3399,7 @@ impl SystemState {
         d.apps.values().any(|o| {
             self.offered_release(o).is_some_and(|v| {
                 self.used_releases(d, &o.package, v)
-                    .any(|(_, r)| r.secret_bindings().contains_key(name))
+                    .any(|(_, r)| r.secrets.contains_key(name))
             })
         })
     }
@@ -6682,10 +6645,16 @@ pub enum SystemCmd {
         actor: AccountId,
         now: u64,
     },
-    /// An exchanged refresh token came back: revoke its session.
+    /// An exchanged refresh token came back: revoke its session. When the token was bound to a
+    /// holder key, `holder_proof` is that key's proof for it, made within
+    /// [`crate::proof::HOLDER_PROOF_SKEW_SECS`] of `now` and checked at apply: a copy of an
+    /// old token taken off the device cannot end the session it belonged to. Absent for an
+    /// unbound token, and in every entry logged before holder keys.
     RefreshReused {
         hash: String,
         now: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holder_proof: Option<crate::types::HolderProof>,
     },
     /// A passkey's counter moved: carries the assertion that moved it,
     /// which only the authenticator signs.
