@@ -125,7 +125,7 @@ def sync_detailed(
     `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
     `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
     run it started while the app keeps it, and the same key with another body is `409
-    IDEMPOTENCY_KEY_REUSED`.
+    IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).
 
     **Who:** signed in (a session or an API key).
 
@@ -168,7 +168,7 @@ def sync(
     `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
     `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
     run it started while the app keeps it, and the same key with another body is `409
-    IDEMPOTENCY_KEY_REUSED`.
+    IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).
 
     **Who:** signed in (a session or an API key).
 
@@ -206,7 +206,7 @@ async def asyncio_detailed(
     `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
     `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
     run it started while the app keeps it, and the same key with another body is `409
-    IDEMPOTENCY_KEY_REUSED`.
+    IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).
 
     **Who:** signed in (a session or an API key).
 
@@ -247,7 +247,7 @@ async def asyncio(
     `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
     `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
     run it started while the app keeps it, and the same key with another body is `409
-    IDEMPOTENCY_KEY_REUSED`.
+    IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).
 
     **Who:** signed in (a session or an API key).
 

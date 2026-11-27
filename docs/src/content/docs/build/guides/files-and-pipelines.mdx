@@ -390,6 +390,7 @@ receipts, events and exports are also covered in
 | `400 BAD_PARAMS` | a param of the wrong type, outside `min`/`max`/`enum`, or undeclared |
 | `409 NO_PRICE_TABLE`, `400 BAD_MAX_COST` | `maxCost` given and the operator set no prices, or it is not a whole number of micro-units |
 | `409 IDEMPOTENCY_KEY_REUSED` | an `idempotencyKey` that already started a run with another pipeline, inputs, params, limits or cost cap |
+| `400 BAD_IDEMPOTENCY_KEY` | an `idempotencyKey` that is empty or longer than 256 bytes |
 | `429 TOO_MANY_PIPELINE_RUNS` | 8 runs already going in this app |
 | `403 FORBIDDEN` | the caller is not the app's owner or a member of its organization (start, cancel, retry, receipt), even where an `anyone` grant admits others |
 | `409 STILL_RUNNING`, `400 LIMIT_EXCEEDS_CAP`, `400 BAD_LIMITS` | a retry of a running run, or with limits above the method's caps or for a step the pipeline lacks |

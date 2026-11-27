@@ -42,6 +42,8 @@ const BAD_LIMITS: &str = "BAD_LIMITS";
 const LIMIT_EXCEEDS_CAP: &str = "LIMIT_EXCEEDS_CAP";
 const STILL_RUNNING: &str = "STILL_RUNNING";
 const KEY_REUSED: &str = "IDEMPOTENCY_KEY_REUSED";
+const BAD_KEY: &str = "BAD_IDEMPOTENCY_KEY";
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256; // a CI job or request id fits; the key is only hashed
 
 /// An input that is a file id the app does not hold: a file is forgotten once nothing refers to
 /// it, so this cannot tell one that was never there from one that expired.
@@ -485,6 +487,12 @@ async fn start_launch(
     key: Option<&str>,
     launch: Launch,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    if key.is_some_and(|k| k.is_empty() || k.len() > MAX_IDEMPOTENCY_KEY_BYTES) {
+        return Err(ApiError::bad_request(
+            BAD_KEY,
+            "an idempotency key is 1 to 256 bytes",
+        ));
+    }
     let run = match key {
         Some(key) => keyed_run(&app.app_id, &caller, key),
         None => typed_id::<12>(),

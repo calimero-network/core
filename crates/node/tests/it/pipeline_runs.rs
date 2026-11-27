@@ -1288,6 +1288,14 @@ async fn a_start_repeated_with_its_idempotency_key_is_the_same_run() {
         reused(start(as_start).await.unwrap_err()),
         "a retry's key is not a start's"
     );
+    for bad in [String::new(), "k".repeat(257)] {
+        let body = json!({ "inputs": { "docs": [file] }, "idempotencyKey": bad });
+        let err = start(body).await.unwrap_err();
+        assert!(
+            matches!(&err, calimero_client::Error::Api { status: 400, code, .. } if code == "BAD_IDEMPOTENCY_KEY"),
+            "{err:?}"
+        );
+    }
 }
 
 /// A step with `cache: false` runs every time, never answered from the step cache.
