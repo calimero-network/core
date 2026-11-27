@@ -331,6 +331,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
+      # Apps compile connectors for wasm32-wasip2, which the host clippy never sees.
+      - name: Cargo clippy (connectors, wasm32-wasip2)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p calimero-connector-nearai --target wasm32-wasip2 -- -D warnings
+
   # Broken intra-doc links (a renamed or removed item, a public doc naming a
   # private one) are rustdoc warnings that no other job builds. Dependencies are
   # checked, not documented, which is the build `Rust lint` caches, so this
