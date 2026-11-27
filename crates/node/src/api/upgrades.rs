@@ -706,7 +706,9 @@ async fn run_upgrade(
             &applied.error,
         ));
     }
-    // The app now runs the new bundle: the directory says so too.
+    // The app now runs the new bundle: the directory says so too. Catching up ran nothing,
+    // and the snapshot is of the code it already ran, so it leaves no undo.
+    let restore_point = restore_point.filter(|_| applied.result["caughtUp"] != json!(true));
     let in_deployment = in_deployment_rule(node, &app_id).await;
     let _ok = node
         .sys_write(&SystemCmd::UpgradeApp {
