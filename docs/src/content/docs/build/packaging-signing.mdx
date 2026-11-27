@@ -336,6 +336,7 @@ The signed manifest carries them as if the app had written them, so a node and t
 `pack` refuses a listed name that is not such a dependency, a dependency with no `connector` table, and a secret two declarations (the app and a connector, or two connectors) bind differently; the same binding twice is kept once.
 A dependency the app does not list adds nothing, whatever it declares.
 The merged secrets are then checked as the app's own are.
+How to use one from an action, and how to write one, is in [Connectors](/build/guides/connectors/).
 
 ## Check a release before you ship it
 

@@ -1,0 +1,253 @@
+---
+title: Connectors
+description: Reach an external service through a connector crate - add one to your app, call it from an action, set its key, and write a new one for another provider.
+sidebar:
+  order: 6.25
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+**Task:** ask a model, or any one external service, from your app without writing its HTTP client, its endpoint or its credential binding yourself.
+
+A connector is a Rust crate your app compiles in.
+It knows one service: the request it sends, the answer it parses, and the errors it maps to your app's.
+It also declares the endpoint it sends to and the key that endpoint needs, and `meroctl app pack` signs both into your release.
+Core ships `calimero-connector-nearai` for [NEAR AI Cloud](https://cloud-api.near.ai)'s chat completions.
+
+A connector is a client, not a service: the request goes out through the same [outbound gate](/build/guides/outbound/) as any `ctx.fetch`, under the same approvals, with the key the node attaches.
+
+## Use a connector
+
+<Steps>
+
+1. Take it from core by tag, the same tag as `calimero-sdk`: one core tag covers every core crate.
+   Connectors are not on crates.io yet.
+
+   ```toml
+   [dependencies]
+   calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<core tag>" }
+   calimero-connector-nearai = { git = "https://github.com/calimero-network/core", tag = "<core tag>" }
+   ```
+
+2. List it in the same `Cargo.toml`, so `pack` merges what it declares into your manifest:
+
+   ```toml
+   [package.metadata.calimero]
+   connectors = ["calimero-connector-nearai"]
+   ```
+
+   A dependency you do not list adds nothing, whatever it declares.
+
+3. Call it from an action (the example [below](#the-app)).
+
+4. Pack, and read what it added.
+   `pack` prints each prefix and binding it merges, and the crate it came from:
+
+   ```text
+   calimero-connector-nearai: outbound https://cloud-api.near.ai/v1/chat/completions
+   calimero-connector-nearai: secret NEAR_AI_API_KEY {"host":"cloud-api.near.ai","paths":["/v1/chat/completions"],...}
+   ```
+
+   The secret's line carries its whole binding as JSON.
+
+   It refuses a listed name that is not a normal dependency for `wasm32-wasip2`, a dependency with no `connector` table, and a secret your app and a connector (or two connectors) bind differently.
+   The rules are in [Packaging and signing](/build/packaging-signing/#connectors).
+
+5. Supply the key.
+   The release binds `NEAR_AI_API_KEY`, and the node attaches it as `authorization: Bearer <key>` on requests to the endpoint; the app never sees it.
+   The instance's owner sets it with `PUT /apps/{app}/secrets/NEAR_AI_API_KEY { value }`, a deployment's managers set one for every instance with `meroctl deployment secret set <deployment> NEAR_AI_API_KEY < near-ai.key`, or the operator supplies it.
+   The organization also approves the endpoint's prefix, as for any outbound request.
+   Both are in [Call an external service](/build/guides/outbound/#secrets).
+
+</Steps>
+
+### The app
+
+A call queues the question, an action asks NEAR AI, and a call only the action can reach writes the answer back:
+
+```rust
+use calimero_connector_nearai::{chat, Message, Prompt};
+use calimero_sdk::prelude::*;
+
+const MODEL: &str = "Qwen/Qwen3.8-27B";
+
+#[app::state(version = 1)]
+pub struct Assistant {
+    /// Questions waiting for an answer, by the action's key.
+    pending: UnorderedMap<String, String>,
+    /// Answers, by the same key.
+    answers: UnorderedMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct Question<'a> {
+    question: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct Reply<'a> {
+    id: &'a str,
+    answer: &'a str,
+}
+
+#[app::logic]
+impl Assistant {
+    #[app::init]
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
+    }
+
+    /// Queue `question`; answers the id its answer is kept under.
+    pub fn ask(&mut self, question: String) -> app::Result<String> {
+        let id = env::start_action("answerQuestion", &Question { question: &question })?;
+        self.pending.insert(&id, &question)?;
+        Ok(id)
+    }
+
+    /// Runs on the leader, outside the log: one exchange with NEAR AI, then one write.
+    #[app::action]
+    pub fn answer_question(ctx: &mut ActionCtx, question: String) -> app::Result<()> {
+        let prompt = Prompt {
+            model: MODEL.to_owned(),
+            messages: vec![Message::User { content: question }],
+            max_tokens: 512,
+            temperature: None,
+            tools: Vec::new(),
+            tool_choice: None,
+        };
+        let text = match chat(ctx, &prompt)?.message {
+            Message::Assistant { content, .. } => content.unwrap_or_default(),
+            _ => String::new(), // `chat` answers only an assistant message
+        };
+        let id = ctx.key();
+        ctx.call::<(), _>("saveAnswer", &Reply { id: &id, answer: &text })?;
+        Ok(())
+    }
+
+    /// Only the app's own actions write here.
+    #[app::allow(action)]
+    pub fn save_answer(&mut self, id: String, answer: String) -> app::Result<()> {
+        self.pending.remove(&id)?;
+        self.answers.insert(&id, &answer)?;
+        Ok(())
+    }
+
+    #[app::view]
+    pub fn answer(&self, id: String) -> app::Result<Option<String>> {
+        Ok(self.answers.get(&id)?)
+    }
+}
+```
+
+`env::start_action` answers the action's key, and `ctx.key()` is that same key on every attempt, so the call and the action name one question by it.
+`chat`'s `Error` converts into an `AppError` with code `NearAiNotSent`, `NearAiStatus` or `NearAiUnusable` (the crate's README has the fields), so `?` hands it to the node, which reports it to `onActionFailed` ([Retries and failure](/build/guides/timers-and-actions/#retries-and-failure)).
+
+### Why an action
+
+`chat` takes `&mut ActionCtx`, so only an action can call it.
+
+- **Time.** A call has 2 s of wall clock and waits at most 1.5 s for a response; a model rarely answers that fast.
+  An action run has 10 s and is retried on a timeout.
+- **The log.** A call's request and response are recorded in its log entry, which every replica holds.
+  An action's are not: only what it writes back through `ctx.call` is, so the prompt you build and the full reply stay out of the run log.
+
+The limits are in [Timers and actions](/build/guides/timers-and-actions/#limits).
+
+### What stays your app's job
+
+A connector makes one exchange and nothing else.
+Your app decides:
+
+- **the queue:** what is pending, and what happens to it when an action fails for good (`onActionFailed`);
+- **storage:** what of the answer it keeps, and for how long;
+- **access:** who may ask, with the app's [access control](/build/guides/access-control/);
+- **limits:** how much one member may ask, since every question spends the instance's key.
+  An app keeps at most 1,000 pending actions.
+
+## Write a connector
+
+A connector lives in core as one workspace crate per provider, `sdks/plugins/connectors/<provider>/`, named `calimero-connector-<provider>`:
+
+```text
+sdks/plugins/connectors/<provider>/
+├── Cargo.toml        # the crate, and its [package.metadata.calimero.connector] table
+├── README.md         # the call, how to add it, its errors
+├── src/
+│   ├── lib.rs        # the call: build the request, parse the answer, map the errors
+│   └── tests.rs      # unit tests of the request and the parsing, on the host
+└── tests/
+    ├── harness.rs    # the connector in a real component, through TestApp
+    └── guest/        # a minimal app whose action calls it (its own workspace)
+```
+
+`calimero-connector-nearai` is the reference: read it before you start.
+
+### Declare what it reaches
+
+The crate's `Cargo.toml` declares the endpoints it sends to and the credentials they need, in the shape an app's `outbound` and `secrets` take:
+
+```toml
+[package]
+name = "calimero-connector-nearai"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.calimero.connector]
+outbound = ["https://cloud-api.near.ai/v1/chat/completions"]
+
+[package.metadata.calimero.connector.secrets.NEAR_AI_API_KEY]
+host = "cloud-api.near.ai"
+paths = ["/v1/chat/completions"]
+header = "authorization"
+format = "Bearer {}"
+description = "NEAR AI Cloud API key"
+required = true
+```
+
+The table takes `outbound` and `secrets` only; `pack` refuses any other key.
+Declare the narrowest prefix and paths that work: the people who approve the release read them.
+A binding's fields and rules are those of an app's own ([Secrets](/build/guides/outbound/#secrets)).
+
+### Send the request
+
+- **Never set the bound header or body field.**
+  The node attaches the key there and refuses a request that sets it itself.
+  The connector sends no credential at all; the README says which secret the instance needs.
+- **Send a retry key scoped to the app, the action and the body.**
+  An action is retried with the same `ctx.key()`, and its requests are not replayed, so the provider must see the same key on every attempt.
+  `ctx.key()` alone is not enough: two apps' actions can share a key, and one action may send two different requests.
+  `calimero-connector-nearai` hashes `env::app_id()`, `ctx.key()` and the body into its `idempotency-key`.
+- **Take `&mut ActionCtx`**, so no call can reach it.
+- **Parse the provider's answer into types**, and map each failure to an error that converts into `AppError` with a code naming the provider.
+  Derive `AbiType` on what an app passes through, so a method can take or return it.
+
+### Test it
+
+- `src/tests.rs`: the request built and the answers parsed, as plain functions on the host.
+- `tests/harness.rs`: the connector inside a real component.
+  `TestApp::mock_http(host, handler)` answers its requests, so a test checks what went out (no `authorization` header, the retry key, the body) and what the app got back, error codes included ([Testing](/build/testing/)).
+- `tests/guest/`: the app the harness runs, its own workspace depending on the connector and the SDK by path.
+  The harness builds it with `calimero_app_build::build_in_repo_cache_with(guest, &[connector])`, so an edit to the connector rebuilds it.
+
+### Wire it into the workspace
+
+<Steps>
+
+1. Add the crate to `members` in the root `Cargo.toml`.
+
+2. Add the guest to `GUESTS_WITH_PATH_DEPS` in `crates/app-build/examples/build-test-apps.rs`, with the connector as its path dependency.
+   CI prebuilds every guest there (`cargo run -p calimero-app-build --example build-test-apps`), so the harness reads the component instead of compiling it on a test's clock.
+
+3. Add `-p calimero-connector-<provider>` to the `Cargo clippy (connectors, wasm32-wasip2)` step in `.github/workflows/ci-checks.yml`: apps compile it for `wasm32-wasip2`, which the host clippy never sees.
+
+4. Add it under `plugins/connectors/` in `sdks/AGENTS.md`.
+
+</Steps>
+
+`scripts/ci-scope.py` already runs the workspace jobs for any change under `sdks/plugins/`, and the test-apps cache key hashes it.
+
+<Aside title="Outside core">
+A connector outside core works the same way: any crate with a `[package.metadata.calimero.connector]` table that an app depends on and lists.
+Name it with your own prefix (`acme-connector-<provider>`), not `calimero-`, so nobody mistakes it for one core ships and reviews.
+</Aside>
