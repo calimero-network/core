@@ -757,6 +757,9 @@ fn import_holder(
     for app in apps {
         let mut record = slice.apps[&app.app_id].clone();
         record.lineage = pins.remove(&app.app_id).flatten();
+        if let (Some(l), Some(r)) = (record.lineage.as_mut(), record.release.as_ref()) {
+            SystemState::raise_floor(l, &r.version);
+        }
         let group = state.next_group.max(1) + 1;
         state.next_group = group;
         record.group = group;

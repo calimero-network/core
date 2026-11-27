@@ -1461,12 +1461,18 @@ fn restore_app(
     if state.restores_older(app, &bundle) {
         return Err(LINEAGE_OLDER_RELEASE);
     }
+    let restored = app
+        .lineage
+        .as_ref()
+        .and_then(|l| state.lineage_release_of(l, &bundle));
     let group = state.next_group.max(1) + 1;
     state.next_group = group;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
+    if let (Some(l), Some(r)) = (app.lineage.as_mut(), restored) {
+        SystemState::raise_floor(l, &r.version);
+    }
     if app.bundle != bundle {
-        // Inferred from the bundle again (`report::release_of_bundle`); the lineage rules
-        // judge a pinned one from the lineage release that ships it (`lineage_from`).
+        // Inferred from the bundle again (`report::release_of_bundle`).
         app.release = None;
     }
     app.bundle = bundle;
