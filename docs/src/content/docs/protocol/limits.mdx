@@ -30,6 +30,7 @@ error the guest's host call returns.
 | Events | 1000 per run; name 100 bytes; data 16 KiB; 1000 accounts in an audience | `MAX_EVENTS`, `MAX_EVENT_NAME_BYTES`, `MAX_EVENT_DATA_BYTES`, `MAX_AUDIENCE_ACCOUNTS` |
 | App log | 64 KiB per run; later lines dropped; never kept by the node | `MAX_LOG_BYTES` |
 | Xcalls (outbox) | 100 per run; app id or method 128 bytes | `MAX_XCALLS`, `MAX_XCALL_NAME_BYTES` |
+| Xcall chains | 128 deliveries from one message a run no xcall delivered sent, its fanout included ([Chain budget](/protocol/xcall/#chain-budget)) | `MAX_XCALL_CHAIN` |
 | Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
 | Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |
 | Outbound HTTP | 8 requests per run (an action, call, timer or delivery); bodies 1 MiB; 64 KiB of each body recorded in a logged run's entry; 100 headers; 1.5 s wait for a logged run's response (`CALL_FETCH_TIMEOUT`) | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |

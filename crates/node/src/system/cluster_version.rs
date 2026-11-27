@@ -249,10 +249,16 @@ pub enum Feature {
     /// `OfferDeployment`, `AcceptDeployment` and `CancelDeploymentTransfer`: an earlier
     /// release cannot read them, so its replicas would keep the deployment's owner.
     DeploymentTransfer,
+    /// A component app's xcall carries its chain's budget (`XcallOut::budget`), and apply
+    /// dead-letters one sent with none left
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
+    /// An app's entry, not a system one: an earlier release ignores the field and would
+    /// queue the message.
+    XcallBudget,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 56] = [
+pub const FEATURES: [Feature; 57] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -309,6 +315,7 @@ pub const FEATURES: [Feature; 56] = [
     Feature::BackupKeyApprovers,
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
+    Feature::XcallBudget,
 ];
 
 impl Feature {
@@ -372,17 +379,22 @@ impl Feature {
             Self::BackupKeyApprovers => "backupKeyApprovers",
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
+            Self::XcallBudget => "xcallBudget",
         }
     }
 
-    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
+    /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
     /// `InviteCreatorStanding` and `BackupKeyApprovers` are rules apply reads from the logged
-    /// version: no entry names them.
+    /// version: no entry names them. `XcallBudget` is carried by app entries, which the
+    /// leader shapes from the logged version.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
         !matches!(
             self,
-            Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers
+            Self::HeldTeamGrants
+                | Self::InviteCreatorStanding
+                | Self::BackupKeyApprovers
+                | Self::XcallBudget
         )
     }
 
@@ -446,6 +458,7 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
+            Self::XcallBudget => "1.0.0-rc.39",
         }
     }
 }
@@ -1349,7 +1362,8 @@ mod tests {
             })),
             Feature::HeldTeamGrants
             | Feature::InviteCreatorStanding
-            | Feature::BackupKeyApprovers => unreachable!("no entry names {feature:?}"),
+            | Feature::BackupKeyApprovers
+            | Feature::XcallBudget => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",

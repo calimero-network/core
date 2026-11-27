@@ -90,6 +90,12 @@ fn who() -> String {
     }
 }
 
+/// `hop`'s arguments, as an xcall sends them.
+#[derive(serde::Serialize)]
+struct HopArgs {
+    fanout: u32,
+}
+
 /// `setFromApp`'s arguments, as an xcall sends them.
 #[derive(serde::Serialize)]
 struct SetArgs<'a> {
@@ -427,6 +433,24 @@ impl Kv {
     #[app::allow(app = "*")]
     pub fn set_from_app(&mut self, key: String, value: String) -> app::Result<()> {
         let _event = self.upsert(&key, &value)?;
+        Ok(())
+    }
+
+    /// Counts one more under `hops`, then sends this app `hop { fanout }` `fanout` times:
+    /// a chain of xcalls that, once a client starts it, no client keeps going.
+    #[app::allow(app = "*")]
+    pub fn hop(&mut self, fanout: u32) -> app::Result<()> {
+        let hops = self
+            .entries
+            .get("hops")?
+            .and_then(|e| e.value.parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        let _event = self.upsert("hops", &hops.to_string())?;
+        let me = env::app_id();
+        for _ in 0..fanout {
+            env::xcall(&me, "hop", &HopArgs { fanout })?;
+        }
         Ok(())
     }
 

@@ -5530,6 +5530,67 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
+/// Each xcall a client's call sends starts a chain that ends once it has taken
+/// `MAX_XCALL_CHAIN` deliveries, however it fans out: the messages past it go to the
+/// source's dead letters, and the app runs no more with no client calling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_that_xcalls_itself_stops_at_the_chain_budget() {
+    use calimero_node::component::xcall::MAX_XCALL_CHAIN;
+
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    async fn hops(cl: &Client, app: &str) -> u32 {
+        let got = strong_view(cl, app, "get", json!({ "key": "hops" })).await;
+        got.as_str().map_or(0, |n| n.parse::<u32>().unwrap())
+    }
+    for fanout in [1_u32, 2] {
+        let app = alice
+            .apps()
+            .create(typed(
+                json!({ "name": format!("hop{fanout}"), "bundle": &bundle }),
+            ))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(&app, "hop", Some(json!({ "fanout": fanout })), None, None)
+            .await
+            .unwrap();
+        let dead = crate::harness::poll::eventually(
+            Duration::from_secs(120),
+            "the chain ends in a dead letter with nothing pending",
+            || async {
+                let x = alice.apps().xcalls(&app).await.map(wire).unwrap();
+                let dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+                if !dead.is_empty() && x["pending"] == json!(0) {
+                    Ok(dead)
+                } else {
+                    Err((hops(&alice, &app).await, x["pending"].clone()))
+                }
+            },
+        )
+        .await;
+        assert!(
+            dead.iter()
+                .all(|d| d["reason"].as_str().unwrap().contains("budget")),
+            "{dead:?}"
+        );
+        // The client's call, then each message it sent starts a chain, whose runs hand on
+        // what is left: every chain takes its whole budget, and no more.
+        let ran = hops(&alice, &app).await;
+        assert_eq!(ran, 1 + fanout * MAX_XCALL_CHAIN);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(hops(&alice, &app).await, ran, "the app kept running");
+    }
+}
+
 /// An app calls another as the person its run serves only with that person's grant
 /// (`PUT /apps/{app}/delegations/{target}`, their passkey over the methods the source's
 /// release lists for the target's package): then the target sees the person as its caller
@@ -10220,6 +10281,7 @@ async fn a_delivered_xcall_into_an_over_cap_developers_app_is_refused() {
         xcall: Some(XcallFrom {
             source: source.clone(),
             seq: 1,
+            budget: None,
         }),
         ..CallRequest::new(
             target.clone(),

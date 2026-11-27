@@ -669,3 +669,9 @@ not_covered("Apps", "The consent page's install sheet (`install`), update sheets
             "`update-classes-approvals` cases'. "
             "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
             "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build")
+not_covered("Apps", "An xcall chain ending at its budget (`MAX_XCALL_CHAIN`, `Feature::XcallBudget`): a message sent "
+            "with none left is dead-lettered",
+            "the chain needs `hop`, which the published kv fixture the old release seeds with does not have; what a "
+            "chain stores is an outbox row and a dead letter, whose old shapes (no budget) the `xcall` case reads "
+            "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` (`component_cluster.rs`) covers it on one "
+            "build")
