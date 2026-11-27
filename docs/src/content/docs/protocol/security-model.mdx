@@ -81,7 +81,11 @@ code, and app code beyond what its owner approved.
 - **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
   are an hour old whose reuse after that revokes the session (a copy taken
   within the hour refreshes beside its owner until then), revocation that
-  holds on every node before the next request and the next refresh.
+  holds on every node before the next request and the next refresh. A
+  browser's session is bound to its non-extractable holder key: its refresh
+  token is used only with that key's signature, so a copy taken off the device
+  refreshes nothing, and it lives 7 days
+  ([Sessions](/protocol/identities/#sessions)).
 - **A lagging replica granting stale access** — credentials and access judged
   on fresh system state (a read index).
 - **A node on an unapproved release** — every internal route judges the
@@ -159,6 +163,17 @@ code, and app code beyond what its owner approved.
   a node can read what a person is asked to approve, or serve another page. It
   cannot change what is approved nor approve without the passkey
   ([The consent page](/protocol/consent-page/#what-it-does-not-protect)).
+- **An app's frontend.** The page decrypts and shows what the signed-in
+  person reads, and its own JavaScript checks the node's attestation, so the
+  person trusts whoever served that page: a page served from a static host
+  (Vercel, a branch build: for demos and debugging) trusts that host and its
+  build; a page the node serves from the release's signed `.mpk` trusts
+  whoever can obtain a WebPKI certificate for its name. Script on the page can
+  use the session while it runs and read the 15-minute session token; the
+  holder key keeps the refresh token from working anywhere else. A browser
+  extension that checks every file against the publisher-signed manifest is
+  the way past TLS (proposed in [mero-tee's frontend-verification
+  issue](https://github.com/calimero-network/mero-tee/issues/666)).
 - **A debug image.** A debug TD exposes its memory to the host. Clients refuse
   debug profiles unless told otherwise, and nodes trust debug peers only when
   they are debug themselves; a cluster on a debug image protects nothing.

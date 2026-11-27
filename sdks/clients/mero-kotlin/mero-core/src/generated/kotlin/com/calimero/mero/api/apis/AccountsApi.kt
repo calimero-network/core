@@ -1282,7 +1282,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/passkey/login/begin
      * Start a sign-in
-     * A WebAuthn challenge for any passkey of the cluster. &#x60;origin&#x60; is an app frontend&#39;s registered origin, whose rp-id the ceremony then uses. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
+     * A WebAuthn challenge for any passkey of the cluster. &#x60;origin&#x60; is an app frontend&#39;s registered origin, whose rp-id the ceremony then uses. &#x60;holderKey&#x60; (base64url of an uncompressed P-256 public point, a browser&#39;s non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key&#39;s &#x60;holderProof&#x60; and lives 7 days rather than 30. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param loginBeginRequest May be absent. (optional)
      * @return PasskeyChallenge
      * @throws IllegalStateException If the request is not correctly configured
@@ -1314,7 +1314,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/passkey/login/begin
      * Start a sign-in
-     * A WebAuthn challenge for any passkey of the cluster. &#x60;origin&#x60; is an app frontend&#39;s registered origin, whose rp-id the ceremony then uses. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
+     * A WebAuthn challenge for any passkey of the cluster. &#x60;origin&#x60; is an app frontend&#39;s registered origin, whose rp-id the ceremony then uses. &#x60;holderKey&#x60; (base64url of an uncompressed P-256 public point, a browser&#39;s non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key&#39;s &#x60;holderProof&#x60; and lives 7 days rather than 30. &#x60;options&#x60; are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn&#39;s.  **Who:** anyone.
      * @param loginBeginRequest May be absent. (optional)
      * @return ApiResponse<PasskeyChallenge?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2086,7 +2086,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/refresh
      * Refresh a session
-     * A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.  **Who:** anyone.
+     * A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs &#x60;holderProof&#x60;: &#x60;signature&#x60; (base64url, the 64-byte &#x60;r ‖ s&#x60; of ECDSA P-256 with SHA-256) by that key over &#x60;\&quot;calimero.refresh-holder.v1\\0\&quot; ‖ b64url(SHA-256(refreshToken)) ‖ \&quot;\\0\&quot; ‖ at ‖ \&quot;\\0\&quot;&#x60;, &#x60;at&#x60; being Unix seconds within 120 of the node&#39;s clock; &#x60;401 HOLDER_PROOF_REQUIRED&#x60; without it, &#x60;401 BAD_HOLDER_PROOF&#x60; when it does not verify. Neither spends the token.  **Who:** anyone.
      * @param refreshRequest 
      * @return Session
      * @throws IllegalStateException If the request is not correctly configured
@@ -2118,7 +2118,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/refresh
      * Refresh a session
-     * A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.  **Who:** anyone.
+     * A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs &#x60;holderProof&#x60;: &#x60;signature&#x60; (base64url, the 64-byte &#x60;r ‖ s&#x60; of ECDSA P-256 with SHA-256) by that key over &#x60;\&quot;calimero.refresh-holder.v1\\0\&quot; ‖ b64url(SHA-256(refreshToken)) ‖ \&quot;\\0\&quot; ‖ at ‖ \&quot;\\0\&quot;&#x60;, &#x60;at&#x60; being Unix seconds within 120 of the node&#39;s clock; &#x60;401 HOLDER_PROOF_REQUIRED&#x60; without it, &#x60;401 BAD_HOLDER_PROOF&#x60; when it does not verify. Neither spends the token.  **Who:** anyone.
      * @param refreshRequest 
      * @return ApiResponse<Session?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2234,7 +2234,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/passkey/register/finish
      * Finish a sign-up
-     * The new passkey&#39;s registration. Answers &#x60;412 CONFIRM_REQUIRED&#x60; first: the new passkey signs the account it creates; the retry with &#x60;confirm&#x60; (and the same &#x60;invite&#x60;) opens a session, and redeems &#x60;invite&#x60; for the new account.  **Who:** anyone. **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * The new passkey&#39;s registration. Answers &#x60;412 CONFIRM_REQUIRED&#x60; first: the new passkey signs the account it creates; the retry with &#x60;confirm&#x60; (and the same &#x60;invite&#x60;) opens a session, and redeems &#x60;invite&#x60; for the new account. &#x60;holderKey&#x60; on the first finish binds that session to a device key, as on &#x60;/auth/passkey/login/begin&#x60;.  **Who:** anyone. **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param registerFinishRequest 
      * @return Session
      * @throws IllegalStateException If the request is not correctly configured
@@ -2266,7 +2266,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/passkey/register/finish
      * Finish a sign-up
-     * The new passkey&#39;s registration. Answers &#x60;412 CONFIRM_REQUIRED&#x60; first: the new passkey signs the account it creates; the retry with &#x60;confirm&#x60; (and the same &#x60;invite&#x60;) opens a session, and redeems &#x60;invite&#x60; for the new account.  **Who:** anyone. **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * The new passkey&#39;s registration. Answers &#x60;412 CONFIRM_REQUIRED&#x60; first: the new passkey signs the account it creates; the retry with &#x60;confirm&#x60; (and the same &#x60;invite&#x60;) opens a session, and redeems &#x60;invite&#x60; for the new account. &#x60;holderKey&#x60; on the first finish binds that session to a device key, as on &#x60;/auth/passkey/login/begin&#x60;.  **Who:** anyone. **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param registerFinishRequest 
      * @return ApiResponse<Session?>
      * @throws IllegalStateException If the request is not correctly configured
