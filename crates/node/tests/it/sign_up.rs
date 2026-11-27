@@ -454,13 +454,13 @@ async fn a_node_paces_the_accounts_it_creates() {
     let c = Cluster::start(3).await;
     let ops = ops(&c).await;
     // Every sign-up on node 0 redeems this invite, so the ones counted are invited.
-    let _invite = operator_invite(&ops, "inv_many", 2 * BURST as u32).await;
+    let _invite = operator_invite(&ops, "inv_many_sign_ups", 2 * BURST as u32).await;
     let accounts = || c.nodes[0].as_ref().unwrap().node.sys(|s| s.accounts.len());
     let first = accounts();
     let started = std::time::Instant::now();
     let mut taken = 0;
     let refusal = loop {
-        match sign_up(&c, 0, &format!("p{taken}"), Some("inv_many")).await {
+        match sign_up(&c, 0, &format!("p{taken}"), Some("inv_many_sign_ups")).await {
             Ok(_) => taken += 1,
             Err(e) => break e,
         }
@@ -480,7 +480,11 @@ async fn a_node_paces_the_accounts_it_creates() {
     })
     .await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    assert_eq!(accounts(), first + taken + 1, "a refused sign-up made an account");
+    assert_eq!(
+        accounts(),
+        first + taken + 1,
+        "a refused sign-up made an account"
+    );
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let _later = sign_up(&c, 0, "later", None).await.unwrap();

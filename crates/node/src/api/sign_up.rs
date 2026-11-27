@@ -60,7 +60,9 @@ fn refuse_below_one(tokens: f64) -> Result<(), ApiError> {
     if tokens >= 1.0 {
         return Ok(());
     }
-    let secs = ((1.0 - tokens) * 60.0 / SIGN_UPS_PER_MINUTE).ceil().max(1.0);
+    let secs = ((1.0 - tokens) * 60.0 / SIGN_UPS_PER_MINUTE)
+        .ceil()
+        .max(1.0);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -574,15 +576,25 @@ mod tests {
     fn sign_ups_past_the_burst_wait_for_the_refill() {
         let start = Instant::now();
         let limit = SignUpLimit(std::sync::Mutex::new((SIGN_UP_BURST, start)));
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a small constant")]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small constant"
+        )]
         for _ in 0..SIGN_UP_BURST as u32 {
             limit.take(start).unwrap();
         }
         let refused = limit.take(start).unwrap_err();
-        assert_eq!((refused.status, refused.code.as_str()), (429, "RATE_LIMITED"));
+        assert_eq!(
+            (refused.status, refused.code.as_str()),
+            (429, "RATE_LIMITED")
+        );
         let wait = refused.retry_after.unwrap();
         assert_eq!(f64::from(wait), (60.0 / SIGN_UPS_PER_MINUTE).ceil());
-        assert!(limit.check(start).is_err(), "a check spends nothing and still refuses");
+        assert!(
+            limit.check(start).is_err(),
+            "a check spends nothing and still refuses"
+        );
         let later = start + Duration::from_secs(u64::from(wait));
         limit.check(later).unwrap();
         limit.take(later).unwrap();
