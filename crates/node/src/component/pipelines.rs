@@ -425,6 +425,9 @@ pub struct PipelineRun {
     /// The hash of the idempotency key that started it (`rows::CPKEY`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// The params the pipeline declares `secret`, shown only as a keyed hash.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub secret_params: BTreeSet<String>,
 }
 
 impl PipelineRun {
@@ -490,6 +493,8 @@ pub struct PipelineStartEntry {
     pub limits: BTreeMap<String, Limits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub secret_params: BTreeSet<String>,
     pub ts_ms: u64,
 }
 
@@ -798,6 +803,7 @@ impl AppMachine {
             retry_of: entry.retry_of.clone(),
             limits: entry.limits.clone(),
             key: entry.key.clone(),
+            secret_params: entry.secret_params.clone(),
         };
         put_json(tx, rows::CPIPE, &record.id, &record);
         if let Some(key) = &record.key {
@@ -1496,6 +1502,7 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
         && known.retry_of == entry.retry_of
         && known.limits == entry.limits
         && known.key == entry.key
+        && known.secret_params == entry.secret_params
         && known
             .steps
             .keys()

@@ -8399,7 +8399,7 @@ public enum Components {
                 case results
             }
         }
-        /// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap.
+        /// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). A param named in `secretParams` is declared `secret`: `params` shows it as `{ hmacSha256 }`, never its value. `costSoFar` is a decimal string, under a cost cap.
         ///
         /// - Remark: Generated from `#/components/schemas/PipelineRunView`.
         public struct PipelineRunView: Codable, Hashable, Sendable {
@@ -8625,6 +8625,8 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/PipelineRunView/limits`.
             public var limits: Components.Schemas.PipelineRunView.LimitsPayload?
+            /// - Remark: Generated from `#/components/schemas/PipelineRunView/secretParams`.
+            public var secretParams: [Swift.String]?
             /// Creates a new `PipelineRunView`.
             ///
             /// - Parameters:
@@ -8651,6 +8653,7 @@ public enum Components {
             ///   - costSoFar: an unsigned 64-bit integer as a decimal string, exact past 2^53
             ///   - retryOf:
             ///   - limits:
+            ///   - secretParams:
             public init(
                 id: Swift.String,
                 pipeline: Swift.String,
@@ -8674,7 +8677,8 @@ public enum Components {
                 cost: Components.Schemas.PipelineRunCost? = nil,
                 costSoFar: Swift.String? = nil,
                 retryOf: Swift.String? = nil,
-                limits: Components.Schemas.PipelineRunView.LimitsPayload? = nil
+                limits: Components.Schemas.PipelineRunView.LimitsPayload? = nil,
+                secretParams: [Swift.String]? = nil
             ) {
                 self.id = id
                 self.pipeline = pipeline
@@ -8699,6 +8703,7 @@ public enum Components {
                 self.costSoFar = costSoFar
                 self.retryOf = retryOf
                 self.limits = limits
+                self.secretParams = secretParams
             }
             public enum CodingKeys: String, CodingKey {
                 case id
@@ -8724,6 +8729,7 @@ public enum Components {
                 case costSoFar
                 case retryOf
                 case limits
+                case secretParams
             }
         }
         /// What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap, and the run it retries.

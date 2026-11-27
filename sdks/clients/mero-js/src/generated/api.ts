@@ -5100,7 +5100,7 @@ export interface components {
             result?: unknown;
             results?: unknown[] | null;
         };
-        /** @description A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap. */
+        /** @description A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). A param named in `secretParams` is declared `secret`: `params` shows it as `{ hmacSha256 }`, never its value. `costSoFar` is a decimal string, under a cost cap. */
         PipelineRunView: {
             id: string;
             pipeline: string;
@@ -5153,6 +5153,7 @@ export interface components {
                     wallSecs: number | null;
                 };
             };
+            secretParams?: string[];
         };
         /** @description What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap, and the run it retries. */
         PipelineStarted: {

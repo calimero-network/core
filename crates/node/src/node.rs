@@ -59,11 +59,11 @@ pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
+pub(crate) use component::{secret_params_key, shown_params, PIPELINE_VIEW, RUN_VIEW};
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
 /// The run view's types, which the API's OpenAPI registry names (`api::openapi`).
 #[cfg(test)]
 pub(crate) use component::{PartTaken, RunFileView, RunList, RunView, UploadStatus, UploadView};
-pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
 
 /// `GET /apps/{app}/pipeline-runs/{run}/receipt`: a pipeline run's receipt
 /// (`calimero_client::receipt::PipelineReceipt`) with the signature of the answering node's

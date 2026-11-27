@@ -760,6 +760,7 @@ Code: `component/pipelines.rs` (apply), `node/component/compute/pipelines.rs` (l
 A compute-only app's group gets an `init` entry with no outcome (`init_compute_only`), so it has the component executor that holds files.
 `PipelineRun` (`rows::CPIPE`) fixes the release `version`, the pipeline `hash`, the compute component and `modules` at start, with the bound `inputs`, `params`, `caller` and `payer`.
 A start with an idempotency key stores the key's hash (over the caller and the key) as `key`, and `rows::CPKEY` maps it to the run until the run is dropped: another start with that key is refused with `KEY_TAKEN`, which the API answers with the first run. Run ids stay random, so a dropped run's id, whose step runs the app keeps longer, is never reused.
+It also names its `secretParams`, the params the pipeline declares `secret`: `run_json` and `build_receipt` show each as `{ hmacSha256 }` (`shown_params`), and only the node's own retry and idempotency check read `__pipeline_run` with `secrets: true` for the values.
 Per step a `StepState` keeps counters and flags only (`status`, `started`, `fan`, `finished`, `failed_items`, `cost`, `run_cost`, `capped`, `results_bytes`, `results_too_large`, `reason`).
 The head keeps `active_pipelines` (at most `MAX_ACTIVE_PIPELINE_RUNS`) and the last `FINISHED_PIPELINE_RUNS_KEPT` finished ids.
 

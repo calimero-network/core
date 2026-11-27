@@ -8,6 +8,7 @@
 mod finish;
 mod job_io;
 mod pipelines;
+pub(crate) use pipelines::{secret_params_key, shown_params};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;

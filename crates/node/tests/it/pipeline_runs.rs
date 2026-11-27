@@ -128,6 +128,16 @@ steps:
   c: { method: echo, inputs: [a.outputs], args: { value: b.result } }
 ";
 
+const SALTED: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: salted
+params:
+  salt: { type: string, secret: true }
+  tag: { type: string, default: plain }
+steps:
+  a: { method: echo, args: { value: [params.salt, params.tag] } }
+";
+
 const FRESH: &str = "apiVersion: compute.calimero.network/v1
 kind: Pipeline
 name: fresh
@@ -807,6 +817,7 @@ async fn a_pipeline_whose_definition_is_gone_fails() {
         retry_of: None,
         limits: Default::default(),
         key: None,
+        secret_params: Default::default(),
         ts_ms: 0,
     };
     let req = CallRequest::host(
@@ -1345,6 +1356,97 @@ async fn a_key_whose_run_was_dropped_starts_a_new_run() {
     assert_ne!(again, first, "a new run under a new id");
     let done = rig.ended(&again).await;
     assert_eq!(done["state"], "succeeded", "{done}");
+}
+
+/// A `secret` param reaches the job, a retry and the step cache, while the run view and the
+/// receipt show only its keyed hash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_secret_param_reaches_the_job_but_not_the_view_or_the_receipt() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    // The rig's bundle is at its pipeline cap: a v2 release carries this one.
+    let v2 = calimero_app_build::with_abi(&rig.compute, &{
+        let mut abi = calimero_app_build::abi_of(&rig.compute).unwrap().unwrap();
+        abi["build"] = json!(2);
+        abi
+    })
+    .unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let mpk = mpk_with_pipelines(
+        "com.test.job",
+        "2.0.0",
+        None,
+        Some(&v2),
+        &[("pipelines/salted.yaml", SALTED)],
+        &key,
+    );
+    let _installed = rig.alice.packages().upload(mpk, None).await.unwrap();
+    let up = rig
+        .alice
+        .apps()
+        .upgrade(
+            &rig.app,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut rig.pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    let salt = "pepper-7f3a9c";
+    let first = rig
+        .start_run("salted", json!({}), json!({ "salt": salt }))
+        .await;
+    let done = rig.ended(&first).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(
+        done["steps"]["a"]["result"],
+        json!([salt, "plain"]),
+        "the job got it"
+    );
+    assert_eq!(done["secretParams"], json!(["salt"]), "{done}");
+    assert_eq!(done["params"]["tag"], "plain");
+    let shown = done["params"]["salt"]["hmacSha256"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(shown.len(), 64, "{done}");
+    assert!(!done["params"].to_string().contains(salt), "{done}");
+
+    let answer = rig.alice.pipeline_receipt(&rig.app, &first).await.unwrap();
+    let receipt = rig
+        .alice
+        .verify_receipt(&rig.app, &first, &answer)
+        .await
+        .unwrap();
+    assert_eq!(receipt.params["salt"], json!({ "hmacSha256": shown }));
+    assert!(!serde_json::to_string(&answer).unwrap().contains(salt));
+
+    let retried = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &first, json!({}))
+        .await
+        .unwrap();
+    let again = rig.ended(retried["run"].as_str().unwrap()).await;
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert!(cached(&again, "a"), "the same salt hits the cache: {again}");
+    assert_eq!(again["steps"]["a"]["result"], json!([salt, "plain"]));
+    assert_ne!(
+        again["params"]["salt"]["hmacSha256"],
+        json!(shown),
+        "a hash per run"
+    );
+
+    let keyed = json!({ "params": { "salt": salt }, "idempotencyKey": "ci-s" });
+    let start = || {
+        rig.alice
+            .start_pipeline_run_with(&rig.app, "salted", keyed.clone())
+    };
+    let once = start().await.unwrap();
+    assert_eq!(
+        start().await.unwrap(),
+        once,
+        "a repeated key is the same run"
+    );
 }
 
 /// A step with `cache: false` runs every time, never answered from the step cache.

@@ -34,7 +34,8 @@ T = TypeVar("T", bound="PipelineRunView")
 @_attrs_define
 class PipelineRunView:
     """A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the
-    reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a
+    reader (results and file hashes only to those who handle the app's files). A param named in `secretParams` is
+    declared `secret`: `params` shows it as `{ hmacSha256 }`, never its value. `costSoFar` is a decimal string, under a
     cost cap.
 
         Attributes:
@@ -63,6 +64,7 @@ class PipelineRunView:
             cost_so_far (Union[Unset, str]): an unsigned 64-bit integer as a decimal string, exact past 2^53
             retry_of (Union[Unset, str]):
             limits (Union[Unset, PipelineRunViewLimits]):
+            secret_params (Union[Unset, list[str]]):
     """
 
     id: str
@@ -95,6 +97,7 @@ class PipelineRunView:
     cost_so_far: Union[Unset, str] = UNSET
     retry_of: Union[Unset, str] = UNSET
     limits: Union[Unset, "PipelineRunViewLimits"] = UNSET
+    secret_params: Union[Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -179,6 +182,10 @@ class PipelineRunView:
         if not isinstance(self.limits, Unset):
             limits = self.limits.to_dict()
 
+        secret_params: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.secret_params, Unset):
+            secret_params = self.secret_params
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -214,6 +221,8 @@ class PipelineRunView:
             field_dict["retryOf"] = retry_of
         if limits is not UNSET:
             field_dict["limits"] = limits
+        if secret_params is not UNSET:
+            field_dict["secretParams"] = secret_params
 
         return field_dict
 
@@ -373,6 +382,8 @@ class PipelineRunView:
         else:
             limits = PipelineRunViewLimits.from_dict(_limits)
 
+        secret_params = cast(list[str], d.pop("secretParams", UNSET))
+
         pipeline_run_view = cls(
             id=id,
             pipeline=pipeline,
@@ -397,6 +408,7 @@ class PipelineRunView:
             cost_so_far=cost_so_far,
             retry_of=retry_of,
             limits=limits,
+            secret_params=secret_params,
         )
 
         pipeline_run_view.additional_properties = d

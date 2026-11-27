@@ -241,7 +241,7 @@ outputs: [total.outputs]
 | --- | --- |
 | `apiVersion`, `kind`, `name` | Required: `compute.calimero.network/v1`, `Pipeline`, and a name of 1 to 64 characters of `[a-z0-9-]` starting with a letter (the same rule for every step, input and param name; `inputs`, `params` and `item` are reserved). |
 | `module` | The module steps run in when they name none: `self` (the release's own compute component, the default) or another installed package, `com.acme.pdf[@0.1.0]`, pinned at install. |
-| `params` | Typed values a run passes: `type` (`number`, `string`, `boolean`), `default`, `min`, `max`, `enum`. A step reads one as `params.<name>`. |
+| `params` | Typed values a run passes: `type` (`number`, `string`, `boolean`), `default`, `min`, `max`, `enum`, `secret`. A step reads one as `params.<name>`. |
 | `inputs` | What a run binds: `kind: files` (with `maxItems`), `artifact` or `table` (one file each), and an optional `default`. |
 | `steps.<name>.method` | A compute method of the step's module, by its ABI name (`countWords`). |
 | `args` | The method's arguments, a JSON object whose values may be `params.x`, `<step>.result` or, in a fan-out, `item`. A method that takes none gets none. |
@@ -261,6 +261,24 @@ A source is at most 64 KiB, with at most 64 steps, 64 inputs, 64 params and
 10,000 items per fan-out (`crates/pipeline/src/compile.rs`).
 A run takes at most 1,024 files, so an install, or a check against a release,
 refuses an input's `maxItems` above that (`BAD_MAX_ITEMS`).
+
+### Secret params
+
+`secret: true` on a param, such as the salt behind a pseudonym, keeps its value out of everything a reader of the run sees.
+The job still gets the value.
+The run view, its events and its receipt show `{ "hmacSha256": "<hex>" }` in its place, and `secretParams` names the params shown that way.
+
+```yaml
+params:
+  salt: { type: string, secret: true }
+```
+
+The hash is an HMAC-SHA256 of the app, the run, the param's name and its value under a key derived from the cluster's key, which never leaves the cluster's nodes.
+A plain or salted hash would let anyone holding the receipt test guesses offline; this one cannot be computed without the cluster's key, and it differs from run to run, so two runs with the same value do not match.
+For the same reason a run with secret params keys its step args under the cluster's key before they go into a step cache key.
+Nobody can check a guess against the hash, the run's owner included: keep the value where you keep the run's other secrets.
+A secret param takes no `default` or `enum` (`BAD_PARAM`): the pipeline's source is public, so either would give the value away.
+A pipeline without a secret param, and every receipt already issued, are unchanged.
 
 ### Check it before you pack
 

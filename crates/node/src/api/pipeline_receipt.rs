@@ -19,7 +19,7 @@ use super::{gate, may_handle_files, ApiResult};
 use crate::attest::AttestationDoc;
 use crate::component::{PipelineRun, PipelineState, RunInputRef, StepState};
 use crate::error::ApiError;
-use crate::node::{Node, PIPELINE_VIEW};
+use crate::node::{secret_params_key, shown_params, Node, PIPELINE_VIEW};
 use crate::packages::pipelines::SELF_MODULE;
 
 const RUN_NOT_ENDED: &str = "RUN_NOT_ENDED";
@@ -81,13 +81,15 @@ fn step_runs(step: &StepState, proofs: &BTreeMap<String, StepRunProof>) -> Vec<R
 }
 
 /// The receipt of an ended pipeline run of `app`, made by the cluster `cluster` (hex identity);
-/// `source` carries job evidence only when the view was asked for it (version 2).
+/// `source` carries job evidence only when the view was asked for it (version 2). A secret param
+/// is shown hashed under `secrets` (`secret_params_key`).
 #[must_use]
 pub fn build_receipt(
     version: u32,
     cluster: &str,
     app: &str,
     source: &ReceiptSource,
+    secrets: &[u8; 32],
 ) -> PipelineReceipt {
     let run = &source.run;
     let proofs = &source.proofs;
@@ -114,7 +116,7 @@ pub fn build_receipt(
                 (name.clone(), files)
             })
             .collect(),
-        params: run.params.clone(),
+        params: shown_params(run, app, secrets),
         state: name_of(&run.state),
         start_ts_ms: run.start_ts_ms,
         end_ts_ms: run.end_ts_ms.unwrap_or_default(),
@@ -197,6 +199,7 @@ pub(super) async fn receipt(
         &hex::encode(node.cluster_identity()),
         &app_id,
         &source,
+        &secret_params_key(node.cluster_key()),
     );
     let receipt: Value =
         serde_json::to_value(&receipt).map_err(|e| ApiError::internal(&e.to_string()))?;

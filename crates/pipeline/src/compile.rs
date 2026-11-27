@@ -43,7 +43,7 @@ const TOP_FIELDS: [&str; 9] = [
     "outputs",
     "failFast",
 ];
-const PARAM_FIELDS: [&str; 5] = ["type", "default", "min", "max", "enum"];
+const PARAM_FIELDS: [&str; 6] = ["type", "default", "min", "max", "enum", "secret"];
 const INPUT_FIELDS: [&str; 3] = ["kind", "maxItems", "default"];
 const STEP_FIELDS: [&str; 14] = [
     "module",
@@ -288,6 +288,13 @@ fn validate_param(name: &str, p: &crate::model::Param, errs: &mut Vec<SpecError>
     }
     if p.values.iter().flatten().any(|v| !fits(v)) {
         bad("enum", "enum value does not match the param type", errs);
+    }
+    if p.secret && (p.default.is_some() || p.values.is_some()) {
+        bad(
+            "secret",
+            "a secret param has no default or enum: the source is public",
+            errs,
+        );
     }
     let Some(d) = &p.default else { return };
     if !fits(d) {

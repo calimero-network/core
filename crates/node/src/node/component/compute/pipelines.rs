@@ -37,6 +37,8 @@ const MAX_DECISION_RUNS_BYTES: usize = calimero_log::MAX_ENTRY_BYTES - 128 * 102
 const RUN_TOO_LARGE: &str = "RUN_TOO_LARGE"; // the reason of a step with a run too big for one log entry
 const ITEMS_UNREADABLE: &str = "ITEMS_UNREADABLE"; // the reason of a step built from an earlier step whose item rows are missing or unreadable
 const PIPELINE_UNAVAILABLE: &str = "PIPELINE_UNAVAILABLE"; // the reason of a step whose pipeline definition cannot be found
+const SECRET_PARAMS_LABEL: &str = "calimero.pipeline-secret-params.v1"; // derives the key secret params are shown hashed under
+const CACHE_ARGS_LABEL: &str = "calimero.pipeline-cache-args.v1"; // derives the key a secret run's step args are hashed under for its cache key
 
 /// The shared-memory state of the loop: what is being driven, and what it has looked up.
 #[derive(Default)]
@@ -69,6 +71,8 @@ fn remember<T>(cache: &std::sync::Mutex<HashMap<String, Arc<T>>>, key: &str, val
 pub(super) struct CacheView<'a> {
     pub(super) sha: &'a dyn Fn(&str) -> Option<String>,
     pub(super) hit: &'a dyn Fn(&str) -> bool,
+    /// The key a run with secret params hashes its step args under (`cache_args_key`).
+    pub(super) secrets: &'a [u8; 32],
 }
 
 /// The compute methods of each compute component a run uses, by bundle hash.
@@ -511,7 +515,7 @@ fn build_step(
         let args = resolve_args(pipeline, run, step, item)?;
         let key = step
             .cache
-            .then(|| step_key(bundle, step, &args, &inputs, view))
+            .then(|| step_key(bundle, run, step, &args, &inputs, view))
             .flatten();
         let built = StepRun {
             run: run_id(&run.id, name, index),
@@ -582,9 +586,11 @@ fn build_step(
     })
 }
 
-/// The step cache key of a run, none when an input's content is not known.
+/// The step cache key of a run, none when an input's content is not known. A run with secret
+/// params keys its args first: the key is shown, and a plain hash of them would test a guess.
 fn step_key(
     bundle: &str,
+    run: &PipelineRun,
     step: &Step,
     args: &[u8],
     inputs: &[String],
@@ -594,7 +600,45 @@ fn step_key(
         .iter()
         .map(|i| (view.sha)(i))
         .collect::<Option<_>>()?;
+    let keyed;
+    let args = if run.secret_params.is_empty() {
+        args
+    } else {
+        keyed = crate::backup::tag(view.secrets, args);
+        &keyed[..]
+    };
     cache_key(bundle, &step.method, args, &hashes)
+}
+
+/// The key a secret param's shown hash is made under: derived from K_c, which never leaves the
+/// cluster's nodes, so a guess cannot be tested offline.
+pub(crate) fn secret_params_key(cluster_key: &[u8; 32]) -> [u8; 32] {
+    crate::backup::tag(cluster_key, SECRET_PARAMS_LABEL)
+}
+
+fn cache_args_key(cluster_key: &[u8; 32]) -> [u8; 32] {
+    crate::backup::tag(cluster_key, CACHE_ARGS_LABEL)
+}
+
+/// A run's params as shown: a secret one as `{ hmacSha256 }` over the app, run, name and value,
+/// so equal values in two runs do not match.
+pub(crate) fn shown_params(
+    run: &PipelineRun,
+    app: &str,
+    key: &[u8; 32],
+) -> BTreeMap<String, Value> {
+    run.params
+        .iter()
+        .map(|(name, v)| {
+            let shown = if run.secret_params.contains(name) {
+                let message = format!("{app}\n{}\n{name}\n{v}", run.id);
+                json!({ "hmacSha256": hex::encode(crate::backup::tag(key, message)) })
+            } else {
+                v.clone()
+            };
+            (name.clone(), shown)
+        })
+        .collect()
 }
 
 /// A batch's `item`: the value itself for a batch of one, else the list of them.
@@ -679,10 +723,13 @@ fn resolve(
 /// A pipeline run as the API shows it: sizes, hashes and results only to those who may list
 /// the app's files, a result as JSON when it is. Without `items` a step shows counters only: no
 /// `runs`, `outputs`, `result` or `results`.
-fn run_json(run: &PipelineRun, files: bool, items: bool) -> Value {
+fn run_json(run: &PipelineRun, files: bool, items: bool, hide: Option<(&str, &[u8; 32])>) -> Value {
     let mut v = serde_json::to_value(run).unwrap_or(Value::Null);
     // The key's hash is the node's lookup, not part of the run a reader sees.
     let _key = v.as_object_mut().and_then(|o| o.remove("key"));
+    if let Some((app, key)) = hide {
+        v["params"] = json!(shown_params(run, app, key));
+    }
     if let Some(cap) = &run.cost {
         v["cost"]["maxCost"] = json!(cap.max_cost.to_string());
         v["cost"]["worstCase"] = json!(cap.worst_case.to_string());
@@ -780,6 +827,10 @@ impl Node {
     ) -> Result<ViewAnswer, ApiError> {
         let files = req.args["files"].as_bool().unwrap_or(false);
         let items = req.args["items"].as_bool().unwrap_or(true);
+        // Only the node's own retry and key check ask for secret values: clients cannot name this view.
+        let key = secret_params_key(self.cluster_key());
+        let hide =
+            (req.args["secrets"].as_bool() != Some(true)).then_some((req.app_id.as_str(), &key));
         let limit = match req.args.get("limit").filter(|l| !l.is_null()) {
             None => DEFAULT_PAGE,
             Some(l) => l
@@ -794,7 +845,7 @@ impl Node {
             let keyed = req.args["key"].as_str().map(|key| {
                 m.keyed_pipeline(key)
                     .and_then(|run| m.pipeline_head(&run))
-                    .map_or(Value::Null, |r| run_json(&r, files, false))
+                    .map_or(Value::Null, |r| run_json(&r, files, false, hide))
             });
             let result = keyed.unwrap_or_else(|| match req.args["run"].as_str() {
                 Some(run) if req.args["receipt"].as_bool() == Some(true) => {
@@ -808,13 +859,13 @@ impl Node {
                     } else {
                         m.pipeline_head(run)
                     };
-                    found.map_or(Value::Null, |r| run_json(&r, files, items))
+                    found.map_or(Value::Null, |r| run_json(&r, files, items, hide))
                 }
                 None => json!({
                     "runs": m
                         .pipeline_runs_page(limit)
                         .iter()
-                        .map(|r| run_json(r, files, false))
+                        .map(|r| run_json(r, files, false, hide))
                         .collect::<Vec<_>>(),
                 }),
             });
@@ -906,6 +957,7 @@ impl Node {
             .remove(&key)
             .unwrap_or_default();
         let wanted = steps_named(&pipeline, run, &builds);
+        let secrets = cache_args_key(self.cluster_key());
         let decided = g.read_local(|m, _| {
             let mut run = run.clone();
             m.fill_steps(&mut run, |n| wanted.contains(n));
@@ -914,6 +966,7 @@ impl Node {
             let view = CacheView {
                 sha: &|id| m.file_sha256(id),
                 hit: &|key| m.cache_hit(key),
+                secrets: &secrets,
             };
             plan(
                 &pipeline,
@@ -1149,6 +1202,7 @@ mod tests {
         let view = CacheView {
             sha: &|_| None,
             hit: &|_| false,
+            secrets: &[0; 32],
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps.clone()))]);
         super::plan(
@@ -1214,6 +1268,7 @@ steps:
             retry_of: None,
             limits: BTreeMap::new(),
             key: None,
+            secret_params: BTreeSet::new(),
         }
     }
 
@@ -1555,6 +1610,7 @@ steps:
         let view = CacheView {
             sha: &|_| None,
             hit: &|_| false,
+            secrets: &[0; 32],
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps()))]);
         let queued = |run: &PipelineRun, places| {
@@ -1614,6 +1670,7 @@ steps:
         let view = CacheView {
             sha: &|_| None,
             hit: &|_| false,
+            secrets: &[0; 32],
         };
         let plan_on = |step: &str, s: &SystemState| {
             let p = fan_pipeline(step);
@@ -1956,6 +2013,7 @@ steps:
         let view = CacheView {
             sha: &|_| None,
             hit: &|_| false,
+            secrets: &[0; 32],
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps()))]);
         super::plan(
@@ -1979,6 +2037,7 @@ steps:
         let view = CacheView {
             sha: &|id| Some((*content.get(id).unwrap_or(&id)).to_owned()),
             hit: &|key| hits.contains(key),
+            secrets: &[0; 32],
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps.clone()))]);
         super::plan(
@@ -2144,6 +2203,7 @@ steps:
         let view = CacheView {
             sha: &|id| Some(id.to_owned()),
             hit: &|_| false,
+            secrets: &[0; 32],
         };
         let decided = super::plan(
             &p,
@@ -2230,15 +2290,88 @@ steps:
         let p = calimero_pipeline::compile(SOURCE).unwrap();
         let mut run = run_of(&p);
         run.steps.get_mut("a").unwrap().cached_items = 2;
-        let shown = run_json(&run, true, false);
+        let shown = run_json(&run, true, false, None);
         let a = shown["steps"]["a"].as_object().unwrap();
         for gone in ["runs", "outputs", "result", "results", "started"] {
             assert!(!a.contains_key(gone), "{gone}");
         }
         assert_eq!(a["cachedItems"], json!(2));
-        let full = run_json(&run, true, true);
+        let full = run_json(&run, true, true, None);
         assert_eq!(full["steps"]["a"]["runs"], json!([]));
         assert_eq!(full["steps"]["a"]["outputs"], json!([]));
+    }
+
+    /// A secret param is shown as a keyed hash that changes with the key, the run and the value;
+    /// the others as given, and the node's own read gets the value.
+    #[test]
+    fn a_secret_param_is_shown_only_as_a_keyed_hash() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let mut run = run_of(&p);
+        run.params = BTreeMap::from([
+            ("limit".to_owned(), json!(3)),
+            ("salt".to_owned(), json!("hunter2")),
+        ]);
+        run.secret_params = BTreeSet::from(["salt".to_owned()]);
+        let hash = |run: &PipelineRun, key: &[u8; 32]| {
+            let shown = run_json(run, true, true, Some(("app", key)));
+            assert_eq!(shown["params"]["limit"], json!(3), "{shown}");
+            assert!(!shown.to_string().contains("hunter2"), "{shown}");
+            assert_eq!(shown["secretParams"], json!(["salt"]), "{shown}");
+            shown["params"]["salt"]["hmacSha256"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let first = hash(&run, &[1; 32]);
+        assert_eq!(first.len(), 64);
+        assert_eq!(hash(&run, &[1; 32]), first, "the same for every reader");
+        assert_ne!(hash(&run, &[2; 32]), first, "another cluster's key");
+        let mut other = run.clone();
+        other.id = "r2".into();
+        assert_ne!(hash(&other, &[1; 32]), first, "another run");
+        let _prev = other.params.insert("salt".to_owned(), json!("hunter3"));
+        other.id = run.id.clone();
+        assert_ne!(hash(&other, &[1; 32]), first, "another value");
+        assert_eq!(
+            run_json(&run, true, true, None)["params"]["salt"],
+            "hunter2"
+        );
+    }
+
+    /// A run with secret params keys its step args before its cache key hashes them, so the shown
+    /// key cannot test a guess; a run without stays on the plain key.
+    #[test]
+    fn a_run_with_secret_params_keys_its_step_cache_key() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let step = &p.steps["b"];
+        let mut run = run_of(&p);
+        let key_under = |run: &PipelineRun, secrets: &[u8; 32]| {
+            let view = CacheView {
+                sha: &|_| Some("ab".to_owned()),
+                hit: &|_| false,
+                secrets,
+            };
+            step_key(
+                "bundle",
+                run,
+                step,
+                b"{\"salt\":1}",
+                &["f".to_owned()],
+                &view,
+            )
+            .unwrap()
+        };
+        let plain = cache_key("bundle", "echo", b"{\"salt\":1}", &["ab".to_owned()]).unwrap();
+        assert_eq!(key_under(&run, &[1; 32]), plain);
+        run.secret_params = BTreeSet::from(["limit".to_owned()]);
+        let keyed = key_under(&run, &[1; 32]);
+        assert_ne!(keyed, plain);
+        assert_eq!(
+            key_under(&run, &[1; 32]),
+            keyed,
+            "the same args hit the same entry"
+        );
+        assert_ne!(key_under(&run, &[2; 32]), keyed);
     }
 
     /// A run with every optional field set, for the answer's type to read.
@@ -2264,6 +2397,8 @@ steps:
         run.cost_so_far = 3;
         run.retry_of = Some("q".into());
         run.limits = BTreeMap::from([("a".to_owned(), Limits::default())]);
+        run.params = BTreeMap::from([("limit".to_owned(), json!(3))]);
+        run.secret_params = BTreeSet::from(["limit".to_owned()]);
         run.end_ts_ms = Some(5);
         let step = run.steps.get_mut("a").unwrap();
         step.status = StepStatus::Succeeded;
@@ -2292,7 +2427,7 @@ steps:
         let p = calimero_pipeline::compile(SOURCE).unwrap();
         for run in [run_of(&p), full_run(&p)] {
             for (files, items) in [(true, true), (true, false), (false, true), (false, false)] {
-                let served = run_json(&run, files, items);
+                let served = run_json(&run, files, items, Some(("app", &[1; 32])));
                 if let Err(e) = serde_json::from_value::<PipelineRunView>(served.clone()) {
                     panic!("files={files} items={items}: {e}\n{served}");
                 }

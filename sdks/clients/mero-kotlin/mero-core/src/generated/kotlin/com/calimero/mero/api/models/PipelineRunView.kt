@@ -33,7 +33,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap.
+ * A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). A param named in `secretParams` is declared `secret`: `params` shows it as `{ hmacSha256 }`, never its value. `costSoFar` is a decimal string, under a cost cap.
  *
  * @param id 
  * @param pipeline 
@@ -58,6 +58,7 @@ import kotlinx.serialization.Contextual
  * @param costSoFar an unsigned 64-bit integer as a decimal string, exact past 2^53
  * @param retryOf 
  * @param limits 
+ * @param secretParams 
  */
 @Serializable
 
@@ -132,7 +133,10 @@ data class PipelineRunView (
     val retryOf: kotlin.String? = null,
 
     @Contextual @SerialName(value = "limits")
-    val limits: kotlin.collections.Map<kotlin.String, PipelineRunViewLimitsValue>? = null
+    val limits: kotlin.collections.Map<kotlin.String, PipelineRunViewLimitsValue>? = null,
+
+    @SerialName(value = "secretParams")
+    val secretParams: kotlin.collections.List<kotlin.String>? = null
 
 ) {
 
