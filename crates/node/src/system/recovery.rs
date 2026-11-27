@@ -881,8 +881,15 @@ fn imported_lineage(
     {
         return Err(OUTSIDE_LINEAGE);
     }
+    // The release it runs: named, else the newest lineage release shipping its code here.
+    let runs = match &record.release {
+        Some(r) => r.version.clone(),
+        None => held
+            .and_then(|p| p.shipping(&record.bundle, record.compute_bundle.as_deref()))
+            .ok_or(OUTSIDE_LINEAGE)?,
+    };
     let mut pin = pin;
-    floor_at_least_runs(&mut pin, release.map(|r| r.version.as_str()))?;
+    floor_at_least_runs(&mut pin, Some(&runs))?;
     Ok(Some(pin))
 }
 

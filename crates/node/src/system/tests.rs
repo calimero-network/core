@@ -10104,6 +10104,35 @@ fn an_import_keeps_a_pinned_instance_on_its_lineage() {
     let _ok = m
         .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
         .unwrap();
+    // A record that names no release is floored at the newest lineage release shipping its
+    // code; one whose code no lineage release ships is refused.
+    let mut low = slice.clone();
+    let kv = low.apps.get_mut("kv").unwrap();
+    kv.release = None;
+    kv.lineage.as_mut().unwrap().floor = "1.0.0".into();
+    let _gone = low.bundles.remove("b-1.1.0");
+    let mut m = fresh(None);
+    let _prev = m
+        .state
+        .bundles
+        .insert("b-1.1.0".into(), old.state.bundles["b-1.1.0"].clone());
+    let _ok = m.run_unproven(import(&low)).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage, pinned,
+        "floored at the shipping release"
+    );
+    let mut unshipped_code = low.clone();
+    unshipped_code.apps.get_mut("kv").unwrap().compute_bundle = Some("c-none".into());
+    let mut m = fresh(None);
+    let _prev = m
+        .state
+        .bundles
+        .insert("b-1.1.0".into(), old.state.bundles["b-1.1.0"].clone());
+    assert!(
+        m.run_unproven(import(&unshipped_code)).is_err(),
+        "no lineage release ships it"
+    );
+    assert!(!m.state.apps.contains_key("kv"));
     // Neither the floor nor the release it runs parses: refused.
     let mut hopeless = garbled.clone();
     let mut nightly = hopeless.packages["p"].versions["1.1.0"].clone();
