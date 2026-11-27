@@ -871,6 +871,25 @@ docker create --name m ghcr.io/calimero-network/merod:prerelease && docker cp m:
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
+### Advisories
+
+A pull request's `Rust supply chain` job runs `cargo deny check advisories bans
+licenses sources`, but only on that pull request. Advisories are published on
+their own schedule, so `.github/workflows/advisories.yml` checks master itself:
+daily, on a push to master that changes `Cargo.lock`, `deny.toml` or
+`sdks/pnpm-lock.yaml`, and by hand (`workflow_dispatch`). It runs
+`cargo deny check advisories` over the workspace and `pnpm audit --prod
+--audit-level high` over the SDKs' runtime dependencies (what mero-js and
+mero-react put in a user's page). A red run opens, or comments on, one issue
+titled `Advisories on master`, and the next green run closes it.
+
+Fix one by moving the lockfile past the affected range (`cargo update -p
+<crate>`, a pnpm override). When there is no fixed version, or nothing we run
+reaches the vulnerable code, add the id to `deny.toml`'s `[advisories] ignore`
+with what pulls the crate in and why it does not reach us; remove the entry as
+soon as it stops matching. A release cut while the issue is open ships the
+advisory, so the release pull request says why it is safe or waits.
+
 ### Flamegraphs
 
 Weekly, in Sunday's nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
@@ -1032,6 +1051,31 @@ seconds-long p99 with two leader nodes (c') is gone.
   25 ms (macOS, where Rust's `sync_data` is `F_FULLFSYNC`, which redb ran on
   every commit), the same formula gives 20 to 50 writes/s per app, the range
   of the ~38/s a macOS build on redb reported.
+
+**Access-check read-index lease.** Every credentialed request reads the system
+state through a read-index round so access is judged fresh; `--sys-read-lease-ms`
+(`Config::sys_read_lease`, zero by default) lets a node reuse a recent confirmed
+index within a window instead ([Access is judged
+fresh](/protocol/reads/#access-is-judged-fresh)). The bench takes the flag, and
+its session-refresh rows (64 sessions refreshing back to back) show the round it
+saves. Two runs on a 4-vCPU container, `--secs 12 --peer-rtt-ms 4`, at lease 0
+and lease 50 ms (the machine was shared, so ±25%):
+
+| Scenario (session refreshes, 64 sessions) | Calls/s 0 → 50 ms | p50 0 → 50 ms | p99 0 → 50 ms |
+| --- | --- | --- | --- |
+| young tokens kept (the common path: no log write) | 8010 → 21483 | 6.55 → 2.59 ms | 15.8 → 12.5 ms |
+| every refresh exchanged (a log write each) | 1212 → 1268 | 47.0 → 43.3 ms | 120 → 129 ms |
+
+On the read-bound path (a young token just re-presented, no rotation) the lease
+drops the per-refresh system round and lifts throughput about 2.7x, p50 by about
+60%. The write-bound path (every refresh rotates its token in the log) is paced
+by the append, not the round, so the lease barely moves its rate — and there it
+makes the governance trade visible: at 50 ms the aggressive run returned about
+10% `UNAUTHENTICATED` as a just-rotated token was judged against the pre-write
+view and refused until it replicated (fail-closed, the two-sided bound the
+[docs](/protocol/reads/#access-is-judged-fresh) describe). At the default zero
+every row is error-free; set a lease only to a freshness bound the deployment
+accepts, below a client's own refresh spacing.
 
 <Aside type="note" title="Fuzzing">
   `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,

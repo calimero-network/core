@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description = "Signed Calimero app packages (.mpk): manifest, canonical JSON, Ed25519 signatures and verified contents"
 publish = true
 
 [dependencies]

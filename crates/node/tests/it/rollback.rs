@@ -56,6 +56,7 @@ fn config(dir: &Path, node_id: u64, counter: Option<Arc<MemoryCounter>>) -> Conf
             snapshot_every: 200,
         },
         read_wait: Duration::from_secs(2),
+        sys_read_lease: Duration::ZERO,
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
         tee_release: None,
         tee_profile: None,

@@ -635,7 +635,7 @@ async fn create_instance(
     });
     // Nor a node whose runtime is older than the release needs.
     let min_runtime = node.min_runtime_of(release.as_ref(), &bundle).await;
-    let replicas = node
+    let mut replicas = node
         .place(approved.as_ref(), now, min_runtime.as_ref())
         .await;
     if replicas.is_empty() {
@@ -733,6 +733,14 @@ async fn create_instance(
     };
     let links_answer = links.clone();
     let app_id = typed_id::<16>();
+    // Order the replica set so the first — the one that initialises the group
+    // and so becomes its first leader — is round-robin across the nodes by how
+    // many apps already exist, rather than always the lowest id. The first app
+    // (index 0) is unchanged; each later one moves along. Done on the leader,
+    // before the set is recorded, so every node applies the same order
+    // (`crate::placement::order_for_leader`).
+    let app_index = node.sys(|s| s.apps.len() as u64);
+    crate::placement::order_for_leader(&mut replicas, app_index);
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.grants.map_or_else(Access::org, Access::new);

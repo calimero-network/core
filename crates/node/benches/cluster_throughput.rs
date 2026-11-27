@@ -21,13 +21,18 @@
 //! 1 ÷ (syncs per call × sync time).
 //!
 //! ```text
-//! cargo bench -p calimero-node --bench cluster_throughput -- [--secs 10] [--peer-rtt-ms 2] [--out FILE.json]
+//! cargo bench -p calimero-node --bench cluster_throughput -- [--secs 10] [--peer-rtt-ms 2] [--sys-read-lease-ms 0] [--out FILE.json]
 //! ```
 //!
 //! `--peer-rtt-ms` puts a delay proxy in front of each node for the traffic
 //! its peers send it (Raft RPCs and forwards), half the round trip each way,
 //! so the rows approximate nodes on separate machines. Clients still reach
 //! the nodes directly. The nodes share this machine's cores and disk either way.
+//!
+//! `--sys-read-lease-ms` sets `Config::sys_read_lease`: zero (the default) runs
+//! a system read-index round for every access check, a non-zero window reuses a
+//! recent confirmed index, which the auth-heavy session-refresh rows show as
+//! higher throughput and fewer system log entries per second.
 //!
 //! Builds the kv component `apps/fixture-kv` (see `tests/harness/cluster.rs`).
 //! Not a criterion bench: one run is a few seconds of load per row, reported once.
@@ -434,6 +439,15 @@ async fn main() {
             .expect("--peer-rtt-ms is a number")
             / 1e3,
     );
+    // The read-index lease (`Config::sys_read_lease`): zero runs a system
+    // read-index round for every access check (the default), a non-zero value
+    // reuses a recent confirmed index within the window, so the auth-heavy
+    // rows (session refreshes) spend fewer rounds on the system group.
+    let sys_lease = Duration::from_millis(
+        arg("--sys-read-lease-ms")
+            .map_or(Ok(0), |s| s.parse::<u64>())
+            .expect("--sys-read-lease-ms is a number"),
+    );
 
     let (sync_ms, sync_mean_ms, unsynced_ms) = sync_time();
     println!("one synced RocksDB write: median {sync_ms:.3} ms (mean {sync_mean_ms:.3} ms); unsynced {unsynced_ms:.3} ms");
@@ -443,12 +457,14 @@ async fn main() {
     let delay = (!peer_rtt.is_zero()).then(|| delayed_peers(peer_rtt));
     let mut c = Cluster::start_with(3, |cfg| {
         cfg.raft = calimero_log::Config::default();
+        cfg.sys_read_lease = sys_lease;
         if let Some(delay) = &delay {
             delay(cfg);
         }
     })
     .await;
     println!("peer round trip: {} ms", peer_rtt.as_secs_f64() * 1e3);
+    println!("system read-index lease: {} ms", sys_lease.as_millis());
     let (owner, mut pk) = signed_up(&c, 0, "bench").await;
     let bundle = owner
         .packages()
@@ -540,6 +556,7 @@ async fn main() {
     let mut kept = Cluster::start_with(3, |cfg| {
         cfg.raft = calimero_log::Config::default();
         cfg.refresh_rotate_after = calimero_node::api::REFRESH_ROTATE_AFTER;
+        cfg.sys_read_lease = sys_lease;
         if let Some(delay) = &delay {
             delay(cfg);
         }

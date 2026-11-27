@@ -1202,7 +1202,9 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// Whether `ip` is a globally routable unicast address.
+/// Whether `ip` is a globally routable unicast address: IPv4 outside the
+/// special-purpose ranges, IPv6 in 2000::/3 outside the non-global entries of the
+/// [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml).
 #[must_use]
 pub fn is_public(ip: IpAddr) -> bool {
     match ip {
@@ -1222,18 +1224,22 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || a >= 240) // reserved
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // `::ffff:a.b.c.d` (mapped) and `::a.b.c.d` (IPv4-compatible, deprecated)
+            // are classified as the IPv4 address they carry; `::` and `::1` become
+            // `0.0.0.0` and `0.0.0.1`, which are not public either.
+            if let Some(v4) = v6.to_ipv4() {
                 return is_public(IpAddr::V4(v4));
             }
             let seg = v6.segments();
-            !(v6.is_unspecified()
-                || v6.is_loopback()
-                || v6.is_multicast()
-                || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80 // link-local
-                || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
-                || (seg[0] == 0x0064 && seg[1] == 0xff9b) // NAT64: an IPv4 address behind it
-                || seg[0] == 0x2002) // 6to4: likewise
+            // Only 2000::/3 is global unicast. Outside it lie the reserved ::/8
+            // (discard 100::/64 among it), NAT64 64:ff9b::/96 and 64:ff9b:1::/48
+            // (an IPv4 address behind them), SRv6 SIDs 5f00::/16, unique local
+            // fc00::/7, link-local fe80::/10, site-local fec0::/10 and multicast.
+            (seg[0] & 0xe000) == 0x2000
+                && !(seg[0] == 0x2001 && seg[1] < 0x0200 // IETF protocol assignments 2001::/23: Teredo, benchmarking, ORCHIDv2
+                    || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
+                    || seg[0] == 0x2002 // 6to4: an IPv4 address behind it
+                    || (seg[0] == 0x3fff && seg[1] < 0x1000)) // documentation 3fff::/20
         }
     }
 }

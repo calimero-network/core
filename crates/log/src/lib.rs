@@ -1015,6 +1015,10 @@ pub struct Engine {
     node: NodeId,
     db: Arc<Db>,
     batcher: Arc<Batcher>,
+    /// Shared with [`Batcher`] and the [`heartbeat_ticker`]: the ticker marks
+    /// each firing so its idle burst coalesces, while a read-index confirm
+    /// between ticks is sent at once.
+    pacing: Arc<network::HeartbeatPacing>,
     config: Config,
     groups: Arc<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
     /// Whether the heartbeat ticker ([`heartbeat_ticker`]) runs.
@@ -1095,10 +1099,12 @@ impl Engine {
             ))
         })?;
         machine::clean_snapshot_dir(&db)?;
+        let pacing = Arc::new(network::HeartbeatPacing::new());
         Ok(Arc::new(Self {
             node,
             db,
-            batcher: Arc::new(Batcher::new(transport)),
+            batcher: Arc::new(Batcher::new(transport, Arc::clone(&pacing))),
+            pacing,
             config,
             groups: Arc::new(RwLock::new(HashMap::new())),
             ticking: AtomicBool::new(false),
@@ -1258,6 +1264,7 @@ impl Engine {
         if !self.ticking.swap(true, Ordering::AcqRel) {
             drop(tokio::spawn(heartbeat_ticker(
                 Arc::downgrade(&self.groups),
+                Arc::clone(&self.pacing),
                 Duration::from_millis(self.config.heartbeat_ms),
             )));
         }
@@ -1444,6 +1451,7 @@ impl Engine {
 /// ([`network::Batcher`]). Ends with the engine.
 async fn heartbeat_ticker(
     groups: Weak<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    pacing: Arc<network::HeartbeatPacing>,
     every: Duration,
 ) {
     let mut tick = tokio::time::interval(every);
@@ -1453,6 +1461,9 @@ async fn heartbeat_ticker(
         let Some(groups) = groups.upgrade() else {
             return;
         };
+        // Mark the firing so the batcher coalesces the heartbeats these ticks
+        // trigger; a read-index confirm between ticks is sent at once.
+        pacing.mark_tick();
         let targets: Vec<_> = groups
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

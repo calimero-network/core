@@ -121,6 +121,7 @@ pub async fn start_on(
             recover_from: None,
             raft: calimero_log::Config::default(),
             read_wait: std::time::Duration::from_secs(2),
+            sys_read_lease: std::time::Duration::ZERO,
             refresh_rotate_after: crate::api::REFRESH_ROTATE_AFTER,
             tee_release: None,
             tee_profile: None,

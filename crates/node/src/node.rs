@@ -183,6 +183,25 @@ pub struct Config {
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
     pub read_wait: Duration,
+    /// How long an access check may reuse a recent system read-index round
+    /// instead of running its own (`Node::sys_round`). Zero (the default)
+    /// keeps a round per newly-arrived request, so a removal, revocation or
+    /// demotion is enforced the moment its write commits. A non-zero lease
+    /// trades that for latency: within it a check serves access from the last
+    /// confirmed index, so a system write committed during the lease is only
+    /// enforced once the lease lapses (a fresh round is run) or the write has
+    /// replicated and applied to this node — whichever is sooner. The lease is
+    /// therefore the **maximum a revocation may lag on a node that has not yet
+    /// applied it**; set it only to a bound the governance model accepts. It
+    /// never weakens the leader or an up-to-date replica, which apply the write
+    /// at once, and never skips judging the credential. The same bound applies
+    /// fail-closed to a just-written credential: within the lease a session or
+    /// grant committed on another node may be judged against the pre-write view
+    /// and refused until it replicates here or the lease lapses, so a lease
+    /// longer than a client's own retry spacing can transiently reject a
+    /// credential it just rotated.
+    /// <https://calimero-network.github.io/core/protocol/reads/#access-is-judged-fresh>
+    pub sys_read_lease: Duration,
     /// How long a refresh token serves the refreshes that present it before
     /// one of them exchanges it in the system log
     /// (`api::REFRESH_ROTATE_AFTER` in production). Zero: every refresh
@@ -747,8 +766,9 @@ pub struct Node {
 struct ReadRounds {
     /// Rounds begun so far.
     begun: std::sync::atomic::AtomicU64,
-    /// The last round that finished, and the index it named.
-    finished: Mutex<(u64, Option<u64>)>,
+    /// The last round that finished, the index it named, and when it finished
+    /// (for the read-index lease, `Config::sys_read_lease`).
+    finished: Mutex<(u64, Option<u64>, Option<tokio::time::Instant>)>,
     /// Held for the length of a round.
     turn: tokio::sync::Mutex<()>,
 }
@@ -1684,11 +1704,18 @@ impl Node {
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
         let _turn = rounds.turn.lock().await;
-        let (round, index) = *rounds
+        let (round, index, at) = *rounds
             .finished
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if round > arrived {
+        // Reuse the last round's index when a round finished after this caller
+        // arrived (callers waiting at the same moment share one round), or when
+        // a confirmed index is still within the read-index lease: a check then
+        // serves access from it rather than running a round of its own. A
+        // failed round (no leader, `None`) is never leased; it is tried again.
+        let lease = self.config.sys_read_lease;
+        let leased = index.is_some() && !lease.is_zero() && at.is_some_and(|t| t.elapsed() < lease);
+        if round > arrived || leased {
             return index;
         }
         let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1696,7 +1723,8 @@ impl Node {
         *rounds
             .finished
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            (round, index, Some(tokio::time::Instant::now()));
         index
     }
 

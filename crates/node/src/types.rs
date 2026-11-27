@@ -1056,6 +1056,49 @@ pub struct RefreshRecord {
     /// they did.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub opened_at: u64,
+    /// The holder key the session is bound to (base64url, an uncompressed P-256 point,
+    /// [`crate::proof::check_holder_key`]): its private half is a browser's non-extractable
+    /// WebCrypto key, and every use of the token carries its signature
+    /// ([`crate::proof::verify_refresh_holder`]), so the token alone, copied off the device,
+    /// refreshes nothing. Stated in the sign-in's challenge, so the passkey signs the
+    /// binding, and carried unchanged by every exchange. Such a token lives
+    /// [`HOLDER_REFRESH_TTL_SECS`] rather than [`REFRESH_TTL_SECS`]. Left out when `None`, so
+    /// records without one read, write and are signed as they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<String>,
+}
+
+/// How long a refresh token lives (seconds) when no holder key binds it: 30 days.
+pub const REFRESH_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// How long a refresh token bound to a holder key lives (seconds): 7 days. Only a browser
+/// binds one, so this is a browser session's lifetime: a device that stays away a week
+/// signs in again.
+pub const HOLDER_REFRESH_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+impl RefreshRecord {
+    /// How long a token of this record lives: [`HOLDER_REFRESH_TTL_SECS`] when a holder key
+    /// binds it, else [`REFRESH_TTL_SECS`].
+    #[must_use]
+    pub const fn ttl(&self) -> u64 {
+        refresh_ttl(self.holder.is_some())
+    }
+
+    /// When the token was issued: its expiry less its lifetime.
+    #[must_use]
+    pub const fn issued_at(&self) -> u64 {
+        self.expires_at.saturating_sub(self.ttl())
+    }
+}
+
+/// A refresh token's lifetime, by whether a holder key binds it ([`RefreshRecord::ttl`]).
+#[must_use]
+pub const fn refresh_ttl(held: bool) -> u64 {
+    if held {
+        HOLDER_REFRESH_TTL_SECS
+    } else {
+        REFRESH_TTL_SECS
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

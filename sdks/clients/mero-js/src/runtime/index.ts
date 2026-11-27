@@ -44,6 +44,16 @@ export type { AttestationDoc, NodePolicy, NodeReleasePolicy, NodeVerification } 
 export { CLOUD_ENVIRONMENTS, DEFAULT_DIRECTORY, DirectoryError, cloudEnvironment } from './directory.js';
 export type { CloudEnvironment, CloudEnvironmentInfo, DirectoryFailure } from './directory.js';
 
+// The device key a session is bound to, so a copied refresh token refreshes nothing.
+export {
+  browserSessionHolder,
+  forgetSessionHolder,
+  generateHolderKeyPair,
+  holderFromKeyPair,
+  holderMessage,
+} from './holder.js';
+export type { HolderKeyStoreOptions, HolderProof, SessionHolder } from './holder.js';
+
 // Passkeys (WebAuthn) for the step-up and the ceremonies.
 export { browserPasskey, b64url, fromB64url, passkeyConfirm } from './passkey.js';
 export type {
