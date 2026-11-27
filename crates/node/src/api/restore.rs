@@ -36,6 +36,9 @@ pub(super) struct RestoreBody {
     recovery: Option<RecoveryFileBody>,
     #[serde(default)]
     operator_proof: Option<OperatorProofBody>,
+    /// An owner's consent to older code for a pinned instance (`POST /apps/{app}/restore-consent`).
+    #[serde(default)]
+    owner: Option<crate::system::RestoreConsent>,
 }
 
 /// A recovery-disk file in the operator's directory and the data key its
@@ -366,6 +369,7 @@ async fn ops_restore_recovery(
     app_id: String,
     r: RecoveryFileBody,
     signed: Option<OperatorProofBody>,
+    owner: Option<crate::system::RestoreConsent>,
 ) -> ApiResult {
     use crate::recovery_disk::{self as disk, Kind};
     let bad = |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
@@ -424,6 +428,8 @@ async fn ops_restore_recovery(
             crate::system::RESTORE_BUNDLE_GONE,
         ));
     }
+    let taken_at = owner.is_some().then(crate::types::update_now);
+    refuse_off_lineage(&node, &app, &bundle, owner.as_ref(), taken_at)?;
     let mut replicas = vec![me];
     replicas.extend(node.sys(|s| {
         app.replicas
@@ -452,7 +458,7 @@ async fn ops_restore_recovery(
         &node,
         &app_id,
         "__restore_app",
-        &json!({ "backup": source.name, "sha256": source.sha256 }),
+        &restore_args(&source, &bundle, owner.is_some()),
         signed,
     )?;
     let Some(guard) = node.begin_move(&app_id) else {
@@ -481,6 +487,8 @@ async fn ops_restore_recovery(
                 compute_bundle,
                 source,
                 proof,
+                owner,
+                at: taken_at,
             })
             .await?;
         let group = out["group"]
@@ -514,6 +522,35 @@ fn refused(e: &BackupError) -> ApiError {
     ApiError::new(status, e.code(), &e.to_string())
 }
 
+/// What the operator signs for a restore: the backup, and with an owner's consent the bundle
+/// it runs too, as the consent states it.
+fn restore_args(source: &RestoreSource, bundle: &str, with_owner: bool) -> serde_json::Value {
+    if with_owner {
+        json!({ "backup": source.name, "sha256": source.sha256, "bundle": bundle })
+    } else {
+        json!({ "backup": source.name, "sha256": source.sha256 })
+    }
+}
+
+/// A pinned instance is restored only onto a release of its lineage, older code only with an
+/// owner's consent while an undo is open; judged before the operator signs, and again at apply.
+fn refuse_off_lineage(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    bundle: &str,
+    owner: Option<&crate::system::RestoreConsent>,
+    at: Option<u64>,
+) -> Result<(), ApiError> {
+    node.sys(|s| {
+        s.ships_on_lineage(app, bundle)?;
+        if s.restores_older(app, bundle) && !s.owner_takes_older(app, owner, at) {
+            return Err(crate::system::LINEAGE_OLDER_RELEASE);
+        }
+        Ok(())
+    })
+    .map_err(crate::node::rejected)
+}
+
 /// Restore `app` from a backup this node holds; this node seeds it. Answers
 /// `{ app, group, rows, backup: { name, index, format, merod, release }, status }`
 /// once every replica holds the restored state.
@@ -532,7 +569,7 @@ pub(super) async fn ops_restore(
                 "name a backup or a recovery file, not both",
             ));
         }
-        return ops_restore_recovery(node, app_id, r, b.operator_proof).await;
+        return ops_restore_recovery(node, app_id, r, b.operator_proof, b.owner).await;
     }
     let Some(dir) = node.config.backup_dir.clone() else {
         return Err(ApiError::new(
@@ -551,6 +588,7 @@ pub(super) async fn ops_restore(
     }
     let key = *node.cluster_key();
     let wanted = b.backup.clone();
+    let owner = b.owner.clone();
     let found = off_workers(|| crate::backup::find(&dir, &key, &app_id, wanted.as_deref()))
         .map_err(|e| refused(&e))?;
     found
@@ -573,6 +611,8 @@ pub(super) async fn ops_restore(
             crate::system::RESTORE_BUNDLE_GONE,
         ));
     }
+    let taken_at = owner.is_some().then(crate::types::update_now);
+    refuse_off_lineage(&node, &app, &bundle, owner.as_ref(), taken_at)?;
     // The seed first, then the app's other replicas that are still registered,
     // as many as it had.
     let mut replicas = vec![me];
@@ -606,7 +646,7 @@ pub(super) async fn ops_restore(
         &node,
         &app_id,
         "__restore_app",
-        &json!({ "backup": source.name, "sha256": source.sha256 }),
+        &restore_args(&source, &bundle, owner.is_some()),
         b.operator_proof,
     )?;
     let Some(guard) = node.begin_move(&app_id) else {
@@ -628,6 +668,8 @@ pub(super) async fn ops_restore(
                 compute_bundle,
                 source,
                 proof,
+                owner,
+                at: taken_at,
             })
             .await?;
         let group = out["group"]

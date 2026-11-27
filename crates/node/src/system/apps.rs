@@ -362,15 +362,47 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             app_id,
             source,
             proof,
+            owner,
+            bundle,
             ..
         } => {
             let (statement, used) = proofs.fresh(proofs.operator(proof)?)?;
-            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            // Beside an owner's consent the signature names the bundle too, as the consent does.
+            let args = match owner {
+                Some(_) => {
+                    json!({ "backup": source.name, "sha256": source.sha256, "bundle": bundle })
+                }
+                None => json!({ "backup": source.name, "sha256": source.sha256 }),
+            };
             proofs.states(&statement, app_id, "__restore_app", &|a| *a == args)?;
             Ok(Some(used))
         }
         _ => Ok(None),
     }
+}
+
+/// The owner's consent a `RestoreApp` carries beside the operator's signature
+/// ([`super::second_proof`]): over this backup and the undo it names, not used before.
+pub(super) fn restore_owner_proof(
+    proofs: &Proofs<'_>,
+    cmd: &SystemCmd,
+) -> Result<Option<String>, Rejection> {
+    let SystemCmd::RestoreApp {
+        app_id,
+        source,
+        bundle,
+        owner: Some(o),
+        ..
+    } = cmd
+    else {
+        return Ok(None);
+    };
+    let older = proofs
+        .s
+        .restore_older_args(app_id, &source.name, &source.sha256, bundle);
+    let (consent, used) = proofs.fresh(proofs.consent_of(&o.account, &o.consent)?)?;
+    proofs.states(&consent, app_id, "__restore_older", &|a| *a == older)?;
+    Ok(Some(used))
 }
 
 /// An `UpgradeApp` outside a run: an upgrade key's signature, the operator's,
@@ -661,8 +693,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             bundle,
             compute_bundle,
             source,
+            owner,
+            at,
             ..
-        } => restore_app(state, app_id, replicas, bundle, compute_bundle, source),
+        } => restore_app(
+            state,
+            app_id,
+            replicas,
+            (bundle, compute_bundle),
+            source,
+            (owner.as_ref(), at),
+        ),
         SystemCmd::FinishRestore { app_id, group } => finish_restore(state, app_id, group),
         SystemCmd::SetAccess {
             app_id,
@@ -1067,6 +1108,9 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
     };
     let org = state.apps.get(&app_id).map(|app| app.org.clone());
     let pins = state.lineage_of(release.as_ref(), &bundle, at);
+    if state.cluster_brings(cluster_version::Feature::PinnedLineage) {
+        state.upgrades_logged_through = state.upgrades_logged_through.max(at);
+    }
     // A person who upgraded it themselves saw who runs its deployment now; an update
     // on its own, a key's, a run's or the operator's did not.
     let person_saw =
@@ -1437,9 +1481,9 @@ fn restore_app(
     state: &mut SystemState,
     app_id: AppId,
     replicas: Vec<u64>,
-    bundle: String,
-    compute_bundle: Option<String>,
+    (bundle, compute_bundle): (String, Option<String>),
     source: crate::types::RestoreSource,
+    (owner, at): (Option<&super::RestoreConsent>, Option<u64>),
 ) -> Result<Value, Rejection> {
     if !state.bundles.contains_key(&bundle) {
         return Err(RESTORE_BUNDLE_GONE.into());
@@ -1456,14 +1500,20 @@ fn restore_app(
     {
         return Err(RESTORE_REPLICAS_DISTINCT);
     }
-    if !state.apps.contains_key(&app_id) {
-        return Err(NO_SUCH_APP);
+    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
+    state.ships_on_lineage(app, &bundle)?;
+    if state.restores_older(app, &bundle) && !state.owner_takes_older(app, owner, at) {
+        return Err(LINEAGE_OLDER_RELEASE);
+    }
+    if let (Some(_), Some(at)) = (owner, at) {
+        state.upgrades_logged_through = state.upgrades_logged_through.max(at);
     }
     let group = state.next_group.max(1) + 1;
     state.next_group = group;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
     if app.bundle != bundle {
-        // Inferred from the bundle again (`report::release_of_bundle`).
+        // Inferred from the bundle again (`report::release_of_bundle`); the lineage rules
+        // judge a pinned one from the lineage release that ships it (`lineage_from`).
         app.release = None;
     }
     app.bundle = bundle;

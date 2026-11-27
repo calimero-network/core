@@ -70,6 +70,7 @@ from .openapi.api.apps import app_openapi as _app_openapi
 from .openapi.api.apps import app_outbound_log as _app_outbound_log
 from .openapi.api.apps import app_policy as _app_policy
 from .openapi.api.apps import app_policy_set as _app_policy_set
+from .openapi.api.apps import app_restore_consent as _app_restore_consent
 from .openapi.api.apps import app_run as _app_run
 from .openapi.api.apps import app_run_logs as _app_run_logs
 from .openapi.api.apps import app_runs as _app_runs
@@ -293,6 +294,7 @@ from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
+from .openapi.models import AppRestoreConsentBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppSetEgressBody
 from .openapi.models import AppTransferBody
@@ -684,6 +686,13 @@ _PUBLIC_LINK_REVOKE = Operation(
     _public_link_revoke,
     "public_link_revoke",
     body=ConfirmOnly,
+    answer="json",
+    confirm=True,
+)
+_APP_RESTORE_CONSENT = Operation(
+    _app_restore_consent,
+    "app_restore_consent",
+    body=AppRestoreConsentBody,
     answer="json",
     confirm=True,
 )
@@ -1813,6 +1822,30 @@ class Apps(Group):
             confirm=confirm,
         )
 
+    def restore_consent(self, *, app, backup, sha256, bundle, confirm=None):
+        """Consent to restoring a pinned instance to older code (`POST /apps/{app}/restore-consent`, `app_restore_consent`).
+
+        An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            backup: body `backup`
+            sha256: body `sha256`
+            bundle: body `bundle`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: RestoreConsent
+        """
+        return self._run(
+            _APP_RESTORE_CONSENT,
+            (app,),
+            {},
+            {"backup": backup, "sha256": sha256, "bundle": bundle},
+            confirm=confirm,
+        )
+
     def run(self, *, app, run):
         """One compute run (`GET /apps/{app}/runs/{run}`, `app_run`).
 
@@ -2014,7 +2047,7 @@ class Apps(Group):
     def undo(self, *, app, confirm=None):
         """Undo an app's last upgrade (`POST /apps/{app}/undo`, `app_undo`).
 
-        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -4437,10 +4470,12 @@ class Ops(Group):
         """
         return self._run(_OPS_REMOVE_NODE, (id,), {}, {}, operator_proof=operator_proof)
 
-    def restore(self, *, app, backup=UNSET, recovery=UNSET, operator_proof=None):
+    def restore(
+        self, *, app, backup=UNSET, recovery=UNSET, owner=UNSET, operator_proof=None
+    ):
         """Restore an app from its sealed backup (`POST /ops/apps/{app}/restore`, `ops_restore`).
 
-        Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.
+        Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), and to code older than the release it runs only with `owner`, an owner's or admin's consent while an undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409 LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
 
         **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
 
@@ -4448,6 +4483,7 @@ class Ops(Group):
             app: path
             backup: body `backup`
             recovery: body `recovery`
+            owner: body `owner`
             operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
 
         Returns: AppRestored
@@ -4456,7 +4492,7 @@ class Ops(Group):
             _OPS_RESTORE,
             (app,),
             {},
-            {"backup": backup, "recovery": recovery},
+            {"backup": backup, "recovery": recovery, "owner": owner},
             operator_proof=operator_proof,
         )
 
@@ -6314,7 +6350,7 @@ class Public(Group):
     ):
         """Bring an organization's or account's apps back from its recovery files (`POST /recover/holder`, `restore_recover_holder`).
 
-        Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+        Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
 
         **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
 

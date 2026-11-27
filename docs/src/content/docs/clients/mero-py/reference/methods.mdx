@@ -76,6 +76,7 @@ Generated from core's `docs/public/openapi.json`.
 | `public_link_create(app, label=…, expires_at=…, rate_per_minute=…, confirm=None)` | `POST /apps/{app}/public-links` | Make a public link of an instance. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 PUBLIC_LINKS_OFF`, `429 QUOTA_EXCEEDED` |
 | `public_link_list(app)` | `GET /apps/{app}/public-links` | An instance's public links |
 | `public_link_revoke(app, link, confirm=None)` | `DELETE /apps/{app}/public-links/{link}` | Revoke a public link. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `restore_consent(app, backup, sha256, bundle, confirm=None)` | `POST /apps/{app}/restore-consent` | Consent to restoring a pinned instance to older code. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNDO_WINDOW_PASSED` |
 | `run(app, run)` | `GET /apps/{app}/runs/{run}` | One compute run |
 | `run_logs(app, run)` | `GET /apps/{app}/runs/{run}/logs` | A compute run's attempt logs |
 | `runs(app, limit=…, before=…)` | `GET /apps/{app}/runs` | An app's compute runs. *Refusals:* `400 BAD_CURSOR`, `400 BAD_LIMIT` |
@@ -86,7 +87,7 @@ Generated from core's `docs/public/openapi.json`.
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
-| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
+| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 OUTSIDE_LINEAGE`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
 | `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
@@ -210,7 +211,7 @@ Generated from core's `docs/public/openapi.json`.
 | `release_deadline(version, after=…, operator_proof=None)` | `POST /ops/releases/{version}/deadline` | Set a release deadline. **operator** |
 | `release_deadline_lift(version, operator_proof=None)` | `DELETE /ops/releases/{version}/deadline` | Lift a release deadline. **operator** |
 | `remove_node(id, operator_proof=None)` | `DELETE /ops/nodes/{id}` | Remove a node. **operator**. *Refusals:* `400 LAST_NODE` |
-| `restore(app, backup=…, recovery=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
+| `restore(app, backup=…, recovery=…, owner=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 LINEAGE_OLDER_RELEASE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 OUTSIDE_LINEAGE`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
 | `served()` | `GET /ops/served-origins` | Custom domains to serve |
 | `set_backup_key(public_key, operator_proof=None)` | `POST /ops/backup-key` | Set the operator's backup key. **operator**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
 | `set_replicas(app, replicas, operator_proof=None)` | `POST /ops/apps/{app}/replicas` | Move an app's replicas. **operator**. *Refusals:* `400 DUPLICATE_REPLICA`, `400 JOB_NODE`, `400 TOO_FEW`, `400 UNKNOWN_NODE`, `409 MOVE_IN_PROGRESS`, `409 RUNTIME_TOO_OLD` |
@@ -298,4 +299,4 @@ Generated from core's `docs/public/openapi.json`.
 | `health()` | `GET /health` | Node health |
 | `publisher_binding(signer)` | `GET /publishers/{signer}` | Whether a signing key is bound |
 | `releases_public()` | `GET /releases` | The cluster's releases |
-| `restore_recover_holder(holder, slice_, apps=…, code=…, operator_proof=None)` | `POST /recover/holder` | Bring an organization's or account's apps back from its recovery files. **operator**. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 FEATURE_NOT_ACTIVE`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING` |
+| `restore_recover_holder(holder, slice_, apps=…, code=…, operator_proof=None)` | `POST /recover/holder` | Bring an organization's or account's apps back from its recovery files. **operator**. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 FEATURE_NOT_ACTIVE`, `409 NO_BACKUP_DIR`, `409 OUTSIDE_LINEAGE`, `409 RECOVERY_SEGMENTS_MISSING` |

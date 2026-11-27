@@ -45,6 +45,7 @@ import com.calimero.mero.api.models.AppList
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMoveRequest
 import com.calimero.mero.api.models.AppMoved
+import com.calimero.mero.api.models.AppRestoreConsentRequest
 import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets
 import com.calimero.mero.api.models.AppSetEgressRequest
@@ -93,6 +94,7 @@ import com.calimero.mero.api.models.PresencePublishRequest
 import com.calimero.mero.api.models.PublicLinkCreateRequest
 import com.calimero.mero.api.models.PublicLinkMade
 import com.calimero.mero.api.models.PublicLinks
+import com.calimero.mero.api.models.RestoreConsent
 import com.calimero.mero.api.models.Run
 import com.calimero.mero.api.models.RunEstimate
 import com.calimero.mero.api.models.RunList
@@ -1891,6 +1893,83 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     }
 
     /**
+     * POST /apps/{app}/restore-consent
+     * Consent to restoring a pinned instance to older code
+     * An owner or admin of the app&#39;s organization, while an undo of its last upgrade is open, with a step-up over &#x60;&lt;app&gt; / __restore_older / { backup, sha256, bundle, point }&#x60; (&#x60;bundle&#x60;: what the backup&#39;s state runs; &#x60;point&#x60;: the restore point the open undo would revert): answers the consent the operator&#39;s restore (&#x60;POST /ops/apps/{app}/restore&#x60;, &#x60;owner&#x60;) carries to restore a pinned instance (its record&#39;s &#x60;lineage&#x60;) from that backup to code older than the release it runs. &#x60;403 FORBIDDEN&#x60; for anyone else and &#x60;409 UNDO_WINDOW_PASSED&#x60; once the undo closed, before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.39.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appRestoreConsentRequest 
+     * @return RestoreConsent
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appRestoreConsent(app: kotlin.String, appRestoreConsentRequest: AppRestoreConsentRequest) : RestoreConsent = withContext(Dispatchers.IO) {
+        val localVarResponse = appRestoreConsentWithHttpInfo(app = app, appRestoreConsentRequest = appRestoreConsentRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RestoreConsent
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/restore-consent
+     * Consent to restoring a pinned instance to older code
+     * An owner or admin of the app&#39;s organization, while an undo of its last upgrade is open, with a step-up over &#x60;&lt;app&gt; / __restore_older / { backup, sha256, bundle, point }&#x60; (&#x60;bundle&#x60;: what the backup&#39;s state runs; &#x60;point&#x60;: the restore point the open undo would revert): answers the consent the operator&#39;s restore (&#x60;POST /ops/apps/{app}/restore&#x60;, &#x60;owner&#x60;) carries to restore a pinned instance (its record&#39;s &#x60;lineage&#x60;) from that backup to code older than the release it runs. &#x60;403 FORBIDDEN&#x60; for anyone else and &#x60;409 UNDO_WINDOW_PASSED&#x60; once the undo closed, before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.39.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appRestoreConsentRequest 
+     * @return ApiResponse<RestoreConsent?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appRestoreConsentWithHttpInfo(app: kotlin.String, appRestoreConsentRequest: AppRestoreConsentRequest) : ApiResponse<RestoreConsent?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appRestoreConsentRequestConfig(app = app, appRestoreConsentRequest = appRestoreConsentRequest)
+
+        return@withContext request<AppRestoreConsentRequest, RestoreConsent>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appRestoreConsent
+     *
+     * @param app 
+     * @param appRestoreConsentRequest 
+     * @return RequestConfig
+     */
+    fun appRestoreConsentRequestConfig(app: kotlin.String, appRestoreConsentRequest: AppRestoreConsentRequest) : RequestConfig<AppRestoreConsentRequest> {
+        val localVariableBody = appRestoreConsentRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/restore-consent".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * GET /apps/{app}/runs/{run}
      * One compute run
      * Its record without arguments or keys: method, state, &#x60;cancelRequested&#x60;, &#x60;startTsMs&#x60;, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app&#39;s files), usage, and &#x60;progress&#x60; as the leader last polled it.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
@@ -2666,7 +2745,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/undo
      * Undo an app&#39;s last upgrade
-     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34. A pinned instance (its record&#39;s &#x60;lineage&#x60;) goes back only to a release of its own package and publisher, an older one included: &#x60;409 OUTSIDE_LINEAGE&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUndoRequest 
      * @return UndoDone
@@ -2699,7 +2778,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/undo
      * Undo an app&#39;s last upgrade
-     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34. A pinned instance (its record&#39;s &#x60;lineage&#x60;) goes back only to a release of its own package and publisher, an older one included: &#x60;409 OUTSIDE_LINEAGE&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUndoRequest 
      * @return ApiResponse<UndoDone?>

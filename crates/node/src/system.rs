@@ -908,6 +908,11 @@ pub struct SystemState {
     /// forgotten yet. Left out when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub proofs_forgotten_through: u64,
+    /// The latest time an upgrade, or a restore an owner consented to, was logged at (each
+    /// entry's own time), from `Feature::PinnedLineage`: such a restore is taken no earlier,
+    /// whatever its proposer's clock says. Left out when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub upgrades_logged_through: u64,
     /// The active cluster version ([`cluster_version`]): the newest core
     /// release every node supports, logged by the system leader
     /// (`SetClusterVersion`), only ever raised. `None` until the first.
@@ -1543,6 +1548,16 @@ pub const LINEAGE_OLDER_RELEASE: Rejection = Rejection::new(
     RejectionKind::LineageOlderRelease,
     "a pinned instance never moves to an older release",
 );
+
+/// An owner's or admin's passkey consent over `<app> / __restore_older / { backup, sha256,
+/// bundle, point }` (`SystemState::restore_older_args`): it lets the operator restore a pinned
+/// instance from that backup onto that bundle while the undo it names is still open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreConsent {
+    pub account: AccountId,
+    pub consent: Value,
+}
 
 /// Why clearing a deployment's secret is refused: it holds no value of it.
 pub const NO_DEPLOYMENT_SECRET: Rejection = Rejection::new(
@@ -3568,23 +3583,140 @@ impl SystemState {
         app: &AppRecord,
         release: Option<&PackageRef>,
     ) -> Result<(), Rejection> {
-        let Some(lineage) = &app.lineage else {
+        self.on_lineage(app, release)?;
+        let (Some(lineage), Some(to)) = (&app.lineage, release) else {
             return Ok(());
         };
-        let to = release
-            .filter(|r| r.package == lineage.package)
-            .filter(|r| {
-                self.packages
-                    .get(&r.package)
-                    .is_some_and(|p| p.signer_id == lineage.signer_id)
-            })
-            .ok_or(OUTSIDE_LINEAGE)?;
         let runs = app.release.as_ref().map(|r| r.version.as_str());
         if lineage.at_least(&to.version, runs) {
             Ok(())
         } else {
             Err(LINEAGE_OLDER_RELEASE)
         }
+    }
+
+    /// Whether `release` is of `app`'s lineage, in any order: a release of its package, still
+    /// signed by its signer. An undo goes back along it; an unpinned instance goes anywhere.
+    ///
+    /// # Errors
+    /// [`OUTSIDE_LINEAGE`].
+    pub fn on_lineage(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+    ) -> Result<(), Rejection> {
+        let Some(lineage) = &app.lineage else {
+            return Ok(());
+        };
+        release
+            .filter(|r| r.package == lineage.package && self.signs_lineage(lineage))
+            .map(|_| ())
+            .ok_or(OUTSIDE_LINEAGE)
+    }
+
+    /// Whether `bundle` ships in a release of `app`'s lineage: a restore names a backup's
+    /// bundle, not a release.
+    ///
+    /// # Errors
+    /// [`OUTSIDE_LINEAGE`].
+    pub fn ships_on_lineage(&self, app: &AppRecord, bundle: &str) -> Result<(), Rejection> {
+        let Some(lineage) = &app.lineage else {
+            return Ok(());
+        };
+        let ships = self.signs_lineage(lineage)
+            && self.packages[&lineage.package]
+                .versions
+                .values()
+                .any(|v| v.parts(&lineage.package).any(|(h, _)| h == bundle));
+        if ships {
+            Ok(())
+        } else {
+            Err(OUTSIDE_LINEAGE)
+        }
+    }
+
+    /// Whether a restore of `app` onto `bundle` takes it to older code: no release of its
+    /// lineage that ships `bundle` is as new as the one it runs. An unpinned instance: never.
+    #[must_use]
+    pub fn restores_older(&self, app: &AppRecord, bundle: &str) -> bool {
+        let Some(lineage) = &app.lineage else {
+            return false;
+        };
+        let semver = |v: &str| semver::Version::parse(v).ok();
+        let from = self.lineage_from(app).and_then(|r| semver(&r.version));
+        !self.packages.get(&lineage.package).is_some_and(|p| {
+            p.versions.values().any(|v| {
+                v.parts(&lineage.package).any(|(h, _)| h == bundle)
+                    && semver(&v.version).is_some_and(|to| from.as_ref().is_some_and(|f| &to >= f))
+            })
+        })
+    }
+
+    /// Whether `owner` lets a pinned instance's restore, taken at `at`, go to older code: an
+    /// owner or admin of its organization, while an undo of its last upgrade is still open,
+    /// `at` no earlier than that upgrade nor than any upgrade the log holds since.
+    #[must_use]
+    pub fn owner_takes_older(
+        &self,
+        app: &AppRecord,
+        owner: Option<&RestoreConsent>,
+        at: Option<u64>,
+    ) -> bool {
+        owner.is_some_and(|o| self.approves_upgrades(&app.org, &o.account))
+            && app.restore_point.as_ref().zip(at).is_some_and(|(p, at)| {
+                p.at <= at && self.upgrades_logged_through <= at && p.open_at(at)
+            })
+    }
+
+    /// What an owner's consent to restore `app_id` from a backup onto `bundle` (older code)
+    /// states: the backup, the bundle, and the restore point its open undo would revert, by
+    /// identity (its time, target and snapshot), so one made again at the same time differs.
+    #[must_use]
+    pub fn restore_older_args(
+        &self,
+        app_id: &str,
+        backup: &str,
+        sha256: &str,
+        bundle: &str,
+    ) -> Value {
+        let point = self
+            .apps
+            .get(app_id)
+            .and_then(|a| a.restore_point.as_ref())
+            .map(|p| json!({ "at": p.at, "toBundle": p.to_bundle, "file": p.file }));
+        json!({ "backup": backup, "sha256": sha256, "bundle": bundle, "point": point })
+    }
+
+    /// The release of its lineage a pinned `app` runs: its record's, else the newest release of
+    /// its package that ships its bundle (a record that names none: restored, imported).
+    #[must_use]
+    pub fn lineage_from(&self, app: &AppRecord) -> Option<PackageRef> {
+        let lineage = app.lineage.as_ref()?;
+        app.release
+            .clone()
+            .or_else(|| self.lineage_release_of(lineage, &app.bundle))
+    }
+
+    /// The newest release of `lineage`'s package that ships `bundle`.
+    #[must_use]
+    pub fn lineage_release_of(&self, lineage: &AppLineage, bundle: &str) -> Option<PackageRef> {
+        let record = self.packages.get(&lineage.package)?;
+        record
+            .versions
+            .values()
+            .filter_map(|v| {
+                v.parts(&lineage.package)
+                    .find(|(h, at)| *h == bundle && !at.compute)
+                    .map(|(_, at)| at)
+            })
+            .max_by(|a, b| compare_versions(&a.version, &b.version))
+    }
+
+    /// Whether `lineage`'s package is installed here, signed by its signer.
+    fn signs_lineage(&self, lineage: &AppLineage) -> bool {
+        self.packages
+            .get(&lineage.package)
+            .is_some_and(|p| p.signer_id == lineage.signer_id)
     }
 
     /// The secret values of the deployment `app_id` was created from, by name,
@@ -5617,6 +5749,15 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, Rej
     }
 }
 
+/// A second proof a command spends beside the one [`authorize`] answers: the owner's consent on
+/// a restore to older code. Judged and spent with it.
+///
+/// # Errors
+/// As [`authorize`].
+pub fn second_proof(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
+    apps::restore_owner_proof(&Proofs { s }, cmd)
+}
+
 /// The checks a command's proof is judged with ([`authorize`]), over the
 /// state it applies to.
 struct Proofs<'a> {
@@ -6634,6 +6775,14 @@ pub enum SystemCmd {
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,
+        /// An owner's or admin's consent to restore a pinned instance to older code, as an undo
+        /// takes it ([`RestoreConsent`]). Left out when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<RestoreConsent>,
+        /// When the proposing node took it, set with `owner`: the time the undo window is
+        /// judged at, never one a consent names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<u64>,
     },
     /// The seed of a restore holds the backup in `group` on every replica:
     /// the app takes calls again.
@@ -7984,10 +8133,14 @@ impl SystemMachine {
         // An entry logged before the cluster required session proofs applies
         // as it did then: a restart replays it, and every replica must reach
         // the answer the release that logged it reached.
-        let used = if cmd.is_session_command() && !self.state.proves_sessions(self.index) {
-            None
+        let (used, second) = if cmd.is_session_command() && !self.state.proves_sessions(self.index)
+        {
+            (None, None)
         } else {
-            authorize(&self.state, &cmd)?
+            (
+                authorize(&self.state, &cmd)?,
+                second_proof(&self.state, &cmd)?,
+            )
         };
         if let Some(stall) = self.new_work_refusal(&cmd) {
             return Err(stall.rejection());
@@ -8018,6 +8171,9 @@ impl SystemMachine {
                     .insert(used.clone());
             }
             let _new = self.state.used_proofs.insert(used);
+        }
+        if let Some(second) = second {
+            let _new = self.state.used_proofs.insert(second);
         }
         if let Some((account, entries)) = approval {
             for entry in entries {
