@@ -91,8 +91,9 @@ each a device of the account.
   ceremonies, 16 per sealed session: a session's next begin replaces its own
   oldest, and in a full pool a new begin replaces the oldest of the session
   holding the most, so a flood of begins never shuts others out. Apart from
-  those it holds 64 step-ups or passkey additions per account (10,000 across
-  accounts); past either it answers `429 RATE_LIMITED`.
+  those it holds 8 step-ups or passkey additions per account, an account's
+  next replacing its own oldest, and 10,000 across accounts, where a new one
+  replaces the oldest of the account holding the most.
 - **Sign-up policy.** Each cluster has one, set at genesis (`--sign-up`)
   and attested with its governance; see [Sign-up policy](#sign-up-policy).
   On an `open` cluster (the default) anyone who can reach it can register an

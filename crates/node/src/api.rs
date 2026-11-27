@@ -289,11 +289,14 @@ pub const MAX_PENDING_CHALLENGES: usize = 10_000;
 /// begin displaces its own oldest. A client has a few at once (a sign-in, a
 /// sign-up, a recovery), so a session that begins more only loses its own.
 pub const MAX_CEREMONIES_PER_SESSION: usize = 16;
-/// The most ceremonies a node holds open for known accounts, all together.
+/// The most ceremonies a node holds open for known accounts, all together;
+/// past this a new one displaces the oldest of the account holding the most
+/// (`admit_pending`), so accounts filling the pool never lock another out.
 pub const MAX_ACCOUNT_CHALLENGES: usize = 10_000;
-/// The most ceremonies a node holds open for one account, so no account
-/// fills the pool the others share.
-pub const MAX_CHALLENGES_PER_ACCOUNT: usize = 64;
+/// The most ceremonies a node holds open for one account; its next step-up
+/// displaces its own oldest. A person approves a few at once (a call, a key,
+/// a passkey), so an account that opens more only loses its own.
+pub const MAX_CHALLENGES_PER_ACCOUNT: usize = 8;
 
 /// A ceremony this node holds open, with the sealed session that began it
 /// (`None` on a plain request, which only a `--dev` node serves) and its place
@@ -310,6 +313,9 @@ struct Held {
 /// greatest is the biggest holder and, among equals, the one with the oldest.
 type Rank = (usize, Reverse<u64>, Option<SealedSession>);
 
+/// Where an account that holds ceremonies ranks for displacement, as [`Rank`].
+type AccountRank = (usize, Reverse<u64>, String);
+
 /// The ceremonies a node holds open ([`Pending`]), indexed so a begin, a take,
 /// an expiry and the displacement a full budget calls for each cost
 /// O(log n): a flood fills the pool, so nothing here scans it.
@@ -323,8 +329,10 @@ pub struct Ceremonies {
     /// Each session in `sessions`, ranked ([`Rank`]).
     ranking: BTreeSet<Rank>,
     anonymous: usize,
-    /// How many ceremonies each known account holds, and all of them.
-    accounts: HashMap<String, usize>,
+    /// The ceremonies of each known account, by order (oldest first).
+    accounts: HashMap<String, BTreeMap<u64, String>>,
+    /// Each account in `accounts`, ranked ([`AccountRank`]).
+    account_ranking: BTreeSet<AccountRank>,
     account_total: usize,
     next: u64,
 }
@@ -361,8 +369,14 @@ impl Ceremonies {
                 self.rank(session);
             }
             Some(account) => {
-                *self.accounts.entry(account.to_owned()).or_default() += 1;
+                self.unrank_account(account);
+                let _prev = self
+                    .accounts
+                    .entry(account.to_owned())
+                    .or_default()
+                    .insert(order, id.clone());
                 self.account_total += 1;
+                self.rank_account(account);
             }
         }
         let _prev = self.held.insert(
@@ -392,13 +406,15 @@ impl Ceremonies {
                 self.rank(h.session);
             }
             Some(account) => {
-                if let Some(n) = self.accounts.get_mut(account) {
-                    *n = n.saturating_sub(1);
-                    if *n == 0 {
+                self.unrank_account(account);
+                if let Some(mine) = self.accounts.get_mut(account) {
+                    let _id = mine.remove(&h.order);
+                    if mine.is_empty() {
                         let _gone = self.accounts.remove(account);
                     }
                 }
                 self.account_total = self.account_total.saturating_sub(1);
+                self.rank_account(account);
             }
         }
         Some(h.pending)
@@ -420,6 +436,32 @@ impl Ceremonies {
         if let Some(rank) = self.rank_of(session) {
             let _new = self.ranking.insert(rank);
         }
+    }
+
+    fn account_rank_of(&self, account: &str) -> Option<AccountRank> {
+        let mine = self.accounts.get(account)?;
+        let (&oldest, _) = mine.first_key_value()?;
+        Some((mine.len(), Reverse(oldest), account.to_owned()))
+    }
+
+    fn unrank_account(&mut self, account: &str) {
+        if let Some(rank) = self.account_rank_of(account) {
+            let _was = self.account_ranking.remove(&rank);
+        }
+    }
+
+    fn rank_account(&mut self, account: &str) {
+        if let Some(rank) = self.account_rank_of(account) {
+            let _new = self.account_ranking.insert(rank);
+        }
+    }
+
+    /// The oldest ceremony `account` holds.
+    fn oldest_of_account(&self, account: &str) -> Option<String> {
+        self.accounts
+            .get(account)
+            .and_then(BTreeMap::first_key_value)
+            .map(|(_, id)| id.clone())
     }
 
     /// The oldest anonymous ceremony `session` holds.
@@ -474,8 +516,11 @@ fn put_pending(
 /// client has the front's address, and `X-Forwarded-For` is written outside
 /// the TD by whoever relays the request.
 ///
-/// A known account's ceremony is refused `429` when its share of the
-/// accounts' pool, or that pool, is full.
+/// A known account's ceremony is never refused either: past its
+/// `MAX_CHALLENGES_PER_ACCOUNT` it displaces that account's oldest, and in a
+/// full pool the oldest of the account holding the most. Accounts are made
+/// by sign-up, so many of them filling the pool only displace their own
+/// oldest first, never lock another account's step-up out.
 fn admit_pending(
     c: &mut Ceremonies,
     pending: &Pending,
@@ -501,13 +546,18 @@ fn admit_pending(
         }
         return Ok(());
     };
-    let mine = c.accounts.get(account).copied().unwrap_or(0);
-    if mine >= MAX_CHALLENGES_PER_ACCOUNT || c.account_total >= MAX_ACCOUNT_CHALLENGES {
-        return Err(ApiError::new(
-            429,
-            "RATE_LIMITED",
-            "too many passkey ceremonies in progress; try again shortly",
-        ));
+    let mine = c.accounts.get(account).map_or(0, BTreeMap::len);
+    let victim = if mine >= MAX_CHALLENGES_PER_ACCOUNT {
+        c.oldest_of_account(account)
+    } else if c.account_total >= MAX_ACCOUNT_CHALLENGES {
+        c.account_ranking
+            .last()
+            .and_then(|(_, _, biggest)| c.oldest_of_account(biggest))
+    } else {
+        None
+    };
+    if let Some(id) = victim {
+        let _displaced = c.remove(&id);
     }
     Ok(())
 }
@@ -2828,8 +2878,8 @@ mod tests {
 
     use super::{
         admit_pending, api_key_shaped, typed_id, Ceremonies, Pending, UnknownApiKeys,
-        MAX_CEREMONIES_PER_SESSION, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
-        MAX_UNKNOWN_API_KEYS,
+        MAX_ACCOUNT_CHALLENGES, MAX_CEREMONIES_PER_SESSION, MAX_CHALLENGES_PER_ACCOUNT,
+        MAX_PENDING_CHALLENGES, MAX_UNKNOWN_API_KEYS,
     };
 
     /// Every key the node makes passes the shape check that refuses a token
@@ -2984,16 +3034,56 @@ mod tests {
         assert!(!contains(&c, &alice));
     }
 
-    /// One account's step-ups are capped, and the cap is its own.
+    fn held_by(c: &Ceremonies, account: &str) -> usize {
+        c.held
+            .values()
+            .filter(|h| h.pending.account() == Some(account))
+            .count()
+    }
+
+    /// One account holds at most its share: past it, its next step-up
+    /// displaces its own oldest, never another account's.
     #[test]
-    fn one_account_cannot_fill_the_accounts_pool() {
+    fn one_account_cannot_hold_more_than_its_share() {
         let mut c = Ceremonies::default();
-        for _ in 0..MAX_CHALLENGES_PER_ACCOUNT {
-            assert!(put(&mut c, step_up("mallory", 100), None, 0).is_ok());
-        }
-        assert_eq!(put(&mut c, step_up("mallory", 100), None, 0), Err(429));
-        assert!(put(&mut c, step_up("alice", 100), None, 0).is_ok());
+        let alice = put(&mut c, step_up("alice", 100), None, 0).unwrap();
+        let own: Vec<String> = (0..MAX_CHALLENGES_PER_ACCOUNT * 4)
+            .map(|_| put(&mut c, step_up("mallory", 100), None, 0).unwrap())
+            .collect();
+        assert_eq!(held_by(&c, "mallory"), MAX_CHALLENGES_PER_ACCOUNT);
+        assert!(contains(&c, &alice), "alice's step-up is still open");
+        assert!(contains(&c, &own[own.len() - 1]));
+        assert!(!contains(&c, &own[0]));
         assert!(put(&mut c, sign_up(100), session(1), 0).is_ok());
+    }
+
+    /// Many accounts that fill the accounts' pool never lock another account
+    /// out: its step-up displaces the oldest of the account holding the most.
+    #[test]
+    fn a_full_accounts_pool_still_admits_a_new_accounts_step_up() {
+        let mut c = Ceremonies::default();
+        let accounts = MAX_ACCOUNT_CHALLENGES / MAX_CHALLENGES_PER_ACCOUNT;
+        let mut first = None;
+        for n in 0..accounts {
+            for _ in 0..MAX_CHALLENGES_PER_ACCOUNT {
+                let id = put(&mut c, step_up(&format!("a{n}"), 100), None, 0).unwrap();
+                first.get_or_insert(id);
+            }
+        }
+        assert_eq!(c.held.len(), MAX_ACCOUNT_CHALLENGES);
+        let alice = put(&mut c, step_up("alice", 100), None, 0).unwrap();
+        assert_eq!(c.held.len(), MAX_ACCOUNT_CHALLENGES);
+        assert!(
+            !contains(&c, &first.unwrap()),
+            "the oldest of a biggest holder went"
+        );
+        assert_eq!(held_by(&c, "a0"), MAX_CHALLENGES_PER_ACCOUNT - 1);
+        // Fresh accounts keep being admitted, and alice's outlives the
+        // oldest held by the accounts that hold more.
+        for n in 0..accounts as u64 {
+            assert!(put(&mut c, step_up(&format!("b{n}"), 100), None, 0).is_ok());
+            assert!(contains(&c, &alice), "after {n} more step-ups");
+        }
     }
 
     /// An id people type never starts with `-`, which `meroctl` would read as a flag.
