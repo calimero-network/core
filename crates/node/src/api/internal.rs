@@ -591,7 +591,10 @@ async fn internal_upload_abort(
 
 /// An app's usage book on this replica, for a peer ([`Node::app_usage`]): only
 /// from a node that is one of the app's replicas, never from a group it still has
-/// after the app moved away.
+/// after the app moved away. Read at the app group's read index
+/// ([`Node::usage_fresh_here`]), `fresh: true`; a replica that cannot catch up
+/// answers its applied state, `fresh: false`, for the peer to use only when no
+/// replica answers fresh.
 async fn internal_usage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -600,12 +603,18 @@ async fn internal_usage(
 ) -> ApiResult {
     let _caller = peer(&node, &headers, key).await?;
     let app_id = body["app"].as_str().unwrap_or_default();
-    let g = node
+    let (app, g) = node
         .sys(|s| s.apps.get(app_id).cloned())
-        .and_then(|app| node.replica_group(&app))
+        .and_then(|app| node.replica_group(&app).map(|g| (app, g)))
         .ok_or_else(|| ApiError::unavailable("not a replica of the app"))?;
-    let book = g.read_local(|m, _| m.state.component.head.usage.clone());
-    Ok(Json(json!({ "usage": book })))
+    let (book, fresh) = match node.usage_fresh_here(&app, &g).await {
+        Ok(book) => (book, true),
+        Err(_) => (
+            g.read_local(|m, _| m.state.component.head.usage.clone()),
+            false,
+        ),
+    };
+    Ok(Json(json!({ "usage": book, "fresh": fresh })))
 }
 
 /// What every component app this node replicates used on `{ day }`, by app id, for

@@ -9527,8 +9527,8 @@ async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
     .await;
 }
 
-/// Waits until every running node has applied what the app's leader has, so a
-/// usage read on any replica counts every run that committed.
+/// Waits until every running node has applied what the app's leader has: a
+/// replica's own applied state then holds every run that committed.
 async fn applied_everywhere(c: &Cluster, app: &str) {
     let target = c.applied_on(c.app_leader(app).unwrap(), app);
     for i in (0..c.nodes.len()).filter(|i| c.nodes[*i].is_some()) {
@@ -9946,7 +9946,6 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         )
         .await
         .unwrap();
-    applied_everywhere(&c, &in_org).await;
 
     let owner = app_usage(&alice, &in_org).await;
     assert_eq!(figure(&owner["today"]["runs"]), 2, "{owner}");
@@ -10044,7 +10043,6 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     for v in ["a", "b", "c"] {
         set(&alice, &in_org, v).await.unwrap();
     }
-    applied_everywhere(&c, &in_org).await;
     let app_fuel = figure(&app_usage(&alice, &in_org).await["today"]["fuel"]);
     assert!(app_fuel > 0);
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
@@ -10068,7 +10066,6 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         .map(|a| a.app_id)
         .unwrap();
     set(&alice, &personal, "p").await.unwrap();
-    applied_everywhere(&c, &personal).await;
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
     let home = alice.apps().get(&personal).await.map(wire).unwrap()["org"]
         .as_str()
@@ -10081,6 +10078,67 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     assert_eq!(figure(&me["developerFuelToday"]), 0, "{me}");
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
     assert_eq!(figure(&org["developerFuelToday"]), app_fuel, "{org}");
+}
+
+/// A usage read right after a call counts it, on any node. A replica that has not
+/// applied the call yet (its applies are held: `calimero_log::testing::hold_apply`)
+/// still answers `GET /apps/{app}/usage` and `GET /orgs/{org}/usage` with it: each
+/// app's usage is read at the app group's read index, not from whatever the
+/// answering replica applied. See
+/// [Reads](https://calimero-network.github.io/core/protocol/reads/#usage).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_usage_read_right_after_a_call_counts_it_on_a_lagging_replica() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "kv-org", "bundle": &bundle, "org": acme }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    set(&alice, &app, "a").await.unwrap();
+    applied_everywhere(&c, &app).await;
+    let leader = c.app_leader(&app).unwrap();
+    let lagging = (0..3).find(|i| *i != leader).unwrap();
+    let reader = c.client(lagging);
+    let _s = reader.sign_in(&mut pk).await.unwrap();
+    let before = usage_totals(&app_usage(&reader, &app).await).0;
+    let org_before =
+        figure(&reader.orgs().usage(&acme).await.map(wire).unwrap()["developerWritesToday"]);
+
+    let dir = c.configs[lagging].data_dir.clone();
+    let group = hosted_on(&c, lagging, &app).await;
+    let held_at = group.applied();
+    calimero_log::testing::hold_apply(&dir, group.id());
+    set(&alice, &app, "b").await.unwrap();
+    assert_eq!(
+        group.applied(),
+        held_at,
+        "the replica applied the call while held"
+    );
+
+    let runs = usage_totals(&app_usage(&reader, &app).await).0;
+    let org_writes =
+        figure(&reader.orgs().usage(&acme).await.map(wire).unwrap()["developerWritesToday"]);
+    calimero_log::testing::release_apply(&dir, group.id());
+    assert_eq!(
+        runs,
+        before + 1,
+        "the app's usage missed the call just made"
+    );
+    assert!(
+        org_writes > org_before,
+        "the org's usage missed the call just made: {org_before} then {org_writes}"
+    );
 }
 
 /// The daily fuel cap holds per developer. An org app made from a release has
