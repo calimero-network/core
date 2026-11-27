@@ -332,7 +332,7 @@ pub enum MetadataCmd {
 
 /// An organization's record (`GET /orgs/{org}`).
 pub async fn org(env: &Env, namespace: &str) -> eyre::Result<Org> {
-    Ok(env.client.orgs().get(namespace).await?)
+    Ok(env.client.orgs().get(namespace, None, None, None).await?)
 }
 
 pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {

@@ -3,12 +3,14 @@ deletion, the recovery key, and guests of an instance."""
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import ed25519_sign
 from rv2 import b64url
 from upgrade_deep import (DeepCase, anyone, check, decision, decisions, eq, install, invite, join, kv_wasm, new_org,
-                          people, person, refused, roles, same_decisions, same_read, snap, team_id, until)
+                          ops, people, person, refused, roles, same_decisions, same_read, signed_ops, snap, team_id,
+                          until)
 from upgrade_path import case
 
 
@@ -477,3 +479,61 @@ class Guests(DeepCase):
         for want in ("gwen reads", "gabe reads", "gwen writes", "gabe writes"):
             check(s["decisions"][want] != "ok", f"{want} with guests off")
         check(s["decisions"]["gert reads"] == "ok", f"a member with guests off: {s['decisions']['gert reads']}")
+
+
+@case
+class StateCaps(DeepCase):
+    name = "state-caps"
+    area = "Organizations"
+    since = "1.0.0-rc.39"
+    seeds = ("an organization with two teams and its own metadata, made while the operator held `maxTeamsPerOrg` at 2 "
+             "and `maxMetadataBytesPerOrg` at 20 000 (a third team and team metadata past the bound refused "
+             "`429 QUOTA_EXCEEDED`), then put the quotas back")
+    verifies = ("the cluster's quotas at their defaults; the organization's two teams and metadata; its teams in "
+                "pages of one (`limit`, `nextTeamsAfter`), then all of them; a third team on the defaults")
+
+    BOUNDS = {"maxTeamsPerOrg": 2, "maxMetadataBytesPerOrg": 20_000}
+    DEFAULTS = {"maxTeamsPerOrg": 1000, "maxMetadataBytesPerOrg": 1024 * 1024,
+                "maxMetadataBytesPerAccount": 2 * 1024 * 1024}
+
+    def populate(self, w):
+        pia = person(w, "pia")
+        org = new_org(pia, "Bounded Org")
+        teams = [team_id(pia.raw("post", f"orgs/{org}/teams", {"name": n, "join": "invite"})) for n in ("a", "b")]
+        # The quotas are written once the cluster version brings them (`409 FEATURE_NOT_ACTIVE` before).
+        until("the cluster version takes the state bounds", lambda: signed_ops(w, "post", "ops/quotas", self.BOUNDS),
+              timeout=120)
+        try:
+            refused("QUOTA_EXCEEDED", lambda: pia.raw("post", f"orgs/{org}/teams", {"name": "c", "join": "invite"}),
+                    "a third team past maxTeamsPerOrg")
+            pia.raw("post", f"orgs/{org}/metadata", {"metadata": {"about": "x" * 15_000}})
+            refused("QUOTA_EXCEEDED",
+                    lambda: pia.raw("post", f"orgs/{org}/teams/{teams[0]}", {"metadata": {"about": "y" * 15_000}}),
+                    "team metadata past maxMetadataBytesPerOrg")
+        finally:
+            signed_ops(w, "post", "ops/quotas", self.DEFAULTS)
+        return {"org": org, "teams": sorted(teams)}
+
+    def check(self, w, s):
+        pia = person(w, "pia")
+        quotas = ops(w, "GET", "ops/quotas")
+        eq({k: quotas.get(k) for k in self.DEFAULTS}, self.DEFAULTS, "the state bounds at their defaults")
+        o = pia.get(f"orgs/{s['org']}")
+        eq(sorted(o.get("teams", {})), s["teams"], "the organization's teams")
+        eq(len(json.dumps(o.get("metadata"))), len(json.dumps({"about": "x" * 15_000})), "its metadata")
+        eq(o.get("nextTeamsAfter"), None, "one page holds every team")
+        paged, after = [], None
+        for _ in s["teams"]:
+            page = pia.get(f"orgs/{s['org']}?limit=1" + (f"&teamsAfter={after}" if after else ""))
+            paged += list(page.get("teams", {}))
+            after = page.get("nextTeamsAfter")
+            if after is None:
+                break
+            eq(after, paged[-1], "the next page's cursor")
+        eq(paged, s["teams"], "the teams in pages of one")
+        eq(after, None, "the last page")
+
+    def exercise(self, w, s):
+        pia = person(w, "pia")
+        made = pia.raw("post", f"orgs/{s['org']}/teams", {"name": "c", "join": "invite"})
+        s["teams"] = sorted(s["teams"] + [team_id(made)])

@@ -124,6 +124,7 @@ the same way. Compute runs on job nodes have their own caps
 | Deployments | 16 per owner, 10 000 per cluster, 64 apps each | `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT` |
 | Organization and app-team names | 64 characters | `MAX_ORG_NAME_CHARS`, `MAX_APP_TEAM_NAME_CHARS` |
 | Team rows changed at once | 64 teams | `MAX_TEAM_BATCH` |
+| Teams and members one `GET /orgs/{org}` answers | 1000 of each (`limit`, 1 to 1000; `teamsAfter`, `membersAfter` and the answer's `nextTeamsAfter`, `nextMembersAfter` page through the rest) | `ORG_PAGE_LIMIT` |
 | Sign-up invites | 10 000, each at most 10 000 uses | `MAX_SIGN_UP_INVITES`, `MAX_SIGN_UP_INVITE_USES` |
 | Compute pools | 32, names 1–64 bytes; 10 000 payer overrides | `MAX_POOLS`, `MAX_POOL_NAME_BYTES`, `MAX_ORG_QUOTAS` |
 | Recovery disk | written every 5 min; the newest 3 files per subject; unlisted segments kept 7 days | `RECOVERY_EVERY`, `KEEP`, `SEGMENT_KEEP` |
@@ -178,7 +179,19 @@ refusal is `429 QUOTA_EXCEEDED`.
 | Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
 | Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
 | Reserved compute fuel per organization (`computeFuelPerOrg`) | 10 times `MAX_COMPUTE_FUEL` |
+| Teams per organization, app teams included (`maxTeamsPerOrg`) | 1000 (`MAX_TEAMS_PER_ORG`) |
+| Metadata bytes per organization: its own, its members' and its teams', as JSON (`maxMetadataBytesPerOrg`) | 1 MiB (`MAX_METADATA_BYTES_PER_ORG`) |
+| Metadata bytes of the organizations one account owns, summed (`maxMetadataBytesPerAccount`) | 2 MiB (`MAX_METADATA_BYTES_PER_ACCOUNT`) |
 | Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count |
+
+Every node holds the system state in memory and writes all of it into each snapshot, so
+what one organization or account keeps there is bounded: teams per organization, and
+metadata bytes per organization and per owning account. Across the cluster, metadata is so
+bounded by `maxAccounts` times `maxMetadataBytesPerAccount`. A write that would not grow a
+total always passes, so an organization over a bound (from before it, or a lowered quota)
+can still shrink. Apply enforces these from cluster version 1.0.0-rc.39, and a change from
+their defaults is written only from that version (`409 FEATURE_NOT_ACTIVE`); a node refuses
+a write past them before it is logged on any version.
 
 The fuel cap is approximate by at most one refresh interval (5 s). A call never
 asks a peer: the node reads the apps it replicates from its own replicas, and the
@@ -243,5 +256,12 @@ the cap.
 Accepted gap (#4809): an older node added after the cap is set, then sent a quota change itself,
 writes the quotas without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
 and the W19 minimum-release gate closes it.
+The bounds on the system state are `system::state_caps`: `SystemState::check_state_caps` judges
+`CreateTeam`, `SetOrgMetadata`, `SetMemberMetadata` and `UpdateTeam` with metadata, in
+`Node::sys_write` before a write is proposed and in `system/orgs.rs` at apply once the logged
+cluster version brings `Feature::StateCaps`. An organization's metadata bytes
+(`org_metadata_bytes`) are the JSON of its own, its members' and its teams' metadata; an
+account's are those of every organization it owns. App teams `ScopeApps` makes count toward
+`maxTeamsPerOrg` but are not refused by it.
 Usage reads (`app_usage`, `internal/usage`, `replicas_usage_on`) use `replica_group`, never a group
 the node keeps after the app moved away.

@@ -102,7 +102,7 @@ async fn an_admin_renames_the_organization_with_a_passkey() {
         assert_eq!(err.code(), Some("BAD_REQUEST"), "{bad:?}: {err}");
     }
     assert_eq!(
-        alice.orgs().get(&org).await.map(wire).unwrap()["name"],
+        alice.orgs().get(&org, None, None, None).await.map(wire).unwrap()["name"],
         "Acme"
     );
 
@@ -117,7 +117,7 @@ async fn an_admin_renames_the_organization_with_a_passkey() {
     assert_eq!(out["orgId"], json!(org), "{out}");
     for p in [&alice, &bob, &carol] {
         assert_eq!(
-            p.orgs().get(&org).await.map(wire).unwrap()["name"],
+            p.orgs().get(&org, None, None, None).await.map(wire).unwrap()["name"],
             "Acme Labs"
         );
         assert_eq!(my_name_for(p, &org).await, "Acme Labs");
