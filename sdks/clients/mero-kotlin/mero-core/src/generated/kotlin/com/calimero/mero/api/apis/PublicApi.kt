@@ -82,13 +82,30 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      }
 
     /**
+     * enum for parameter form
+     */
+     enum class FormAttestation(val value: kotlin.String) {
+         @SerialName(value = "interval") INTERVAL("interval");
+
+        /**
+         * Override [toString()] to avoid using the enum variable name as the value, and instead use
+         * the actual value defined in the API spec file.
+         *
+         * This solves a problem when the variable name and its value are different, and ensures that
+         * the client sends the correct enum values to the server always.
+         */
+        override fun toString(): kotlin.String = "$value"
+     }
+
+    /**
      * GET /attestation
      * The node&#39;s attestation
-     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash: &#x60;app&#x60; only an app anyone may reach (public), any other answering &#x60;404&#x60; as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
+     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash: &#x60;app&#x60; only an app anyone may reach (public), any other answering &#x60;404&#x60; as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. &#x60;form&#x3D;interval&#x60; (without &#x60;purpose&#x60;) answers from the quote the node makes once a minute over its interval key, with &#x60;interval&#x60;: that key&#39;s signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
      * @param nonce 
      * @param app  (optional)
      * @param appHash  (optional)
      * @param purpose  (optional)
+     * @param form  (optional)
      * @return AttestationDoc
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -98,8 +115,8 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun attestation(nonce: kotlin.String, app: kotlin.String? = null, appHash: kotlin.String? = null, purpose: PurposeAttestation? = null) : AttestationDoc = withContext(Dispatchers.IO) {
-        val localVarResponse = attestationWithHttpInfo(nonce = nonce, app = app, appHash = appHash, purpose = purpose)
+    suspend fun attestation(nonce: kotlin.String, app: kotlin.String? = null, appHash: kotlin.String? = null, purpose: PurposeAttestation? = null, form: FormAttestation? = null) : AttestationDoc = withContext(Dispatchers.IO) {
+        val localVarResponse = attestationWithHttpInfo(nonce = nonce, app = app, appHash = appHash, purpose = purpose, form = form)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as AttestationDoc
@@ -119,19 +136,20 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
     /**
      * GET /attestation
      * The node&#39;s attestation
-     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash: &#x60;app&#x60; only an app anyone may reach (public), any other answering &#x60;404&#x60; as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
+     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash: &#x60;app&#x60; only an app anyone may reach (public), any other answering &#x60;404&#x60; as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. &#x60;form&#x3D;interval&#x60; (without &#x60;purpose&#x60;) answers from the quote the node makes once a minute over its interval key, with &#x60;interval&#x60;: that key&#39;s signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
      * @param nonce 
      * @param app  (optional)
      * @param appHash  (optional)
      * @param purpose  (optional)
+     * @param form  (optional)
      * @return ApiResponse<AttestationDoc?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun attestationWithHttpInfo(nonce: kotlin.String, app: kotlin.String?, appHash: kotlin.String?, purpose: PurposeAttestation?) : ApiResponse<AttestationDoc?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = attestationRequestConfig(nonce = nonce, app = app, appHash = appHash, purpose = purpose)
+    suspend fun attestationWithHttpInfo(nonce: kotlin.String, app: kotlin.String?, appHash: kotlin.String?, purpose: PurposeAttestation?, form: FormAttestation?) : ApiResponse<AttestationDoc?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = attestationRequestConfig(nonce = nonce, app = app, appHash = appHash, purpose = purpose, form = form)
 
         return@withContext request<Unit, AttestationDoc>(
             localVariableConfig
@@ -145,9 +163,10 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * @param app  (optional)
      * @param appHash  (optional)
      * @param purpose  (optional)
+     * @param form  (optional)
      * @return RequestConfig
      */
-    fun attestationRequestConfig(nonce: kotlin.String, app: kotlin.String?, appHash: kotlin.String?, purpose: PurposeAttestation?) : RequestConfig<Unit> {
+    fun attestationRequestConfig(nonce: kotlin.String, app: kotlin.String?, appHash: kotlin.String?, purpose: PurposeAttestation?, form: FormAttestation?) : RequestConfig<Unit> {
         val localVariableBody = null
         val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
             .apply {
@@ -160,6 +179,9 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
                 }
                 if (purpose != null) {
                     put("purpose", listOf(purpose.value))
+                }
+                if (form != null) {
+                    put("form", listOf(form.value))
                 }
             }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()

@@ -9,6 +9,13 @@ sidebar:
 returns the transport key only once the quote checks out. Its report data must
 be `nonce ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)`.
 
+It asks for the [interval form](/protocol/tee-attestation/#interval-quotes) (`form=interval`):
+a node answers from a quote it makes once a minute over a key of its own and signs this
+request's nonce with that key, so attesting never waits for a quote. Then the signature must be
+that key's over the nonce, the app hash and the transport key, the quote at most 5 minutes old
+by this device's clock, and its report data must bind that key, the transport key and the time.
+A node that answers without `interval` (an older release) is checked as above.
+
 | `CloudPolicy` | What passes |
 | --- | --- |
 | `.development` (`allowMock: true`) | a `MOCK_TDX_QUOTE_V1` quote binding the nonce and key: `merod local` only |

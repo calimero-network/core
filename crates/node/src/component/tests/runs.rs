@@ -169,6 +169,7 @@ pub(super) fn job_doc(signer: &SigningKey, node: u64) -> crate::attest::Attestat
         kms: None,
         job_key: Some(hex::encode(signer.verifying_key().to_bytes())),
         cluster_identity: Some("cc".repeat(32)),
+        interval: None,
     }
 }
 

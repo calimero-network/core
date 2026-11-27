@@ -1502,6 +1502,10 @@ struct AttestQuery {
     /// `orchestrator`: the transport key and the cluster identity this replica holds.
     #[serde(default)]
     purpose: Option<String>,
+    /// `interval`: without a `purpose`, answer from the interval quote
+    /// (`attest::IntervalQuotes`) rather than a quote over `nonce`.
+    #[serde(default)]
+    form: Option<String>,
 }
 
 async fn attestation(
@@ -1513,6 +1517,16 @@ async fn attestation(
         .ok()
         .and_then(|v| v.try_into().ok())
         .ok_or_else(|| ApiError::bad_request("BAD_NONCE", "nonce must be 32 bytes hex"))?;
+    let interval = match q.form.as_deref() {
+        None => false,
+        Some(crate::attest::INTERVAL_FORM) => true,
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "BAD_FORM",
+                "form must be `interval`, or absent",
+            ))
+        }
+    };
     let app_hash: [u8; 32] = match (&q.app, &q.app_hash) {
         (Some(app), _) => {
             // In the clear and without a credential, so judged as an anonymous
@@ -1574,22 +1588,32 @@ async fn attestation(
     } else {
         report_data(&nonce, &app_hash, &transport_key)
     };
-    // Off the async workers, one at a time, and only now: after the `app`
-    // lookup, which may wait, so a request that waits there holds no slot.
-    // A node of this cluster queues apart from anyone (`attest::Lane`).
-    let lane = if crate::attest::is_peer_attest(
-        &headers,
-        node.cluster_key(),
-        &node.config.cluster,
-        &nonce,
-    ) {
-        crate::attest::Lane::Peer
-    } else {
-        crate::attest::Lane::Anyone
+    // The interval form makes no quote: the interval key signs this request.
+    let answered = (interval && q.purpose.is_none())
+        .then(|| node.intervals.answer(&nonce, &app_hash, &transport_key))
+        .flatten();
+    let (quote, interval) = match answered {
+        Some((quote, proof)) => (quote, Some(proof)),
+        None => {
+            // Off the async workers, one at a time, and only now: after the
+            // `app` lookup, which may wait, so a request that waits there
+            // holds no slot. A node of this cluster queues apart from anyone
+            // (`attest::Lane`).
+            let lane = if crate::attest::is_peer_attest(
+                &headers,
+                node.cluster_key(),
+                &node.config.cluster,
+                &nonce,
+            ) {
+                crate::attest::Lane::Peer
+            } else {
+                crate::attest::Lane::Anyone
+            };
+            (node.quoter.quote_in(lane, report).await?, None)
+        }
     };
-    let q = node.quoter.quote_in(lane, report).await?;
     let doc = AttestationDoc {
-        quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, q),
+        quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
         transport_key: hex::encode(transport_key),
         app_hash: hex::encode(app_hash),
         nonce: hex::encode(nonce),
@@ -1602,6 +1626,7 @@ async fn attestation(
         kms,
         job_key: None,
         cluster_identity: orchestrator.then(|| hex::encode(node.cluster_identity())),
+        interval,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }

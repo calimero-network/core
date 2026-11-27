@@ -4641,6 +4641,8 @@ pub use crate::attest::Release;
 
 pub use crate::attest::AttestationDoc;
 
+pub use crate::attest::IntervalProof;
+
 /// What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct KmsKeys {
@@ -8498,6 +8500,40 @@ impl<'de> Deserialize<'de> for AttestationPurpose {
             "receipts" => Self::Receipts,
             "kms" => Self::Kms,
             "orchestrator" => Self::Orchestrator,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AttestationForm {
+    /// `interval`.
+    Interval,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AttestationForm {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Interval => "interval",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AttestationForm {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AttestationForm {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "interval" => Self::Interval,
             other => Self::Other(other.to_owned()),
         })
     }

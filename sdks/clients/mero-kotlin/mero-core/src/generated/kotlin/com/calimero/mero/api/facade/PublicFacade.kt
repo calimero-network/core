@@ -20,7 +20,7 @@ class PublicFacade internal constructor(
     /**
      * The node's attestation
      *
-     * In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+     * In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
      *
      * **Who:** anyone.
      *
@@ -33,8 +33,9 @@ class PublicFacade internal constructor(
         app: kotlin.String? = null,
         appHash: kotlin.String? = null,
         purpose: com.calimero.mero.api.apis.PublicApi.PurposeAttestation? = null,
+        form: com.calimero.mero.api.apis.PublicApi.FormAttestation? = null,
     ): AttestationDoc =
-        api(null, null, emptySet()).publicApi.attestation(nonce = nonce, app = app, appHash = appHash, purpose = purpose)
+        api(null, null, emptySet()).publicApi.attestation(nonce = nonce, app = app, appHash = appHash, purpose = purpose, form = form)
 
     /**
      * Node health

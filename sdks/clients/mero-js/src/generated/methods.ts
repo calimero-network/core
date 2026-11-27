@@ -1959,7 +1959,7 @@ export function createRoutes(api: RouteClient) {
        * `GET /attestation` (`attestation`). **Who:** anyone.
        */
       attestation: (args: NonNullable<operations['attestation']['parameters']['query']>, options?: MethodOptions): Promise<operations['attestation']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"GET","path":"/attestation","pathParams":[],"query":["nonce","app","appHash","purpose"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['attestation']['responses'][200]['content']['application/json']>,
+        route(api, {"method":"GET","path":"/attestation","pathParams":[],"query":["nonce","app","appHash","purpose","form"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['attestation']['responses'][200]['content']['application/json']>,
       /**
        * Node health.
        *

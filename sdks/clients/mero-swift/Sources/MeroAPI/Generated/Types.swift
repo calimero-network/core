@@ -700,7 +700,7 @@ public protocol APIProtocol: Sendable {
     func appXcalls(_ input: Operations.AppXcalls.Input) async throws -> Operations.AppXcalls.Output
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
@@ -3151,7 +3151,7 @@ extension APIProtocol {
     }
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
@@ -13691,7 +13691,7 @@ public enum Components {
                 case profile
             }
         }
-        /// A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API.
+        /// A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API.
         ///
         /// - Remark: Generated from `#/components/schemas/AttestationDoc`.
         public struct AttestationDoc: Codable, Hashable, Sendable {
@@ -13721,6 +13721,8 @@ public enum Components {
             public var jobKey: Swift.String?
             /// - Remark: Generated from `#/components/schemas/AttestationDoc/clusterIdentity`.
             public var clusterIdentity: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/AttestationDoc/interval`.
+            public var interval: Components.Schemas.IntervalProof?
             /// Creates a new `AttestationDoc`.
             ///
             /// - Parameters:
@@ -13737,6 +13739,7 @@ public enum Components {
             ///   - kms:
             ///   - jobKey:
             ///   - clusterIdentity:
+            ///   - interval:
             public init(
                 quote: Swift.String,
                 transportKey: Swift.String,
@@ -13750,7 +13753,8 @@ public enum Components {
                 governance: Components.Schemas.Governance? = nil,
                 kms: Components.Schemas.KmsKeys? = nil,
                 jobKey: Swift.String? = nil,
-                clusterIdentity: Swift.String? = nil
+                clusterIdentity: Swift.String? = nil,
+                interval: Components.Schemas.IntervalProof? = nil
             ) {
                 self.quote = quote
                 self.transportKey = transportKey
@@ -13765,6 +13769,7 @@ public enum Components {
                 self.kms = kms
                 self.jobKey = jobKey
                 self.clusterIdentity = clusterIdentity
+                self.interval = interval
             }
             public enum CodingKeys: String, CodingKey {
                 case quote
@@ -13780,6 +13785,44 @@ public enum Components {
                 case kms
                 case jobKey
                 case clusterIdentity
+                case interval
+            }
+        }
+        /// With `form=interval`: the node's interval key (Ed25519, hex) that its quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex) over the request's nonce, app hash and transport key.
+        ///
+        /// - Remark: Generated from `#/components/schemas/IntervalProof`.
+        public struct IntervalProof: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/IntervalProof/key`.
+            public var key: Swift.String
+            /// - Remark: Generated from `#/components/schemas/IntervalProof/quoteNonce`.
+            public var quoteNonce: Swift.String
+            /// - Remark: Generated from `#/components/schemas/IntervalProof/issuedAt`.
+            public var issuedAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/IntervalProof/signature`.
+            public var signature: Swift.String
+            /// Creates a new `IntervalProof`.
+            ///
+            /// - Parameters:
+            ///   - key:
+            ///   - quoteNonce:
+            ///   - issuedAt:
+            ///   - signature:
+            public init(
+                key: Swift.String,
+                quoteNonce: Swift.String,
+                issuedAt: Swift.Int64,
+                signature: Swift.String
+            ) {
+                self.key = key
+                self.quoteNonce = quoteNonce
+                self.issuedAt = issuedAt
+                self.signature = signature
+            }
+            public enum CodingKeys: String, CodingKey {
+                case key
+                case quoteNonce
+                case issuedAt
+                case signature
             }
         }
         /// What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.
@@ -33081,7 +33124,7 @@ public enum Operations {
     }
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
@@ -33106,6 +33149,12 @@ public enum Operations {
                 }
                 /// - Remark: Generated from `#/paths/attestation/GET/query/purpose`.
                 public var purpose: Operations.Attestation.Input.Query.PurposePayload?
+                /// - Remark: Generated from `#/paths/attestation/GET/query/form`.
+                @frozen public enum FormPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case interval = "interval"
+                }
+                /// - Remark: Generated from `#/paths/attestation/GET/query/form`.
+                public var form: Operations.Attestation.Input.Query.FormPayload?
                 /// Creates a new `Query`.
                 ///
                 /// - Parameters:
@@ -33113,16 +33162,19 @@ public enum Operations {
                 ///   - app:
                 ///   - appHash:
                 ///   - purpose:
+                ///   - form:
                 public init(
                     nonce: Swift.String,
                     app: Swift.String? = nil,
                     appHash: Swift.String? = nil,
-                    purpose: Operations.Attestation.Input.Query.PurposePayload? = nil
+                    purpose: Operations.Attestation.Input.Query.PurposePayload? = nil,
+                    form: Operations.Attestation.Input.Query.FormPayload? = nil
                 ) {
                     self.nonce = nonce
                     self.app = app
                     self.appHash = appHash
                     self.purpose = purpose
+                    self.form = form
                 }
             }
             public var query: Operations.Attestation.Input.Query

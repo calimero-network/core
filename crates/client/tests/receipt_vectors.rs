@@ -97,6 +97,7 @@ fn receipt_doc(binding: [u8; 32]) -> AttestationDoc {
         kms: None,
         job_key: None,
         cluster_identity: None,
+        interval: None,
     }
 }
 
@@ -381,6 +382,7 @@ fn job_doc(job: [u8; 32], identity: [u8; 32], node: u64) -> AttestationDoc {
         kms: None,
         job_key: Some(hx(job)),
         cluster_identity: Some(hx(identity)),
+        interval: None,
     }
 }
 

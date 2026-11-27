@@ -297,7 +297,7 @@ Generated from core's `docs/public/openapi.json`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `attestation(nonce, app=…, app_hash=…, purpose=…)` | `GET /attestation` | The node's attestation. *Refusals:* `400 BAD_HASH`, `400 BAD_NONCE`, `503 BUSY` |
+| `attestation(nonce, app=…, app_hash=…, purpose=…, form=…)` | `GET /attestation` | The node's attestation. *Refusals:* `400 BAD_FORM`, `400 BAD_HASH`, `400 BAD_NONCE`, `503 BUSY` |
 | `health()` | `GET /health` | Node health |
 | `publisher_binding(signer)` | `GET /publishers/{signer}` | Whether a signing key is bound |
 | `releases_public()` | `GET /releases` | The cluster's releases |

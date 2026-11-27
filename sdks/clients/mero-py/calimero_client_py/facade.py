@@ -305,6 +305,7 @@ from .openapi.models import AppUndoBody
 from .openapi.models import AppUnlinkBody
 from .openapi.models import AppUpgradeBody
 from .openapi.models import AppUpgradeUnitBody
+from .openapi.models import AttestationForm
 from .openapi.models import AttestationPurpose
 from .openapi.models import BackupKeyBody
 from .openapi.models import CapabilitiesBody
@@ -6326,10 +6327,12 @@ _RESTORE_RECOVER_HOLDER = Operation(
 class Public(Group):
     """`client.public`: the operations core's document groups as `public`."""
 
-    def attestation(self, *, nonce, app=UNSET, app_hash=UNSET, purpose=UNSET):
+    def attestation(
+        self, *, nonce, app=UNSET, app_hash=UNSET, purpose=UNSET, form=UNSET
+    ):
         """The node's attestation (`GET /attestation`, `attestation`).
 
-        In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+        In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
 
         **Who:** anyone.
 
@@ -6338,6 +6341,7 @@ class Public(Group):
             app: query
             app_hash: query
             purpose: query
+            form: query
 
         Returns: AttestationDoc
         """
@@ -6349,6 +6353,7 @@ class Public(Group):
                 "app": app,
                 "app_hash": app_hash,
                 "purpose": Operation.enum(AttestationPurpose, purpose),
+                "form": Operation.enum(AttestationForm, form),
             },
             None,
         )

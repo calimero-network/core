@@ -936,6 +936,7 @@ mod tests {
             kms: None,
             job_key: Some(key.clone()),
             cluster_identity: Some("ab".repeat(32)),
+            interval: None,
         };
         let mut r = receipt();
         let _prev = r.job_attestations.insert(key.clone(), doc.clone());

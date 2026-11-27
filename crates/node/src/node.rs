@@ -652,6 +652,9 @@ pub struct Node {
     /// Makes this node's quotes (`/attestation`, the recovery disk's), off the
     /// async workers and one at a time.
     pub(crate) quoter: crate::attest::Quoter,
+    /// The interval key and its quote, which `/attestation?form=interval`
+    /// answers with (`attest::refresh_interval_quotes` keeps it current).
+    pub(crate) intervals: crate::attest::IntervalQuotes,
     /// Compiles the components installs and uploads hand this node, off the
     /// async workers and one at a time (`compile`).
     pub(crate) compiler: crate::compile::Compiler,
@@ -1207,6 +1210,7 @@ impl Node {
             receipt_key,
             recovery: recovery_disk::RecoveryWriter::default(),
             quoter,
+            intervals: crate::attest::IntervalQuotes::default(),
             compiler,
             peers: Mutex::new(HashMap::new()),
             http,

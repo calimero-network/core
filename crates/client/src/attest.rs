@@ -10,6 +10,14 @@
 //! `report_data = nonce(32) || SHA-256("calimero.tee-attest.kms-evidence.v1" |
 //! transport_binding | SHA-256(JCS(kms)))`, where `transport_binding` is the
 //! second half above. Not asking keeps the layout above, byte for byte.
+//!
+//! Asked with `form=interval`, a node answers from the quote it makes once per
+//! interval over an Ed25519 key of its own, and signs this request's nonce with
+//! that key ([`IntervalProof`]): no quote is made per request. A node that does
+//! not know the form answers the per-request quote above, which [`verify`]
+//! takes as before.
+//!
+//! Spec: [Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -66,6 +74,101 @@ pub struct AttestationDoc {
     /// The cluster identity (Ed25519, hex) a job node takes work from; the jobs quote binds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_identity: Option<String>,
+    /// With `form=interval`, from a node that has a current interval quote:
+    /// `quote` is that quote, made over [`interval_report_data`], and this
+    /// signs the request's nonce under the key it binds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<IntervalProof>,
+}
+
+/// The `form` query parameter's value that asks `GET /attestation` for the
+/// interval form ([`IntervalProof`]).
+pub const INTERVAL_FORM: &str = "interval";
+
+/// Domain separator of an interval quote's binding ([`interval_key_binding`]).
+pub const ATTEST_INTERVAL_KEY_DOMAIN: &[u8] = b"calimero.tee-attest.interval-key.v1";
+
+/// Domain separator of the message an interval key signs ([`interval_message`]).
+pub const ATTEST_INTERVAL_SIG_DOMAIN: &[u8] = b"calimero.tee-attest.interval-sig.v1\0";
+
+/// The oldest interval quote a verifier takes, by its `issuedAt` and the
+/// verifier's clock. A node makes a new one every minute and serves one for at
+/// most two, so this leaves three minutes for the clocks to differ.
+///
+/// Spec: [Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)
+pub const INTERVAL_QUOTE_MAX_AGE_SECS: u64 = 300;
+
+/// How far ahead of the verifier's clock an interval quote's `issuedAt` may be.
+pub const INTERVAL_QUOTE_MAX_SKEW_SECS: u64 = 60;
+
+/// What a node adds to a `form=interval` answer: the key its interval quote
+/// binds, the quote's own nonce and time, and the key's signature over the
+/// caller's request ([`interval_message`]).
+///
+/// Spec: [Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IntervalProof {
+    /// The interval key (Ed25519), hex.
+    pub key: String,
+    /// The first half of the quote's report data, which the node chose, hex.
+    pub quote_nonce: String,
+    /// When the node made the quote, Unix seconds by its clock; bound.
+    pub issued_at: u64,
+    /// Ed25519 over [`interval_message`], hex.
+    pub signature: String,
+}
+
+/// The second half of an interval quote's report data:
+/// `SHA-256(ATTEST_INTERVAL_KEY_DOMAIN ‖ transport_key ‖ interval_key ‖ u64_be(issued_at))`.
+#[must_use]
+pub fn interval_key_binding(
+    transport_key: &[u8; 32],
+    interval_key: &[u8; 32],
+    issued_at: u64,
+) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(ATTEST_INTERVAL_KEY_DOMAIN);
+    h.update(transport_key);
+    h.update(interval_key);
+    h.update(issued_at.to_be_bytes());
+    h.finalize().into()
+}
+
+/// The report data of an interval quote: the node's own `quote_nonce`, then
+/// [`interval_key_binding`].
+#[must_use]
+pub fn interval_report_data(
+    quote_nonce: &[u8; 32],
+    transport_key: &[u8; 32],
+    interval_key: &[u8; 32],
+    issued_at: u64,
+) -> [u8; 64] {
+    let mut out = [0; 64];
+    out[..32].copy_from_slice(quote_nonce);
+    out[32..].copy_from_slice(&interval_key_binding(
+        transport_key,
+        interval_key,
+        issued_at,
+    ));
+    out
+}
+
+/// What an interval key signs for one request:
+/// `ATTEST_INTERVAL_SIG_DOMAIN ‖ nonce ‖ app_hash ‖ transport_key`, the
+/// caller's nonce and what the per-request quote's report data would bind.
+#[must_use]
+pub fn interval_message(
+    nonce: &[u8; 32],
+    app_hash: &[u8; 32],
+    transport_key: &[u8; 32],
+) -> Vec<u8> {
+    let mut m = ATTEST_INTERVAL_SIG_DOMAIN.to_vec();
+    m.extend_from_slice(nonce);
+    m.extend_from_slice(app_hash);
+    m.extend_from_slice(transport_key);
+    m
 }
 
 /// What a node verified of the mero-kms replicas it took its keys from, one
@@ -706,12 +809,84 @@ pub async fn verify(
     let app_hash = policy
         .app_hash
         .unwrap_or_else(|| hex32(&doc.app_hash).unwrap_or([0; 32]));
+    if let Some(interval) = &doc.interval {
+        if doc.kms.is_some() {
+            eyre::bail!("an interval attestation carries no KMS record");
+        }
+        verify_interval(
+            doc,
+            interval,
+            nonce,
+            &app_hash,
+            &transport_key,
+            policy,
+            unix_now(),
+        )
+        .await?;
+        return Ok(transport_key);
+    }
     let expected = match &doc.kms {
         Some(kms) => kms_report_data(nonce, &app_hash, &transport_key, kms),
         None => report_data(nonce, &app_hash, &transport_key),
     };
     verify_report(doc, nonce, policy, &expected).await?;
     Ok(transport_key)
+}
+
+/// Unix seconds by this process's clock.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The interval form of [`verify`] at `now` (Unix seconds): the quote is no
+/// older than [`INTERVAL_QUOTE_MAX_AGE_SECS`], the interval key signed this
+/// `nonce`, `app_hash` and `transport_key`, and the quote (judged as any
+/// other) binds that key, the transport key and the time.
+async fn verify_interval(
+    doc: &AttestationDoc,
+    interval: &IntervalProof,
+    nonce: &[u8; 32],
+    app_hash: &[u8; 32],
+    transport_key: &[u8; 32],
+    policy: &Policy,
+    now: u64,
+) -> eyre::Result<()> {
+    if interval.issued_at > now.saturating_add(INTERVAL_QUOTE_MAX_SKEW_SECS) {
+        eyre::bail!(
+            "the interval quote is dated {}s ahead of this clock",
+            interval.issued_at - now
+        );
+    }
+    if now.saturating_sub(interval.issued_at) > INTERVAL_QUOTE_MAX_AGE_SECS {
+        eyre::bail!(
+            "the interval quote is {}s old, more than the {INTERVAL_QUOTE_MAX_AGE_SECS}s this client takes",
+            now - interval.issued_at
+        );
+    }
+    let key = hex32(&interval.key)?;
+    let signature: [u8; 64] = hex::decode(&interval.signature)?
+        .try_into()
+        .map_err(|_| eyre::eyre!("the interval signature is not 64 bytes"))?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&key)
+        .map_err(|_| eyre::eyre!("the interval key is not an Ed25519 key"))?;
+    vk.verify_strict(
+        &interval_message(nonce, app_hash, transport_key),
+        &ed25519_dalek::Signature::from_bytes(&signature),
+    )
+    .map_err(|_| eyre::eyre!("the interval key did not sign this nonce, app and transport key"))?;
+    let quote_nonce = hex32(&interval.quote_nonce)?;
+    let expected = interval_report_data(&quote_nonce, transport_key, &key, interval.issued_at);
+    let _verified = verify_quote(
+        &doc.quote,
+        &doc.release.version,
+        &quote_nonce,
+        policy,
+        &expected,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Verify a receipt-key attestation (`purpose=receipts`): the same checks as
@@ -997,7 +1172,9 @@ async fn judge(
     })
 }
 
-/// Attests a node's transport key over HTTP, for the sealed client.
+/// Attests a node's transport key over HTTP, for the sealed client. Asks for
+/// the interval form (`form=interval`), which a node answers without making a
+/// quote; a node that does not know it answers a quote over this nonce.
 #[derive(Debug, Clone)]
 pub struct HttpAttestor {
     pub policy: Policy,
@@ -1030,7 +1207,8 @@ impl HttpAttestor {
         let mut url = calimero_sealed::client::resolve_path(api_url, "attestation")?;
         let _q = url
             .query_pairs_mut()
-            .append_pair("nonce", &hex::encode(nonce));
+            .append_pair("nonce", &hex::encode(nonce))
+            .append_pair("form", INTERVAL_FORM);
         if let Some(h) = self.policy.app_hash {
             let _q = url
                 .query_pairs_mut()
@@ -1111,6 +1289,7 @@ mod tests {
             kms: None,
             job_key: None,
             cluster_identity: None,
+            interval: None,
         }
     }
 
@@ -1921,5 +2100,168 @@ mod tests {
             receipt_key_binding(&[1; 32], &closed, "c", 1),
             receipt_key_binding(&[1; 32], &invite, "c", 1)
         );
+    }
+
+    /// What a node's interval answer is made of, and how a test spoils it.
+    #[derive(Default)]
+    struct Interval {
+        /// Sign this nonce instead of the one asked for.
+        signed_nonce: Option<[u8; 32]>,
+        /// Bind this key in the quote instead of the one that signs.
+        bound_key: Option<[u8; 32]>,
+        /// Flip a bit of the signature.
+        bad_signature: bool,
+    }
+
+    const NOW: u64 = 1_800_000_000;
+
+    /// A mock interval answer to `nonce` for transport key `[1; 32]`, made at `issued_at`.
+    fn interval_doc(nonce: [u8; 32], issued_at: u64, o: &Interval) -> AttestationDoc {
+        use ed25519_dalek::Signer;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let public = key.verifying_key().to_bytes();
+        let quote_nonce = [3; 32];
+        let report = interval_report_data(
+            &quote_nonce,
+            &[1; 32],
+            &o.bound_key.unwrap_or(public),
+            issued_at,
+        );
+        let mut signature = key
+            .sign(&interval_message(
+                &o.signed_nonce.unwrap_or(nonce),
+                &[0; 32],
+                &[1; 32],
+            ))
+            .to_bytes();
+        if o.bad_signature {
+            signature[40] ^= 1;
+        }
+        AttestationDoc {
+            interval: Some(IntervalProof {
+                key: hex::encode(public),
+                quote_nonce: hex::encode(quote_nonce),
+                issued_at,
+                signature: hex::encode(signature),
+            }),
+            ..mock_doc(report, None)
+        }
+    }
+
+    async fn check_interval(doc: &AttestationDoc, nonce: [u8; 32]) -> eyre::Result<()> {
+        let interval = doc.interval.as_ref().expect("an interval answer");
+        verify_interval(
+            doc,
+            interval,
+            &nonce,
+            &[0; 32],
+            &[1; 32],
+            &mock_policy(),
+            NOW,
+        )
+        .await
+    }
+
+    /// An interval answer verifies for the nonce its key signed, under a
+    /// quote that binds that key, the transport key and the time, and within
+    /// the age a verifier takes; each other answer is refused.
+    #[tokio::test]
+    async fn an_interval_answer_is_refused_unless_signed_bound_and_fresh() {
+        let nonce = [2; 32];
+        let ok = interval_doc(nonce, NOW - 10, &Interval::default());
+        check_interval(&ok, nonce)
+            .await
+            .expect("a fresh, signed, bound answer");
+
+        let refused = |doc: AttestationDoc, why: &'static str| async move {
+            let e = check_interval(&doc, nonce).await.expect_err(why);
+            assert!(format!("{e:#}").contains(why), "{e:#} names {why}");
+        };
+        refused(
+            interval_doc(
+                nonce,
+                NOW,
+                &Interval {
+                    signed_nonce: Some([9; 32]),
+                    ..Interval::default()
+                },
+            ),
+            "did not sign this nonce",
+        )
+        .await;
+        refused(
+            interval_doc(
+                nonce,
+                NOW - INTERVAL_QUOTE_MAX_AGE_SECS - 1,
+                &Interval::default(),
+            ),
+            "old, more than",
+        )
+        .await;
+        refused(
+            interval_doc(
+                nonce,
+                NOW + INTERVAL_QUOTE_MAX_SKEW_SECS + 1,
+                &Interval::default(),
+            ),
+            "ahead of this clock",
+        )
+        .await;
+        refused(
+            interval_doc(
+                nonce,
+                NOW,
+                &Interval {
+                    bound_key: Some([3; 32]),
+                    ..Interval::default()
+                },
+            ),
+            "does not bind",
+        )
+        .await;
+        refused(
+            interval_doc(
+                nonce,
+                NOW,
+                &Interval {
+                    bad_signature: true,
+                    ..Interval::default()
+                },
+            ),
+            "did not sign this nonce",
+        )
+        .await;
+        // The quote binds `issuedAt`: an answer that names another time fails it.
+        let mut redated = interval_doc(nonce, NOW - 400, &Interval::default());
+        if let Some(i) = redated.interval.as_mut() {
+            i.issued_at = NOW;
+        }
+        refused(redated, "does not bind").await;
+    }
+
+    /// `verify` takes either form: a document without `interval` (a node of an
+    /// earlier release) is the per-request quote, checked as before, and an
+    /// interval document never carries a KMS record.
+    #[tokio::test]
+    async fn verify_takes_the_per_request_form_and_the_interval_form() {
+        let nonce = [2; 32];
+        let old = mock_doc(report_data(&nonce, &[0; 32], &[1; 32]), None);
+        assert_eq!(verify(&old, &nonce, &mock_policy()).await.unwrap(), [1; 32]);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let fresh = interval_doc(nonce, now, &Interval::default());
+        assert_eq!(
+            verify(&fresh, &nonce, &mock_policy()).await.unwrap(),
+            [1; 32]
+        );
+        assert!(verify(&fresh, &[4; 32], &mock_policy()).await.is_err());
+        let with_kms = AttestationDoc {
+            kms: Some(KmsKeys::default()),
+            ..fresh
+        };
+        assert!(verify(&with_kms, &nonce, &mock_policy()).await.is_err());
     }
 }

@@ -11,8 +11,16 @@ the operator runs. So the client never trusts the connection: it trusts the **qu
 `fetchAttestedKey(baseUrl, policy)` asks `GET /attestation?nonce=…` (the one call besides
 `/health` served in the clear). The quote's report data must be
 `nonce(32) ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)`, so it
-binds this request and the X25519 transport key the channel will be opened to. Then, as core's
-Rust client (`attest::verify`, `Measurements::Release`):
+binds this request and the X25519 transport key the channel will be opened to.
+
+It asks for the [interval form](/protocol/tee-attestation/#interval-quotes) (`form=interval`):
+a node answers from a quote it makes once a minute over a key of its own and signs this
+request's nonce with that key, so attesting never waits for a quote. Then the signature must be
+that key's over the nonce, the app hash and the transport key, the quote at most 5 minutes old
+by this device's clock, and its report data must bind that key, the transport key and the time.
+A node that answers without `interval` (an older release) is checked as above.
+
+Either way, as core's Rust client (`attest::verify`, `Measurements::Release`):
 
 - **mock** quotes (`MOCK_TDX_QUOTE_V1…`, `merod local`) pass only with `CloudPolicy(allowMock = true)`;
 - a **real** quote: the node names its mero-tee release; it must be at least `minReleaseVersion`;

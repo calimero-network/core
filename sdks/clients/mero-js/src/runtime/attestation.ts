@@ -18,9 +18,19 @@
  * trusted profile, `locked-read-only` unless a debug profile is explicitly
  * allowed. Nothing here reads the environment: mock quotes pass only with
  * `allowMock`.
+ *
+ * The client asks for the interval form (`form=interval`, core's `INTERVAL_FORM`): the
+ * node answers from a quote it makes once a minute over an Ed25519 key of its own,
+ * and signs this request's nonce with that key, so no quote is made per request.
+ * The quote's report data is `quoteNonce(32) || SHA-256("calimero.tee-attest.interval-key.v1"
+ * | transport_key | interval_key | u64_be(issuedAt))`, the signature covers
+ * `"calimero.tee-attest.interval-sig.v1\0" | nonce | app_hash | transport_key`, and the
+ * quote may be at most `INTERVAL_QUOTE_MAX_AGE_SECS` old. A node that does not know the
+ * form answers a quote over this nonce, checked as above. Spec:
+ * https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes
  */
 
-import { fromHex, hex } from '../crypto/internal.js';
+import { concat, fromHex, hex, verifyStrict } from '../crypto/internal.js';
 import {
   cloudCollateralUrl,
   cloudNodeReleaseUrl,
@@ -38,6 +48,17 @@ import { CLOUD_ENVIRONMENTS, defaultCloudEnvironment } from './directory.js';
 
 /** The mock quote format development clusters use. */
 export const MOCK_QUOTE_HEADER = 'MOCK_TDX_QUOTE_V1';
+
+/** The `form` that asks `GET /attestation` for the interval form (core's `INTERVAL_FORM`). */
+export const INTERVAL_FORM = 'interval';
+/** Domain of an interval quote's binding (core's `ATTEST_INTERVAL_KEY_DOMAIN`). */
+export const INTERVAL_KEY_DOMAIN = 'calimero.tee-attest.interval-key.v1';
+/** Domain of what an interval key signs (core's `ATTEST_INTERVAL_SIG_DOMAIN`). */
+export const INTERVAL_SIG_DOMAIN = 'calimero.tee-attest.interval-sig.v1\0';
+/** The oldest interval quote taken, by its `issuedAt` and this clock (core's `INTERVAL_QUOTE_MAX_AGE_SECS`). */
+export const INTERVAL_QUOTE_MAX_AGE_SECS = 300;
+/** How far ahead of this clock an interval quote may be dated (core's `INTERVAL_QUOTE_MAX_SKEW_SECS`). */
+export const INTERVAL_QUOTE_MAX_SKEW_SECS = 60;
 
 /** How the signed release a node names is trusted (core's `Measurements::Release`). */
 export interface NodeReleasePolicy {
@@ -120,6 +141,20 @@ export interface NodePolicy {
   app?: string;
   /** With `app`: the hash the node must bind. Alone: sent and bound, but only echoed, so never recorded. */
   appHash?: string;
+  /** The current time in milliseconds, which an interval quote's age is judged by; defaults to `Date.now`. For tests. */
+  now?: () => number;
+}
+
+/** What a `form=interval` answer adds (core's `IntervalProof`). */
+export interface IntervalProof {
+  /** The interval key (Ed25519) the quote binds, hex. */
+  key: string;
+  /** The first half of the quote's report data, which the node chose, hex. */
+  quoteNonce: string;
+  /** When the node made the quote, Unix seconds by its clock. */
+  issuedAt: number;
+  /** Ed25519 over {@link intervalMessage}, hex. */
+  signature: string;
 }
 
 export interface AttestationDoc {
@@ -131,6 +166,8 @@ export interface AttestationDoc {
   cluster: string;
   node: number;
   mock: boolean;
+  /** With `form=interval`, from a node that has a current interval quote. */
+  interval?: IntervalProof;
 }
 
 /**
@@ -374,6 +411,59 @@ export async function verifyQuoteBinding(
   return { mock: false, ...facts };
 }
 
+const utf8 = (s: string) => new TextEncoder().encode(s);
+
+/** u64 big-endian. */
+function u64be(value: number): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
+  return out;
+}
+
+/** An interval quote's report data after its nonce (core's `interval_key_binding`). */
+export async function intervalKeyBinding(transportKey: Uint8Array, intervalKey: Uint8Array, issuedAt: number): Promise<Uint8Array> {
+  const digest = await crypto.subtle.digest('SHA-256', concat(utf8(INTERVAL_KEY_DOMAIN), transportKey, intervalKey, u64be(issuedAt)));
+  return new Uint8Array(digest);
+}
+
+/** What an interval key signs for one request (core's `interval_message`). */
+export function intervalMessage(nonce: Uint8Array, appHash: Uint8Array, transportKey: Uint8Array): Uint8Array {
+  return concat(utf8(INTERVAL_SIG_DOMAIN), nonce, appHash, transportKey);
+}
+
+/**
+ * The interval form (core's `verify_interval`): the quote is fresh by this clock, the interval key
+ * signed this nonce, app hash and transport key, and the quote binds that key, the transport key and
+ * the time.
+ */
+async function verifyInterval(
+  doc: AttestationDoc,
+  interval: IntervalProof,
+  nonce: Uint8Array,
+  appHash: Uint8Array,
+  transportKey: Uint8Array,
+  policy: NodePolicy,
+  fetchImpl: typeof fetch,
+): Promise<Pick<NodeVerification, 'mock' | 'release' | 'profile'>> {
+  const issuedAt = interval.issuedAt;
+  if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) throw new Error('The interval quote names no valid issuedAt');
+  const now = Math.floor((policy.now ?? Date.now)() / 1000);
+  if (issuedAt > now + INTERVAL_QUOTE_MAX_SKEW_SECS) {
+    throw new Error(`The interval quote is dated ${issuedAt - now}s ahead of this clock`);
+  }
+  if (now - issuedAt > INTERVAL_QUOTE_MAX_AGE_SECS) {
+    throw new Error(`The interval quote is ${now - issuedAt}s old, more than the ${INTERVAL_QUOTE_MAX_AGE_SECS}s this client takes`);
+  }
+  const key = fromHex(interval.key, 'interval.key', 32);
+  const signature = fromHex(interval.signature, 'interval.signature', 64);
+  if (!(await verifyStrict(key, intervalMessage(nonce, appHash, transportKey), signature))) {
+    throw new Error('The interval key did not sign this nonce, app and transport key');
+  }
+  const suffix = await intervalKeyBinding(transportKey, key, issuedAt);
+  const quoteNonce = fromHex(interval.quoteNonce, 'interval.quoteNonce', 32);
+  return verifyQuoteBinding(doc, quoteNonce, suffix, policy, 'interval key', fetchImpl);
+}
+
 /** Fetch the node's attestation and return its transport key once it checks out. */
 export async function fetchAttestedKey(
   baseUrl: string,
@@ -403,6 +493,7 @@ export async function verifyNode(
   const nonce = hex(crypto.getRandomValues(new Uint8Array(32)));
   const attestation = new URL(`${url}/attestation`);
   attestation.searchParams.set('nonce', nonce);
+  attestation.searchParams.set('form', INTERVAL_FORM);
   if (policy.app) attestation.searchParams.set('app', policy.app);
   else if (policy.appHash) attestation.searchParams.set('appHash', policy.appHash);
   const response = await fetchImpl(attestation.toString());
@@ -414,8 +505,10 @@ export async function verifyNode(
   const transportKey = fromHex(doc.transportKey, 'transportKey', 32);
   const boundApp = policy.app ? nodeBoundAppHash(doc, policy) : undefined;
   const inner = boundApp ?? (policy.appHash ? fromHex(policy.appHash, 'appHash', 32) : new Uint8Array(32));
-  const suffix = await transportKeyBinding(inner, transportKey);
-  const facts = await verifyQuoteBinding(doc, fromHex(nonce, 'nonce', 32), suffix, policy, 'transport key', fetchImpl);
+  const nonceBytes = fromHex(nonce, 'nonce', 32);
+  const facts = doc.interval
+    ? await verifyInterval(doc, doc.interval, nonceBytes, inner, transportKey, policy, fetchImpl)
+    : await verifyQuoteBinding(doc, nonceBytes, await transportKeyBinding(inner, transportKey), policy, 'transport key', fetchImpl);
   const verification: NodeVerification = {
     url,
     ...facts,

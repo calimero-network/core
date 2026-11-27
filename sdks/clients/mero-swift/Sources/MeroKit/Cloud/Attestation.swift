@@ -22,9 +22,26 @@ import FoundationNetworking
 // its registers must be the release's image for the trusted profile,
 // `locked-read-only` unless a debug profile is explicitly allowed. Nothing
 // here reads the environment: mock quotes pass only with `allowMock`.
+//
+// The client asks for the interval form (`form=interval`): the node answers
+// from a quote it makes once a minute over an Ed25519 key of its own and signs
+// this request's nonce with that key, so no quote is made per request. A node
+// that does not know the form answers a quote over this nonce, checked as
+// above. Spec: https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes
 
 /// The mock quote format development clusters use. (== mero-js `MOCK_QUOTE_HEADER`.)
 public let mockQuoteHeader = "MOCK_TDX_QUOTE_V1"
+
+/// The `form` that asks `GET /attestation` for the interval form (core's `INTERVAL_FORM`).
+public let intervalForm = "interval"
+/// Domain of an interval quote's binding (core's `ATTEST_INTERVAL_KEY_DOMAIN`).
+public let intervalKeyDomain = "calimero.tee-attest.interval-key.v1"
+/// Domain of what an interval key signs (core's `ATTEST_INTERVAL_SIG_DOMAIN`).
+public let intervalSigDomain = "calimero.tee-attest.interval-sig.v1\u{0}"
+/// The oldest interval quote taken, by its `issuedAt` and this clock (core's `INTERVAL_QUOTE_MAX_AGE_SECS`).
+public let intervalQuoteMaxAgeSecs: Int64 = 300
+/// How far ahead of this clock an interval quote may be dated (core's `INTERVAL_QUOTE_MAX_SKEW_SECS`).
+public let intervalQuoteMaxSkewSecs: Int64 = 60
 
 /// Where the signed release a node names comes from. Untrusted either way:
 /// its Sigstore signature is checked. (== mero-js `CloudReleasePolicy.releaseSource`.)
@@ -148,15 +165,18 @@ public struct CloudPolicy: Sendable {
     public var verifyQuote: (any TransportQuoteVerifier)?
     /// The app bundle hash (hex) the quote must bind, when talking to one app.
     public var appHash: String?
+    /// The current time in milliseconds, which an interval quote's age is judged by. For tests.
+    public var now: @Sendable () -> Int64
 
     public init(
         allowMock: Bool = false, release: CloudReleasePolicy? = nil, verifyQuote: (any TransportQuoteVerifier)? = nil,
-        appHash: String? = nil
+        appHash: String? = nil, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.allowMock = allowMock
         self.release = release
         self.verifyQuote = verifyQuote
         self.appHash = appHash
+        self.now = now
     }
 
     /// A development cluster's: mock quotes accepted, nothing else.
@@ -178,6 +198,67 @@ public struct AttestationDoc: Codable, Sendable, Equatable {
     public var cluster: String?
     public var node: Int?
     public var mock: Bool?
+    /// With `form=interval`, from a node that has a current interval quote.
+    public var interval: IntervalProof?
+}
+
+/// What a `form=interval` answer adds (core's `IntervalProof`).
+public struct IntervalProof: Codable, Sendable, Equatable {
+    /// The interval key (Ed25519) the quote binds, hex.
+    public var key: String
+    /// The first half of the quote's report data, which the node chose, hex.
+    public var quoteNonce: String
+    /// When the node made the quote, Unix seconds by its clock.
+    public var issuedAt: Int64
+    /// Ed25519 over `intervalMessage`, hex.
+    public var signature: String
+
+    public init(key: String, quoteNonce: String, issuedAt: Int64, signature: String) {
+        self.key = key
+        self.quoteNonce = quoteNonce
+        self.issuedAt = issuedAt
+        self.signature = signature
+    }
+}
+
+/// An interval quote's report data after its nonce (core's `interval_key_binding`).
+public func intervalKeyBinding(_ transportKey: Data, _ intervalKey: Data, issuedAt: Int64) -> Data {
+    var time = UInt64(bitPattern: issuedAt).bigEndian
+    let timeBytes = withUnsafeBytes(of: &time) { Data($0) }
+    return sha256(Data(intervalKeyDomain.utf8) + transportKey + intervalKey + timeBytes)
+}
+
+/// What an interval key signs for one request (core's `interval_message`).
+public func intervalMessage(nonce: Data, appHash: Data, transportKey: Data) -> Data {
+    Data(intervalSigDomain.utf8) + nonce + appHash + transportKey
+}
+
+/// The interval form (core's `verify_interval`): the quote is fresh by `policy.now`, the interval
+/// key signed this nonce, app hash and transport key, and the quote binds that key, the transport
+/// key and the time.
+func verifyInterval(
+    _ doc: AttestationDoc, _ interval: IntervalProof, nonce: Data, appHash: Data, transportKey: Data,
+    policy: CloudPolicy, session: URLSession
+) async throws {
+    let now = policy.now() / 1000
+    if interval.issuedAt > now + intervalQuoteMaxSkewSecs {
+        throw TeeTrustError("The interval quote is dated \(interval.issuedAt - now)s ahead of this clock")
+    }
+    if now - interval.issuedAt > intervalQuoteMaxAgeSecs {
+        throw TeeTrustError(
+            "The interval quote is \(now - interval.issuedAt)s old, more than the \(intervalQuoteMaxAgeSecs)s "
+                + "this client takes")
+    }
+    let key = try Hex.decode(interval.key, label: "interval.key", bytes: 32)
+    let signature = try Hex.decode(interval.signature, label: "interval.signature", bytes: 64)
+    let message = intervalMessage(nonce: nonce, appHash: appHash, transportKey: transportKey)
+    guard Ed25519.verify(publicKey: key, signature: signature, message: message) else {
+        throw TeeTrustError("The interval key did not sign this nonce, app and transport key")
+    }
+    let quoteNonce = try Hex.decode(interval.quoteNonce, label: "interval.quoteNonce", bytes: 32)
+    try await verifyQuoteBinding(
+        doc, nonce: quoteNonce, suffix: intervalKeyBinding(transportKey, key, issuedAt: interval.issuedAt),
+        policy: policy, what: "interval key", session: session)
 }
 
 /// The release a node names, checked against the floor before anything is
@@ -213,7 +294,7 @@ public func fetchAttestedKey(_ baseURL: String, policy: CloudPolicy, session: UR
         throw TeeTrustError("bad node URL \(baseURL)")
     }
     parts.queryItems =
-        [URLQueryItem(name: "nonce", value: nonce)]
+        [URLQueryItem(name: "nonce", value: nonce), URLQueryItem(name: "form", value: intervalForm)]
         + (policy.appHash.map { [URLQueryItem(name: "appHash", value: $0)] } ?? [])
     guard let url = parts.url else { throw TeeTrustError("bad node URL \(baseURL)") }
     var request = URLRequest(url: url)
@@ -238,6 +319,12 @@ func checkAttestation(
 {
     let transportKey = try Hex.decode(doc.transportKey, label: "transportKey", bytes: 32)
     let inner = try policy.appHash.map { try Hex.decode($0, label: "appHash", bytes: 32) } ?? Data(count: 32)
+    if let interval = doc.interval {
+        try await verifyInterval(
+            doc, interval, nonce: try Hex.decode(nonce, label: "nonce", bytes: 32), appHash: inner,
+            transportKey: transportKey, policy: policy, session: session)
+        return transportKey
+    }
     let suffix = transportKeyBinding(inner, transportKey)
     try await verifyQuoteBinding(
         doc, nonce: try Hex.decode(nonce, label: "nonce", bytes: 32), suffix: suffix, policy: policy,

@@ -209,6 +209,12 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         shutdown.clone(),
     )));
 
+    // The interval quote `/attestation?form=interval` answers with.
+    drop(tokio::spawn(attest::refresh_interval_quotes(
+        Arc::downgrade(&node),
+        shutdown.clone(),
+    )));
+
     // Keep hosted groups in line with the system state.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

@@ -109,6 +109,7 @@ from .approved_releases import ApprovedReleases
 from .apps_report import AppsReport
 from .assertion import Assertion
 from .attestation_doc import AttestationDoc
+from .attestation_form import AttestationForm
 from .attestation_purpose import AttestationPurpose
 from .backup_key_answer import BackupKeyAnswer
 from .backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
@@ -337,6 +338,7 @@ from .holder_recovered import HolderRecovered
 from .init_failed import InitFailed
 from .intent_result import IntentResult
 from .intents_body import IntentsBody
+from .interval_proof import IntervalProof
 from .invite_body import InviteBody
 from .invite_key import InviteKey
 from .invite_list import InviteList
@@ -889,6 +891,7 @@ __all__ = (
     "AppWithdrawn",
     "Assertion",
     "AttestationDoc",
+    "AttestationForm",
     "AttestationPurpose",
     "BackupKeyAnswer",
     "BackupKeyAnswerHolderType0",
@@ -1093,6 +1096,7 @@ __all__ = (
     "InitFailed",
     "IntentResult",
     "IntentsBody",
+    "IntervalProof",
     "InviteBody",
     "InviteKey",
     "InviteList",
