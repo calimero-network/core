@@ -30,6 +30,7 @@ mod deployments;
 mod fleet;
 mod orgs;
 mod packages;
+mod prejudge;
 mod recovery;
 mod rejection;
 mod routing;
@@ -50,6 +51,7 @@ pub use orgs::{
     InviteRedeemed, OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted,
 };
 pub use packages::{PublisherBound, Uninstalled};
+pub use prejudge::prejudge;
 pub use recovery::{RecoveryFinished, RecoveryStarted};
 
 /// What `ScopeApps` answers: the organization's mode after, and each package's app team.

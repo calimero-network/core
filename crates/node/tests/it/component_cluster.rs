@@ -1793,21 +1793,21 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
         let err = set_access(&bob, app, json!([{ "kind": "anyone" }]))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), Some("REJECTED"), "{app}: access: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: access: {err}");
         let err = set(&bob, app, "back").await.unwrap_err();
         assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: reached: {err}");
         let err = set_metadata(&bob, app, json!({ "pinned": true }))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), Some("REJECTED"), "{app}: metadata: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: metadata: {err}");
         let err = bob
             .apps()
             .transfer(app, &bob_id, Some(&mut b))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), Some("FORBIDDEN"), "{app}: transfer: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: transfer: {err}");
         let err = bob.apps().delete(app).await.unwrap_err();
-        assert_eq!(err.code(), Some("REJECTED"), "{app}: delete: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: delete: {err}");
     }
     let record = alice.apps().get(&kept).await.map(wire).unwrap();
     assert_eq!(record["grants"], json!([{ "kind": "org" }]), "{record}");
@@ -2012,19 +2012,19 @@ async fn an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it() {
     let err = set_access(&bob, &bobs, json!([{ "kind": "anyone" }]))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "access: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "access: {err}");
     let err = set_metadata(&bob, &bobs, json!({ "pinned": true }))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "metadata: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "metadata: {err}");
     let err = bob
         .apps()
         .transfer(&bobs, &bob_id, Some(&mut b))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("FORBIDDEN"), "transfer: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "transfer: {err}");
     let err = bob.apps().delete(&bobs).await.unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "delete: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "delete: {err}");
 
     // The organization's owner takes Bob's channel; Dave, added back to
     // Blocks, has his again.

@@ -1497,14 +1497,33 @@ impl Node {
 
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
-    /// version ([`Node::require_features`]).
+    /// version ([`Node::require_features`]), and the refusal `apply` would
+    /// answer for one it judges refused already (`Node::sys_prejudge`).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        // Authority first: a caller who may not act learns that (or that the subject is
+        // missing), never how full the state is.
+        self.sys_prejudge(cmd).await?;
         // A write past a bound on the system state is refused before it is logged; apply
         // judges it again ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)).
         self.sys(|s| s.check_state_caps(cmd)).map_err(rejected)?;
         self.sys_propose(cmd).await
+    }
+
+    /// Refuse, before it costs a log entry, a command `apply` would refuse
+    /// ([`crate::system::prejudge`]). A refusal on this replica's state is
+    /// judged again once it caught up ([`Node::sys_fresh`]): the write that
+    /// allows the command (this request's own first one, made through
+    /// another node) may not have applied here yet. A replica that cannot
+    /// catch up proposes it, and `apply` judges it.
+    /// Spec: <https://calimero-network.github.io/core/protocol/system-group/#judged-before-it-is-proposed>
+    async fn sys_prejudge(&self, cmd: &SystemCmd) -> Result<(), ApiError> {
+        let judge = || self.sys_machine(|m| crate::system::prejudge(m, cmd));
+        if judge().is_ok() || !self.sys_fresh().await {
+            return Ok(());
+        }
+        judge().map_err(rejected)
     }
 
     /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
@@ -2237,10 +2256,20 @@ impl Node {
         .unwrap_or_else(|| id.to_owned())
     }
 
+    /// One not found here is looked for on a state that caught up with the
+    /// system leader ([`Node::sys_fresh_index`]), which holds every app made
+    /// before the request: missing there, it is missing, answered at once.
+    /// Only when no leader answers does it wait for one ([`Node::sys_until`]).
     pub async fn app(&self, app_id: &str) -> Result<AppRecord, ApiError> {
-        self.sys_until(|s| s.apps.get(app_id).cloned())
-            .await
-            .ok_or_else(|| ApiError::not_found("no such app"))
+        let find = |s: &SystemState| s.apps.get(app_id).cloned();
+        let found = match self.sys(find) {
+            Some(app) => Some(app),
+            None => match self.sys_fresh_index().await {
+                (Some(_), _) => self.sys(find),
+                (None, _) => self.sys_until(find).await,
+            },
+        };
+        found.ok_or_else(|| ApiError::not_found("no such app"))
     }
 
     async fn start_app_group_if_replica(&self, group: GroupId) -> bool {

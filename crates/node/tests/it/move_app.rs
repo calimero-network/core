@@ -422,12 +422,13 @@ async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in(
         .remove_member(&src, &bob_id, Some(&mut a))
         .await
         .unwrap();
+    // Out of the source, the app is not theirs to see: as if missing.
     refused(
         &bob.apps()
             .app_move(&app, &dst, Some(false), None)
             .await
             .unwrap_err(),
-        "only the app's owner",
+        "404 NOT_FOUND: no such app",
     );
     // Carol administers both, then leaves the source.
     let _left = carol
@@ -442,7 +443,7 @@ async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in(
             .app_move(&app, &dst, Some(false), None)
             .await
             .unwrap_err(),
-        "only the app's owner",
+        "404 NOT_FOUND: no such app",
     );
     // Dave, a member who manages nothing.
     refused(

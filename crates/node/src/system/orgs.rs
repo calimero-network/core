@@ -478,6 +478,98 @@ fn authorize_invite_redemption(
     Ok(Some(used))
 }
 
+/// A refusal to whoever is not a member of the organization: as for one that
+/// does not exist (`GET /orgs/{org}` answers them so).
+const ORG_NOT_FOUND: Rejection = Rejection::new(RejectionKind::NotFound, "no such organization");
+/// A refusal to a member who does not see the team: as for one that does not
+/// exist (`GET /orgs/{org}/teams/{team}` answers them so).
+const TEAM_NOT_FOUND: Rejection = Rejection::new(RejectionKind::NotFound, "no such team");
+
+/// What [`apply`] refuses of `cmd` for its actor's authority, judged read-only
+/// before it is proposed ([`super::prejudge`]). A refusal names the
+/// organization (or team) missing to an actor who cannot see it.
+pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection> {
+    let (org, team, actor, judged) = match cmd {
+        SystemCmd::SetOrgMetadata {
+            org,
+            metadata,
+            actor,
+        } => (
+            org,
+            None,
+            actor,
+            check_org_metadata(s, org, metadata, actor),
+        ),
+        SystemCmd::SetMemberMetadata {
+            org,
+            account,
+            metadata,
+            actor,
+        } => (
+            org,
+            None,
+            actor,
+            check_member_metadata(s, org, account, metadata, actor),
+        ),
+        SystemCmd::CreateTeam {
+            org,
+            team_id,
+            parent,
+            join,
+            actor,
+            member_child_teams,
+            ..
+        } => (
+            org,
+            parent.as_deref(),
+            actor,
+            check_new_team(
+                s,
+                org,
+                team_id,
+                actor,
+                parent.as_deref(),
+                *join,
+                *member_child_teams,
+            ),
+        ),
+        SystemCmd::UpdateTeam {
+            org,
+            team,
+            name,
+            join,
+            metadata,
+            actor,
+            ..
+        } => {
+            let judged = s.orgs.get(org).ok_or(NO_SUCH_ORG).and_then(|o| {
+                if !o.teams.contains_key(team) {
+                    return Err(NO_SUCH_TEAM);
+                }
+                check_team_changes(
+                    o,
+                    team,
+                    actor,
+                    name.is_some(),
+                    join.is_some(),
+                    metadata.as_ref(),
+                )
+            });
+            (org, Some(team.as_str()), actor, judged)
+        }
+        _ => return Ok(()),
+    };
+    judged.map_err(|why| {
+        let Some(o) = s.orgs.get(org).filter(|o| o.role(actor).is_some()) else {
+            return ORG_NOT_FOUND;
+        };
+        match team {
+            Some(t) if !o.teams.contains_key(t) || !o.sees_team(actor, t) => TEAM_NOT_FOUND,
+            _ => why,
+        }
+    })
+}
+
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 ///
@@ -849,19 +941,30 @@ fn set_org_metadata(
     metadata: Value,
     actor: &str,
 ) -> Result<Value, Rejection> {
-    metadata_fits(&metadata)?;
-    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
-    if organization.role(actor) < Some(OrgRole::Admin)
-        && !organization.may(actor, None, crate::types::caps::MANAGE_METADATA)
-    {
-        return Err(MAY_NOT_SET_ORG_METADATA);
-    }
+    check_org_metadata(state, org, &metadata, actor)?;
     if state.caps_state() {
         state.check_metadata(org, MetadataSlot::Org, &metadata)?;
     }
     let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
     organization.metadata = metadata;
     Ok(Value::Null)
+}
+
+/// [`set_org_metadata`]'s rules, read-only.
+fn check_org_metadata(
+    state: &SystemState,
+    org: &str,
+    metadata: &Value,
+    actor: &str,
+) -> Result<(), Rejection> {
+    metadata_fits(metadata)?;
+    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
+    if organization.role(actor) < Some(OrgRole::Admin)
+        && !organization.may(actor, None, crate::types::caps::MANAGE_METADATA)
+    {
+        return Err(MAY_NOT_SET_ORG_METADATA);
+    }
+    Ok(())
 }
 
 /// Set (or, with null, drop) a member's metadata: theirs or an admin's.
@@ -872,14 +975,7 @@ fn set_member_metadata(
     metadata: Value,
     actor: &str,
 ) -> Result<Value, Rejection> {
-    metadata_fits(&metadata)?;
-    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
-    if organization.role(&account).is_none() {
-        return Err(NOT_A_MEMBER);
-    }
-    if actor != account && organization.role(actor) < Some(OrgRole::Admin) {
-        return Err(MEMBER_METADATA_THEIRS);
-    }
+    check_member_metadata(state, org, &account, &metadata, actor)?;
     if state.caps_state() {
         state.check_metadata(org, MetadataSlot::Member(&account), &metadata)?;
     }
@@ -890,6 +986,25 @@ fn set_member_metadata(
         let _prev = organization.member_metadata.insert(account, metadata);
     }
     Ok(Value::Null)
+}
+
+/// [`set_member_metadata`]'s rules, read-only.
+fn check_member_metadata(
+    state: &SystemState,
+    org: &str,
+    account: &str,
+    metadata: &Value,
+    actor: &str,
+) -> Result<(), Rejection> {
+    metadata_fits(metadata)?;
+    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
+    if organization.role(account).is_none() {
+        return Err(NOT_A_MEMBER);
+    }
+    if actor != account && organization.role(actor) < Some(OrgRole::Admin) {
+        return Err(MEMBER_METADATA_THEIRS);
+    }
+    Ok(())
 }
 
 /// Set a member's role: an admin's, ownership the owner's, and the one owner
@@ -970,19 +1085,15 @@ fn create_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         // SAFETY: `apply` sends only a `CreateTeam` here.
         unreachable!("create_team applies a CreateTeam")
     };
-    let organization = state.orgs.get(&org).ok_or(NO_SUCH_ORG)?;
-    if organization.teams.contains_key(&team_id) {
-        return Err(TEAM_EXISTS);
-    }
-    if !may_create_team(
-        organization,
+    check_new_team(
+        state,
+        &org,
+        &team_id,
         &actor,
         parent.as_deref(),
         join,
         member_child_teams,
-    ) {
-        return Err(MAY_NOT_CREATE_TEAM);
-    }
+    )?;
     if state.caps_state() {
         state.check_new_team(&org)?;
     }
@@ -1004,6 +1115,26 @@ fn create_team(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejecti
         },
     );
     Ok(json!(TeamCreated { team_id }))
+}
+
+/// [`create_team`]'s rules, read-only.
+fn check_new_team(
+    state: &SystemState,
+    org: &str,
+    team_id: &str,
+    actor: &str,
+    parent: Option<&str>,
+    join: TeamJoin,
+    member_child_teams: bool,
+) -> Result<(), Rejection> {
+    let organization = state.orgs.get(org).ok_or(NO_SUCH_ORG)?;
+    if organization.teams.contains_key(team_id) {
+        return Err(TEAM_EXISTS);
+    }
+    if !may_create_team(organization, actor, parent, join, member_child_teams) {
+        return Err(MAY_NOT_CREATE_TEAM);
+    }
+    Ok(())
 }
 
 /// Who may create a team: an admin anywhere, a team's lead below it; a member

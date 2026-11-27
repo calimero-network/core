@@ -62,6 +62,7 @@ mod public_links;
 mod recovery;
 mod recovery_disk;
 mod refresh;
+mod refused_writes;
 mod release_lookups;
 mod restore;
 mod rollback;

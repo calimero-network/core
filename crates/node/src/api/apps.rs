@@ -1031,11 +1031,12 @@ async fn app_delete(
         )
     });
     if let Some(instance) = instance {
-        return Err(ApiError::new(
+        let refused = ApiError::new(
             409,
             "UNIT_MEMBER",
             &format!("this app is a member of instance {instance}'s unit: delete the instance"),
-        ));
+        );
+        return Err(hidden_from(&node, &app, Some(&account), refused));
     }
     // The whole-unit rule once the cluster applies it; an instance with members waits for it
     // (`409 FEATURE_NOT_ACTIVE`), and any other app is deleted alone either way.
@@ -1368,6 +1369,22 @@ async fn app_access(
     Ok(Json(json!({})))
 }
 
+/// `refused`, or to an account that does not reach `app` the answer to an app
+/// that does not exist (`404 no such app`), as `GET /apps/{app}` answers it:
+/// a write refused on an instance it cannot see tells it nothing more.
+pub(crate) fn hidden_from(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    account: Option<&str>,
+    refused: ApiError,
+) -> ApiError {
+    if reaches(node, app, account) {
+        refused
+    } else {
+        ApiError::not_found("no such app")
+    }
+}
+
 /// Delete an organization, its teams, invites and apps: the owner's, with a
 /// passkey assertion over this exact deletion (a 412 asks for it).
 #[derive(Deserialize)]
@@ -1392,7 +1409,8 @@ async fn app_transfer(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     // Before organizations are ordinary, an app in a personal organization handed to
     // someone outside it goes to theirs. After, an organization's app goes only to a
@@ -1469,7 +1487,8 @@ async fn app_move(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
@@ -1857,6 +1876,9 @@ async fn app_delegations(
     let account = p.account()?;
     let source = node.app(&source_id).await?;
     p.within(&node, &source)?;
+    if !reaches(&node, &source, Some(&account)) {
+        return Err(ApiError::not_found("no such app"));
+    }
     let granted = node.sys(|s| {
         s.delegations
             .get(&account)
@@ -1901,9 +1923,10 @@ async fn secrets_gate(
     let app = node.app(&app_id).await?;
     p.within(node, &app)?;
     if !manages_app(node, &app, p.caller.account()) {
-        return Err(ApiError::forbidden(
+        let refused = ApiError::forbidden(
             "only the app's owner, or whoever manages its organization's apps, handles its secrets",
-        ));
+        );
+        return Err(hidden_from(node, &app, p.caller.account(), refused));
     }
     let declared = node
         .release_of_app(&app)
@@ -2200,7 +2223,9 @@ async fn app_link(
         fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))
             && fresh_record(s, &target).is_some_and(|target| s.manages_app(target, &actor))
     }) {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK);
+        let refused = hidden_from(&node, &target, Some(&actor), refused);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     if target_id == app_id || target.org != app.org {
         return Err(ApiError::bad_request(
@@ -2265,7 +2290,8 @@ async fn app_unlink(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     if !app.attached.contains_key(&name) {
         return Err(ApiError::new(

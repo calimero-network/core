@@ -899,7 +899,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         .upgrade(&alices, typed(json!({ "bundle": next })), Some(&mut bob_pk))
         .await
         .unwrap();
-    // Never an app of alice's own organization.
+    // Never an app of alice's own organization, which bob does not reach: as if missing.
     let personal = alice
         .apps()
         .create(typed(
@@ -917,7 +917,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
             )
             .await
             .unwrap_err(),
-        "403",
+        "404 NOT_FOUND: no such app",
     );
 }
 
@@ -6328,7 +6328,8 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     assert_eq!(run["apps"], json!([own]), "{run}");
     let running = cora.apps().get(&inst).await.map(wire).unwrap();
     assert_eq!(running["release"]["version"], json!("1.0.0"), "{running}");
-    // The publisher may not upgrade the customer's instance by itself either.
+    // The publisher may not upgrade the customer's instance by itself either: it does not
+    // reach it, so it is answered as one that does not exist.
     let e = pam
         .apps()
         .upgrade(
@@ -6338,8 +6339,7 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
         )
         .await
         .unwrap_err();
-    assert!(e.to_string().starts_with("403"), "{e}");
-    assert!(e.to_string().contains("owner or admin"), "{e}");
+    assert_eq!(e.to_string(), "404 NOT_FOUND: no such app", "{e}");
     // The customer's owner does.
     let _ok = cora
         .apps()

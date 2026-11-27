@@ -1376,40 +1376,49 @@ fn delete_app(
     members: Option<Vec<AppId>>,
 ) -> Result<Value, Rejection> {
     let rule = OwnerRule::logged(owner_in_org, owner_in_team);
-    let may_delete = |state: &SystemState, app: &AppRecord| {
-        state.owner_acts_as_logged(app, &actor, rule) || state.is_org_admin(&app.org, &actor)
-    };
-    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !may_delete(state, app) {
-        return Err(ONLY_OWNER_OR_ADMIN_DELETES);
-    }
-    // An entry from before the whole-unit rule deletes the app alone.
-    let unit = match members {
-        None => Vec::new(),
-        Some(named) => {
-            if state.unit_parent(&app_id).is_some() {
-                return Err(UNIT_MEMBER);
-            }
-            let unit = state.unit_of(&app_id);
-            let named: BTreeSet<AppId> = named.into_iter().collect();
-            if named.len() != unit.len() || !unit.iter().all(|m| named.contains(m)) {
-                return Err(UNIT_NOT_AS_NAMED.into());
-            }
-            if unit
-                .iter()
-                .filter_map(|m| state.apps.get(m))
-                .any(|m| !may_delete(state, m))
-            {
-                return Err(UNIT_DELETE_NEEDS_EACH);
-            }
-            unit
-        }
-    };
+    let unit = check_delete(state, &app_id, &actor, rule, members.as_deref())?;
     for member in &unit {
         state.remove_app(member);
     }
     state.remove_app(&app_id);
     Ok(Value::Null)
+}
+
+/// [`delete_app`]'s rules, read-only: the unit it deletes with the app.
+fn check_delete(
+    state: &SystemState,
+    app_id: &str,
+    actor: &str,
+    rule: OwnerRule,
+    members: Option<&[AppId]>,
+) -> Result<Vec<AppId>, Rejection> {
+    let may_delete = |app: &AppRecord| {
+        state.owner_acts_as_logged(app, actor, rule) || state.is_org_admin(&app.org, actor)
+    };
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    if !may_delete(app) {
+        return Err(ONLY_OWNER_OR_ADMIN_DELETES);
+    }
+    // An entry from before the whole-unit rule deletes the app alone.
+    let Some(named) = members else {
+        return Ok(Vec::new());
+    };
+    if state.unit_parent(app_id).is_some() {
+        return Err(UNIT_MEMBER);
+    }
+    let unit = state.unit_of(app_id);
+    let named: BTreeSet<&AppId> = named.iter().collect();
+    if named.len() != unit.len() || !unit.iter().all(|m| named.contains(m)) {
+        return Err(UNIT_NOT_AS_NAMED.into());
+    }
+    if unit
+        .iter()
+        .filter_map(|m| state.apps.get(m))
+        .any(|m| !may_delete(m))
+    {
+        return Err(UNIT_DELETE_NEEDS_EACH);
+    }
+    Ok(unit)
 }
 
 /// Restore an app from a backup into a new group on the replicas named.
@@ -1486,10 +1495,23 @@ fn set_access(
     owner_in_org: bool,
     owner_in_team: bool,
 ) -> Result<Value, Rejection> {
-    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !state.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
-        && !state.may_set_access(app, &access, &actor)
-    {
+    let rule = OwnerRule::logged(owner_in_org, owner_in_team);
+    let access = check_access(state, &app_id, access, &actor, rule)?;
+    let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
+    app.access = access;
+    Ok(Value::Null)
+}
+
+/// [`set_access`]'s rules, read-only: the access the app then has.
+fn check_access(
+    state: &SystemState,
+    app_id: &str,
+    access: Access,
+    actor: &str,
+    rule: OwnerRule,
+) -> Result<Access, Rejection> {
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    if !state.owner_acts_as_logged(app, actor, rule) && !state.may_set_access(app, &access, actor) {
         return Err(ONLY_MANAGERS_SET_ACCESS);
     }
     // The instance's public links stay as they are: made and revoked with their own
@@ -1499,9 +1521,7 @@ fn set_access(
         .keeping_links(access)
         .ok_or(LINKS_KEEP_THEIR_CONSENT)?;
     state.check_grants(&app.org, access.without_links().grants())?;
-    let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
-    app.access = access;
-    Ok(Value::Null)
+    Ok(access)
 }
 
 /// Let `source` call `target` as `account` for `methods`, or take that back.
@@ -1808,16 +1828,79 @@ fn set_app_metadata(
     owner_in_org: bool,
     owner_in_team: bool,
 ) -> Result<Value, Rejection> {
-    metadata_fits(&metadata)?;
-    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    let admin = state.is_org_admin(&app.org, &actor);
-    if !state.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
-        && !admin
-    {
-        return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);
-    }
+    let rule = OwnerRule::logged(owner_in_org, owner_in_team);
+    check_app_metadata(state, &app_id, &metadata, &actor, rule)?;
     if let Some(app) = state.apps.get_mut(&app_id) {
         app.metadata = metadata;
     }
     Ok(Value::Null)
+}
+
+/// [`set_app_metadata`]'s rules, read-only.
+fn check_app_metadata(
+    state: &SystemState,
+    app_id: &str,
+    metadata: &Value,
+    actor: &str,
+    rule: OwnerRule,
+) -> Result<(), Rejection> {
+    metadata_fits(metadata)?;
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    if !state.owner_acts_as_logged(app, actor, rule) && !state.is_org_admin(&app.org, actor) {
+        return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);
+    }
+    Ok(())
+}
+
+/// A refusal to an account that does not reach the app: as for one that does
+/// not exist (`GET /apps/{app}` answers them so).
+const APP_NOT_FOUND: Rejection = Rejection::new(RejectionKind::NotFound, "no such app");
+
+/// What [`apply`] refuses of `cmd` for its actor's authority, judged read-only
+/// before it is proposed ([`super::prejudge`]). A refusal names the app
+/// missing to an actor who does not reach it.
+pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection> {
+    let (app_id, actor, judged) = match cmd {
+        SystemCmd::SetAppMetadata {
+            app_id,
+            metadata,
+            actor,
+            owner_in_org,
+            owner_in_team,
+        } => {
+            let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
+            (
+                app_id,
+                actor,
+                check_app_metadata(s, app_id, metadata, actor, rule),
+            )
+        }
+        SystemCmd::SetAccess {
+            app_id,
+            access,
+            actor,
+            owner_in_org,
+            owner_in_team,
+        } => {
+            let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
+            let judged = check_access(s, app_id, access.clone(), actor, rule).map(drop);
+            (app_id, actor, judged)
+        }
+        SystemCmd::DeleteApp {
+            app_id,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            members,
+        } => {
+            let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
+            let judged = check_delete(s, app_id, actor, rule, members.as_deref()).map(drop);
+            (app_id, actor, judged)
+        }
+        _ => return Ok(()),
+    };
+    judged.map_err(|why| match s.apps.get(app_id) {
+        Some(app) if s.may_reach(app, Some(actor)) => why,
+        _ => APP_NOT_FOUND,
+    })
 }

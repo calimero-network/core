@@ -74,8 +74,12 @@ InstallPackage { package, signer_id, release }
 ```
 
 Because the log orders every command and every replica applies the same
-commands to the same state, there is one verdict. A refused command is still
-committed, as a no-op with its reason: a kind and a message
+commands to the same state, there is one verdict. The node that builds a
+command judges it first and refuses what it can already tell `apply` would
+refuse, without proposing it ([Judged before it
+is proposed](#judged-before-it-is-proposed)). A refused command that gets
+past that, because the state changed in between, is still committed, as a
+no-op with its reason: a kind and a message
 (`system::Rejection`), answered as `{"err": <message>, "code": <code>}`. The
 node that proposed it turns the kind into the HTTP answer (`400 REJECTED` by
 default, `429 QUOTA_EXCEEDED` for a quota, `403 SIGN_UP_REFUSED`, `409
@@ -306,6 +310,36 @@ until its 10-second deadline (`SYSTEM_WRITE_TIMEOUT`) to ride out an election,
 then answers `503 UNAVAILABLE` naming the group's leader, voters and the nodes
 behind it. A follower that receives
 `internal/system` refuses rather than forwarding again.
+
+### Judged before it is proposed
+
+Every refused command that reaches the log costs every node an entry, an
+fsync and, every thousand entries, a snapshot of the whole system state. So
+before it proposes, `Node::sys_write` judges the command read-only on the
+state it would apply to (`system::prejudge`): its proof (`system::authorize`),
+the new-work refusal, and the authority rules of the commands any signed-in
+account can send (an organization's and member's metadata, creating and
+updating a team, an instance's metadata, access and deletion). It refuses
+only what `apply` would refuse on the same state, with the same kind and
+message, and proposes everything else; `apply` judges it again, so the
+verdict that counts is still the log's. It runs before the
+[state bounds](/protocol/limits/#quotas) are checked, so a caller who may not
+act is told so, or that the subject is missing, never how full the state is.
+
+A refusal on this replica's state is judged again once the replica caught up
+with the system leader ([one round per request](#one-round-per-request)): a
+write that allows the command, such as the request's own first write made
+through another node, may not have applied here yet. A replica that cannot
+catch up proposes the command and leaves the verdict to `apply`.
+
+A refusal to an account that cannot see the subject answers as if the subject
+did not exist, as reads do: `404 NOT_FOUND` with `no such app`, `no such
+organization` or `no such team`, the same status, code and message an unknown
+id gets. The instance routes the API judges itself before proposing (transfer,
+move, links, secrets, upgrade, `GET /apps/{app}/delegations`) answer the same.
+An unknown instance id is answered as soon as a read-index round shows this
+replica caught up, rather than after waiting `read_wait` for an instance made
+through another node.
 
 Some system commands are not idempotent yet, so a forwarded system write keeps
 the long HTTP timeout instead of the short bounded forward app calls use.

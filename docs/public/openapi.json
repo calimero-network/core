@@ -565,6 +565,19 @@
               "FORBIDDEN"
             ]
           },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
           "409": {
             "description": "`FEATURE_NOT_ACTIVE`; `UNIT_MEMBER`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
             "content": {
@@ -752,6 +765,19 @@
             },
             "x-calimero-codes": [
               "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "421": {
@@ -1525,6 +1551,19 @@
             },
             "x-calimero-codes": [
               "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "421": {
@@ -4083,6 +4122,19 @@
               "SIGN_COUNT_REPLAYED"
             ]
           },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
           "409": {
             "description": "`FEATURE_NOT_ACTIVE`; `NOT_AN_ATTACH_REFERENCE`; `WRONG_PACKAGE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
             "content": {
@@ -4241,7 +4293,7 @@
             ]
           },
           "404": {
-            "description": "`NOT_ATTACHED`",
+            "description": "`NOT_ATTACHED`; `NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -4250,7 +4302,8 @@
               }
             },
             "x-calimero-codes": [
-              "NOT_ATTACHED"
+              "NOT_ATTACHED",
+              "NOT_FOUND"
             ]
           },
           "409": {
@@ -4366,6 +4419,19 @@
             },
             "x-calimero-codes": [
               "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "413": {
@@ -4766,6 +4832,19 @@
               "ASSERTION_REFUSED",
               "FORBIDDEN",
               "SIGN_COUNT_REPLAYED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "409": {
@@ -7708,6 +7787,19 @@
               "SIGN_COUNT_REPLAYED"
             ]
           },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
           "412": {
             "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
             "content": {
@@ -8195,6 +8287,19 @@
               "ASSERTION_REFUSED",
               "FORBIDDEN",
               "SIGN_COUNT_REPLAYED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "409": {
@@ -22588,6 +22693,19 @@
               "UNAUTHENTICATED"
             ]
           },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
             "content": {
@@ -22967,6 +23085,19 @@
             },
             "x-calimero-codes": [
               "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "421": {
@@ -24474,6 +24605,19 @@
               "FORBIDDEN"
             ]
           },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
             "content": {
@@ -24657,6 +24801,19 @@
             },
             "x-calimero-codes": [
               "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "421": {

@@ -1013,6 +1013,25 @@ async fn team_update(
         None => {}
     }
     let actor = p.account()?;
+    // An update that names nothing changes nothing: answered without a log entry, `404` to
+    // whoever does not see the team, as a read is.
+    if body.name.is_none()
+        && body.join.is_none()
+        && body.parent.is_none()
+        && body.metadata.is_none()
+    {
+        node.sys_fresh_from(p.sys_index).await;
+        let sees = node.sys(|s| {
+            s.orgs
+                .get(&org)
+                .filter(|o| o.role(&actor).is_some() && o.teams.contains_key(&team))
+                .is_some_and(|o| o.sees_team(&actor, &team))
+        });
+        if !sees {
+            return Err(ApiError::not_found("no such team"));
+        }
+        return Ok(Json(json!({})));
+    }
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
