@@ -31,6 +31,15 @@ use crate::node::SYSTEM_GROUP;
 use crate::system::Area;
 use crate::types::{AccountId, AppId, OrgId};
 
+/// Whether tenant sharding routes and applies by shard. This is the cutover
+/// switch, not a runtime feature: while `false`, [`shard_for`] keeps every
+/// command on the root group and the role-aware apply guard treats root as the
+/// owner of all, so behaviour is unchanged; the final slice sets it `true` once
+/// an org's reads, writes and `apply` all target its tenant shard, and it is
+/// removed when the single-group path goes. A hard cutover — genesis starts
+/// empty, so there is nothing to migrate.
+pub(crate) const ACTIVE: bool = false;
+
 /// The first Raft group id a tenant group may take. App groups climb from 2
 /// ([`SYSTEM_GROUP`] is 1) and never reach this, so tenant groups live in their
 /// own high id range: an org's tenant group gets a stable id here without
@@ -40,8 +49,9 @@ use crate::types::{AccountId, AppId, OrgId};
 pub(crate) const TENANT_GROUP_BASE: GroupId = 1 << 32;
 
 /// Which control-plane shard a piece of state lives in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ShardId {
+    #[default]
     /// Cluster-wide state shared by every tenant: the fleet, the package
     /// registry, the sign-up and deployment policy, the cluster version.
     Root,

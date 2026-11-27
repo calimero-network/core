@@ -1136,7 +1136,10 @@ impl Node {
             None => None,
         };
         let system = engine
-            .start_group(SYSTEM_GROUP, SystemMachine::new(config.cluster.clone()))
+            .start_group(
+                SYSTEM_GROUP,
+                SystemMachine::new(config.cluster.clone(), crate::system::shard::ShardId::Root),
+            )
             .await?;
         let sealed = Arc::new(calimero_sealed::SealedTransport::generate(
             &calimero_sealed::SealedOptions {
@@ -1562,14 +1565,13 @@ impl Node {
     /// what every node supports).
     pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        // The shard this command's state belongs to. The gate is off and no
-        // tenant groups exist yet, so every command resolves to the root group:
-        // this wires the routing layer onto the write path without changing
-        // behaviour. A later slice turns the gate on and gives the resolver the
-        // root directory to look up an app's or account's org.
+        // The shard this command's state belongs to. While the cutover is off
+        // (`shard::ACTIVE`) every command resolves to the root group, so this is
+        // behaviour-preserving; the flip turns it on and gives the resolver the
+        // root directory to look up an app's or account's owning org.
         let shard = {
             use crate::system::shard;
-            shard::shard_for(false, shard::tenant_of(&cmd.scope(), |_| None))
+            shard::shard_for(shard::ACTIVE, shard::tenant_of(&cmd.scope(), |_| None))
         };
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
@@ -2388,7 +2390,10 @@ impl Node {
         {
             return Ok(g);
         }
-        let machine = SystemMachine::new(self.config.cluster.clone());
+        let machine = SystemMachine::new(
+            self.config.cluster.clone(),
+            crate::system::shard::ShardId::Tenant(org.clone()),
+        );
         let g = self.engine.start_group(group, machine).await?;
         let _prev = self
             .tenants

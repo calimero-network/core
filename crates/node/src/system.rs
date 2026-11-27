@@ -7931,14 +7931,21 @@ pub struct SystemMachine {
     /// messages of every app group ([`routing`]); dropped whenever `state`
     /// changes through [`Machine::apply`] or [`Machine::restore`].
     routing: routing::Routing,
+    /// Which shard this machine is: the cluster-wide `Root` (group 1), or an
+    /// organization's `Tenant` group. `apply` judges each command against this —
+    /// a command routes to, and so applies on, exactly the shard that owns it
+    /// ([`shard::owns`]); one that reaches the wrong shard is a routing bug,
+    /// refused rather than applied. Defaults to `Root`.
+    role: shard::ShardId,
 }
 
 impl SystemMachine {
-    /// The system machine of the cluster named `cluster`.
+    /// The system machine of the cluster named `cluster`, serving `role`.
     #[must_use]
-    pub fn new(cluster: String) -> Self {
+    pub fn new(cluster: String, role: shard::ShardId) -> Self {
         Self {
             cluster,
+            role,
             ..Self::default()
         }
     }
@@ -8001,6 +8008,20 @@ impl SystemMachine {
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
     fn run(&mut self, mut cmd: SystemCmd) -> Result<Value, Rejection> {
+        // This command routed to this shard, so this shard owns it: one that
+        // reaches the wrong system shard is a routing bug, refused not applied
+        // ([`shard::owns`]). `SeedTenant` is the node's own seed, written
+        // straight to its tenant group. While the cutover is off every command
+        // owns on root, so this is behaviour-preserving.
+        if !matches!(cmd, SystemCmd::SeedTenant { .. })
+            && !shard::owns(
+                &self.role,
+                shard::tenant_of(&cmd.scope(), |_| None),
+                shard::ACTIVE,
+            )
+        {
+            return Err("this command reached the wrong system shard".into());
+        }
         // From the mark on, a flag naming an older rule is no choice of the
         // proposer's: this release's nodes always set it.
         if self.state.holds_current_rules(self.index) {
