@@ -597,8 +597,11 @@ impl AppLineage {
     }
 
     /// Raise the floor to `version` when it is newer, or set it where there is none (or none
-    /// that parses).
+    /// that parses); a `version` that does not parse is never written.
     pub fn raise_floor(&mut self, version: &str) {
+        if semver::Version::parse(version).is_err() {
+            return;
+        }
         let unreadable = semver::Version::parse(&self.floor).is_err();
         if unreadable || self.at_least(version, None) && version != self.floor {
             self.floor = version.to_owned();
