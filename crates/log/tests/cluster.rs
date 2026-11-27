@@ -124,6 +124,7 @@ fn config() -> Config {
         election_min_ms: 300,
         election_max_ms: 600,
         snapshot_every: 20,
+        snapshot_scale_bytes: None,
     }
 }
 
@@ -1666,4 +1667,197 @@ async fn a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status() {
     assert_eq!(status.stopped, None, "{status:?}");
     assert_eq!(status.restarts, 2, "{status:?}");
     assert_eq!(get(g, "b").as_deref(), Some("2"));
+}
+
+/// With a size-aware cadence (`Config::snapshot_scale_bytes`), openraft's own
+/// snapshot policy is `Never`: a snapshot can appear only because the engine's
+/// supervisor drove it. Past the base cadence a single-node group's snapshot
+/// lands, proving the engine-driven path works end to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_engine_drives_snapshots_when_the_cadence_is_size_aware() {
+    let net = Arc::new(Net::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config {
+        snapshot_scale_bytes: Some(4096),
+        ..config()
+    };
+    let engine = Engine::open(
+        1,
+        dir.path(),
+        &KEY,
+        Arc::new(Wire(Arc::clone(&net), 1)),
+        cfg,
+    )
+    .unwrap();
+    let group = engine
+        .start_group(
+            1,
+            DiskKv {
+                state: None,
+                applies: Arc::new(Mutex::new(Vec::new())),
+                skew: false,
+            },
+        )
+        .await
+        .unwrap();
+    net.engines.write().unwrap().insert(1, Arc::clone(&engine));
+    let voters: BTreeMap<NodeId, String> = [(1u64, "node-1".to_owned())].into_iter().collect();
+    group.initialize(voters).await.unwrap();
+    for _ in 0..100 {
+        if group.status().is_leader {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(group.status().is_leader, "the sole voter leads");
+
+    // The base cadence is snapshot_every = 20; with no snapshot yet the state
+    // counts as small, so the first build is due once 20 entries have applied.
+    for i in 0..30u64 {
+        group
+            .propose(move |_, _| Proposal::Append(format!("k{i}=v{i}").into_bytes()))
+            .await
+            .unwrap();
+    }
+
+    // The supervisor checks about once a second; wait a few ticks for the
+    // snapshot it drives to land (a `Never` policy would never produce one).
+    let mut snapped = None;
+    for _ in 0..80 {
+        if let Some((at, _, _)) = engine.snapshot_file(1).unwrap() {
+            snapped = Some(at);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let at = snapped.expect("the engine drove a snapshot under the Never policy");
+    assert!(at >= 20, "the snapshot covers the applied entries: {at}");
+
+    engine.shutdown().await;
+}
+
+/// A whole snapshot re-seals the entire state, so building one every
+/// `snapshot_every` entries whatever the size is write amplification for a
+/// large app. This measures it: the same workload at a ~1 MB state under the
+/// fixed cadence and under a size-aware one. Every snapshot build calls
+/// `Machine::snapshot`, so the counter is the exact number of whole-state
+/// re-seals. The size-aware run re-seals far fewer times (the benchmark number
+/// in the PR / docs); the first build still lands at the base cadence.
+mod snapshot_amplification {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Counted {
+        map: BTreeMap<u64, Vec<u8>>,
+        builds: Arc<AtomicUsize>,
+    }
+
+    impl Machine for Counted {
+        const IN_MEMORY: bool = true;
+        fn apply(&mut self, _index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+            // `key:<u64> ‖ 0x00 ‖ <value bytes>`
+            let cut = command
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(command.len());
+            let key: u64 = std::str::from_utf8(&command[..cut])
+                .unwrap()
+                .parse()
+                .unwrap();
+            let _prev = self
+                .map
+                .insert(key, command[cut.min(command.len())..].to_vec());
+            Vec::new()
+        }
+        fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+            self.builds.fetch_add(1, Ordering::SeqCst);
+            let rows: Vec<(u64, &Vec<u8>)> = self.map.iter().map(|(k, v)| (*k, v)).collect();
+            Ok(serde_json::to_vec(&rows)?)
+        }
+        fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
+            let rows: Vec<(u64, Vec<u8>)> = if data.is_empty() {
+                Vec::new()
+            } else {
+                serde_json::from_slice(data)?
+            };
+            self.map = rows.into_iter().collect();
+            Ok(())
+        }
+    }
+
+    async fn re_seals(scale: Option<u64>, entries: u64, value: &[u8]) -> (usize, u64) {
+        let net = Arc::new(Net::default());
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            snapshot_scale_bytes: scale,
+            ..config()
+        };
+        let engine = Engine::open(
+            1,
+            dir.path(),
+            &KEY,
+            Arc::new(Wire(Arc::clone(&net), 1)),
+            cfg,
+        )
+        .unwrap();
+        let builds = Arc::new(AtomicUsize::new(0));
+        let group = engine
+            .start_group(
+                1,
+                Counted {
+                    map: BTreeMap::new(),
+                    builds: Arc::clone(&builds),
+                },
+            )
+            .await
+            .unwrap();
+        net.engines.write().unwrap().insert(1, Arc::clone(&engine));
+        let voters: BTreeMap<NodeId, String> = [(1u64, "node-1".to_owned())].into_iter().collect();
+        group.initialize(voters).await.unwrap();
+        for _ in 0..100 {
+            if group.status().is_leader {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        for i in 0..entries {
+            let mut cmd = format!("{i}").into_bytes();
+            cmd.push(0);
+            cmd.extend_from_slice(value);
+            group
+                .propose(move |_, _| Proposal::Append(cmd.clone()))
+                .await
+                .unwrap();
+        }
+        // The size-aware cadence builds on the supervisor's 1 s tick; give it
+        // time to settle so the counts compare over the same workload.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let n = builds.load(Ordering::SeqCst);
+        let at = engine.snapshot_file(1).unwrap().map_or(0, |(at, _, _)| at);
+        engine.shutdown().await;
+        (n, at)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_size_aware_cadence_re_seals_a_large_state_far_less_often() {
+        // 256 keys of 4 KiB each ≈ a 1 MiB state, written over 400 entries.
+        let value = vec![b'x'; 4 * 1024];
+        let entries = 400;
+        // snapshot_every = 20; scale = 128 KiB, so a ~1 MiB state is ~8 units
+        // and snapshots about every 160 entries instead of every 20.
+        let (fixed, fixed_at) = re_seals(None, entries, &value).await;
+        let (aware, aware_at) = re_seals(Some(128 * 1024), entries, &value).await;
+        println!(
+            "whole-state re-seals over {entries} entries at ~1 MiB: fixed={fixed} (snapshot@{fixed_at}), size-aware={aware} (snapshot@{aware_at})"
+        );
+        assert!(
+            fixed >= 5,
+            "the fixed cadence re-seals every 20 entries: {fixed}"
+        );
+        assert!(
+            aware < fixed,
+            "the size-aware cadence re-seals less often: size-aware={aware} fixed={fixed}"
+        );
+    }
 }

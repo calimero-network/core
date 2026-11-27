@@ -1937,7 +1937,7 @@ export interface paths {
         put?: never;
         /**
          * Refresh a session
-         * @description A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+         * @description A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
          *
          *     **Who:** anyone.
          */
@@ -4212,6 +4212,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/packages/{package}/{version}/frontend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A release's frontend files
+         * @description Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+         *
+         *     **Who:** anyone.
+         */
+        get: operations["package_frontend"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/packages/{package}/{version}/pipelines": {
         parameters: {
             query?: never;
@@ -5584,6 +5606,20 @@ export interface components {
             createdBy: string;
             createdAt: string;
             token: string;
+        };
+        /** @description `GET /packages/{package}/{version}/frontend`: the release's frontend entry and every file, by path relative to the frontend root, with its SHA-256 (lowercase hex) and size in bytes. */
+        FrontendDigests: {
+            package: string;
+            version: string;
+            entry: string;
+            files: components["schemas"]["FrontendFileDigest"][];
+        };
+        /** @description One frontend file: its path relative to the frontend root (served at `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes. */
+        FrontendFileDigest: {
+            path: string;
+            sha256: string;
+            /** Format: int64 */
+            size: number;
         };
         /** @description `GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in uses to pick the person's passkey for it. */
         SignUpPublic: {
@@ -22431,6 +22467,38 @@ export interface operations {
             };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    package_frontend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package: string;
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FrontendDigests"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

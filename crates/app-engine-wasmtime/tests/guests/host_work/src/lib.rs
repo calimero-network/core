@@ -14,7 +14,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.8","methods":{"reads":{"kind":"view"},"searches":{"kind":"view"},"spin":{"kind":"view"},"refused":{"kind":"call"},"shout":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.7","methods":{"reads":{"kind":"view"},"searches":{"kind":"view"},"spin":{"kind":"view"},"refused":{"kind":"call"},"shout":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

@@ -50,7 +50,7 @@ request anywhere.
 | `POST /auth/logout` | This session: its refresh tokens go, its tokens stop verifying |
 | `POST /auth/logout-all` | Every session of the account |
 | Removing a passkey | Every session opened with that passkey; tokens of a session whose passkey is gone are also refused directly |
-| A refresh token presented again after it was exchanged | Its session (`RefreshReused`): someone else holds a copy |
+| A refresh token presented again after it was exchanged | Its session (`RefreshReused`): someone else holds a copy. A token bound to a holder key does so only with that key's proof |
 | Revoking an API key | That key, at once |
 
 A revoked session id is remembered for an hour (`REVOKED_SESSION_KEEP_SECS`),

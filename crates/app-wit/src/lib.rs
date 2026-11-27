@@ -8,10 +8,10 @@
 pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");
 
 /// The fully qualified world every app component targets.
-pub const WORLD: &str = "calimero:app/app@0.5.8";
+pub const WORLD: &str = "calimero:app/app@0.5.7";
 
 /// The fully qualified world of a component holding only an app's compute methods.
-pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.8";
+pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.7";
 
 /// Whether an ABI's `world` names the compute world: [`COMPUTE_WORLD`], or the same world at
 /// an older `0.5` patch, which a compute component built before the newest patch names (an
@@ -34,18 +34,17 @@ pub fn names_compute_world(world: &str) -> bool {
 pub const MAX_RANDOM_BYTES_PER_CALL: usize = 1024 * 1024;
 
 const ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.8",
-    "calimero:app/storage@0.5.8",
-    "calimero:app/context@0.5.8",
-    "calimero:app/events@0.5.8",
-    "calimero:app/blobs@0.5.8",
-    "calimero:app/search@0.5.8",
-    "calimero:app/files@0.5.8",
-    "calimero:app/xcall@0.5.8",
-    "calimero:app/action@0.5.8",
-    "calimero:app/runs@0.5.8",
-    "calimero:app/rebuild@0.5.8",
-    "calimero:app/connector@0.5.8",
+    "calimero:app/types@0.5.7",
+    "calimero:app/storage@0.5.7",
+    "calimero:app/context@0.5.7",
+    "calimero:app/events@0.5.7",
+    "calimero:app/blobs@0.5.7",
+    "calimero:app/search@0.5.7",
+    "calimero:app/files@0.5.7",
+    "calimero:app/xcall@0.5.7",
+    "calimero:app/action@0.5.7",
+    "calimero:app/runs@0.5.7",
+    "calimero:app/rebuild@0.5.7",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",
@@ -61,9 +60,9 @@ const ALLOWED_IMPORTS: &[&str] = &[
 ];
 
 const COMPUTE_ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.8",
-    "calimero:app/files@0.5.8",
-    "calimero:app/job@0.5.8",
+    "calimero:app/types@0.5.7",
+    "calimero:app/files@0.5.7",
+    "calimero:app/job@0.5.7",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",

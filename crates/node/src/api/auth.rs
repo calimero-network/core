@@ -659,16 +659,7 @@ pub(super) struct RefreshBody {
     /// The holder's signature, required for a token bound to a holder key
     /// ([`RefreshRecord::holder`]) and ignored for any other.
     #[serde(default)]
-    holder_proof: Option<HolderProof>,
-}
-
-/// A holder's proof that it uses the token: `signature` (base64url, `r ‖ s`) by the session's
-/// holder key over [`crate::proof::refresh_holder_message`] of the token's hash and `at`
-/// (Unix seconds, within [`crate::proof::HOLDER_PROOF_SKEW_SECS`] of the node's clock).
-#[derive(Deserialize)]
-pub(super) struct HolderProof {
-    at: u64,
-    signature: String,
+    holder_proof: Option<crate::types::HolderProof>,
 }
 
 /// A token bound to a holder key is used only with that key's proof: `401 HOLDER_PROOF_REQUIRED`
@@ -677,7 +668,7 @@ pub(super) struct HolderProof {
 fn check_holder(
     rec: &RefreshRecord,
     hash: &str,
-    proof: Option<&HolderProof>,
+    proof: Option<&crate::types::HolderProof>,
 ) -> Result<(), ApiError> {
     let Some(holder) = &rec.holder else {
         return Ok(());
@@ -716,12 +707,21 @@ async fn refresh(
         // refused at apply for a token never exchanged, so a replica that
         // could not catch up lets the system log decide rather than answer
         // "unknown" to a thief from a stale view.
-        let known_here = node.sys(|s| s.rotated_refresh.contains_key(&old_hash));
+        let rotated = node.sys(|s| s.rotated_refresh.get(&old_hash).cloned());
+        let known_here = rotated.is_some();
+        // A token bound to a holder key ends its session only with that key's proof: a copy
+        // of an old token taken off the device cannot sign its owner out. Judged here before
+        // anything is written, and again at apply (`accounts::authorize_reuse`), which also
+        // decides for a replica that could not catch up.
+        if let Some(rotated) = &rotated {
+            check_holder(rotated, &old_hash, body.holder_proof.as_ref())?;
+        }
         if known_here || !caught_up {
             let revoked = node
                 .sys_write(&SystemCmd::RefreshReused {
                     hash: old_hash,
                     now: now_secs(),
+                    holder_proof: body.holder_proof.clone(),
                 })
                 .await;
             if known_here || revoked.is_ok() {
@@ -799,6 +799,9 @@ async fn refresh(
             .sys_write(&SystemCmd::RefreshReused {
                 hash: old_hash,
                 now: now_secs(),
+                // Checked against this token's live record above (`check_holder`); the log
+                // judges it again against the exchanged one.
+                holder_proof: body.holder_proof.clone(),
             })
             .await;
         if revoked.is_ok() {

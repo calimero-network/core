@@ -82,12 +82,10 @@ use tracing::{info, warn};
 use zeroize::Zeroizing;
 
 mod audit;
-mod connector;
 mod redact;
 mod settings;
 
 pub use audit::*;
-pub use connector::*;
 use redact::Redactor;
 pub use redact::{
     MAX_ENCODED_SECRET_BYTES, MAX_REDACTION_PATTERNS, MAX_SECRETS_PER_REQUEST,
@@ -602,31 +600,6 @@ impl OutboundService {
         sent: Arc<AtomicU64>,
         audit: Arc<OutboundAudit>,
     ) -> Option<Arc<dyn OutboundHost>> {
-        self.run_outbound(
-            app,
-            declared,
-            BTreeMap::new(),
-            approval,
-            context,
-            sent,
-            audit,
-        )
-    }
-
-    /// The raw client for a run, refusing every host of `reserved` (a declared
-    /// connector's host, by the connector's name); `None` when the app
-    /// declared no prefix this node can use.
-    #[expect(clippy::too_many_arguments, reason = "one run's whole outbound scope")]
-    fn run_outbound(
-        self: &Arc<Self>,
-        app: AppIdentity,
-        declared: Vec<String>,
-        reserved: BTreeMap<String, String>,
-        approval: Option<Approval>,
-        context: String,
-        sent: Arc<AtomicU64>,
-        audit: Arc<OutboundAudit>,
-    ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
             .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
@@ -638,7 +611,6 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
-            reserved,
             approval,
             context,
             sent,
@@ -953,8 +925,6 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
-    /// Hosts reached only through a connector the app declares, by its name.
-    reserved: BTreeMap<String, String>,
     approval: Option<Approval>,
     context: String,
     /// Requests handed to the transport.
@@ -980,26 +950,6 @@ impl OutboundHost for RunOutbound {
         let host = reqwest::Url::parse(&request.url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
-        let reserved = host
-            .as_deref()
-            .map(|h| h.trim_end_matches('.'))
-            .and_then(|h| Some((self.reserved.get(h)?, h)));
-        if let Some((connector, reserved_host)) = reserved {
-            entry.failure = Some(AuditFailure::Refused);
-            audit.record(&self.context, entry);
-            warn!(
-                context = %self.context,
-                package = %self.app.package,
-                host = reserved_host,
-                connector = %connector,
-                refusal = "ConnectorHost",
-                "outbound request refused"
-            );
-            return Err(format!(
-                "{reserved_host} is reached only through the {connector} connector this app \
-                 declares, never by a raw request"
-            ));
-        }
         let prepared =
             match self
                 .service
@@ -1054,7 +1004,7 @@ impl OutboundHost for RunOutbound {
 impl OutboundService {
     /// Sends a prepared request, counts it in `sent`, logs it (with the prefix of
     /// `declared` that covers it, never its path) and redacts its secrets from
-    /// the answer: every raw request and connector call ends here.
+    /// the answer: every request ends here.
     fn transmit(
         &self,
         app: &AppIdentity,
@@ -1202,7 +1152,9 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// Whether `ip` is a globally routable unicast address.
+/// Whether `ip` is a globally routable unicast address: IPv4 outside the
+/// special-purpose ranges, IPv6 in 2000::/3 outside the non-global entries of the
+/// [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml).
 #[must_use]
 pub fn is_public(ip: IpAddr) -> bool {
     match ip {
@@ -1222,18 +1174,22 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || a >= 240) // reserved
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // `::ffff:a.b.c.d` (mapped) and `::a.b.c.d` (IPv4-compatible, deprecated)
+            // are classified as the IPv4 address they carry; `::` and `::1` become
+            // `0.0.0.0` and `0.0.0.1`, which are not public either.
+            if let Some(v4) = v6.to_ipv4() {
                 return is_public(IpAddr::V4(v4));
             }
             let seg = v6.segments();
-            !(v6.is_unspecified()
-                || v6.is_loopback()
-                || v6.is_multicast()
-                || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80 // link-local
-                || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
-                || (seg[0] == 0x0064 && seg[1] == 0xff9b) // NAT64: an IPv4 address behind it
-                || seg[0] == 0x2002) // 6to4: likewise
+            // Only 2000::/3 is global unicast. Outside it lie the reserved ::/8
+            // (discard 100::/64 among it), NAT64 64:ff9b::/96 and 64:ff9b:1::/48
+            // (an IPv4 address behind them), SRv6 SIDs 5f00::/16, unique local
+            // fc00::/7, link-local fe80::/10, site-local fec0::/10 and multicast.
+            (seg[0] & 0xe000) == 0x2000
+                && !(seg[0] == 0x2001 && seg[1] < 0x0200 // IETF protocol assignments 2001::/23: Teredo, benchmarking, ORCHIDv2
+                    || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
+                    || seg[0] == 0x2002 // 6to4: an IPv4 address behind it
+                    || (seg[0] == 0x3fff && seg[1] < 0x1000)) // documentation 3fff::/20
         }
     }
 }
