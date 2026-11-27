@@ -40,7 +40,7 @@ error the guest's host call returns.
 | Files | 16 open; 2 GiB each; 64 MiB written per run (2 GiB in a compute run); 1,000 new files per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_COMPUTE_FILE_BYTES`, `MAX_NEW_FILES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
-| Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
+| Call and view arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
 
 A soft limit answers a fixed string, which depends only on the run's own calls,
 so every node gives the same answer. `events.emit` answers `too many events`,
@@ -107,7 +107,7 @@ the same way. Compute runs on job nodes have their own caps
 | Outbound audit (`GET /apps/{app}/outbound-log`), in memory per node | 100 entries per instance, each 7 days at most, 1024 instances (the one whose last request is oldest goes first); a path cut at 128 bytes, 16 secret names an entry | `MAX_AUDIT_ENTRIES`, `AUDIT_RETENTION_MS`, `MAX_AUDIT_INSTANCES`, `MAX_AUDIT_PATH_BYTES`, `MAX_AUDIT_SECRET_NAMES` |
 | Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
 | Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
-| Event and presence streams per node | 4096 | `MAX_EVENT_STREAMS` |
+| Event and presence streams per node | 4096; of those, 64 per account (its sessions and API keys together) and 1024 per app; a caller without an account counts toward its app's and the node's only; each refused `429 RATE_LIMITED`, the message naming the limit | `MAX_EVENT_STREAMS`, `MAX_EVENT_STREAMS_PER_ACCOUNT`, `MAX_EVENT_STREAMS_PER_APP` |
 | Open passkey ceremonies per node | 10 000 sign-ins and sign-ups; apart from those, 64 per account and 10 000 across accounts; each 5 minutes | `MAX_PENDING_CHALLENGES`, `MAX_CHALLENGES_PER_ACCOUNT`, `MAX_ACCOUNT_CHALLENGES` |
 | Sealed sessions per node | 16 384 anonymous, 4096 identified (peers), each evicting its own; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `MAX_IDENTIFIED_SESSIONS`, `SESSION_LIFETIME` |
 | Sealed handshakes per node | anonymous 100/s (burst 200); identified 50/s (burst 100), apart | `HANDSHAKES_PER_SECOND`, `IDENTIFIED_HANDSHAKES_PER_SECOND` |
@@ -119,6 +119,7 @@ the same way. Compute runs on job nodes have their own caps
 | One component of a package release (a service's WASM or compute component, unpacked) | 47 MiB, as a blob: `413 TOO_LARGE` at install | `MAX_COMPONENT_BYTES` |
 | Compiles at install and raw bundle upload | 1 at a time, off the async workers; 4 more wait, each at most 10 s, past that `503 BUSY` with `Retry-After: 1`; one compile past 60 s is `422 COMPILE_TIMEOUT` | `MAX_CONCURRENT_COMPILES`, `MAX_QUEUED_COMPILES`, `COMPILE_WAIT`, `COMPILE_TIMEOUT` |
 | Quotes (`GET /attestation`, a job node's and a waiting node's, `merod attest --serve`) | 1 made at a time, off the async workers; 8 more wait, each at most 3 s; past that `503 BUSY` with `Retry-After: 1` | `MAX_CONCURRENT_QUOTES`, `MAX_QUEUED_QUOTES`, `QUOTE_WAIT` |
+| Quotes for the cluster's own nodes (`GET /attestation` with a valid `x-calimero-peer-attest`) | 8 places of their own, each waiting at most 10 s, ahead of every anonymous request but the one already waiting; past that `503 BUSY` | `MAX_QUEUED_PEER_QUOTES`, `PEER_QUOTE_WAIT` |
 | Sealed-file exports | 30 a minute per account per node | `MAX_EXPORTS_PER_MINUTE` |
 | Sessions listed (`GET /auth/sessions`) | 256 | `MAX_SESSIONS_LISTED` |
 | Deployments | 16 per owner, 10 000 per cluster, 64 apps each | `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT` |

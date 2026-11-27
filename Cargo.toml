@@ -50,6 +50,8 @@ members = [
     "./crates/meroctl/compute",
     "./crates/meroctl/sign",
     "./crates/search/bench",
+
+    "./sdks/plugins/connectors/nearai",
 ]
 
 # CODING_STANDARDS.md, "Errors and panics": a panic point is reserved for an

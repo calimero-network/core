@@ -6,6 +6,8 @@
 )]
 use super::files::files_gate;
 use super::*;
+use crate::event_streams::Full;
+use crate::event_streams::StreamSlot;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -300,32 +302,25 @@ pub(super) struct EventsQuery {
     from: u64,
 }
 
-/// The most event streams one node serves at once.
-pub const MAX_EVENT_STREAMS: usize = 4096;
-
-/// One open event stream, counted until the stream is dropped.
-struct StreamSlot(Arc<std::sync::atomic::AtomicUsize>);
-
-impl StreamSlot {
-    fn take(node: &Node) -> Result<Self, ApiError> {
-        use std::sync::atomic::Ordering;
-        let open = node.event_streams.fetch_add(1, Ordering::SeqCst);
-        let slot = Self(Arc::clone(&node.event_streams));
-        if open >= MAX_EVENT_STREAMS {
-            return Err(ApiError::new(
-                429,
-                "RATE_LIMITED",
-                "this node serves as many event streams as it can; try another node or later",
-            ));
-        }
-        Ok(slot)
-    }
-}
-
-impl Drop for StreamSlot {
-    fn drop(&mut self) {
-        let _was = self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
+/// A slot for one event or presence stream of `p` on `app_id`, released when the stream
+/// drops. A caller without an account counts toward the app's and the node's shares only.
+fn stream_slot(node: &Node, p: &Principal, app_id: &str) -> Result<StreamSlot, ApiError> {
+    node.event_streams
+        .take(p.caller.account(), app_id)
+        .map_err(|full| {
+            let why = match full {
+                Full::Account => {
+                    "this account has reached the per-account limit of event streams on this node; close one or try another node"
+                }
+                Full::App => {
+                    "this app has reached the per-app limit of event streams on this node; try another node or later"
+                }
+                Full::Node => {
+                    "this node serves as many event streams as it can; try another node or later"
+                }
+            };
+            ApiError::new(429, "RATE_LIMITED", why)
+        })
 }
 
 async fn events(
@@ -338,7 +333,7 @@ async fn events(
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
-    let slot = StreamSlot::take(&node)?;
+    let slot = stream_slot(&node, &p, &app_id)?;
     if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone(), Some(p.clone()))
     {
         let stream = stream.map(move |e| {
@@ -461,7 +456,7 @@ async fn presence_stream(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "*", false).await?;
-    let slot = StreamSlot::take(&node)?;
+    let slot = stream_slot(&node, &p, &app_id)?;
     let (now, rx) = node.presence.subscribe(&app_id);
     let first = futures_util::stream::once(async move {
         Ok::<_, Infallible>(
