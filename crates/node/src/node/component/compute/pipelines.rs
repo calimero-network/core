@@ -27,6 +27,7 @@ use crate::error::ApiError;
 use crate::node::component::entry_bytes;
 use crate::node::{off_workers, Node, ViewAnswer, ViewRequest};
 use crate::packages::pipelines::SELF_MODULE;
+use crate::system::QueueRoom;
 use crate::types::{AppRecord, Caller};
 
 const DEFAULT_PAGE: usize = 20; // pipeline runs a list answers when the caller names no limit
@@ -75,12 +76,13 @@ pub(super) type BundleCaps = BTreeMap<String, Arc<BTreeMap<String, Caps>>>;
 
 /// What each step does now: a pending one starts once its needs succeeded or were skipped, fails
 /// upstream when one did not, and a cancelled run ends it; a running fan-out gets its next runs
-/// while it has items left. `room` is the runs the app can take.
+/// while it has items left. `room` is the runs the app can take, `queue` what the system queue
+/// would grant now.
 pub(super) fn plan(
     pipeline: &Pipeline,
     run: &PipelineRun,
     caps: &BundleCaps,
-    mut room: usize,
+    (mut room, queue): (usize, &mut QueueRoom),
     view: &CacheView<'_>,
     builds: &mut Builds,
 ) -> Vec<(String, StepVerdict)> {
@@ -103,7 +105,7 @@ pub(super) fn plan(
                     (caps, room),
                     view,
                     builds,
-                    &mut budget,
+                    (&mut budget, &mut *queue),
                 );
                 match wave {
                     Err(reason) => {
@@ -154,7 +156,8 @@ pub(super) fn plan(
                     Ok(Built::Runs { runs, fan }) => {
                         let all = Arc::new(runs);
                         let wave = wave_size(step, 0, all.len(), room);
-                        let (runs, cached, blocked) = admit(&all, 0, wave, view, &mut budget);
+                        let (runs, cached, blocked) =
+                            admit((&all, 0, true), wave, view, (&mut budget, &mut *queue));
                         capped = blocked;
                         match (runs.is_empty() && cached.is_empty(), blocked) {
                             (true, true) => Some(cost_capped()),
@@ -260,22 +263,26 @@ impl Budget {
     }
 }
 
-/// [`take_wave`] held to what the budget affords; the last value says the cap kept runs out that
-/// the wave would otherwise have carried, so the step stops here.
+/// [`take_wave`] held to what the queue would grant now (at least one run for an `idle` step, so a
+/// step never waits on its own runs) and to what the budget affords; the last value says the cap
+/// kept runs out that the wave would otherwise have carried, so the step stops here.
 fn admit(
-    runs: &[StepRun],
-    from: usize,
+    (runs, from, idle): (&[StepRun], usize, bool),
     wave: usize,
     view: &CacheView<'_>,
-    budget: &mut Budget,
+    (budget, queue): (&mut Budget, &mut QueueRoom),
 ) -> (Vec<StepRun>, Vec<CachedRun>, bool) {
-    let Some(caps) = runs.first().map(|r| r.caps) else {
+    let Some(first) = runs.first() else {
         return (Vec::new(), Vec::new(), false);
     };
+    let (caps, pool) = (first.caps, first.pool.as_deref());
+    let granted = queue.fits(caps.fuel, caps.memory_mib, pool);
+    let wave = wave.min(granted.max(usize::from(idle)));
     let fits = budget.afford(caps);
     let (fresh, hits) = take_wave(runs, from, wave.min(fits), view);
     let blocked = fits < wave && take_wave(runs, from, wave, view).0.len() > fresh.len();
     budget.spend(caps, fresh.len());
+    queue.take(caps.fuel, caps.memory_mib, pool, fresh.len());
     (fresh, hits, blocked)
 }
 
@@ -331,7 +338,7 @@ fn next_wave(
     (caps, room): (&BundleCaps, usize),
     view: &CacheView<'_>,
     builds: &mut Builds,
-    budget: &mut Budget,
+    limits: (&mut Budget, &mut QueueRoom),
 ) -> Result<Option<NextWave>, &'static str> {
     let Some(state) = run.steps.get(name) else {
         return Ok(None);
@@ -358,7 +365,7 @@ fn next_wave(
             Built::Skip => return Ok(None),
         },
     };
-    let (fresh, hits, blocked) = admit(&runs, started, wave, view, budget);
+    let (fresh, hits, blocked) = admit((&runs, started, active == 0), wave, view, limits);
     Ok((!fresh.is_empty() || !hits.is_empty() || blocked).then_some((fresh, hits, blocked)))
 }
 
@@ -889,6 +896,15 @@ impl Node {
             .remove(&key)
             .unwrap_or_default();
         let wanted = steps_named(&pipeline, run, &builds);
+        let (app_id, active) = g.read_local(|m, _| (m.app_id.clone(), m.active_runs()));
+        let queue = self.sys(|s| {
+            let payer = crate::usage::payer(s.apps.get(&app_id)?);
+            let arriving = active.iter().filter(|r| s.run_slot(&app_id, r).is_none());
+            Some(s.queue_room(&payer, arriving.count()))
+        });
+        let Some(mut queue) = queue else {
+            return;
+        };
         let decided = g.read_local(|m, _| {
             let mut run = run.clone();
             m.fill_steps(&mut run, |n| wanted.contains(n));
@@ -898,7 +914,14 @@ impl Node {
                 sha: &|id| m.file_sha256(id),
                 hit: &|key| m.cache_hit(key),
             };
-            plan(&pipeline, run, &caps, room, &view, &mut builds)
+            plan(
+                &pipeline,
+                run,
+                &caps,
+                (room, &mut queue),
+                &view,
+                &mut builds,
+            )
         });
         builds.retain(|name, _| {
             let open = |s: &crate::component::StepState| {
@@ -1106,7 +1129,14 @@ mod tests {
             hit: &|_| false,
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps.clone()))]);
-        super::plan(p, run, &by_bundle, room, &view, &mut Builds::new())
+        super::plan(
+            p,
+            run,
+            &by_bundle,
+            (room, &mut QueueRoom::of(usize::MAX)),
+            &view,
+            &mut Builds::new(),
+        )
     }
 
     const SOURCE: &str = "apiVersion: compute.calimero.network/v1
@@ -1495,6 +1525,37 @@ steps:
         assert_eq!(runs.len(), 3, "up to maxParallel again");
     }
 
+    #[test]
+    fn waves_wait_for_the_queue_and_a_step_with_none_active_still_starts_one() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 20 }\n");
+        let mut run = fan_run(&p, 10);
+        let view = CacheView {
+            sha: &|_| None,
+            hit: &|_| false,
+        };
+        let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps()))]);
+        let queued = |run: &PipelineRun, places| {
+            let room = (10, &mut QueueRoom::of(places));
+            super::plan(&p, run, &by_bundle, room, &view, &mut Builds::new())
+        };
+        let (first, fan) = started(&queued(&run, 2), "each");
+        assert_eq!(first.len(), 2, "what the queue grants");
+        assert_eq!(started(&queued(&run, 0), "each").0.len(), 1, "never none");
+
+        let step = run.steps.get_mut("each").unwrap();
+        step.status = StepStatus::Running;
+        step.fan = fan;
+        step.runs = (0..2).map(|i| format!("r.each.{i}")).collect();
+        step.started = 2;
+        assert!(queued(&run, 0).is_empty(), "two are active");
+        run.steps.get_mut("each").unwrap().finished = 2;
+        let decided = queued(&run, 0);
+        let StepVerdict::More { runs, .. } = &decided[0].1 else {
+            panic!("{decided:?}")
+        };
+        assert_eq!(runs.len(), 1, "none active: one waits in the queue");
+    }
+
     /// A table that prices a run of `caps()` at 20 at worst.
     fn capped(run: &mut PipelineRun, max_cost: u64) {
         let table = calimero_pipeline::PriceTable {
@@ -1808,7 +1869,14 @@ steps:
             hit: &|_| false,
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps()))]);
-        super::plan(p, run, &by_bundle, room, &view, builds)
+        super::plan(
+            p,
+            run,
+            &by_bundle,
+            (room, &mut QueueRoom::of(usize::MAX)),
+            &view,
+            builds,
+        )
     }
 
     fn cplan(
@@ -1824,7 +1892,14 @@ steps:
             hit: &|key| hits.contains(key),
         };
         let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps.clone()))]);
-        super::plan(p, run, &by_bundle, room, &view, &mut Builds::new())
+        super::plan(
+            p,
+            run,
+            &by_bundle,
+            (room, &mut QueueRoom::of(usize::MAX)),
+            &view,
+            &mut Builds::new(),
+        )
     }
 
     fn key_of(
@@ -1981,14 +2056,28 @@ steps:
             sha: &|id| Some(id.to_owned()),
             hit: &|_| false,
         };
-        let decided = super::plan(&p, &run, &by_bundle, 10, &view, &mut Builds::new());
+        let decided = super::plan(
+            &p,
+            &run,
+            &by_bundle,
+            (10, &mut QueueRoom::of(10)),
+            &view,
+            &mut Builds::new(),
+        );
         let a = start_of(&decided, "a");
         assert_eq!(a.compute_bundle.as_deref(), Some("module-v1"));
         assert_eq!(a.caps.fuel, 7, "the module's caps, not the package's");
 
         set(&mut run, "a", StepStatus::Succeeded);
         let b = start_of(
-            &super::plan(&p, &run, &by_bundle, 10, &view, &mut Builds::new()),
+            &super::plan(
+                &p,
+                &run,
+                &by_bundle,
+                (10, &mut QueueRoom::of(10)),
+                &view,
+                &mut Builds::new(),
+            ),
             "b",
         );
         assert_eq!(b.compute_bundle, None, "`self` is the run's own component");
@@ -1996,11 +2085,25 @@ steps:
         // A run that pinned no such module fails the step; one whose component is unknown too.
         run.modules.clear();
         set(&mut run, "a", StepStatus::Pending);
-        let decided = super::plan(&p, &run, &by_bundle, 10, &view, &mut Builds::new());
+        let decided = super::plan(
+            &p,
+            &run,
+            &by_bundle,
+            (10, &mut QueueRoom::of(10)),
+            &view,
+            &mut Builds::new(),
+        );
         assert_eq!(failure(&decided, "a"), "UNKNOWN_MODULE");
         run.modules = BTreeMap::from([("pdf@1".to_owned(), "module-v1".to_owned())]);
         let _gone = by_bundle.remove("module-v1");
-        let decided = super::plan(&p, &run, &by_bundle, 10, &view, &mut Builds::new());
+        let decided = super::plan(
+            &p,
+            &run,
+            &by_bundle,
+            (10, &mut QueueRoom::of(10)),
+            &view,
+            &mut Builds::new(),
+        );
         assert_eq!(failure(&decided, "a"), "UNKNOWN_METHOD");
     }
 

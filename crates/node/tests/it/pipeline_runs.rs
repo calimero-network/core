@@ -619,6 +619,28 @@ async fn a_fan_out_over_many_items_with_a_few_failures_succeeds_with_failures() 
     assert_eq!(done["steps"]["all"]["status"], "succeeded", "{done}");
 }
 
+/// `maxParallel` asks for more runs than the one job node's places: the rest wait in the step,
+/// not in the system queue, so no item outlives the queue timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fan_out_wider_than_its_pool_waits_in_the_step_not_the_queue() {
+    let rig = Rig::start(&[JOB_A]).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_compute_limits(ComputeLimits {
+            queued_timeout: Duration::ZERO,
+            ..test_limits()
+        });
+    }
+    let texts: Vec<String> = (0..20).map(|i| format!("item {i}")).collect();
+    let files = rig.uploads(&texts).await;
+    let run = rig
+        .start_run("lots", json!({ "docs": files }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    let outcomes: Vec<_> = rig.all_records().into_iter().map(|r| r.final_).collect();
+    assert_eq!(done["state"], "succeeded", "{outcomes:?}");
+    assert_eq!(done["steps"]["each"]["failedItems"], 0, "{done}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn batch_groups_items_into_fewer_runs() {
     let rig = Rig::start(&[JOB_A, JOB_A + 1]).await;
@@ -1249,7 +1271,8 @@ async fn max_cost_without_a_price_table_is_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_run_stops_admitting_before_it_crosses_its_cost_cap() {
-    let rig = Rig::start(&[JOB_A]).await;
+    // Places for a wave of four, so the cap and not the queue is what holds the step back.
+    let rig = Rig::start(&[JOB_A, JOB_A + 1, JOB_A + 2]).await;
     set_prices(&rig).await;
     let mut files = Vec::new();
     for i in 0..6 {
