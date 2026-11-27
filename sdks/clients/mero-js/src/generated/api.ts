@@ -8181,7 +8181,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8381,7 +8381,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9112,7 +9112,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9303,7 +9303,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9403,7 +9403,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9527,7 +9527,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9610,7 +9610,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9762,7 +9762,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9891,7 +9891,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10932,7 +10932,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11032,7 +11032,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11335,7 +11335,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11426,7 +11426,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11558,7 +11558,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11680,7 +11680,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11825,7 +11825,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11918,7 +11918,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12056,7 +12056,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12148,7 +12148,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12824,7 +12824,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12932,7 +12932,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13098,7 +13098,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13356,6 +13356,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `SIGN_COUNT_REPLAYED` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
                 headers: {
@@ -13458,7 +13467,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `SIGN_UP_REFUSED` */
+            /** @description `ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED`; `SIGN_UP_REFUSED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13578,7 +13587,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13705,7 +13714,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13775,7 +13784,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13845,7 +13854,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13959,7 +13968,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -14024,6 +14033,15 @@ export interface operations {
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED` */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14858,7 +14876,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -14930,7 +14948,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15037,7 +15055,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15167,7 +15185,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15238,7 +15256,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15320,7 +15338,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15499,7 +15517,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15599,7 +15617,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15691,7 +15709,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15781,7 +15799,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15873,7 +15891,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18692,7 +18710,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18763,7 +18781,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18901,7 +18919,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19091,7 +19109,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19171,7 +19189,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19245,7 +19263,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19383,7 +19401,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19465,7 +19483,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19614,7 +19632,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19687,7 +19705,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19804,7 +19822,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19885,7 +19903,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20009,7 +20027,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20103,7 +20121,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20175,7 +20193,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20255,7 +20273,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20335,7 +20353,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20416,7 +20434,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20497,7 +20515,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20652,7 +20670,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20723,7 +20741,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20971,7 +20989,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21061,7 +21079,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21135,7 +21153,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21266,7 +21284,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21395,7 +21413,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21539,7 +21557,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21731,7 +21749,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21814,7 +21832,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -22611,7 +22629,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -22733,7 +22751,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -22805,7 +22823,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;

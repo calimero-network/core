@@ -62,6 +62,8 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `403 SIGN_UP_REFUSED` | The cluster's sign-up policy is `invite` or `closed` and no valid invite came with the sign-up | Sign up with an organization or cluster sign-up invite ([Sign-up policy](/operate/auth/#sign-up-policy)). |
 | `403 DEPLOY_NOT_GRANTED` | An install where `--deployments granted` and the account (or its organization) holds no live deployer grant | The operator (or the cluster's owner) grants one: `POST /ops/deployers`. |
 | `409 CONSENT_STALE` | What a consent page showed changed before the person approved it | The app asks again (`POST /consent/requests`). |
+| `403 SIGN_COUNT_REPLAYED` | The passkey's signature counter did not move past the one the cluster last saw: another copy of the passkey signed since (two `meroctl` commands at once with one `--dev-passkey` file, or a file restored from an older copy) | Sign again with the passkey's current copy; run commands that share one passkey file one at a time. |
+| `403 ASSERTION_REFUSED` | A step-up approval (`confirm`) whose assertion did not verify: wrong origin, relying party or signature | Sign the challenge again from an origin in `--origins`; the session itself is still good. |
 | `412 CONFIRM_REQUIRED` | The action needs a passkey assertion | A browser or SDK client answers it; `meroctl` needs `--dev-passkey` on development clusters. |
 
 ## Calls, reads and leaders

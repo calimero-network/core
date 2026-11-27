@@ -132,6 +132,12 @@ impl Request {
     fn relative_path(&self) -> &str {
         self.path.trim_start_matches('/')
     }
+
+    /// Whether the body carries a passkey's approval (`confirm`), whose
+    /// challenge the node spends on the first send.
+    fn carries_confirm(&self) -> bool {
+        matches!(&self.body, Body::Json(Value::Object(b)) if b.contains_key("confirm"))
+    }
 }
 
 /// The error a node's answer `status` with body `v` stands for.
@@ -314,7 +320,10 @@ impl Transport {
     /// [`Credential::Held`], a `401` to a session this transport can refresh
     /// (it holds the refresh token) is refreshed once, on this node, and the
     /// request sent once more: the node that issued the session may be gone,
-    /// or have been removed, and a refresh works on any node.
+    /// or have been removed, and a refresh works on any node. A request whose
+    /// body carries a passkey's approval (`confirm`) is never sent again: the
+    /// node spent its single-use challenge on the first send, so its `401` (an
+    /// assertion the node refused) is the answer.
     ///
     /// # Errors
     /// When the node cannot be reached or attested, or its answer not opened
@@ -335,7 +344,11 @@ impl Transport {
             (false, _) => None,
         };
         let resp = self.send_once(&req, token.as_deref()).await?;
-        if !held || resp.status().as_u16() != 401 || req.relative_path() == REFRESH_PATH {
+        if !held
+            || resp.status().as_u16() != 401
+            || req.relative_path() == REFRESH_PATH
+            || req.carries_confirm()
+        {
             return Ok(resp);
         }
         let Some(sent) = token else { return Ok(resp) };
@@ -586,7 +599,10 @@ mod tests {
     }
 
     /// A node that answers every request `401` but a refresh, and logs what it was sent.
-    async fn refusing_node() -> (super::Transport, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    async fn refusing_node() -> (
+        super::Transport,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         use std::sync::{Arc, Mutex};
 
         use axum::extract::State;
@@ -682,7 +698,12 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             *log.lock().unwrap(),
-            ["auth/apikeys", "auth/apikeys", "auth/refresh", "auth/apikeys"]
+            [
+                "auth/apikeys",
+                "auth/apikeys",
+                "auth/refresh",
+                "auth/apikeys"
+            ]
         );
     }
 

@@ -312,9 +312,16 @@ async fn a_stale_passkey_counter_is_named_and_spends_no_refresh() {
     let calimero_client::Error::Api { status, code, .. } = &e else {
         panic!("not the node's answer: {e}");
     };
-    assert_eq!((*status, code.as_str()), (403, "SIGN_COUNT_REPLAYED"), "{e}");
+    assert_eq!(
+        (*status, code.as_str()),
+        (403, "SIGN_COUNT_REPLAYED"),
+        "{e}"
+    );
     let after = alice.transport().session().await.unwrap();
-    assert_eq!(after.session_token, before.session_token, "no refresh spent");
+    assert_eq!(
+        after.session_token, before.session_token,
+        "no refresh spent"
+    );
 
     // The current passkey still approves.
     let _made = alice

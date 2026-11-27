@@ -392,6 +392,8 @@ impl Op {
             add(412, "CONFIRM_REQUIRED");
             add(400, "UNKNOWN_CHALLENGE");
             add(400, "EXPIRED_CHALLENGE");
+            add(403, "SIGN_COUNT_REPLAYED");
+            add(403, "ASSERTION_REFUSED");
         }
         if self.operator {
             add(428, "OPERATOR_SIGNATURE_REQUIRED");
@@ -2363,7 +2365,7 @@ fn operations() -> Vec<Op> {
         post("/auth/passkey/login/finish", "login_finish", Anyone, "Finish a sign-in")
             .json::<super::AssertionBody>("{ challengeId: string, assertion: #Assertion }")
             .ok("#Session")
-            .errors(&[(400, "WRONG_CHALLENGE"), (400, "UNKNOWN_CHALLENGE"), (400, "EXPIRED_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (421, "WRONG_NODE")]),
+            .errors(&[(400, "WRONG_CHALLENGE"), (400, "UNKNOWN_CHALLENGE"), (400, "EXPIRED_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_COUNT_REPLAYED"), (421, "WRONG_NODE")]),
         post("/auth/passkeys/add/begin", "passkey_add_begin", AccountHolder, "Start adding a passkey")
             .about("Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
             .ok("#PasskeyChallenge"),
