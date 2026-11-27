@@ -3605,33 +3605,26 @@ impl SystemState {
     }
 
     /// Whether a restore of `app` onto `bundle` takes it to older code: no release of its
-    /// lineage that ships `bundle` is as new as the one it runs. An unpinned instance: never.
+    /// lineage that ships `bundle` (as its app or compute part) is as new as its floor or the
+    /// release it runs. An unpinned instance: never.
     #[must_use]
     pub fn restores_older(&self, app: &AppRecord, bundle: &str) -> bool {
         let Some(lineage) = &app.lineage else {
             return false;
         };
-        let semver = |v: &str| semver::Version::parse(v).ok();
-        let from = self.lineage_from(app).and_then(|r| semver(&r.version));
-        !self.packages.get(&lineage.package).is_some_and(|p| {
-            p.versions.values().any(|v| {
-                v.parts(&lineage.package).any(|(h, _)| h == bundle)
-                    && semver(&v.version).is_some_and(|to| from.as_ref().is_some_and(|f| &to >= f))
-            })
-        })
+        let at_least = |v: &str| {
+            compare_versions(v, &lineage.floor) != std::cmp::Ordering::Less
+                && app
+                    .release
+                    .as_ref()
+                    .is_none_or(|r| compare_versions(v, &r.version) != std::cmp::Ordering::Less)
+        };
+        !self
+            .lineage_release_of(lineage, bundle)
+            .is_some_and(|r| at_least(&r.version))
     }
 
-    /// The release of its lineage a pinned `app` runs: its record's, else the newest release of
-    /// its package that ships its bundle (a record that names none: restored, imported).
-    #[must_use]
-    pub fn lineage_from(&self, app: &AppRecord) -> Option<PackageRef> {
-        let lineage = app.lineage.as_ref()?;
-        app.release
-            .clone()
-            .or_else(|| self.lineage_release_of(lineage, &app.bundle))
-    }
-
-    /// The newest release of `lineage`'s package that ships `bundle`.
+    /// The newest release of `lineage`'s package that ships `bundle`, as an app or a compute part.
     #[must_use]
     pub fn lineage_release_of(&self, lineage: &AppLineage, bundle: &str) -> Option<PackageRef> {
         let record = self.packages.get(&lineage.package)?;
@@ -3640,10 +3633,17 @@ impl SystemState {
             .values()
             .filter_map(|v| {
                 v.parts(&lineage.package)
-                    .find(|(h, at)| *h == bundle && !at.compute)
+                    .find(|(h, _)| *h == bundle)
                     .map(|(_, at)| at)
             })
             .max_by(|a, b| compare_versions(&a.version, &b.version))
+    }
+
+    /// Raise `lineage`'s floor to `version` when it is newer; it is never lowered.
+    pub fn raise_floor(lineage: &mut AppLineage, version: &str) {
+        if compare_versions(version, &lineage.floor) == std::cmp::Ordering::Greater {
+            lineage.floor = version.to_owned();
+        }
     }
 
     /// Whether `lineage`'s package is installed here, signed by its signer.

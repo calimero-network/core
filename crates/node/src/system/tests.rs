@@ -9696,6 +9696,89 @@ fn restore_kv(bundle: &str) -> SystemCmd {
     }
 }
 
+/// A pinned instance's floor is its own: uninstalling the newest release that ships its bundle
+/// opens no gap below it, for a restore as for an upgrade.
+#[test]
+fn uninstalling_a_release_lowers_no_floor() {
+    use super::LINEAGE_OLDER_RELEASE;
+    let mut m = lineage_fixture();
+    register(&mut m, 1, "replica");
+    for (version, bundle) in [("1.2.5", "b-1.2.5"), ("1.3.0", "b-1.2.0")] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            let _prev = release.services.insert(String::new(), bundle.into());
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.3.0"))))
+        .unwrap();
+    // As a restore onto another bundle leaves it.
+    m.state.apps.get_mut("kv").unwrap().release = None;
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.3.0".into()),
+            actor: "alice".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(restore_kv("b-1.2.5")).unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.2.5", Some(("p", "1.2.5"))))
+            .unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+}
+
+/// A pinned instance with only a compute component is restored onto newer code as any other.
+#[test]
+fn a_compute_only_pinned_instance_is_restored_forward() {
+    let mut m = deploying(super::Deployments::Open);
+    register(&mut m, 1, "replica");
+    for version in ["1.0.0", "1.1.0"] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            release.services.clear();
+            release.components = crate::types::Components::ComputeOnly;
+            let _prev = release
+                .compute
+                .insert(String::new(), format!("c-{version}"));
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    let mut create = instance("job", "alice", "c-1.0.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.components = crate::types::Components::ComputeOnly;
+        app.compute_bundle = Some("c-1.0.0".into());
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    m.state.apps.get_mut("job").unwrap().release = None;
+    let _ok = m
+        .run_unproven(SystemCmd::RestoreApp {
+            app_id: "job".into(),
+            replicas: vec![1],
+            bundle: "c-1.1.0".into(),
+            compute_bundle: Some("c-1.1.0".into()),
+            source: crate::types::RestoreSource {
+                name: "job.snap".into(),
+                sha256: "ab".into(),
+                index: 7,
+            },
+            proof: Value::Null,
+        })
+        .unwrap();
+    assert_eq!(m.state.apps["job"].lineage.as_ref().unwrap().floor, "1.1.0");
+}
+
 /// A pinned store is not rolled back: a restore to older code is refused though the operator
 /// signed it.
 #[test]
@@ -9829,6 +9912,19 @@ fn an_import_keeps_a_pinned_instance_on_its_lineage() {
     stripped.apps.get_mut("kv").unwrap().lineage = None;
     let mut unshipped = slice.clone();
     let _gone = unshipped.packages.remove("p");
+    // A floor behind the release the record names is raised to it.
+    let mut behind = slice.clone();
+    behind
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .floor = "1.0.0".into();
+    let mut m = fresh(None);
+    let _ok = m.run_unproven(import(&behind)).unwrap();
+    assert_eq!(m.state.apps["kv"].lineage, pinned, "floor raised to 1.1.0");
     for (why, slice) in [("kept", &slice), ("stripped", &stripped)] {
         let mut m = fresh(None);
         let _ok = m.run_unproven(import(slice)).unwrap();
