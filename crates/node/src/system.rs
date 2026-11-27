@@ -809,6 +809,17 @@ pub struct SystemState {
     pub next_tenant_group: u64,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
+    /// Root-held routing directory for organization invites: invite key -> the
+    /// organization it belongs to. An invite token names no organization, so the
+    /// redeem path reads this on root to find the invite's tenant group and
+    /// route `RedeemInvite` there (the invite record itself lives on that tenant,
+    /// written by `CreateInvite`). Routing metadata only — never the authority
+    /// for a redemption, which the tenant re-checks against its own invite record
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    /// Left out when empty, so a state from before sharding reads and writes as
+    /// it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub invite_org: BTreeMap<String, OrgId>,
     /// Instance invites ([`crate::types::AppInvite`]), by the token's Ed25519 public key:
     /// whoever redeems one becomes a guest of its instance. Left out when empty, so a
     /// state from before reads and writes as it did.
@@ -5853,6 +5864,7 @@ impl SystemCmd {
             Self::SetEgress { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
             Self::SeedTenant { .. } => Area::Orgs,
+            Self::BindInvite { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
             Self::SetAppMetadata { .. } => Area::Apps,
@@ -5932,6 +5944,14 @@ impl SystemCmd {
             | Self::FinishRecovery { org, .. } => Scope::Org(org.clone()),
             // Seeded into the organization's own tenant group.
             Self::SeedTenant { org, .. } => Scope::Org(org.org_id.clone()),
+            // An invite and its redemption live in the organization's tenant
+            // group: the invite carries its org directly; the redemption's org is
+            // resolved from the root `invite_org` directory at propose and baked
+            // in (`None` only with the cutover off, then cluster-routed to root).
+            Self::CreateInvite { invite, .. } => Scope::Org(invite.org.clone()),
+            Self::RedeemInvite { org: Some(org), .. } => Scope::Org(org.clone()),
+            // The invite routing directory is cluster-wide root state.
+            Self::BindInvite { .. } => Scope::Cluster,
             // A new app carries its org directly.
             Self::CreateApp { app, .. } => Scope::Org(app.org.clone()),
             // Commands on an existing app → the app's owning org (resolved from
@@ -7465,6 +7485,17 @@ pub enum SystemCmd {
         org: Box<crate::types::Org>,
         members: Vec<crate::types::Account>,
     },
+    /// Record an organization invite in the root routing directory
+    /// ([`SystemState::invite_org`]): `invite_key` belongs to `org`. Written to
+    /// the root group alongside the `CreateInvite` that stores the invite on the
+    /// org's tenant group, so the redeem path can find the invite's tenant from
+    /// the token alone. Carries no authority — the redemption is authorized on
+    /// the tenant against its own invite record
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    BindInvite {
+        invite_key: String,
+        org: OrgId,
+    },
     SetOrgMetadata {
         org: OrgId,
         metadata: Value,
@@ -7778,6 +7809,24 @@ pub enum SystemCmd {
         now: u64,
         #[serde(default)]
         signature: String,
+        /// The organization this invite belongs to, resolved at propose from the
+        /// root `invite_org` directory so the command routes to that org's tenant
+        /// group (the invite record and the membership both live there). Absent
+        /// in an entry proposed with the cutover off, which stays on root as
+        /// before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<OrgId>,
+        /// The redeemer's account identity (its passkeys), read from the root
+        /// account directory at propose and carried so the tenant group can
+        /// register the new member from the entry alone — the redeemer is not yet
+        /// a seeded member, so the tenant does not hold their account. Trusted at
+        /// the same attestation boundary as the tenant seed's member projection;
+        /// the redemption itself is authorized by the bearer token, re-verified
+        /// on the tenant against its own invite record. Absent with the cutover
+        /// off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        redeemer: Option<Box<Account>>,
         /// A redemption that changes nothing for `account` (a member at the
         /// invite's role or above, in every team it names) spends no use.
         /// Absent (`false`) in a redemption an earlier release logged:

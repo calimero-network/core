@@ -384,9 +384,15 @@ async fn internal_system(
     // Any node of the cluster may propose; what it proposes is judged where
     // it applies (`system::authorize` and each command's own checks).
     let _caller = peer(&node, &headers, key).await?;
-    // Only the leader answers; a follower refuses rather than forwarding again.
+    // Route to the command's shard, as the local propose path does, so a
+    // tenant-scoped command forwarded here from another node's propose lands on
+    // this node's tenant group, not the root group (which would refuse it as the
+    // wrong shard). While the cutover is off every command routes to root
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let shard = node.shard_of(&cmd);
     let bytes = serde_json::to_vec(&cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-    match node.system.write(bytes).await {
+    // Only the leader answers; a follower refuses rather than forwarding again.
+    match node.system_shard(&shard).write(bytes).await {
         Ok((_i, out)) => crate::system::output(&out)
             .map(Json)
             .map_err(|e| crate::node::rejected(&e)),

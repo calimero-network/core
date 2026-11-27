@@ -490,6 +490,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
         cmd @ SystemCmd::CreateOrg { .. } => create_org(state, cmd),
         SystemCmd::DeleteOrg { org, actor, .. } => delete_org(state, &org, &actor),
         SystemCmd::SeedTenant { org, members } => seed_tenant(state, *org, members),
+        SystemCmd::BindInvite { invite_key, org } => {
+            let _prev = state.invite_org.insert(invite_key, org);
+            Ok(Value::Null)
+        }
         SystemCmd::RenameOrg {
             org, name, actor, ..
         } => rename_org(state, org, name, &actor),
@@ -588,8 +592,25 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             now,
             free_when_unchanged,
             clamp_grants,
+            redeemer,
             ..
         } => {
+            // On a tenant group the redeemer is, by definition, not yet a member,
+            // so the shard does not hold their account. The proposer carries it
+            // from the root directory (`redeemer`); register it here, as the
+            // tenant seed registers an existing member, so `check_known_account`
+            // passes and the new member's later tenant commands verify. Trusted
+            // at the seed's attestation boundary; the redemption itself was
+            // authorized against the tenant's own invite record
+            // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+            if let Some(redeemer) = redeemer {
+                if redeemer.account_id == account {
+                    let _kept = state
+                        .accounts
+                        .entry(account.clone())
+                        .or_insert(*redeemer);
+                }
+            }
             check_known_account(state, &account)?;
             let org = state.redeem_org_invite(
                 &invite_key,

@@ -1611,21 +1611,27 @@ impl Node {
     /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
     /// the gate itself logs ([`Node::raise_cluster_version_once`] checks it on
     /// what every node supports).
+    /// The shard a system command's state belongs to: its org's tenant group
+    /// when its area has moved there (`shard::flipped`) and the cutover is on
+    /// (`shard::ACTIVE`), otherwise the root group. While the cutover is off this
+    /// is always the root group, so routing is behaviour-preserving. Both the
+    /// local propose path ([`Node::sys_propose`]) and the peer-forward handler
+    /// (`api::internal::internal_system`) resolve it this way, so a command that
+    /// forwards to another node's leader still lands on the right shard
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn shard_of(&self, cmd: &SystemCmd) -> crate::system::shard::ShardId {
+        use crate::system::shard;
+        let tenant = if shard::flipped(cmd.area()) {
+            shard::tenant_of(&cmd.scope(), |_| None)
+        } else {
+            None
+        };
+        shard::shard_for(shard::ACTIVE, tenant)
+    }
+
     pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        // The shard this command's state belongs to: its org's tenant group
-        // when its area has moved there (`shard::flipped`) and the cutover is on
-        // (`shard::ACTIVE`), otherwise the root group. While the cutover is off
-        // this is behaviour-preserving.
-        let shard = {
-            use crate::system::shard;
-            let tenant = if shard::flipped(cmd.area()) {
-                shard::tenant_of(&cmd.scope(), |_| None)
-            } else {
-                None
-            };
-            shard::shard_for(shard::ACTIVE, tenant)
-        };
+        let shard = self.shard_of(cmd);
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
         // count of tries, which a leaderless group used up in about 7.5 s

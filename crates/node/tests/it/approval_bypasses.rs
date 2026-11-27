@@ -570,6 +570,8 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
         signature,
         free_when_unchanged: true,
         clamp_grants: true,
+        org: None,
+        redeemer: None,
     };
     let refused = [
         ("a passkey without consent", add(Value::Null)),

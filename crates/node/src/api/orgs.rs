@@ -1338,6 +1338,19 @@ pub(crate) async fn create_invite(
             "the approval was for a different call",
         ));
     }
+    // Under the cutover the invite lives in its organization's tenant group
+    // (`CreateInvite` routes there by scope). Record the invite_key -> org entry
+    // in the root routing directory first, so the redeem path can find the
+    // invite's tenant from the token alone; the directory carries no authority
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    if crate::system::shard::ACTIVE {
+        let _ok = node
+            .sys_write(&SystemCmd::BindInvite {
+                invite_key: invite_key.clone(),
+                org: org.clone(),
+            })
+            .await?;
+    }
     let _ok = node
         .sys_write(&SystemCmd::CreateInvite {
             invite_key,
@@ -1449,14 +1462,34 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
         .require_features(&[Feature::InviteCapabilities])
         .await
         .is_ok();
+    let invite_key = crate::proof::invite_key(token);
+    // Under the cutover the invite and the membership both live in the
+    // organization's tenant group. Resolve the org from the root routing
+    // directory so the command routes there, and carry the redeemer's account
+    // identity from the root account directory so the tenant can register the
+    // new member from the entry alone (they are not yet a seeded member). The
+    // redemption stays authorized by the bearer token, re-checked on the tenant
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let (org, redeemer) = if crate::system::shard::ACTIVE {
+        node.sys(|s| {
+            (
+                s.invite_org.get(&invite_key).cloned(),
+                s.accounts.get(&account).cloned().map(Box::new),
+            )
+        })
+    } else {
+        (None, None)
+    };
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
-            invite_key: crate::proof::invite_key(token),
+            invite_key,
             signature: crate::proof::sign_invite_redeem(token, &account, now),
             account,
             now,
             free_when_unchanged: true,
             clamp_grants,
+            org,
+            redeemer,
         })
         .await?;
     Ok(Json(v))
