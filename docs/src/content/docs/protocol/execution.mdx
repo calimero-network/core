@@ -207,7 +207,7 @@ rules:
   reaches the app's views only: a call to any other method is refused with `403`
   before it runs, so no run burns the developer's fuel uncounted.
 - **Entry size**: an entry over the log's cap is logged trapped (`HostDenied`),
-  and arguments over 512 KiB are `413 ARGS_TOO_LARGE`.
+  and arguments over 512 KiB, a call's or a view's, are `413 ARGS_TOO_LARGE`.
 - **Conflicts**: a run built on a state another entry has since moved past, or
   on a bundle an upgrade replaced, commits as a no-op and runs again.
 
