@@ -35,6 +35,18 @@ CACHE="${MERO_OPENAPI_CACHE:-$ROOT/.build/openapi-generator}"
 
 die() { echo "generate-openapi: $*" >&2; exit 1; }
 
+# The generator's two fetches (the clone and SwiftPM's dependencies) go to github.com,
+# which a runner sometimes cannot reach; nothing else here retries.
+retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    echo "generate-openapi: attempt $attempt of '$*' failed" >&2
+    [ "$attempt" = 3 ] || sleep $((attempt * ${RETRY_DELAY:-5}))
+  done
+  return 1
+}
+
 [ -f "$SPEC" ] || die "no OpenAPI document at $SPEC: run this inside calimero-network/core (sdks/clients/mero-swift), or set MERO_OPENAPI_SPEC"
 
 # The generator at GENERATOR_VERSION, built from source on first use.
@@ -45,9 +57,9 @@ generator() {
   if [ ! -x "$bin" ]; then
     rm -rf "$src"
     mkdir -p "$CACHE"
-    git clone --quiet --depth 1 --branch "$GENERATOR_VERSION" \
+    retry git clone --quiet --depth 1 --branch "$GENERATOR_VERSION" \
       https://github.com/apple/swift-openapi-generator "$src" >&2
-    (cd "$src" && swift build -c release --product swift-openapi-generator >&2)
+    (cd "$src" && retry swift package resolve >&2 && swift build -c release --product swift-openapi-generator >&2)
   fi
   echo "$bin"
 }
