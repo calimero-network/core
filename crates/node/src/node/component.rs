@@ -2925,13 +2925,15 @@ impl Node {
             .propose_led(|m, _, _| {
                 // `base_index` holds this to the state read here, so a race retries into it.
                 let runs = m.state.bundle.as_deref();
-                // Already there (a switch whose record never followed): nothing to run, and the
-                // record catches up. That is also the repair for the refusal below.
+                // Already there: nothing runs. A record naming other code catches up (the repair
+                // for the refusal below); a release sharing the bundle is an upgrade as any other.
                 if runs == Some(bundle)
                     && m.state.component.head.compute_bundle.as_deref() == compute_bundle
                 {
                     let mut done = crate::component::host_answer(m.state.last_index, true, "");
-                    done.result = json!({ "caughtUp": true });
+                    if judged_on.is_some_and(|j| j != bundle) {
+                        done.result = json!({ "caughtUp": true });
+                    }
                     return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
                 }
                 if judged_on.is_some_and(|j| runs.is_some_and(|r| r != j)) {
