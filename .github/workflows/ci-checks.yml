@@ -417,6 +417,13 @@ jobs:
       # target/tests/trybuild). Most of the slowest tests' time was these builds. Saved from master
       # below, with the commit they were built from: the restore may come from another commit
       # than the rust-cache's, and every file's mtime says it is older than any build.
+      # The rust-cache also saves what sits under target/ (trybuild's target/tests/trybuild
+      # among it), stamped with its own commit, so a stale copy would pass for current.
+      - name: Drop the test apps' builds the rust-cache carried
+        run: |
+          du -sh target/tests target/tmp target/app-components 2>/dev/null || true
+          rm -rf target/tests target/tmp target/app-components
+
       - name: Restore the test apps' builds
         id: test-apps
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
