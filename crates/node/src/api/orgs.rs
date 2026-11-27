@@ -325,9 +325,9 @@ async fn org_get(
     // Who may approve its releases, the keys it publishes, and whether a
     // passed deadline has stopped new work on its own set (`null`: it has
     // not).
-    let (approvers, publishes, stall) = node.sys(|s| {
+    let (approvers, publishes, stall) = node.sys_with_org(&org, |s, o| {
         (
-            s.release_approvers(&org),
+            s.release_approvers_at(o),
             s.publishers
                 .iter()
                 .filter(|(_, b)| b.org == org)
@@ -975,8 +975,8 @@ async fn team_get(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let v = node
-        .sys(|s| {
-            let o = s.orgs.get(&org)?;
+        .sys_with_org(&org, |s, o| {
+            let o = o?;
             o.role(&account)?;
             team_view(s, o, &team, &account)
         })
@@ -1064,10 +1064,8 @@ async fn team_delete(
     let actor = p.account()?;
     // Only someone who may delete it learns which apps go (as `DeleteTeam`
     // judges it again where it applies).
-    let (sees, may_delete) = node.sys(|s| {
-        s.orgs
-            .get(&org)
-            .filter(|o| o.teams.contains_key(&team))
+    let (sees, may_delete) = node.sys_with_org(&org, |_, o| {
+        o.filter(|o| o.teams.contains_key(&team))
             .map_or((false, false), |o| {
                 let may = o.manages_team(&actor, &team)
                     || o.may(&actor, None, crate::types::caps::DELETE_TEAM);
@@ -1080,7 +1078,7 @@ async fn team_delete(
     if !may_delete {
         return Err(ApiError::forbidden("not allowed to delete this team"));
     }
-    let apps = node.sys(|s| s.team_apps(&org, &team));
+    let apps = node.sys_with_org(&org, |s, o| s.team_apps_at(o, &team));
     let keep_apps = body.keep_apps;
     let consent = if apps.is_empty() {
         Value::Null

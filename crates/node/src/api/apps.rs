@@ -1433,10 +1433,8 @@ async fn app_transfer(
         .await
         .is_ok();
     if ordinary
-        && !node.sys(|s| {
-            s.orgs
-                .get(&app.org)
-                .and_then(|o| o.role(&body.to))
+        && !node.sys_with_org(&app.org, |_, o| {
+            o.and_then(|o| o.role(&body.to))
                 .is_some_and(|r| r >= crate::types::OrgRole::Member)
         })
     {

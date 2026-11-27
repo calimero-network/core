@@ -5141,10 +5141,19 @@ impl SystemState {
     /// Who may approve `org`'s releases ([`Self::approves_releases`]).
     #[must_use]
     pub fn release_approvers(&self, org: &str) -> Vec<AccountId> {
-        self.orgs.get(org).map_or_else(Vec::new, |o| {
+        self.release_approvers_at(self.orgs.get(org))
+    }
+
+    /// [`Self::release_approvers`] reading the organization from its own shard
+    /// (its tenant group when sharded): its members and their capabilities are
+    /// the organization's, the cluster governance is root's
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn release_approvers_at(&self, org: Option<&Org>) -> Vec<AccountId> {
+        org.map_or_else(Vec::new, |o| {
             o.members
                 .keys()
-                .filter(|a| self.approves_releases(org, a))
+                .filter(|a| self.approves_releases_at(Some(o), a))
                 .cloned()
                 .collect()
         })
@@ -5554,7 +5563,16 @@ impl SystemState {
     /// `DeleteTeam { keep_apps }` the same apps stay, without those teams' grants.
     #[must_use]
     pub fn team_apps(&self, org: &str, team: &str) -> Vec<AppId> {
-        let Some(o) = self.orgs.get(org).filter(|o| o.teams.contains_key(team)) else {
+        self.team_apps_at(self.orgs.get(org), team)
+    }
+
+    /// [`Self::team_apps`] reading the organization from its own shard (its
+    /// tenant group when sharded): the team structure is the organization's, the
+    /// app directory it filters is root's (`self`)
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn team_apps_at(&self, org: Option<&Org>, team: &str) -> Vec<AppId> {
+        let Some(o) = org.filter(|o| o.teams.contains_key(team)) else {
             return Vec::new();
         };
         let gone = o.subtree(team);
@@ -5564,7 +5582,7 @@ impl SystemState {
             // team, a grant to the organization) stays and loses only those grants.
             .filter(|a| {
                 let teams = a.access.teams();
-                a.org == org
+                a.org == o.org_id
                     && !teams.is_empty()
                     && !a.access.org_wide()
                     && teams.into_iter().all(|t| gone.contains(t))

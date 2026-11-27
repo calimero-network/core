@@ -779,10 +779,8 @@ impl Principal {
                 "a session opened on an app's frontend changes only that app's own teams; do this on the cluster's own page",
             )
         };
-        let (own, app_team, apps) = node.sys(|s| {
-            let Some((package, app_team)) = s
-                .orgs
-                .get(org)
+        let (own, app_team, apps) = node.sys_with_org(org, |s, o| {
+            let Some((package, app_team)) = o
                 .and_then(|o| o.package_of_team(team))
                 .map(|(p, top)| (p == pkg, top))
             else {
@@ -790,7 +788,7 @@ impl Principal {
             };
             let apps = match reach {
                 OwnTeam::BelowHoldingOwnApps => s
-                    .team_apps(org, team)
+                    .team_apps_at(o, team)
                     .iter()
                     .filter_map(|a| s.apps.get(a).cloned())
                     .collect(),
@@ -1697,8 +1695,11 @@ pub async fn read_only_in(
     let Some(a) = account else {
         return false;
     };
+    // The caller's team membership lives in the app's organization on its own
+    // shard (its tenant group), not in this root state, so read it there
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     let check = || {
-        node.sys(|s| {
+        node.sys_with_org(&app.org, |s, org| {
             let Some(app) = fresh_record(s, app) else {
                 return false;
             };
@@ -1707,9 +1708,7 @@ pub async fn read_only_in(
             if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
                 return false;
             }
-            s.orgs
-                .get(&app.org)
-                .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
+            org.is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
         })
     };
     check() && {
