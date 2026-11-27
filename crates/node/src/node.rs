@@ -694,8 +694,8 @@ pub struct Node {
     compute: component::ComputeState,
     /// Wakes the compute driver: a call started or cancelled a run.
     pub runs_kick: Arc<tokio::sync::Notify>,
-    /// Event streams this node is serving (`/apps/{app}/events`).
-    pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Event and presence streams this node is serving, in total, by account and by app.
+    pub event_streams: std::sync::Arc<crate::event_streams::EventStreams>,
     /// Pipeline run event streams open on this node, by app.
     pub pipeline_subscribers: Mutex<HashMap<String, usize>>,
     /// Every app's ephemeral presence, in memory only.
