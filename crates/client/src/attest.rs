@@ -1012,30 +1012,41 @@ impl calimero_sealed::client::Attest for HttpAttestor {
         http: &'a reqwest::Client,
         api_url: &'a Url,
     ) -> BoxFuture<'a, eyre::Result<[u8; 32]>> {
-        Box::pin(async move {
-            let nonce: [u8; 32] = rand_nonce();
-            let mut url = calimero_sealed::client::resolve_path(api_url, "attestation")?;
+        Box::pin(self.attest_with(http, api_url, |req, _nonce| req))
+    }
+}
+
+impl HttpAttestor {
+    /// Attest the node at `api_url` as [`calimero_sealed::client::Attest`]
+    /// does, with `decorate` adding to the `GET /attestation` request what it
+    /// needs of the fresh nonce (a node's peer header).
+    pub async fn attest_with(
+        &self,
+        http: &reqwest::Client,
+        api_url: &Url,
+        decorate: impl FnOnce(reqwest::RequestBuilder, &[u8; 32]) -> reqwest::RequestBuilder,
+    ) -> eyre::Result<[u8; 32]> {
+        let nonce: [u8; 32] = rand_nonce();
+        let mut url = calimero_sealed::client::resolve_path(api_url, "attestation")?;
+        let _q = url
+            .query_pairs_mut()
+            .append_pair("nonce", &hex::encode(nonce));
+        if let Some(h) = self.policy.app_hash {
             let _q = url
                 .query_pairs_mut()
-                .append_pair("nonce", &hex::encode(nonce));
-            if let Some(h) = self.policy.app_hash {
-                let _q = url
-                    .query_pairs_mut()
-                    .append_pair("appHash", &hex::encode(h));
-            }
-            let doc: AttestationDoc = http
-                .get(url)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            let key = verify(&doc, &nonce, &self.policy).await?;
-            if let Ok(mut seen) = self.seen_release.lock() {
-                *seen = Some(doc.release.version.clone());
-            }
-            Ok(key)
-        })
+                .append_pair("appHash", &hex::encode(h));
+        }
+        let doc: AttestationDoc = decorate(http.get(url), &nonce)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let key = verify(&doc, &nonce, &self.policy).await?;
+        if let Ok(mut seen) = self.seen_release.lock() {
+            *seen = Some(doc.release.version.clone());
+        }
+        Ok(key)
     }
 }
 
