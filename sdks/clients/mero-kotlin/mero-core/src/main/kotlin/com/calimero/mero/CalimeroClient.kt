@@ -1365,7 +1365,7 @@ class CalimeroClient(
     }
 
     /** The organization, with the teams this caller reaches or manages. */
-    internal suspend fun getOrg(org: String): OrgInfo = orgInfo(raw(defaultApi.organizations.orgGetRequestConfig(org)) as JsonObject)
+    internal suspend fun getOrg(org: String): OrgInfo = orgInfo(raw(defaultApi.organizations.orgGetRequestConfig(org, limit = null, teamsAfter = null, membersAfter = null)) as JsonObject)
 
     // ---------------------------------------------------------------- approvals
 

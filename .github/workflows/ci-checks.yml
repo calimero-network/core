@@ -331,6 +331,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
+      # Apps compile connectors for wasm32-wasip2, which the host clippy never sees.
+      - name: Cargo clippy (connectors, wasm32-wasip2)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p calimero-connector-nearai --target wasm32-wasip2 -- -D warnings
+
   # Broken intra-doc links (a renamed or removed item, a public doc naming a
   # private one) are rustdoc warnings that no other job builds. Dependencies are
   # checked, not documented, which is the build `Rust lint` caches, so this
@@ -414,7 +419,7 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
           restore-keys: test-apps-v2-
 
       # Every test app the tests build, compiled before them into the component cache, so a
@@ -489,7 +494,7 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
 
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests

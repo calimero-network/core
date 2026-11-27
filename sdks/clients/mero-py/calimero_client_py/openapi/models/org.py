@@ -72,6 +72,8 @@ class Org:
             release_approvers (Union[Unset, list[str]]):
             publishes (Union[Unset, list[str]]):
             new_work_stopped (Union['OrgNewWorkStoppedType0', None, Unset]):
+            next_teams_after (Union[None, Unset, str]):
+            next_members_after (Union[None, Unset, str]):
     """
 
     org_id: str
@@ -98,6 +100,8 @@ class Org:
     release_approvers: Union[Unset, list[str]] = UNSET
     publishes: Union[Unset, list[str]] = UNSET
     new_work_stopped: Union["OrgNewWorkStoppedType0", None, Unset] = UNSET
+    next_teams_after: Union[None, Unset, str] = UNSET
+    next_members_after: Union[None, Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -183,6 +187,18 @@ class Org:
         else:
             new_work_stopped = self.new_work_stopped
 
+        next_teams_after: Union[None, Unset, str]
+        if isinstance(self.next_teams_after, Unset):
+            next_teams_after = UNSET
+        else:
+            next_teams_after = self.next_teams_after
+
+        next_members_after: Union[None, Unset, str]
+        if isinstance(self.next_members_after, Unset):
+            next_members_after = UNSET
+        else:
+            next_members_after = self.next_members_after
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -226,6 +242,10 @@ class Org:
             field_dict["publishes"] = publishes
         if new_work_stopped is not UNSET:
             field_dict["newWorkStopped"] = new_work_stopped
+        if next_teams_after is not UNSET:
+            field_dict["nextTeamsAfter"] = next_teams_after
+        if next_members_after is not UNSET:
+            field_dict["nextMembersAfter"] = next_members_after
 
         return field_dict
 
@@ -336,6 +356,24 @@ class Org:
 
         new_work_stopped = _parse_new_work_stopped(d.pop("newWorkStopped", UNSET))
 
+        def _parse_next_teams_after(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        next_teams_after = _parse_next_teams_after(d.pop("nextTeamsAfter", UNSET))
+
+        def _parse_next_members_after(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        next_members_after = _parse_next_members_after(d.pop("nextMembersAfter", UNSET))
+
         org = cls(
             org_id=org_id,
             name=name,
@@ -361,6 +399,8 @@ class Org:
             release_approvers=release_approvers,
             publishes=publishes,
             new_work_stopped=new_work_stopped,
+            next_teams_after=next_teams_after,
+            next_members_after=next_members_after,
         )
 
         org.additional_properties = d
