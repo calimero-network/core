@@ -188,7 +188,7 @@ refusal is `429 QUOTA_EXCEEDED`.
 | Teams per organization, app teams included (`maxTeamsPerOrg`) | 1000 (`MAX_TEAMS_PER_ORG`) |
 | Metadata bytes per organization: its own, its members' and its teams', as JSON (`maxMetadataBytesPerOrg`) | 1 MiB (`MAX_METADATA_BYTES_PER_ORG`) |
 | Metadata bytes of the organizations one account owns, summed (`maxMetadataBytesPerAccount`) | 2 MiB (`MAX_METADATA_BYTES_PER_ACCOUNT`) |
-| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count |
+| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner) | 10 000 000 000 000 (`DEFAULT_FUEL_PER_DEVELOPER_PER_DAY`, from cluster version 1.0.0-rc.39; 0 before it, and `"0"` set by the operator, is no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count |
 
 Every node holds the system state in memory and writes all of it into each snapshot, so
 what one organization or account keeps there is bounded: teams per organization, and
@@ -238,8 +238,17 @@ at 0.
 `DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
 `TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that
 organization's quota would not hold its files.
-The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default, is no limit; a
+The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"` is no limit; a
 decimal string in JSON, a number refused, `system::decimal_u64`).
+Its default is `DEFAULT_FUEL_PER_DEVELOPER_PER_DAY`, 10^13 fuel: about 2.8 hours of one core
+(one fuel is about a nanosecond), as much as `computeFuelPerOrg`. A kv `set` costs about 5 700
+fuel, so a developer makes some 1.7 billion of them a day before the cap; what reaches it is
+work no client paces, such as an xcall chain among a developer's apps that never ends, which
+at `DEFAULT_FUEL` a run reaches it after about 50 000 runs. `Quotas::default()` keeps 0, so a
+log replays as it applied: the cap is written by the `SetClusterVersion` that first brings
+`Feature::DefaultFuelCap` (1.0.0-rc.39), on a new cluster and on one that rolls onto that release
+alike, and only where the cap is 0. A cap the operator set is kept, and a `"0"` the operator
+sets after it is no limit again.
 It is charged to the app's developer, `usage::developer` (#4839), the same identity usage is billed
 to: the owner of the deployment an app was created from, else the app's organization or owner.
 So two payers' instances of one developer's deployment share one cap.

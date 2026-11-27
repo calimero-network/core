@@ -829,10 +829,12 @@ async fn ops_quotas_set(
     }
     let quotas: crate::system::Quotas = serde_json::from_value(merged)
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
-    // A fuel cap is written only once every node runs a release that knows it: an
-    // older node drops the field, and its snapshots would bring the cap back to 0.
+    // A new fuel cap is written only once every node runs a release that knows it: an
+    // older node drops the field, and its snapshots would bring the cap back to 0. A cap
+    // the state already holds (the default one included) is kept by any other change.
     // Judged before the operator is asked to sign, so a refused write is never signed.
-    if quotas.max_fuel_per_developer_per_day != 0 {
+    let cap = quotas.max_fuel_per_developer_per_day;
+    if cap != 0 && cap != node.sys(|s| s.quotas.max_fuel_per_developer_per_day) {
         node.require_current_release("a fuel cap").await?;
     }
     // The bounds on the system state: an earlier release drops them, as it drops the fuel cap.

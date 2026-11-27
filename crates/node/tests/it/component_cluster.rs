@@ -9801,16 +9801,98 @@ async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
-/// A limit of 0 (the default) never refuses; a refusal is not logged, so the
-/// same idempotency key runs once the limit is lifted.
+/// The daily fuel cap a cluster takes when the operator set none
+/// (`system::DEFAULT_FUEL_PER_DEVELOPER_PER_DAY`, 10^13).
+const DEFAULT_FUEL_CAP: u64 = 10_000_000_000_000;
+
+/// A new cluster caps each developer's fuel per day without the operator setting
+/// anything, so work no client started (xcall chains among a developer's apps) has a
+/// daily bound: a developer below the cap runs its calls, one at the cap gets
+/// `429 QUOTA_EXCEEDED`, and a cap of 0 the operator sets after it is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_new_cluster_caps_each_developers_daily_fuel() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    fuel_limit_everywhere(&c, DEFAULT_FUEL_CAP).await;
+    let me = alice.auth().usage().await.map(wire).unwrap();
+    assert_eq!(
+        me["quotas"]["maxFuelPerDeveloperPerDay"],
+        json!(DEFAULT_FUEL_CAP.to_string()),
+        "{me}"
+    );
+    // Below the default cap: calls run and count.
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let set = |key: &'static str| {
+        let alice = &alice;
+        let app = &app;
+        async move {
+            alice
+                .apps()
+                .call(
+                    app,
+                    "set",
+                    Some(json!({ "key": key, "value": "v" })),
+                    None,
+                    None,
+                )
+                .await
+        }
+    };
+    let _r = set("a").await.unwrap();
+    let used = figure(&developer_usage(&alice, &app).await["developerFuelToday"]);
+    assert!(used > 0 && used < DEFAULT_FUEL_CAP, "{used}");
+    // Another quota changes and the default cap stays, even with no fuel cap written by
+    // the operator: the same refusal as any cap once the developer reaches it.
+    let _ok = ops
+        .ops()
+        .quotas_set(
+            typed(json!({ "maxAppsPerAccount": 7 })),
+            Some(&common::operator_sign),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let quotas = ops.ops().quotas_get().await.map(wire).unwrap();
+    assert_eq!(
+        quotas["maxFuelPerDeveloperPerDay"],
+        json!(DEFAULT_FUEL_CAP.to_string()),
+        "{quotas}"
+    );
+    set_fuel_limit(&ops, used).await;
+    fuel_limit_everywhere(&c, used).await;
+    let err = set("b").await.unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+    // The operator's 0 is no limit, and stays.
+    set_fuel_limit(&ops, 0).await;
+    fuel_limit_everywhere(&c, 0).await;
+    let _r = set("b").await.unwrap();
+}
+
+/// A limit of 0 never refuses; a refusal is not logged, so the same idempotency
+/// key runs once the limit is lifted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fuel_limit_of_zero_never_refuses() {
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
-    let quotas = ops.ops().quotas_get().await.map(wire).unwrap();
-    assert_eq!(quotas["maxFuelPerDeveloperPerDay"], json!("0"), "{quotas}");
+    // The operator lifts the default cap once the cluster version brought it.
+    fuel_limit_everywhere(&c, DEFAULT_FUEL_CAP).await;
+    set_fuel_limit(&ops, 0).await;
+    fuel_limit_everywhere(&c, 0).await;
     let bundle = alice
         .packages()
         .bundle_put(kv_wasm())
@@ -10568,6 +10650,8 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
     .await;
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
+    // The default cap arrives with the cluster version, which the nodes' builds support.
+    fuel_limit_everywhere(&c, DEFAULT_FUEL_CAP).await;
     let err = ops
         .ops()
         .quotas_set(typed(json!({ "maxFuelPerDeveloperPerDay": "1000" })), None)
@@ -10584,7 +10668,7 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
         &json!([{ "node": 3, "release": "0.9.0" }]),
         "{err:?}"
     );
-    // Other quotas, and a cap of 0, are written as before.
+    // Other quotas are written as before, and keep the cap the state holds.
     let _ok = ops
         .ops()
         .quotas_set(
@@ -10595,7 +10679,10 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
         .map(wire)
         .unwrap();
     let quotas = ops.ops().quotas_get().await.map(wire).unwrap();
-    assert_eq!(quotas["maxFuelPerDeveloperPerDay"], json!("0"));
+    assert_eq!(
+        quotas["maxFuelPerDeveloperPerDay"],
+        json!(DEFAULT_FUEL_CAP.to_string())
+    );
 
     // Node 3 runs the release now: the cap is written.
     c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;

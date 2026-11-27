@@ -99,7 +99,9 @@ pub struct Quotas {
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
     /// Fuel a developer's apps may burn per UTC day, summed over its component apps;
-    /// 0 (the default) is no limit. The developer is the one usage
+    /// 0 is no limit. A cluster holding 0 takes [`DEFAULT_FUEL_PER_DEVELOPER_PER_DAY`] once
+    /// its cluster version brings [`cluster_version::Feature::DefaultFuelCap`]; this field's
+    /// own default stays 0, so a log replays as it applied. The developer is the one usage
     /// is billed to (`usage::developer`): the owner of the deployment an app
     /// was created from, else the app's organization or owner. Over it, a client's
     /// call or an xcall delivery to any of the developer's apps is refused before it
@@ -267,6 +269,14 @@ impl QueueRoom {
         }
     }
 }
+
+/// The daily fuel cap per developer a cluster takes when its cluster version brings
+/// [`cluster_version::Feature::DefaultFuelCap`] and the operator set none: 10^13 fuel, about
+/// 2.8 hours of one core (one fuel is about a nanosecond), the same as the default
+/// `compute_fuel_per_org`. A kv `set` costs about 5 700 fuel, so this is some 1.7 billion such
+/// calls a day; one chain of runs each burning the whole `DEFAULT_FUEL` of a call reaches it in
+/// about 50 000 runs. See [Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas).
+pub const DEFAULT_FUEL_PER_DEVELOPER_PER_DAY: u64 = 10 * calimero_app_host::MAX_COMPUTE_FUEL;
 
 impl Default for Quotas {
     fn default() -> Self {

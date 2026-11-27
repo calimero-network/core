@@ -382,7 +382,7 @@ its value):
 | `maxFileBytesPerOrg` | `50000000000` (50 GB) |
 | `maxConcurrentRunsPerOrg` | `4` |
 | `computeFuelPerOrg` | `10000000000000` |
-| `maxFuelPerDeveloperPerDay` | `"0"` (a decimal string, D20; no limit; per developer: a deployment's owner for its instances, else the app's org or owner, D78; `409 UPGRADE_PENDING` until every node runs this release) |
+| `maxFuelPerDeveloperPerDay` | `"10000000000000"` (a decimal string, D20; `"0"` is no limit; written where the cap is 0 when the cluster version reaches 1.0.0-rc.39, `"0"` before; per developer: a deployment's owner for its instances, else the app's org or owner, D78; `409 UPGRADE_PENDING` until every node runs this release) |
 
 ## Internal
 

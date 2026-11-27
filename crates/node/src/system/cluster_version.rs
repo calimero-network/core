@@ -292,10 +292,17 @@ pub enum Feature {
     /// release ignores the field and would skip every queued message. An app's entry, not a
     /// system one: the leader writes the field from the logged version.
     XcallKeepsQueue,
+    /// A cluster whose developer fuel cap is 0 (no limit) takes
+    /// [`DEFAULT_FUEL_PER_DEVELOPER_PER_DAY`](crate::system::DEFAULT_FUEL_PER_DEVELOPER_PER_DAY)
+    /// when the `SetClusterVersion` that brings this feature applies
+    /// ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)). A rule
+    /// apply reads from the logged version: no entry names it, and no earlier entry
+    /// applies otherwise.
+    DefaultFuelCap,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 63] = [
+pub const FEATURES: [Feature; 64] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -359,6 +366,7 @@ pub const FEATURES: [Feature; 63] = [
     Feature::PinnedLineage,
     Feature::AppOrigins,
     Feature::XcallKeepsQueue,
+    Feature::DefaultFuelCap,
 ];
 
 impl Feature {
@@ -429,12 +437,13 @@ impl Feature {
             Self::PinnedLineage => "pinnedLineage",
             Self::AppOrigins => "appOrigins",
             Self::XcallKeepsQueue => "xcallKeepsQueue",
+            Self::DefaultFuelCap => "defaultFuelCap",
         }
     }
 
     /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
-    /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
-    /// the logged version, and `MeteredBlobs`, `XcallBudget` and `XcallKeepsQueue` are fields
+    /// `InviteCreatorStanding`, `BackupKeyApprovers`, `StateCaps` and `DefaultFuelCap` are rules
+    /// apply reads from the logged version, and `MeteredBlobs`, `XcallBudget` and `XcallKeepsQueue` are fields
     /// of an app's entry,
     /// which the leader shapes from the logged version: no system entry names them.
     #[must_use]
@@ -448,6 +457,7 @@ impl Feature {
                 | Self::MeteredBlobs
                 | Self::XcallBudget
                 | Self::XcallKeepsQueue
+                | Self::DefaultFuelCap
         )
     }
 
@@ -517,7 +527,8 @@ impl Feature {
             | Self::XcallBudget
             | Self::PinnedLineage
             | Self::AppOrigins
-            | Self::XcallKeepsQueue => "1.0.0-rc.39",
+            | Self::XcallKeepsQueue
+            | Self::DefaultFuelCap => "1.0.0-rc.39",
         }
     }
 }
@@ -731,7 +742,17 @@ pub(super) fn apply(
     {
         return Err(NOT_FORWARD.into());
     }
+    let had_default_cap = state.cluster_brings(Feature::DefaultFuelCap);
     state.cluster_version = Some(version.clone());
+    // The default fuel cap arrives with the version that brings it, once, and only
+    // where none is set: a cap the operator set stays, and a 0 set after it is theirs.
+    if !had_default_cap
+        && state.cluster_brings(Feature::DefaultFuelCap)
+        && state.quotas.max_fuel_per_developer_per_day == 0
+    {
+        state.quotas.max_fuel_per_developer_per_day =
+            crate::system::DEFAULT_FUEL_PER_DEVELOPER_PER_DAY;
+    }
     Ok(json!({ "clusterVersion": version }))
 }
 
@@ -1539,7 +1560,8 @@ mod tests {
             | Feature::StateCaps
             | Feature::MeteredBlobs
             | Feature::XcallBudget
-            | Feature::XcallKeepsQueue => unreachable!("no system entry names {feature:?}"),
+            | Feature::XcallKeepsQueue
+            | Feature::DefaultFuelCap => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1639,6 +1661,71 @@ mod tests {
 
     fn same_state(nodes: &[Replica]) -> bool {
         nodes.windows(2).all(|w| w[0].state() == w[1].state())
+    }
+
+    /// Raises every node's logged cluster version to `version`.
+    fn raise_to(nodes: &mut [Replica], version: &str) {
+        let raise = SystemCmd::SetClusterVersion {
+            version: version.into(),
+            nodes: (1..)
+                .zip(nodes.iter().map(|n| n.release.to_owned()))
+                .collect(),
+        };
+        for n in nodes.iter_mut() {
+            let _ok = n.apply(&raise).unwrap();
+        }
+    }
+
+    fn fuel_cap(nodes: &[Replica]) -> Vec<u64> {
+        nodes
+            .iter()
+            .map(|n| n.machine.state.quotas.max_fuel_per_developer_per_day)
+            .collect()
+    }
+
+    fn set_fuel_cap(nodes: &mut [Replica], cap: u64) {
+        let mut quotas = nodes[0].machine.state.quotas.clone();
+        quotas.max_fuel_per_developer_per_day = cap;
+        let cmd = SystemCmd::SetQuotas {
+            quotas,
+            proof: Value::Null,
+        };
+        for n in nodes.iter_mut() {
+            let _ok = n.apply(&cmd).unwrap();
+        }
+    }
+
+    /// A cluster with no fuel cap takes the default one when its cluster version first brings
+    /// `DefaultFuelCap`, on every node alike; below that version it keeps no cap, a cap the
+    /// operator set stays, and a 0 the operator sets afterwards is kept.
+    #[test]
+    fn the_default_fuel_cap_arrives_with_the_cluster_version() {
+        let default = crate::system::DEFAULT_FUEL_PER_DEVELOPER_PER_DAY;
+        let since = Feature::DefaultFuelCap.since();
+
+        let mut nodes = cluster(&[since, since, since]);
+        raise_to(&mut nodes, RC38);
+        assert_eq!(fuel_cap(&nodes), [0, 0, 0], "no cap below the feature");
+        raise_to(&mut nodes, since);
+        assert_eq!(fuel_cap(&nodes), [default; 3]);
+        assert!(same_state(&nodes));
+        // The operator lifts it: a later version does not bring it back.
+        set_fuel_cap(&mut nodes, 0);
+        nodes.iter_mut().for_each(|n| n.release = "1.0.0");
+        raise_to(&mut nodes, "1.0.0");
+        assert_eq!(fuel_cap(&nodes), [0, 0, 0]);
+
+        // A cap the operator set before the feature stays as it is.
+        let mut nodes = cluster(&[since, since, since]);
+        raise_to(&mut nodes, RC38);
+        set_fuel_cap(&mut nodes, 1_000);
+        raise_to(&mut nodes, since);
+        assert_eq!(fuel_cap(&nodes), [1_000; 3]);
+
+        // A new cluster's first version brings it at once.
+        let mut nodes = cluster(&[since, since, since]);
+        raise_to(&mut nodes, since);
+        assert_eq!(fuel_cap(&nodes), [default; 3]);
     }
 
     /// Reproduction: in a cluster rolling from rc.14, a node on rc.15 logs

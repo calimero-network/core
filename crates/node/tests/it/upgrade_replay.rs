@@ -68,6 +68,12 @@ const LOG_POSITIONS: &[&str] = &["index"];
 /// replay's clock rather than the release's answer.
 const EXPIRED: &str = "expired";
 
+/// The developer fuel cap a cluster that held none takes once its cluster version brings
+/// `Feature::DefaultFuelCap`, which the replaying node raises on its own: where the release
+/// answered `"0"`, this one may answer the default
+/// ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)).
+const FUEL_CAP: (&str, &str) = ("maxFuelPerDeveloperPerDay", "10000000000000");
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -165,6 +171,9 @@ fn holds(got: &Value, want: &Value, path: &str) -> Result<(), String> {
                     if gv.as_bool() != Some(want) {
                         return Err(format!("{at} is {gv}, expiresAt says {want}"));
                     }
+                    continue;
+                }
+                if k == FUEL_CAP.0 && v == "0" && gv == FUEL_CAP.1 {
                     continue;
                 }
                 if LOG_POSITIONS.contains(&k.as_str()) {

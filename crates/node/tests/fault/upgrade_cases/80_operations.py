@@ -9,7 +9,7 @@ import random
 import time
 from pathlib import Path
 
-from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, ops, ops_text,
+from upgrade_deep import (VOLATILE, DeepCase, anyone, check, decision, eq, kv_wasm, new_org, ops, ops_text,
                           person, refused, same_decisions, same_read, scrub, signed_ops, snap, subset, until)
 from upgrade_deep import not_covered
 from rv2 import HttpError
@@ -134,7 +134,9 @@ class OpsState(DeepCase):
         s["signup"] = anyone(w, "GET", "sign-up")
 
     def check(self, w, s):
-        subset(ops(w, "GET", "ops/quotas"), s["quotas"], "quotas and overrides")
+        # The fuel cap a cluster holding 0 takes from cluster version 1.0.0-rc.39 is `default-fuel-cap`'s.
+        fuel = VOLATILE | {"maxFuelPerDeveloperPerDay"}
+        subset(scrub(ops(w, "GET", "ops/quotas"), fuel), scrub(s["quotas"], fuel), "quotas and overrides")
         subset(scrub(ops(w, "GET", "ops/pools"), {"nodes", "running"}), scrub(s["pools"], {"nodes", "running"}), "pools")
         subset(anyone(w, "GET", "sign-up"), s["signup"], "the sign-up policy")
 
@@ -146,6 +148,45 @@ class OpsState(DeepCase):
         for n in w.members():
             written += _backup(w, n)
         check(written > 0, "no node wrote a backup")
+
+
+@case
+class DefaultFuelCap(DeepCase):
+    name = "default-fuel-cap"
+    exclusive = True  # the quotas are the cluster's
+    area = "Ops"
+    since = "1.0.0-rc.39"
+    seeds = ("nothing the operator sets: the cluster version that brings `defaultFuelCap` gives a cluster holding "
+             "no developer fuel cap the default one; a developer's kv calls below it")
+    verifies = ("`maxFuelPerDeveloperPerDay` at its default in `ops/quotas` and an account's `/auth/usage`; "
+                "a call below it runs and counts toward `developerFuelToday`")
+
+    CAP = "10000000000000"  # `system::DEFAULT_FUEL_PER_DEVELOPER_PER_DAY`
+
+    def _caps(self, w):
+        cap = ops(w, "GET", "ops/quotas").get("maxFuelPerDeveloperPerDay")
+        eq(cap, self.CAP, "the cluster's fuel cap")
+        mine = person(w, "fern").get("auth/usage")
+        eq(mine.get("quotas", {}).get("maxFuelPerDeveloperPerDay"), self.CAP, "the fuel cap /auth/usage shows")
+        used = int(mine.get("developerFuelToday") or 0)
+        check(used < int(self.CAP), f"the developer is under the cap: {used}")
+        return used
+
+    def populate(self, w):
+        fern = person(w, "fern")
+        app = fern.deploy(kv_wasm(w), "fuel-capped")
+        until("the cluster version brings the default fuel cap", lambda: self._caps(w), timeout=120)
+        fern.call(app, "set", {"key": "k", "value": "under the cap"})
+        until("the call counts toward the developer's day", lambda: check(self._caps(w) > 0, "no fuel counted"))
+        return {"app": app}
+
+    def check(self, w, s):
+        self._caps(w)
+        eq(person(w, "fern").result(s["app"], "get", {"key": "k"}), "under the cap", "a view below the cap")
+
+    def exercise(self, w, s):
+        person(w, "fern").call(s["app"], "set", {"key": "k2", "value": "still under"})
+        self._caps(w)
 
 
 @case

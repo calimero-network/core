@@ -284,7 +284,8 @@ Each instance's usage series carries two labels
   is created from your deployment too and billed to you the same way, and
   deleting the instance deletes them.
 
-A cluster may cap a developer's fuel per day (`maxFuelPerDeveloperPerDay`),
+A cluster caps a developer's fuel per day (`maxFuelPerDeveloperPerDay`, by
+default 10^13 fuel, some 1.7 billion kv `set` calls; the operator may change it),
 summed over every instance of your deployments: past it, client calls to
 them answer `429 QUOTA_EXCEEDED` until the next UTC day. `GET /auth/usage`
 (your account) and `GET /orgs/{org}/usage` (your organization, for its
