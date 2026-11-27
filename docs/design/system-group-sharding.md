@@ -229,11 +229,28 @@ green):
   tenant id never shifts an app group id and is never reused.
 - `Node::ensure_tenant_group` + the reconcile loop: every system voter now forms
   and hosts each org's tenant group (mirroring `ensure_app_group`), so tenant
-  groups are **real, replicating Raft groups**. They run a plain `SystemMachine`
-  and nothing routes to them yet, so behaviour is unchanged.
+  groups are **real, replicating Raft groups**. `admit_raft` admits a tenant
+  group's Raft messages by the system group's membership (a tenant group is
+  placed on the system voters; its id is in the dedicated high range), which the
+  in-process cluster proved necessary — without it the group cannot reach a
+  quorum.
+- **The identity keystone** (`SystemCmd::SeedTenant`): once a tenant group forms,
+  the node seeds it with its org record and a projection of its members'
+  passkeys, read from the root directory. The tenant then verifies its members'
+  consent from its own log alone (`Proofs::consent_of` reads the member
+  passkeys), so `apply` stays deterministic and no node trusts a peer's read —
+  the resolution of the gating decision above, validated end to end
+  (`an_orgs_tenant_group_is_seeded_with_its_record_and_members`, 689/689 `it`).
 
-What remains is the routing flip (reads/writes to the tenant groups, role-aware
-`apply`), and it is gated on the decision below.
+What remains is the routing flip itself: role-aware `apply`, and routing an org's
+reads and writes to its tenant group. The mechanism is proven; the work is
+breadth. The org record is read in **~128 places across ~20 files and six
+command areas** (orgs, apps, updates, approvals, recovery, deployments, plus the
+access gate, `GET /orgs` and the consent page). Each read either moves to the
+tenant machine (the apply handlers of org-detail commands, which now hold the
+org) or becomes a resolve-at-propose that bakes the membership fact into the
+entry (the cross-area reads). This is the pervasive, cluster-validated core — the
+last step, deliberately not landed in one pass.
 
 ## Migration plan (staged)
 
