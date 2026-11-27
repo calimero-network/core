@@ -671,7 +671,11 @@ fn booking_id(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn no_double_booking_under_contention() {
     const N: usize = 200;
-    let c = Cluster::start(3).await;
+    // More sign-ups on each node than its pace takes at once.
+    let c = Cluster::start_with(3, |cfg| {
+        calimero_node::testing::unpaced_sign_ups(&cfg.public_url);
+    })
+    .await;
     let mut owner = person(&c, "owner").await;
     let org = str_of(
         &owner.on[0]

@@ -56,6 +56,21 @@ impl SignUpLimit {
     }
 }
 
+/// This node's sign-up pace ([`SignUpLimit`]): `take` spends a token for the account about to
+/// be proposed, else the pace is only checked.
+pub(super) fn pace(node: &Node, take: bool) -> Result<(), ApiError> {
+    #[cfg(feature = "testing")]
+    if crate::testing::sign_ups_unpaced(&node.config.public_url) {
+        return Ok(());
+    }
+    let now = Instant::now();
+    if take {
+        node.sign_up_limit.take(now)
+    } else {
+        node.sign_up_limit.check(now)
+    }
+}
+
 fn refuse_below_one(tokens: f64) -> Result<(), ApiError> {
     if tokens >= 1.0 {
         return Ok(());

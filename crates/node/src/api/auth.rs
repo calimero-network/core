@@ -152,7 +152,7 @@ async fn begin_rp_id(node: &Node, origin: Option<&str>) -> Result<String, ApiErr
 /// judged again on fresh state, so a replica behind a policy change or a new
 /// invite does not refuse what the log would take; `apply` decides in the end.
 async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiError> {
-    node.sign_up_limit.check(Instant::now())?;
+    super::sign_up::pace(node, false)?;
     let key = invite.map(crate::proof::invite_key);
     let now = now_secs();
     let judge = |s: &SystemState| s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ());
@@ -438,7 +438,7 @@ async fn sign_up_confirmed(
             release: Some(node.own_release()),
         });
     // Spent once the new passkey has signed the account, whatever the log then answers.
-    node.sign_up_limit.take(Instant::now())?;
+    super::sign_up::pace(node, true)?;
     let invite = invite.map(|token| crate::system::SignUpRedemption {
         invite_key: crate::proof::invite_key(token),
         now,
