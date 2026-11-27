@@ -5740,7 +5740,13 @@ async fn xcalls_sent_from_on_xcall_failed_share_the_chain_budget() {
     };
     let _r = alice
         .apps()
-        .call(&app, "bounce", Some(json!({ "app": "no-such-app" })), None, None)
+        .call(
+            &app,
+            "bounce",
+            Some(json!({ "app": "no-such-app" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let dead = crate::harness::poll::eventually(

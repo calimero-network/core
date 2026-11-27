@@ -739,9 +739,10 @@ not_covered("Apps", "A view's arguments held to `MAX_ARGS_BYTES` (`413 ARGS_TOO_
 
 not_covered("Apps", "An xcall chain ending at its budget (`MAX_XCALL_CHAIN`, `Feature::XcallBudget`): a message sent "
             "with none left is dead-lettered",
-            "the chain needs `hop`, which the published kv fixture the old release seeds with does not have; what a "
+            "the chain needs `hop` or `bounce`, which the published kv fixture the old release seeds with does not have; what a "
             "chain stores is an outbox row and a dead letter, whose old shapes (no budget) the `xcall` case reads "
-            "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` (`component_cluster.rs`) covers it on one "
+            "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` and "
+            "`xcalls_sent_from_on_xcall_failed_share_the_chain_budget` (`component_cluster.rs`) cover it on one "
             "build")
 not_covered("Apps", "A full outbox keeping its queue (`MAX_OUTBOX`, `Feature::XcallKeepsQueue`): an xcall past it is "
             "dead-lettered alone",
