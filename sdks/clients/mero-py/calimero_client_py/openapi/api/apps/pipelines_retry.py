@@ -118,6 +118,7 @@ def sync_detailed(
 
      The owner and the organization's members. A new run of an ended run's pipeline at the same release,
     hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    `idempotencyKey` as on a start.
 
     **Who:** signed in (a session or an API key).
 
@@ -158,6 +159,7 @@ def sync(
 
      The owner and the organization's members. A new run of an ended run's pipeline at the same release,
     hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    `idempotencyKey` as on a start.
 
     **Who:** signed in (a session or an API key).
 
@@ -193,6 +195,7 @@ async def asyncio_detailed(
 
      The owner and the organization's members. A new run of an ended run's pipeline at the same release,
     hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    `idempotencyKey` as on a start.
 
     **Who:** signed in (a session or an API key).
 
@@ -231,6 +234,7 @@ async def asyncio(
 
      The owner and the organization's members. A new run of an ended run's pipeline at the same release,
     hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    `idempotencyKey` as on a start.
 
     **Who:** signed in (a session or an API key).
 

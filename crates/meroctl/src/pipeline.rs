@@ -65,6 +65,10 @@ pub enum PipelineCmd {
         /// Start no step run that could take the run past this many micro-units.
         #[arg(long, value_name = "MICRO_UNITS")]
         max_cost: Option<String>,
+        /// Make a repeat of this command the same run: a CI job passes its job id, say. Without
+        /// one the client still makes a key for its own retries.
+        #[arg(long, value_name = "KEY")]
+        idempotency_key: Option<String>,
         /// Wait until the run is no longer running and print it.
         #[arg(long)]
         wait: bool,
@@ -80,6 +84,10 @@ pub enum PipelineCmd {
         /// Start no step run that could take the run past this many micro-units.
         #[arg(long, value_name = "MICRO_UNITS")]
         max_cost: Option<String>,
+        /// Make a repeat of this command the same run: a CI job passes its job id, say. Without
+        /// one the client still makes a key for its own retries.
+        #[arg(long, value_name = "KEY")]
+        idempotency_key: Option<String>,
         /// Wait until the new run is no longer running and print it.
         #[arg(long)]
         wait: bool,
@@ -391,10 +399,14 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
             inputs,
             params,
             max_cost,
+            idempotency_key,
             wait,
         } => {
             let app = env.app(&app).await?;
-            let body = start_body(&inputs, &params, max_cost.as_deref())?;
+            let mut body = start_body(&inputs, &params, max_cost.as_deref())?;
+            if let Some(key) = idempotency_key {
+                body["idempotencyKey"] = json!(key);
+            }
             let started = env
                 .client
                 .start_pipeline_run_with(&app, &name, body)
@@ -409,12 +421,16 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
             run,
             limits,
             max_cost,
+            idempotency_key,
             wait,
         } => {
             let app = env.app(&app).await?;
             let mut body = json!({ "limits": parse_limits(&limits)? });
             if let Some(max) = max_cost {
                 body["maxCost"] = json!(max);
+            }
+            if let Some(key) = idempotency_key {
+                body["idempotencyKey"] = json!(key);
             }
             let started = env.client.retry_pipeline_run(&app, &run, body).await?;
             if !wait {

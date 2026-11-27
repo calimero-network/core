@@ -450,7 +450,7 @@ public protocol APIProtocol: Sendable {
     func pipelineReceiptReceipt(_ input: Operations.PipelineReceiptReceipt.Input) async throws -> Operations.PipelineReceiptReceipt.Output
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -468,7 +468,7 @@ public protocol APIProtocol: Sendable {
     func pipelinesEstimateRun(_ input: Operations.PipelinesEstimateRun.Input) async throws -> Operations.PipelinesEstimateRun.Output
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2647,7 +2647,7 @@ extension APIProtocol {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2685,7 +2685,7 @@ extension APIProtocol {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -28684,7 +28684,7 @@ public enum Operations {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -28780,21 +28780,27 @@ public enum Operations {
                     public var limits: Operations.PipelinesRetry.Input.Body.JsonPayload.LimitsPayload?
                     /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/requestBody/json/maxCost`.
                     public var maxCost: Swift.String?
+                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/requestBody/json/idempotencyKey`.
+                    public var idempotencyKey: Swift.String?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - limits:
                     ///   - maxCost:
+                    ///   - idempotencyKey:
                     public init(
                         limits: Operations.PipelinesRetry.Input.Body.JsonPayload.LimitsPayload? = nil,
-                        maxCost: Swift.String? = nil
+                        maxCost: Swift.String? = nil,
+                        idempotencyKey: Swift.String? = nil
                     ) {
                         self.limits = limits
                         self.maxCost = maxCost
+                        self.idempotencyKey = idempotencyKey
                     }
                     public enum CodingKeys: String, CodingKey {
                         case limits
                         case maxCost
+                        case idempotencyKey
                     }
                     public init(from decoder: any Decoder) throws {
                         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -28806,9 +28812,14 @@ public enum Operations {
                             Swift.String.self,
                             forKey: .maxCost
                         )
+                        self.idempotencyKey = try container.decodeIfPresent(
+                            Swift.String.self,
+                            forKey: .idempotencyKey
+                        )
                         try decoder.ensureNoAdditionalProperties(knownKeys: [
                             "limits",
-                            "maxCost"
+                            "maxCost",
+                            "idempotencyKey"
                         ])
                     }
                 }
@@ -29168,7 +29179,7 @@ public enum Operations {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -29255,25 +29266,31 @@ public enum Operations {
                     public var params: Operations.PipelinesStart.Input.Body.JsonPayload.ParamsPayload?
                     /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/requestBody/json/maxCost`.
                     public var maxCost: Swift.String?
+                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/requestBody/json/idempotencyKey`.
+                    public var idempotencyKey: Swift.String?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - inputs:
                     ///   - params:
                     ///   - maxCost:
+                    ///   - idempotencyKey:
                     public init(
                         inputs: Operations.PipelinesStart.Input.Body.JsonPayload.InputsPayload? = nil,
                         params: Operations.PipelinesStart.Input.Body.JsonPayload.ParamsPayload? = nil,
-                        maxCost: Swift.String? = nil
+                        maxCost: Swift.String? = nil,
+                        idempotencyKey: Swift.String? = nil
                     ) {
                         self.inputs = inputs
                         self.params = params
                         self.maxCost = maxCost
+                        self.idempotencyKey = idempotencyKey
                     }
                     public enum CodingKeys: String, CodingKey {
                         case inputs
                         case params
                         case maxCost
+                        case idempotencyKey
                     }
                     public init(from decoder: any Decoder) throws {
                         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -29289,10 +29306,15 @@ public enum Operations {
                             Swift.String.self,
                             forKey: .maxCost
                         )
+                        self.idempotencyKey = try container.decodeIfPresent(
+                            Swift.String.self,
+                            forKey: .idempotencyKey
+                        )
                         try decoder.ensureNoAdditionalProperties(knownKeys: [
                             "inputs",
                             "params",
-                            "maxCost"
+                            "maxCost",
+                            "idempotencyKey"
                         ])
                     }
                 }

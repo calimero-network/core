@@ -1235,6 +1235,61 @@ async fn rerunning_with_one_changed_param_runs_only_the_steps_it_reaches() {
     assert_eq!(third["steps"]["c"]["result"], first["steps"]["c"]["result"]);
 }
 
+/// A start or retry sent again with its idempotency key, as a CI job does after a timeout, answers
+/// the run the first one started; the same key with another body is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_start_repeated_with_its_idempotency_key_is_the_same_run() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"some document").await;
+    let start = |body: Value| rig.alice.start_pipeline_run_with(&rig.app, "partial", body);
+    let reused = |e: calimero_client::Error| matches!(&e, calimero_client::Error::Api { status: 409, code, .. } if code == "IDEMPOTENCY_KEY_REUSED");
+    let body =
+        json!({ "inputs": { "docs": [file] }, "params": { "p": "one" }, "idempotencyKey": "ci-1" });
+    let first = start(body.clone()).await.unwrap();
+    assert_eq!(
+        start(body.clone()).await.unwrap(),
+        first,
+        "the same run, the same answer"
+    );
+    let run = first["run"].as_str().unwrap().to_owned();
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(
+        start(body.clone()).await.unwrap(),
+        first,
+        "an ended run is still the same run"
+    );
+
+    let mut other = body.clone();
+    other["params"]["p"] = json!("two");
+    assert!(reused(start(other).await.unwrap_err()));
+
+    let mut keyless = body.clone();
+    let _key = keyless.as_object_mut().unwrap().remove("idempotencyKey");
+    let fresh = start(keyless).await.unwrap();
+    assert_ne!(fresh["run"], first["run"], "no key, a new run");
+    let _ended = rig.ended(fresh["run"].as_str().unwrap()).await;
+
+    let retry = json!({ "idempotencyKey": "ci-2" });
+    let once = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &run, retry.clone())
+        .await
+        .unwrap();
+    let twice = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &run, retry)
+        .await
+        .unwrap();
+    assert_eq!(once, twice, "a repeated retry is the same run");
+    assert_eq!(once["retryOf"], json!(run));
+    let as_start = json!({ "inputs": { "docs": [file] }, "idempotencyKey": "ci-2" });
+    assert!(
+        reused(start(as_start).await.unwrap_err()),
+        "a retry's key is not a start's"
+    );
+}
+
 /// A step with `cache: false` runs every time, never answered from the step cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_step_with_cache_false_always_runs() {

@@ -537,7 +537,8 @@ impl Client {
             .await
     }
 
-    /// [`Client::start_pipeline_run`] with the whole request body, `maxCost` included.
+    /// [`Client::start_pipeline_run`] with the whole request body, `maxCost` and `idempotencyKey`
+    /// included; without a key one is made, so a retry of this call is the same run.
     pub async fn start_pipeline_run_with(
         &self,
         app: &str,
@@ -545,6 +546,7 @@ impl Client {
         body: Value,
     ) -> Result<Value> {
         let max_cost: Option<String> = body_field(&body, "maxCost")?;
+        let key: Option<String> = body_field(&body, "idempotencyKey")?;
         let answer = self
             .apps()
             .pipelines_start(
@@ -553,6 +555,7 @@ impl Client {
                 body_field(&body, "inputs")?,
                 body_field(&body, "params")?,
                 max_cost.as_deref(),
+                key.as_deref(),
             )
             .await?;
         route::value(&answer)
@@ -656,12 +659,19 @@ impl Client {
     }
 
     /// Starts a new run of an ended pipeline run's pipeline, release, inputs and params; `body` is
-    /// `{ limits?, maxCost? }`.
+    /// `{ limits?, maxCost?, idempotencyKey? }`.
     pub async fn retry_pipeline_run(&self, app: &str, run: &str, body: Value) -> Result<Value> {
         let max_cost: Option<String> = body_field(&body, "maxCost")?;
+        let key: Option<String> = body_field(&body, "idempotencyKey")?;
         let answer = self
             .apps()
-            .pipelines_retry(app, run, body_field(&body, "limits")?, max_cost.as_deref())
+            .pipelines_retry(
+                app,
+                run,
+                body_field(&body, "limits")?,
+                max_cost.as_deref(),
+                key.as_deref(),
+            )
             .await?;
         route::value(&answer)
     }

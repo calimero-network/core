@@ -122,7 +122,10 @@ def sync_detailed(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
+    `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
+    run it started while the app keeps it, and the same key with another body is `409
+    IDEMPOTENCY_KEY_REUSED`.
 
     **Who:** signed in (a session or an API key).
 
@@ -162,7 +165,10 @@ def sync(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
+    `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
+    run it started while the app keeps it, and the same key with another body is `409
+    IDEMPOTENCY_KEY_REUSED`.
 
     **Who:** signed in (a session or an API key).
 
@@ -197,7 +203,10 @@ async def asyncio_detailed(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
+    `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
+    run it started while the app keeps it, and the same key with another body is `409
+    IDEMPOTENCY_KEY_REUSED`.
 
     **Who:** signed in (a session or an API key).
 
@@ -235,7 +244,10 @@ async def asyncio(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an
+    `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the
+    run it started while the app keeps it, and the same key with another body is `409
+    IDEMPOTENCY_KEY_REUSED`.
 
     **Who:** signed in (a session or an API key).
 

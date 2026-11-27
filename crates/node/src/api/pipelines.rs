@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use calimero_identity::{b64url, sha256};
 use calimero_pipeline::{
     estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
     PriceTable, MAX_RUN_FILES,
@@ -19,8 +20,8 @@ use serde_json::{json, Value};
 use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult, Principal};
 use crate::app::Status;
 use crate::component::{
-    parse_hex32, CostCap, FanOut, PipelineStartEntry, PipelineState, RunInputRef, StepStatus,
-    INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS,
+    idem_key, parse_hex32, CostCap, FanOut, PipelineStartEntry, PipelineState, RunInputRef,
+    StepStatus, INPUT_NOT_HELD, KNOWN, TOO_MANY_PIPELINE_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
@@ -40,6 +41,7 @@ const BAD_MAX_COST: &str = "BAD_MAX_COST";
 const BAD_LIMITS: &str = "BAD_LIMITS";
 const LIMIT_EXCEEDS_CAP: &str = "LIMIT_EXCEEDS_CAP";
 const STILL_RUNNING: &str = "STILL_RUNNING";
+const KEY_REUSED: &str = "IDEMPOTENCY_KEY_REUSED";
 
 /// An input that is a file id the app does not hold: a file is forgotten once nothing refers to
 /// it, so this cannot tell one that was never there from one that expired.
@@ -61,6 +63,8 @@ pub(super) struct StartBody {
     /// Micro-units, a decimal string: the run starts no step run that could take it past this.
     #[serde(default)]
     max_cost: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 /// The compute methods of each module a pipeline names, by the name as written.
@@ -451,7 +455,8 @@ pub(super) async fn start(
         retry_of: None,
         max_cost: body.max_cost,
     };
-    start_launch(&node, &app, p.caller, p.sys_index, launch).await
+    let key = body.idempotency_key.as_deref();
+    start_launch(&node, &app, p.caller, p.sys_index, key, launch).await
 }
 
 /// Everything a new pipeline run is made of: what a start takes from the request and the pinned
@@ -470,14 +475,25 @@ struct Launch {
     max_cost: Option<String>,
 }
 
-/// Checks the inputs are held, prices the cost cap and logs the start on the app's leader.
+/// Checks the inputs are held, prices the cost cap and logs the start on the app's leader. With
+/// an idempotency key the run id is the key's, and a run it already started is answered again.
 async fn start_launch(
     node: &Node,
     app: &AppRecord,
     caller: Caller,
     sys_index: Option<u64>,
+    key: Option<&str>,
     launch: Launch,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let run = match key {
+        Some(key) => keyed_run(&app.app_id, &caller, key),
+        None => typed_id::<12>(),
+    };
+    if key.is_some() {
+        if let Some(answer) = started_before(node, app, &caller, &run, &launch).await? {
+            return Ok((StatusCode::OK, Json(json!(answer))));
+        }
+    }
     for id in launch.inputs.values().flatten() {
         let raw = parse_hex32(id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
@@ -490,7 +506,6 @@ async fn start_launch(
     let priced = with_limits(&launch.pipeline, &launch.limits);
     let methods = module_methods(node, &launch.compute_bundle, &launch.modules).await?;
     let cost = cost_cap(node, &priced, &methods, launch.max_cost.as_deref()).await?;
-    let run = typed_id::<12>();
     let retry_of = launch.retry_of.clone();
     let entry = PipelineStartEntry {
         id: run.clone(),
@@ -529,11 +544,79 @@ async fn start_launch(
             "this app has too many pipeline runs going; wait for one to end",
         )),
         (_, Some(INPUT_NOT_HELD)) => Err(expired()),
+        (_, Some(KNOWN)) if key.is_some() => Err(key_reused()),
         (status, why) => Err(ApiError::conflict(&format!(
             "the pipeline run was not started ({status:?}: {})",
             why.unwrap_or("no reason")
         ))),
     }
+}
+
+/// The run id an idempotency key names: the same for the same app, caller and key, so a repeated
+/// start is the run the first one logged.
+fn keyed_run(app_id: &str, caller: &Caller, key: &str) -> String {
+    let mut seed = format!("pipeline-run|{app_id}|{}", idem_key(caller, key)).into_bytes();
+    loop {
+        let digest = sha256(&seed);
+        let id = b64url(&digest[..12]);
+        if !id.starts_with('-') {
+            return id;
+        }
+        seed = digest.to_vec();
+    }
+}
+
+fn key_reused() -> ApiError {
+    ApiError::new(
+        409,
+        KEY_REUSED,
+        "this idempotency key started a different pipeline run",
+    )
+}
+
+/// The answer of the run this key already started, if any: its start again when the request
+/// matches the run's, a refusal when it does not.
+async fn started_before(
+    node: &Node,
+    app: &AppRecord,
+    caller: &Caller,
+    run: &str,
+    launch: &Launch,
+) -> Result<Option<PipelineStarted>, ApiError> {
+    let known = node
+        .view(&crate::node::ViewRequest {
+            app_id: app.app_id.clone(),
+            method: PIPELINE_VIEW.to_owned(),
+            args: json!({ "run": run, "files": false, "items": false }),
+            caller: caller.clone(),
+            strong: true,
+            min_index: 0,
+            via: None,
+            action: None,
+        })
+        .await?
+        .result;
+    if known.is_null() {
+        return Ok(None);
+    }
+    let limits: BTreeMap<String, Limits> =
+        serde_json::from_value(known["limits"].clone()).unwrap_or_default();
+    let max_cost = known["cost"]["maxCost"].as_str();
+    let same = known["pipeline"] == launch.name.as_str()
+        && known["inputs"] == json!(launch.inputs)
+        && known["params"] == json!(launch.params)
+        && known["retryOf"].as_str() == launch.retry_of.as_deref()
+        && limits == launch.limits
+        && max_cost.and_then(|m| m.parse::<u64>().ok())
+            == launch.max_cost.as_deref().and_then(|m| m.parse().ok());
+    if !same {
+        return Err(key_reused());
+    }
+    Ok(Some(PipelineStarted {
+        run: run.to_owned(),
+        worst_case: known["cost"]["worstCase"].as_str().map(str::to_owned),
+        retry_of: launch.retry_of.clone(),
+    }))
 }
 
 /// The pipeline with each step's limits overridden, for pricing what a retry may cost.
@@ -601,6 +684,8 @@ pub(super) struct RetryBody {
     limits: BTreeMap<String, Limits>,
     #[serde(default)]
     max_cost: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 /// Starts a new run of the same pipeline, release, inputs and params as an ended run, with the
@@ -666,7 +751,8 @@ pub(super) async fn retry(
         retry_of: Some(run),
         max_cost: body.max_cost,
     };
-    start_launch(&node, &app, p.caller, p.sys_index, launch).await
+    let key = body.idempotency_key.as_deref();
+    start_launch(&node, &app, p.caller, p.sys_index, key, launch).await
 }
 
 /// One pipeline run's record, as the leader holds it.

@@ -25,11 +25,13 @@ class PipelinesStartBody:
         inputs (Union[Unset, PipelinesStartBodyInputs]):
         params (Union[Unset, PipelinesStartBodyParams]):
         max_cost (Union[Unset, str]):
+        idempotency_key (Union[Unset, str]):
     """
 
     inputs: Union[Unset, "PipelinesStartBodyInputs"] = UNSET
     params: Union[Unset, "PipelinesStartBodyParams"] = UNSET
     max_cost: Union[Unset, str] = UNSET
+    idempotency_key: Union[Unset, str] = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.pipelines_start_body_inputs import PipelinesStartBodyInputs
@@ -45,6 +47,8 @@ class PipelinesStartBody:
 
         max_cost = self.max_cost
 
+        idempotency_key = self.idempotency_key
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -54,6 +58,8 @@ class PipelinesStartBody:
             field_dict["params"] = params
         if max_cost is not UNSET:
             field_dict["maxCost"] = max_cost
+        if idempotency_key is not UNSET:
+            field_dict["idempotencyKey"] = idempotency_key
 
         return field_dict
 
@@ -79,10 +85,13 @@ class PipelinesStartBody:
 
         max_cost = d.pop("maxCost", UNSET)
 
+        idempotency_key = d.pop("idempotencyKey", UNSET)
+
         pipelines_start_body = cls(
             inputs=inputs,
             params=params,
             max_cost=max_cost,
+            idempotency_key=idempotency_key,
         )
 
         return pipelines_start_body

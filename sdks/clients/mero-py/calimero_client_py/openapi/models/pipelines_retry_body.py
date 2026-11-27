@@ -23,10 +23,12 @@ class PipelinesRetryBody:
     Attributes:
         limits (Union[Unset, PipelinesRetryBodyLimits]):
         max_cost (Union[Unset, str]):
+        idempotency_key (Union[Unset, str]):
     """
 
     limits: Union[Unset, "PipelinesRetryBodyLimits"] = UNSET
     max_cost: Union[Unset, str] = UNSET
+    idempotency_key: Union[Unset, str] = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.pipelines_retry_body_limits import PipelinesRetryBodyLimits
@@ -37,6 +39,8 @@ class PipelinesRetryBody:
 
         max_cost = self.max_cost
 
+        idempotency_key = self.idempotency_key
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -44,6 +48,8 @@ class PipelinesRetryBody:
             field_dict["limits"] = limits
         if max_cost is not UNSET:
             field_dict["maxCost"] = max_cost
+        if idempotency_key is not UNSET:
+            field_dict["idempotencyKey"] = idempotency_key
 
         return field_dict
 
@@ -61,9 +67,12 @@ class PipelinesRetryBody:
 
         max_cost = d.pop("maxCost", UNSET)
 
+        idempotency_key = d.pop("idempotencyKey", UNSET)
+
         pipelines_retry_body = cls(
             limits=limits,
             max_cost=max_cost,
+            idempotency_key=idempotency_key,
         )
 
         return pipelines_retry_body

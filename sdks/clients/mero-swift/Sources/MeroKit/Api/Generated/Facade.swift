@@ -832,26 +832,26 @@ extension CalimeroClient {
 
         /// Retry a pipeline run: `POST /apps/{app}/pipeline-runs/{run}/retry` (`pipelines_retry`).
         ///
-        /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+        /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func pipelinesRetry(app: Swift.String, run: Swift.String, limits: Operations.PipelinesRetry.Input.Body.JsonPayload.LimitsPayload? = nil, maxCost: Swift.String? = nil) async throws -> Components.Schemas.PipelineStarted {
-            let input = Operations.PipelinesRetry.Input(path: .init(app: app, run: run), body: .json(.init(limits: limits, maxCost: maxCost)))
-            return try await client.perform { api in
+        public func pipelinesRetry(app: Swift.String, run: Swift.String, limits: Operations.PipelinesRetry.Input.Body.JsonPayload.LimitsPayload? = nil, maxCost: Swift.String? = nil, idempotencyKey: Swift.String? = nil) async throws -> Components.Schemas.PipelineStarted {
+            let input = Operations.PipelinesRetry.Input(path: .init(app: app, run: run), body: .json(.init(limits: limits, maxCost: maxCost, idempotencyKey: idempotencyKey)))
+            return try await client.perform(retry: idempotencyKey != nil) { api in
                 try await api.pipelinesRetry(input).ok.body.json
             }
         }
 
         /// Start a pipeline run: `POST /apps/{app}/pipelines/{name}/runs` (`pipelines_start`).
         ///
-        /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+        /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` the run id is derived from the app, the caller and the key: a repeat answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func pipelinesStart(app: Swift.String, name: Swift.String, inputs: Operations.PipelinesStart.Input.Body.JsonPayload.InputsPayload? = nil, params: Operations.PipelinesStart.Input.Body.JsonPayload.ParamsPayload? = nil, maxCost: Swift.String? = nil) async throws -> Components.Schemas.PipelineStarted {
-            let input = Operations.PipelinesStart.Input(path: .init(app: app, name: name), body: .json(.init(inputs: inputs, params: params, maxCost: maxCost)))
-            return try await client.perform { api in
+        public func pipelinesStart(app: Swift.String, name: Swift.String, inputs: Operations.PipelinesStart.Input.Body.JsonPayload.InputsPayload? = nil, params: Operations.PipelinesStart.Input.Body.JsonPayload.ParamsPayload? = nil, maxCost: Swift.String? = nil, idempotencyKey: Swift.String? = nil) async throws -> Components.Schemas.PipelineStarted {
+            let input = Operations.PipelinesStart.Input(path: .init(app: app, name: name), body: .json(.init(inputs: inputs, params: params, maxCost: maxCost, idempotencyKey: idempotencyKey)))
+            return try await client.perform(retry: idempotencyKey != nil) { api in
                 try await api.pipelinesStart(input).ok.body.json
             }
         }
