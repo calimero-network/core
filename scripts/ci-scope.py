@@ -80,6 +80,7 @@ WORKFLOWS = {
             # and what those scripts read.
             "scripts/check-like-ci.py",
             "scripts/check-naming.sh",
+            "scripts/check-publishable-crates.py",
             "scripts/check-no-user-data-at-info.py",
             "scripts/check-no-user-data-at-info.allow",
             "scripts/tests/check-no-user-data-at-info-test.py",

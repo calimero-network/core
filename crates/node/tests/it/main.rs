@@ -38,7 +38,6 @@ mod component_compute;
 mod component_files;
 mod component_packages;
 mod compute_runs;
-mod connectors;
 mod consent_page;
 mod deployers;
 mod deployments;

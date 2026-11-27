@@ -23,6 +23,12 @@ pub struct SessionsRevoked {
 /// An exchange of a refresh token the cluster does not hold.
 const UNKNOWN_REFRESH_TOKEN: Rejection =
     Rejection::new(RejectionKind::Rejected, "unknown refresh token");
+/// A reused token bound to a holder key, without a proof by that key, or with one that does not
+/// verify at the entry's time.
+const NO_HOLDER_PROOF: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "this refresh token is bound to a device key: a reuse ends its session only with that key's proof",
+);
 /// An exchange of a refresh token recorded without a key.
 const REFRESH_WITHOUT_KEY: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -160,6 +166,11 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             count,
             assertion,
         } => authorize_counter(proofs, credential_id, *count, assertion),
+        SystemCmd::RefreshReused {
+            hash,
+            now,
+            holder_proof,
+        } => authorize_reuse(proofs, hash, *now, holder_proof.as_ref()),
         _ => Ok(None),
     }
 }
@@ -282,6 +293,9 @@ fn authorize_exchange(
         || old.passkey != record.passkey
         || old.app != record.app
         || old.origin != record.origin
+        // A session bound to a holder key stays bound to it: no node drops the binding
+        // (or binds an unbound one) in an exchange.
+        || old.holder != record.holder
     {
         return Err(OTHER_SESSION);
     }
@@ -294,6 +308,28 @@ fn authorize_exchange(
         now,
     );
     crate::proof::verify_refresh_use(&old.key, &message, signature)?;
+    Ok(None)
+}
+
+/// A reuse of a token bound to a holder key: that key's proof for the token, at the entry's
+/// time. Unbound tokens, and tokens the state does not hold (refused at apply), need none.
+fn authorize_reuse(
+    proofs: &Proofs<'_>,
+    hash: &str,
+    now: u64,
+    holder_proof: Option<&crate::types::HolderProof>,
+) -> Result<Option<String>, Rejection> {
+    let Some(holder) = proofs
+        .s
+        .rotated_refresh
+        .get(hash)
+        .and_then(|r| r.holder.as_deref())
+    else {
+        return Ok(None);
+    };
+    let proof = holder_proof.ok_or(NO_HOLDER_PROOF)?;
+    crate::proof::verify_refresh_holder(holder, hash, proof.at, &proof.signature, now)
+        .map_err(|_| NO_HOLDER_PROOF)?;
     Ok(None)
 }
 
@@ -348,7 +384,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             let revoked = state.revoke_account_sessions(&actor, now);
             Ok(json!(SessionsRevoked { revoked }))
         }
-        SystemCmd::RefreshReused { hash, now } => {
+        SystemCmd::RefreshReused { hash, now, .. } => {
             let reused = state
                 .rotated_refresh
                 .get(&hash)

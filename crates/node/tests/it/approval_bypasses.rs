@@ -761,7 +761,7 @@ async fn forged_sessions_counters_key_revocations_and_accounts_are_refused() {
     // The leader's tokens open nothing; alice's own still refreshes, her
     // passkey still signs in, and the victim's sign-up goes through.
     for token in [theirs, also_theirs] {
-        let e = c.client(0).auth().refresh(token).await.unwrap_err();
+        let e = c.client(0).auth().refresh(token, None).await.unwrap_err();
         assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
     }
     let _s = alice_client.refresh().await.unwrap();
@@ -1108,7 +1108,7 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
     let fresh = alice.refresh().await.unwrap();
     // A sign-in node 3 may not serve is refused before its challenge is spent:
     // the same ceremony then finishes on an approved node.
-    let begin = on3.auth().login_begin(None).await.map(wire).unwrap();
+    let begin = on3.auth().login_begin(None, None).await.map(wire).unwrap();
     let challenge =
         calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
     let finish = json!({

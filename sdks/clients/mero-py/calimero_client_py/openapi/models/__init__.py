@@ -307,6 +307,8 @@ from .file_stored import FileStored
 from .file_view import FileView
 from .follow_up_failed import FollowUpFailed
 from .follow_up_failed_error import FollowUpFailedError
+from .frontend_digests import FrontendDigests
+from .frontend_file_digest import FrontendFileDigest
 from .governance import Governance
 from .governance_app_upgrades import GovernanceAppUpgrades
 from .governance_deployers import GovernanceDeployers
@@ -586,6 +588,7 @@ from .recovery_set_response_200 import RecoverySetResponse200
 from .recovery_start_body import RecoveryStartBody
 from .recovery_started import RecoveryStarted
 from .refresh_body import RefreshBody
+from .refresh_body_holder_proof import RefreshBodyHolderProof
 from .register_begin_body import RegisterBeginBody
 from .register_finish_body import RegisterFinishBody
 from .registration import Registration
@@ -1054,6 +1057,8 @@ __all__ = (
     "FileView",
     "FollowUpFailed",
     "FollowUpFailedError",
+    "FrontendDigests",
+    "FrontendFileDigest",
     "Governance",
     "GovernanceAppUpgrades",
     "GovernanceDeployers",
@@ -1313,6 +1318,7 @@ __all__ = (
     "RecoveryStartBody",
     "RecoveryStarted",
     "RefreshBody",
+    "RefreshBodyHolderProof",
     "RegisterBeginBody",
     "RegisterFinishBody",
     "Registration",

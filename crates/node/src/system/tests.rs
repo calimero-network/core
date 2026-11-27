@@ -1270,7 +1270,6 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             metadata: Value::Null,
             outbound: Vec::new(),
             secrets: BTreeMap::new(),
-            connectors: BTreeMap::new(),
             uses: BTreeMap::new(),
             installed_by: "alice".into(),
             installed_at: 0,
@@ -1381,7 +1380,6 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             metadata: Value::Null,
             outbound: Vec::new(),
             secrets: BTreeMap::new(),
-            connectors: BTreeMap::new(),
             uses: BTreeMap::new(),
             installed_by: "alice".into(),
             installed_at: 0,
@@ -1428,7 +1426,6 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             metadata: Value::Null,
             outbound: Vec::new(),
             secrets: BTreeMap::new(),
-            connectors: BTreeMap::new(),
             uses: BTreeMap::new(),
             installed_by: "alice".into(),
             installed_at: 0,
@@ -2319,6 +2316,7 @@ fn refresh_token(
         origin: None,
         key: crate::proof::refresh_key(&token),
         opened_at: 0,
+        holder: None,
     };
     (token, hash, record)
 }
@@ -2455,6 +2453,69 @@ fn proofs_from_before_the_expiry_mark_read_and_write_as_they_did() {
     }
 }
 
+/// A reused token that was bound to a holder key revokes its session only with that key's proof
+/// for it, made near the entry's time; an unbound one revokes it as before. So a copy of an old
+/// token taken off the device cannot sign its owner out, through any node.
+#[test]
+fn a_reused_holder_bound_token_revokes_only_with_its_holders_proof() {
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+    let device = || {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let public = calimero_identity::b64url(pair.public_key().as_ref());
+        (pair, public)
+    };
+    let prove = |pair: &EcdsaKeyPair, hash: &str, at: u64| crate::types::HolderProof {
+        at,
+        signature: calimero_identity::b64url(
+            pair.sign(
+                &SystemRandom::new(),
+                &crate::proof::refresh_holder_message(hash, at),
+            )
+            .unwrap()
+            .as_ref(),
+        ),
+    };
+    let (mut m, alice, _bob, _carol) = proven_cluster();
+    let (key, public) = device();
+    let (other, _) = device();
+    let (_t, hash, mut held) = refresh_token("alice", &alice.credential_id(), "s-held");
+    held.holder = Some(public);
+    let _prev = m.state.rotated_refresh.insert(hash.clone(), held);
+    let now = 1_700_000_000;
+    let reuse = |holder_proof| SystemCmd::RefreshReused {
+        hash: hash.clone(),
+        now,
+        holder_proof,
+    };
+    for (why, proof) in [
+        ("no proof", None),
+        ("another key's", Some(prove(&other, &hash, now))),
+        ("for another token", Some(prove(&key, "other-hash", now))),
+        ("stale", Some(prove(&key, &hash, now - 600))),
+    ] {
+        assert!(m.run(reuse(proof)).is_err(), "{why}");
+        assert!(!m.state.revoked_sessions.contains("s-held"), "{why}");
+    }
+    let _ok = m.run(reuse(Some(prove(&key, &hash, now - 30)))).unwrap();
+    assert!(m.state.revoked_sessions.contains("s-held"));
+
+    // An unbound token's reuse needs no proof, as before.
+    let (_t, plain_hash, plain) = refresh_token("alice", &alice.credential_id(), "s-plain");
+    let _prev = m.state.rotated_refresh.insert(plain_hash.clone(), plain);
+    let _ok = m
+        .run(SystemCmd::RefreshReused {
+            hash: plain_hash,
+            now,
+            holder_proof: None,
+        })
+        .unwrap();
+    assert!(m.state.revoked_sessions.contains("s-plain"));
+}
+
 /// A refresh token is exchanged only with its own key's signature, for
 /// the session it already belongs to.
 #[test]
@@ -2535,6 +2596,18 @@ fn a_refresh_token_is_exchanged_with_its_own_key() {
                 crate::proof::sign_refresh_use(&token, &message(&next_record)),
             ),
         ),
+        // An unbound session is not bound to a holder key by an exchange: the passkey
+        // signed the session without one.
+        (
+            "bound to a holder key the session lacks",
+            exchange(
+                crate::types::RefreshRecord {
+                    holder: Some("BHolder".into()),
+                    ..next_record.clone()
+                },
+                crate::proof::sign_refresh_use(&token, &message(&next_record)),
+            ),
+        ),
     ] {
         assert!(m.run(cmd).is_err(), "{why}");
     }
@@ -2545,6 +2618,65 @@ fn a_refresh_token_is_exchanged_with_its_own_key() {
         .unwrap();
     assert!(m.state.refresh.contains_key(&next_hash));
     assert!(m.run(exchange(next_record, signed)).is_err(), "replayed");
+
+    // A holder-bound session stays bound: an exchange that drops the key, or names
+    // another, is refused, so no node can turn the token into one usable off the device.
+    let (held_token, held_hash, mut held) = refresh_token("alice", &alice.credential_id(), "s4");
+    held.holder = Some("BDevice".into());
+    let _prev = m.state.refresh.insert(held_hash.clone(), held.clone());
+    let (_n, then_hash, then_record) = refresh_token("alice", &alice.credential_id(), "s4");
+    for (why, holder) in [("dropped", None), ("swapped", Some("BOther".to_owned()))] {
+        let record = crate::types::RefreshRecord {
+            holder,
+            ..then_record.clone()
+        };
+        let message = crate::proof::refresh_use_message(
+            &held_hash,
+            &then_hash,
+            &record.key,
+            "s4",
+            record.expires_at,
+            5,
+        );
+        assert_eq!(
+            m.run(SystemCmd::UseRefresh {
+                old_hash: held_hash.clone(),
+                new_hash: then_hash.clone(),
+                record,
+                now: 5,
+                signature: crate::proof::sign_refresh_use(&held_token, &message),
+            })
+            .unwrap_err()
+            .message(),
+            "the exchange is for another session",
+            "{why}"
+        );
+    }
+    let kept = crate::types::RefreshRecord {
+        holder: held.holder.clone(),
+        ..then_record
+    };
+    let message = crate::proof::refresh_use_message(
+        &held_hash,
+        &then_hash,
+        &kept.key,
+        "s4",
+        kept.expires_at,
+        5,
+    );
+    let _ok = m
+        .run(SystemCmd::UseRefresh {
+            old_hash: held_hash,
+            new_hash: then_hash.clone(),
+            record: kept,
+            now: 5,
+            signature: crate::proof::sign_refresh_use(&held_token, &message),
+        })
+        .unwrap();
+    assert_eq!(
+        m.state.refresh[&then_hash].holder.as_deref(),
+        Some("BDevice")
+    );
 
     // A token from before keys is not exchanged at all.
     let (old, old_hash, mut keyless) = refresh_token("alice", &alice.credential_id(), "s3");

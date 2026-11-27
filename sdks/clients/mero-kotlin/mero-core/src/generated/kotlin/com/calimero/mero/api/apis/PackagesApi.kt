@@ -30,6 +30,7 @@ import okhttp3.HttpUrl
 import com.calimero.mero.api.models.BundleStored
 import com.calimero.mero.api.models.CapabilityCard
 import com.calimero.mero.api.models.Error
+import com.calimero.mero.api.models.FrontendDigests
 import com.calimero.mero.api.models.OriginList
 import com.calimero.mero.api.models.OriginRemoved
 import com.calimero.mero.api.models.OriginsAddRequest
@@ -450,6 +451,82 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /packages/{package}/{version}/frontend
+     * A release&#39;s frontend files
+     * Every file the node serves for the release&#39;s frontend (at &#x60;/{version}/{path}&#x60; on the package&#39;s origin), with its SHA-256 and size, and the entry. The node verified each against the publisher&#39;s signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. &#x60;404&#x60; for a release that ships no frontend or that the cluster does not hold.  **Who:** anyone.
+     * @param `package` 
+     * @param version 
+     * @return FrontendDigests
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun packageFrontend(`package`: kotlin.String, version: kotlin.String) : FrontendDigests = withContext(Dispatchers.IO) {
+        val localVarResponse = packageFrontendWithHttpInfo(`package` = `package`, version = version)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FrontendDigests
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /packages/{package}/{version}/frontend
+     * A release&#39;s frontend files
+     * Every file the node serves for the release&#39;s frontend (at &#x60;/{version}/{path}&#x60; on the package&#39;s origin), with its SHA-256 and size, and the entry. The node verified each against the publisher&#39;s signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. &#x60;404&#x60; for a release that ships no frontend or that the cluster does not hold.  **Who:** anyone.
+     * @param `package` 
+     * @param version 
+     * @return ApiResponse<FrontendDigests?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun packageFrontendWithHttpInfo(`package`: kotlin.String, version: kotlin.String) : ApiResponse<FrontendDigests?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = packageFrontendRequestConfig(`package` = `package`, version = version)
+
+        return@withContext request<Unit, FrontendDigests>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation packageFrontend
+     *
+     * @param `package` 
+     * @param version 
+     * @return RequestConfig
+     */
+    fun packageFrontendRequestConfig(`package`: kotlin.String, version: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/packages/{package}/{version}/frontend".replace("{"+"package"+"}", encodeURIComponent(`package`.toString())).replace("{"+"version"+"}", encodeURIComponent(version.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = false,
             body = localVariableBody
         )
     }

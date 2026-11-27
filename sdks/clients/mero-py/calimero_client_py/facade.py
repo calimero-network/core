@@ -222,6 +222,7 @@ from .openapi.api.packages import origins_add as _origins_add
 from .openapi.api.packages import origins_list as _origins_list
 from .openapi.api.packages import origins_remove as _origins_remove
 from .openapi.api.packages import package_capabilities as _package_capabilities
+from .openapi.api.packages import package_frontend as _package_frontend
 from .openapi.api.packages import package_get as _package_get
 from .openapi.api.packages import package_install as _package_install
 from .openapi.api.packages import package_list as _package_list
@@ -2746,19 +2747,22 @@ class Auth(Group):
         """
         return self._run(_APIKEY_REVOKE, (key,), {}, {}, confirm=confirm)
 
-    def login_begin(self, *, origin=UNSET):
+    def login_begin(self, *, origin=UNSET, holder_key=UNSET):
         """Start a sign-in (`POST /auth/passkey/login/begin`, `login_begin`).
 
-        A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+        A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
 
         **Who:** anyone.
 
         Args:
             origin: body `origin`
+            holder_key: body `holderKey`
 
         Returns: PasskeyChallenge
         """
-        return self._run(_LOGIN_BEGIN, (), {}, {"origin": origin})
+        return self._run(
+            _LOGIN_BEGIN, (), {}, {"origin": origin, "holderKey": holder_key}
+        )
 
     def login_finish(self, *, challenge_id, assertion):
         """Finish a sign-in (`POST /auth/passkey/login/finish`, `login_finish`).
@@ -2893,19 +2897,25 @@ class Auth(Group):
         """
         return self._run(_RECOVERY_REMOVE, (), {}, {}, confirm=confirm)
 
-    def refresh(self, *, refresh_token):
+    def refresh(self, *, refresh_token, holder_proof=UNSET):
         """Refresh a session (`POST /auth/refresh`, `refresh`).
 
-        A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+        A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\\0" ‖ at ‖ "\\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
 
         **Who:** anyone.
 
         Args:
             refresh_token: body `refreshToken`
+            holder_proof: body `holderProof`
 
         Returns: Session
         """
-        return self._run(_REFRESH, (), {}, {"refreshToken": refresh_token})
+        return self._run(
+            _REFRESH,
+            (),
+            {},
+            {"refreshToken": refresh_token, "holderProof": holder_proof},
+        )
 
     def register_begin(self, *, name=UNSET, origin=UNSET, invite=UNSET):
         """Start a sign-up (`POST /auth/passkey/register/begin`, `register_begin`).
@@ -2926,11 +2936,17 @@ class Auth(Group):
         )
 
     def register_finish(
-        self, *, challenge_id, registration, invite=UNSET, confirm=None
+        self,
+        *,
+        challenge_id,
+        registration,
+        invite=UNSET,
+        holder_key=UNSET,
+        confirm=None,
     ):
         """Finish a sign-up (`POST /auth/passkey/register/finish`, `register_finish`).
 
-        The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+        The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
 
         **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -2938,6 +2954,7 @@ class Auth(Group):
             challenge_id: body `challengeId`
             registration: body `registration`
             invite: body `invite`
+            holder_key: body `holderKey`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
         Returns: Session
@@ -2950,6 +2967,7 @@ class Auth(Group):
                 "challengeId": challenge_id,
                 "registration": registration,
                 "invite": invite,
+                "holderKey": holder_key,
             },
             confirm=confirm,
         )
@@ -5867,6 +5885,12 @@ _PACKAGE_CAPABILITIES = Operation(
     body="none",
     answer="json",
 )
+_PACKAGE_FRONTEND = Operation(
+    _package_frontend,
+    "package_frontend",
+    body="none",
+    answer="json",
+)
 _PACKAGE_GET = Operation(
     _package_get,
     "package_get",
@@ -5965,6 +5989,29 @@ class Packages(Group):
                 version,
             ),
             {"service": service},
+            None,
+        )
+
+    def frontend(self, *, package, version):
+        """A release's frontend files (`GET /packages/{package}/{version}/frontend`, `package_frontend`).
+
+        Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+
+        **Who:** anyone.
+
+        Args:
+            package: path
+            version: path
+
+        Returns: FrontendDigests
+        """
+        return self._run(
+            _PACKAGE_FRONTEND,
+            (
+                package,
+                version,
+            ),
+            {},
             None,
         )
 

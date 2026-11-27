@@ -369,14 +369,6 @@ pub(crate) fn backend_fetch(
     backend::fetch(request)
 }
 
-pub(crate) fn backend_connector_call(
-    connector: &str,
-    operation: &str,
-    input: &[u8],
-) -> std::result::Result<Vec<u8>, String> {
-    backend::connector_call(connector, operation, input)
-}
-
 /// Blob `id`'s metadata, if the app holds it. Prefer [`crate::BlobRef::info`].
 pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
     backend::blob_info(id)

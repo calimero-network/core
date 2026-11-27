@@ -249,10 +249,17 @@ pub enum Feature {
     /// `OfferDeployment`, `AcceptDeployment` and `CancelDeploymentTransfer`: an earlier
     /// release cannot read them, so its replicas would keep the deployment's owner.
     DeploymentTransfer,
+    /// `CreateRefresh`, `UseRefresh` and `CreateAccount` whose refresh record names a
+    /// holder key (`RefreshRecord::holder`): an earlier release drops the field, so its
+    /// replicas would hold the session unbound, with the 30-day lifetime, and take an
+    /// exchange that drops the binding where a later one refuses it. Also `RefreshReused`
+    /// with `holder_proof`: an earlier release drops the proof and would revoke a bound
+    /// session for a copy of its old token that a later one refuses.
+    SessionHolders,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 56] = [
+pub const FEATURES: [Feature; 57] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -309,6 +316,7 @@ pub const FEATURES: [Feature; 56] = [
     Feature::BackupKeyApprovers,
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
+    Feature::SessionHolders,
 ];
 
 impl Feature {
@@ -372,6 +380,7 @@ impl Feature {
             Self::BackupKeyApprovers => "backupKeyApprovers",
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
+            Self::SessionHolders => "sessionHolders",
         }
     }
 
@@ -446,6 +455,7 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
+            Self::SessionHolders => "1.0.0-rc.39",
         }
     }
 }
@@ -848,15 +858,28 @@ impl SystemCmd {
             }
             Self::RedeemInvite {
                 clamp_grants: true, ..
-            }
-            | Self::CreateAccount {
-                invite:
-                    Some(crate::system::SignUpRedemption {
-                        clamp_grants: true, ..
-                    }),
-                ..
             } => vec![Feature::InviteCapabilities],
-            Self::CreateAccount { .. } => Vec::new(),
+            Self::CreateAccount {
+                invite, refresh, ..
+            } => {
+                let mut f = Vec::new();
+                if invite.as_ref().is_some_and(|i| i.clamp_grants) {
+                    f.push(Feature::InviteCapabilities);
+                }
+                if refresh.as_ref().is_some_and(|g| g.record.holder.is_some()) {
+                    f.push(Feature::SessionHolders);
+                }
+                f
+            }
+            Self::CreateRefresh { record, .. } | Self::UseRefresh { record, .. }
+                if record.holder.is_some() =>
+            {
+                vec![Feature::SessionHolders]
+            }
+            Self::RefreshReused {
+                holder_proof: Some(_),
+                ..
+            } => vec![Feature::SessionHolders],
             Self::RedeemInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
@@ -1071,6 +1094,7 @@ mod tests {
     const RC36: &str = "1.0.0-rc.36";
     const RC37: &str = "1.0.0-rc.37";
     const RC38: &str = "1.0.0-rc.38";
+    const RC39: &str = "1.0.0-rc.39";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1333,6 +1357,8 @@ mod tests {
                 "deployment_needs_recovery": true })),
             Feature::DeploymentTransfer => entry(json!({ "op": "offerDeployment",
                 "deployment": "d", "to": { "org": "org" }, "actor": "alice", "at": 1 })),
+            Feature::SessionHolders => entry(json!({ "op": "createRefresh", "hash": "h",
+                "record": { "account": "a", "session": "s", "expiresAt": 1, "holder": "BA" } })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1653,7 +1679,7 @@ mod tests {
             .filter(|f| f.names_an_entry())
             .partition(|f| {
                 ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC38,
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC38, RC39,
                 ]
                 .contains(&f.since())
             });
@@ -1745,8 +1771,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC34);
         let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
-        let (rc36, rc38): (Vec<Feature>, Vec<Feature>) =
+        let (rc36, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC36);
+        let (rc38, rc39): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC38);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -2002,6 +2030,27 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc38 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.39's (a session bound to a holder key) waits past rc.38: an rc.38 node drops
+        // the record's holder and would hold the session unbound.
+        assert_eq!(rc39, [Feature::SessionHolders]);
+        for &feature in &rc39 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC38))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC39;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC39.into(),
+            nodes: (1..=3).map(|id| (id, RC39.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc39 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

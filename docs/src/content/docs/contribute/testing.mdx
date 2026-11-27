@@ -871,6 +871,25 @@ docker create --name m ghcr.io/calimero-network/merod:prerelease && docker cp m:
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
+### Advisories
+
+A pull request's `Rust supply chain` job runs `cargo deny check advisories bans
+licenses sources`, but only on that pull request. Advisories are published on
+their own schedule, so `.github/workflows/advisories.yml` checks master itself:
+daily, on a push to master that changes `Cargo.lock`, `deny.toml` or
+`sdks/pnpm-lock.yaml`, and by hand (`workflow_dispatch`). It runs
+`cargo deny check advisories` over the workspace and `pnpm audit --prod
+--audit-level high` over the SDKs' runtime dependencies (what mero-js and
+mero-react put in a user's page). A red run opens, or comments on, one issue
+titled `Advisories on master`, and the next green run closes it.
+
+Fix one by moving the lockfile past the affected range (`cargo update -p
+<crate>`, a pnpm override). When there is no fixed version, or nothing we run
+reaches the vulnerable code, add the id to `deny.toml`'s `[advisories] ignore`
+with what pulls the crate in and why it does not reach us; remove the entry as
+soon as it stops matching. A release cut while the issue is open ships the
+advisory, so the release pull request says why it is safe or waits.
+
 ### Flamegraphs
 
 Weekly, in Sunday's nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store

@@ -18,8 +18,8 @@
  */
 
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { browserPasskey, CalimeroClient, LoginRequired } from '@calimero-network/mero-js';
-import type { CalimeroSession, PasskeyProvider } from '@calimero-network/mero-js';
+import { browserPasskey, browserSessionHolder, CalimeroClient, LoginRequired } from '@calimero-network/mero-js';
+import type { CalimeroSession, PasskeyProvider, SessionHolder } from '@calimero-network/mero-js';
 import { reportSessions, resolvePolicy, SessionReportingClient } from '../client';
 import { describeError, type Failure } from '../errors';
 import {
@@ -67,6 +67,7 @@ export function MeroProvider({
   appId: appIdProp,
   sessionStore = localStorageSessionStore,
   passkey: passkeyProp,
+  holder: holderProp,
   fetch: fetchProp,
   retry,
   client: injectedClient,
@@ -99,6 +100,11 @@ export function MeroProvider({
   }, [appIdProp]);
 
   const passkey = useMemo<PasskeyProvider>(() => passkeyProp ?? browserPasskey(), [passkeyProp]);
+  // The device key sessions are bound to: given, none (`null`), or this browser's own.
+  const holder = useMemo<SessionHolder | undefined>(
+    () => (holderProp === null ? undefined : (holderProp ?? (isBrowser ? browserSessionHolder() : undefined))),
+    [holderProp],
+  );
 
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
@@ -128,13 +134,14 @@ export function MeroProvider({
         policy: resolvedPolicy,
         fetch: fetchProp,
         retry: JSON.parse(retryKey) as typeof retry,
+        holder,
       },
       keep,
     );
     const kept = storeRef.current.load();
     if (kept) built.restore(kept);
     return built;
-  }, [injectedClient, chosenNode, nodesKey, resolvedPolicy, fetchProp, retryKey, generation, keep]);
+  }, [injectedClient, chosenNode, nodesKey, resolvedPolicy, fetchProp, retryKey, generation, keep, holder]);
 
   // A cluster by name: the directory is read first, so its client comes later.
   const clusterKey =
@@ -155,6 +162,7 @@ export function MeroProvider({
       policy: resolvedPolicy,
       fetch: fetchProp,
       retry: JSON.parse(retryKey) as typeof retry,
+      holder,
     })
       .then((built) => {
         if (!current) return;
@@ -176,7 +184,7 @@ export function MeroProvider({
       current = false;
     };
     // `clusterKey` stands for the cluster, zone, directory, retry and generation.
-  }, [clusterKey, resolvedPolicy, fetchProp, keep]);
+  }, [clusterKey, resolvedPolicy, fetchProp, keep, holder]);
 
   const clusterClient = clusterKey && connected?.key === clusterKey ? connected.client : null;
   const client = injectedClient ?? (chosenCluster ? clusterClient : nodeClient);

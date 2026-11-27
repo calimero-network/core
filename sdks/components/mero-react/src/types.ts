@@ -3,6 +3,7 @@ import type {
   CalimeroSession,
   RetryOptions,
   PasskeyProvider,
+  SessionHolder,
 } from '@calimero-network/mero-js';
 import type { PolicyOptions } from './client';
 import type { Failure } from './errors';
@@ -48,6 +49,14 @@ export interface MeroProviderConfig extends PolicyOptions {
   sessionStore?: SessionStore;
   /** The passkey prompt. Default: mero-js `browserPasskey()` (WebAuthn). */
   passkey?: PasskeyProvider;
+  /**
+   * The device key sessions are bound to. Default: mero-js
+   * `browserSessionHolder()`, a non-extractable WebCrypto key kept in
+   * IndexedDB: every refresh carries its proof, so the refresh token kept in
+   * `sessionStore` is useless copied off this device, and the node keeps it 7
+   * days rather than 30. `null` binds nothing (a session as before).
+   */
+  holder?: SessionHolder | null;
   /** The `fetch` the client sends attestation and sealed envelopes with. */
   fetch?: typeof fetch;
   /** How calls and views retry a `503` or a dropped connection. */
