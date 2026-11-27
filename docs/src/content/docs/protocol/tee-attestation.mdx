@@ -77,7 +77,8 @@ rejoining (`MAX_QUEUED_PEER_QUOTES`, `PEER_QUOTE_WAIT`).
 So a node can make about one quote a second for everyone, and a few dozen
 requests at once would keep new clients from connecting. The clients in this
 repository therefore ask for the interval form below, which makes no quote per
-request.
+request. The cluster's nodes do not: each peer channel rests on a quote made
+for its own nonce, in the peer lane.
 
 ## Interval quotes
 
@@ -123,9 +124,18 @@ has no current interval quote (it just started, or its last quote failed), or
 that is asked with a `purpose`, answers the per-request quote as before, and so
 does a node of a release before the form: it ignores the parameter. A verifier
 takes either answer, deciding by whether `interval` is present. `form` takes
-only `interval`; any other value is `400 BAD_FORM`. Nodes attesting each other
-(`HttpAttestor`, `PeerAttestor`) ask for it too, so the per-request queue and
-its peer lane serve only older clients and the other purposes.
+only `interval`; any other value is `400 BAD_FORM`.
+
+Nodes attesting each other never use the form. A node's peer policy
+(`Policy::require_fresh_quote`) makes `HttpAttestor` and `PeerAttestor` ask
+without `form`, on every peer path: opening a channel, identifying a caller,
+checking a registered node, delivering the cluster key, and again after a
+restart. `verify` under that policy refuses a document that carries
+`interval`, so a peer that answers with an interval proof anyway is not
+attested. The per-request queue's peer lane keeps their quotes ahead of
+anonymous requests. A node still answers `form=interval` from its peers, so
+a node of the release that brought the form, which asks its peers for it,
+still attests the others through a rolling upgrade.
 
 ## What the verifier checks
 
@@ -487,7 +497,9 @@ Code: `attest::IntervalQuotes`, `attest::refresh_interval_quotes`.
 after `INTERVAL_QUOTE_RETRY` when one fails. `/attestation` with `form=interval` and no `purpose`
 signs `interval_message` with the current key (`IntervalQuotes::answer`) while its quote is at most
 `INTERVAL_QUOTE_SERVED_FOR` old and binds the node's transport key, and falls back to the
-per-request quote otherwise. The verifier is `calimero_client::attest::verify`'s `verify_interval`.
+per-request quote otherwise. The verifier is `calimero_client::attest::verify`'s `verify_interval`;
+`Config::peer_policy` sets `require_fresh_quote`, so a node asks its peers without `form` and refuses
+their interval proofs (`attest::tests::a_peer_is_attested_with_a_quote_over_its_own_nonce`).
 
 ### Peers' quotes
 

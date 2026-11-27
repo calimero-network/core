@@ -778,6 +778,153 @@ mod tests {
         assert!(intervals.answer(&[1; 32], &[0; 32], &transport).is_none());
     }
 
+    /// What a mock peer saw of one `GET /attestation`: its query and whether it
+    /// carried [`PEER_ATTEST_HEADER`].
+    type Asked = Arc<std::sync::Mutex<Vec<(String, bool)>>>;
+
+    /// A peer at the returned URL that answers `/attestation` as a node with
+    /// the interval form does: the interval proof when asked `form=interval`
+    /// (or always, with `always_interval`), else a quote over the nonce.
+    async fn mock_peer(always_interval: bool) -> (url::Url, Asked) {
+        use axum::extract::{RawQuery, State};
+        use axum::http::HeaderMap;
+
+        struct Peer {
+            quoter: Quoter,
+            intervals: IntervalQuotes,
+            asked: Asked,
+            always_interval: bool,
+        }
+        const TRANSPORT: [u8; 32] = [5; 32];
+
+        async fn answer(
+            State(p): State<Arc<Peer>>,
+            headers: HeaderMap,
+            RawQuery(query): RawQuery,
+        ) -> axum::Json<AttestationDoc> {
+            let query = query.unwrap_or_default();
+            p.asked
+                .lock()
+                .unwrap()
+                .push((query.clone(), headers.contains_key(PEER_ATTEST_HEADER)));
+            let nonce: [u8; 32] = url::form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == "nonce")
+                .and_then(|(_, v)| hex::decode(v.as_bytes()).ok())
+                .and_then(|v| v.try_into().ok())
+                .unwrap();
+            let interval = (p.always_interval || query.contains("form=interval"))
+                .then(|| p.intervals.answer(&nonce, &[0; 32], &TRANSPORT))
+                .flatten();
+            let (quote, interval) = match interval {
+                Some((quote, proof)) => (quote, Some(proof)),
+                None => (
+                    p.quoter
+                        .quote_in(Lane::Peer, report_data(&nonce, &[0; 32], &TRANSPORT))
+                        .await
+                        .unwrap(),
+                    None,
+                ),
+            };
+            axum::Json(AttestationDoc {
+                quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
+                transport_key: hex::encode(TRANSPORT),
+                app_hash: hex::encode([0; 32]),
+                nonce: hex::encode(nonce),
+                release: Release {
+                    version: "0.0.0".into(),
+                    profile: "dev".into(),
+                },
+                cluster: "c".into(),
+                node: 1,
+                mock: true,
+                receipt_key: None,
+                governance: None,
+                kms: None,
+                job_key: None,
+                cluster_identity: None,
+                interval,
+            })
+        }
+
+        let peer = Arc::new(Peer {
+            quoter: Quoter::new(Mode::Mock),
+            intervals: IntervalQuotes::default(),
+            asked: Asked::default(),
+            always_interval,
+        });
+        peer.intervals
+            .refresh(&peer.quoter, TRANSPORT)
+            .await
+            .unwrap();
+        let asked = Arc::clone(&peer.asked);
+        let app = axum::Router::new()
+            .route("/attestation", axum::routing::get(answer))
+            .with_state(peer);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        drop(tokio::spawn(
+            async move { axum::serve(listener, app).await },
+        ));
+        (url.parse().unwrap(), asked)
+    }
+
+    /// A node attests a peer with a quote made for its own nonce: it does not
+    /// ask for the interval form (but still sends its peer header, so the peer
+    /// queues the quote in [`Lane::Peer`]), and refuses an interval proof a
+    /// peer answers anyway. A client still asks for the interval form.
+    #[tokio::test]
+    async fn a_peer_is_attested_with_a_quote_over_its_own_nonce() {
+        use calimero_sealed::client::Attest;
+
+        let http = reqwest::Client::new();
+        let peer_policy = crate::node::peer_policy(true, &Measurements::None, None);
+        let peer_attestor = PeerAttestor {
+            attestor: HttpAttestor {
+                policy: peer_policy,
+                seen_release: Arc::default(),
+            },
+            cluster_key: [7; 32],
+            cluster: "c".into(),
+        };
+
+        let (url, asked) = mock_peer(false).await;
+        assert_eq!(
+            peer_attestor
+                .attest_transport_key(&http, &url)
+                .await
+                .unwrap(),
+            [5; 32]
+        );
+        let (query, peer_header) = asked.lock().unwrap().pop().unwrap();
+        assert!(!query.contains("form="), "a peer asked {query}");
+        assert!(peer_header, "a peer's request carries its header");
+
+        let client = HttpAttestor {
+            policy: Policy {
+                allow_mock: true,
+                ..Policy::default()
+            },
+            seen_release: Arc::default(),
+        };
+        assert_eq!(
+            client.attest_transport_key(&http, &url).await.unwrap(),
+            [5; 32]
+        );
+        let (query, _) = asked.lock().unwrap().pop().unwrap();
+        assert!(query.contains("form=interval"), "a client asked {query}");
+
+        let (url, _asked) = mock_peer(true).await;
+        let e = peer_attestor
+            .attest_transport_key(&http, &url)
+            .await
+            .expect_err("a peer's interval proof is refused");
+        assert!(format!("{e:#}").contains("interval"), "{e:#}");
+        assert_eq!(
+            client.attest_transport_key(&http, &url).await.unwrap(),
+            [5; 32]
+        );
+    }
+
     /// A request that waits [`QUOTE_WAIT`] without getting the slot is busy.
     #[tokio::test]
     async fn a_request_that_waits_too_long_is_busy() {

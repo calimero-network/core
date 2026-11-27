@@ -298,7 +298,9 @@ impl Config {
 
 /// How a node judges a peer's quote. It trusts debug peers only when it runs a
 /// debug image itself: `tee_profile` is the profile its own registers match
-/// (checked at start on TDX, `attest::check_own_profile`).
+/// (checked at start on TDX, `attest::check_own_profile`). It takes only a
+/// quote over its own nonce, never an interval proof
+/// ([Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)).
 pub(crate) fn peer_policy(
     allow_mock: bool,
     measurements: &calimero_client::Measurements,
@@ -310,6 +312,8 @@ pub(crate) fn peer_policy(
         measurements: measurements.clone(),
         allowed_tcb_statuses: Vec::new(),
         allow_debug_profiles: tee_profile.is_some_and(calimero_client::attest::is_debug_profile),
+        // A peer's channel always rests on a quote made for its own nonce.
+        require_fresh_quote: true,
     }
 }
 

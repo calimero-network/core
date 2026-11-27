@@ -631,6 +631,12 @@ pub struct Policy {
     /// Trust a release's debug profiles (a debuggable image: the host can read
     /// its memory). Off unless a caller asks; they are never trusted silently.
     pub allow_debug_profiles: bool,
+    /// Take only a quote made over this verifier's own nonce: [`HttpAttestor`]
+    /// does not ask for the interval form, and [`verify`] refuses a document
+    /// that carries `interval`. Nodes judge each other this way.
+    ///
+    /// Spec: [Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)
+    pub require_fresh_quote: bool,
 }
 
 /// The oldest mero-tee release a client trusts when it names none: the floor
@@ -810,6 +816,9 @@ pub async fn verify(
         .app_hash
         .unwrap_or_else(|| hex32(&doc.app_hash).unwrap_or([0; 32]));
     if let Some(interval) = &doc.interval {
+        if policy.require_fresh_quote {
+            eyre::bail!("an interval attestation, where this verifier takes only a quote over its own nonce");
+        }
         if doc.kms.is_some() {
             eyre::bail!("an interval attestation carries no KMS record");
         }
@@ -1174,7 +1183,9 @@ async fn judge(
 
 /// Attests a node's transport key over HTTP, for the sealed client. Asks for
 /// the interval form (`form=interval`), which a node answers without making a
-/// quote; a node that does not know it answers a quote over this nonce.
+/// quote; a node that does not know it answers a quote over this nonce. With
+/// [`Policy::require_fresh_quote`] (a node attesting a peer) it asks for that
+/// quote over this nonce, and takes nothing else.
 #[derive(Debug, Clone)]
 pub struct HttpAttestor {
     pub policy: Policy,
@@ -1207,8 +1218,10 @@ impl HttpAttestor {
         let mut url = calimero_sealed::client::resolve_path(api_url, "attestation")?;
         let _q = url
             .query_pairs_mut()
-            .append_pair("nonce", &hex::encode(nonce))
-            .append_pair("form", INTERVAL_FORM);
+            .append_pair("nonce", &hex::encode(nonce));
+        if !self.policy.require_fresh_quote {
+            let _q = url.query_pairs_mut().append_pair("form", INTERVAL_FORM);
+        }
         if let Some(h) = self.policy.app_hash {
             let _q = url
                 .query_pairs_mut()
@@ -2263,5 +2276,28 @@ mod tests {
             ..fresh
         };
         assert!(verify(&with_kms, &nonce, &mock_policy()).await.is_err());
+    }
+
+    /// A verifier that requires a fresh quote (a node judging a peer) takes the
+    /// per-request form and refuses an interval answer, however valid.
+    #[tokio::test]
+    async fn a_fresh_quote_policy_refuses_an_interval_answer() {
+        let peer = Policy {
+            require_fresh_quote: true,
+            ..mock_policy()
+        };
+        let nonce = [2; 32];
+        let per_request = mock_doc(report_data(&nonce, &[0; 32], &[1; 32]), None);
+        assert_eq!(verify(&per_request, &nonce, &peer).await.unwrap(), [1; 32]);
+
+        let interval = interval_doc(nonce, unix_now(), &Interval::default());
+        assert_eq!(
+            verify(&interval, &nonce, &mock_policy()).await.unwrap(),
+            [1; 32]
+        );
+        let e = verify(&interval, &nonce, &peer)
+            .await
+            .expect_err("a peer takes no interval answer");
+        assert!(format!("{e:#}").contains("own nonce"), "{e:#}");
     }
 }
