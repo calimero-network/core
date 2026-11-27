@@ -3556,8 +3556,8 @@ impl SystemState {
         let (Some(lineage), Some(to)) = (&app.lineage, release) else {
             return Ok(());
         };
-        let runs = app.release.as_ref().map(|r| r.version.as_str());
-        if lineage.at_least(&to.version, runs) {
+        let runs = self.lineage_runs(app, lineage);
+        if lineage.at_least(&to.version, runs.as_ref().map(|r| r.version.as_str())) {
             Ok(())
         } else {
             Err(LINEAGE_OLDER_RELEASE)
@@ -3618,10 +3618,10 @@ impl SystemState {
         let Some(lineage) = &app.lineage else {
             return false;
         };
+        let runs = self.lineage_runs(app, lineage);
         let at_least = |v: &str| {
             compare_versions(v, &lineage.floor) != std::cmp::Ordering::Less
-                && app
-                    .release
+                && runs
                     .as_ref()
                     .is_none_or(|r| compare_versions(v, &r.version) != std::cmp::Ordering::Less)
         };
@@ -3643,6 +3643,15 @@ impl SystemState {
                     .map(|(_, at)| at)
             })
             .max_by(|a, b| compare_versions(&a.version, &b.version))
+    }
+
+    /// The release of its lineage a pinned `app` runs: its record's, else the newest one that
+    /// ships its bundle. Judged beside the floor, never instead of it.
+    #[must_use]
+    pub fn lineage_runs(&self, app: &AppRecord, lineage: &AppLineage) -> Option<PackageRef> {
+        app.release
+            .clone()
+            .or_else(|| self.lineage_release_of(lineage, &app.bundle))
     }
 
     /// Raise `lineage`'s floor to `version` when it is newer; it is never lowered.

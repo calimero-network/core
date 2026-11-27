@@ -575,7 +575,9 @@ pub struct AppLineage {
     pub package: String,
     pub signer_id: String,
     /// The newest release version it has been judged at, raised by every move that applies and
-    /// never lowered: nothing older is reachable again, whatever is installed.
+    /// never lowered: nothing older is reachable again, whatever is installed. Empty in a record
+    /// written before it, which an import raises to the release it runs.
+    #[serde(default)]
     pub floor: String,
 }
 
