@@ -305,6 +305,38 @@ detail.
 
 </Steps>
 
+## Connectors
+
+A connector is a crate an app compiles in to reach one external service, such as
+`calimero-connector-nearai` for NEAR AI Cloud.
+It declares the prefixes it sends under and the credentials it needs in its own `Cargo.toml`, in the shape an app's `outbound` and `secrets` take ([Outbound requests](/build/guides/outbound/#secrets)):
+
+```toml
+[package.metadata.calimero.connector]
+outbound = ["https://cloud-api.near.ai/v1/chat/completions"]
+
+[package.metadata.calimero.connector.secrets.NEAR_AI_API_KEY]
+host = "cloud-api.near.ai"
+paths = ["/v1/chat/completions"]
+header = "authorization"
+format = "Bearer {}"
+description = "NEAR AI Cloud API key"
+required = true
+```
+
+An app that depends on it opts in by name:
+
+```toml
+[package.metadata.calimero]
+connectors = ["calimero-connector-nearai"]
+```
+
+`meroctl app pack DIR` finds each listed name among the crate's normal dependencies for `wasm32-wasip2` (`cargo metadata`) and adds its `outbound` prefixes and `secrets` to the app's own, printing each one it adds and the crate it came from.
+The signed manifest carries them as if the app had written them, so a node and the consent page see an ordinary release.
+`pack` refuses a listed name that is not such a dependency, a dependency with no `connector` table, and a secret two declarations (the app and a connector, or two connectors) bind differently; the same binding twice is kept once.
+A dependency the app does not list adds nothing, whatever it declares.
+The merged secrets are then checked as the app's own are.
+
 ## Check a release before you ship it
 
 `meroctl app check` says what the people running your app will see when this
