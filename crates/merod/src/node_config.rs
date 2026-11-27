@@ -122,6 +122,14 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_JOB_SLOTS")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_slots: Option<usize>,
+    /// How many milliseconds an access check may reuse a recent system
+    /// read-index round instead of running its own [default: 0]. Zero keeps a
+    /// round per newly-arrived request, so a revocation takes effect at once. A
+    /// non-zero value is the maximum a revocation may lag on a replica that has
+    /// not yet applied it; set it only to a bound your governance accepts.
+    #[arg(long, env = "MEROD_SYS_READ_LEASE_MS")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sys_read_lease_ms: Option<u64>,
     /// The passkey (WebAuthn) relying party id [default: localhost]. It must
     /// be a registrable suffix of every host that runs a passkey ceremony:
     /// each `--origins` host and `--apps-domain` must equal it or be a
@@ -403,6 +411,7 @@ impl NodeArgs {
             job_node: self.job_node.or(base.job_node),
             cluster_identity: self.cluster_identity.or(base.cluster_identity),
             job_slots: self.job_slots.or(base.job_slots),
+            sys_read_lease_ms: self.sys_read_lease_ms.or(base.sys_read_lease_ms),
             storage_key: self.storage_key.or(base.storage_key),
             rp_id: self.rp_id.or(base.rp_id),
             origins: list(self.origins, base.origins),
