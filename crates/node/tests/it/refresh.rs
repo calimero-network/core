@@ -394,6 +394,74 @@ async fn an_exchanged_holder_bound_token_stays_bound() {
     assert!(e.starts_with("401 HOLDER_PROOF_REQUIRED"), "{e}");
 }
 
+/// A copy of an exchanged holder-bound token, presented without the device key's proof (or with
+/// another key's), signs nobody out: the owner's session keeps refreshing on every node. Only
+/// that key's proof for the old token is taken as a reuse, and then the session ends as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_copied_old_holder_bound_token_cannot_sign_its_owner_out() {
+    let rotate = Duration::from_secs(2);
+    let c = Cluster::start_with(3, |cfg| cfg.refresh_rotate_after = rotate).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let device = Holder::new();
+    let old = sign_in_held(&alice, &mut pk, &device).await.refresh_token;
+    tokio::time::sleep(rotate + Duration::from_millis(1100)).await;
+    let next = refresh_raw(
+        &c,
+        1,
+        json!({ "refreshToken": old, "holderProof": device.proof(&old, now()) }),
+    )
+    .await
+    .unwrap()["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(next, old, "exchanged once old enough");
+
+    let thief = Holder::new();
+    for i in 0..3 {
+        let e = refresh_raw(&c, i, json!({ "refreshToken": old }))
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("401 HOLDER_PROOF_REQUIRED"), "node {i}: {e}");
+        let e = refresh_raw(
+            &c,
+            i,
+            json!({ "refreshToken": old, "holderProof": thief.proof(&old, now()) }),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.starts_with("401 BAD_HOLDER_PROOF"), "node {i}: {e}");
+    }
+    // The owner was not signed out: the current token still refreshes, on every node.
+    for i in 0..3 {
+        let fresh = refresh_raw(
+            &c,
+            i,
+            json!({ "refreshToken": next, "holderProof": device.proof(&next, now()) }),
+        )
+        .await;
+        assert!(fresh.is_ok(), "node {i}: {fresh:?}");
+    }
+
+    // The device's own proof for the old token is a reuse, which still ends the session.
+    let e = refresh_raw(
+        &c,
+        2,
+        json!({ "refreshToken": old, "holderProof": device.proof(&old, now()) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("already used"), "{e}");
+    let e = refresh_raw(
+        &c,
+        0,
+        json!({ "refreshToken": next, "holderProof": device.proof(&next, now()) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.starts_with("401"), "the session went with the reuse: {e}");
+}
+
 /// A holder key that is not an uncompressed P-256 point is refused before the ceremony.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_malformed_holder_key_is_refused_at_sign_in() {

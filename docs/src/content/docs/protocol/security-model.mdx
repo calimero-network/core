@@ -168,8 +168,9 @@ code, and app code beyond what its owner approved.
   use the session while it runs and read the 15-minute session token; the
   holder key keeps the refresh token from working anywhere else. A browser
   extension that checks every file against the publisher-signed manifest is
-  the way past TLS (proposed in [mero-tee's frontend-verification
-  issue](https://github.com/calimero-network/mero-tee/issues/666)).
+  the way past TLS: it checks each file against
+  `GET /packages/{package}/{version}/frontend` from the attested node
+  ([Levels of frontend trust](/protocol/applications/#levels-of-frontend-trust)).
 - **A debug image.** A debug TD exposes its memory to the host. Clients refuse
   debug profiles unless told otherwise, and nodes trust debug peers only when
   they are debug themselves; a cluster on a debug image protects nothing.

@@ -695,3 +695,8 @@ not_covered("Packages", "Served frontends and served origins (custom domains)",
             "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
             "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
             "`app_frontends_are_served_and_their_sessions_are_bound` covers serving")
+
+not_covered("Packages", "A release's frontend digests (`GET /packages/{package}/{version}/frontend`)",
+            "the suite's packages carry no frontend, so the route answers 404 for every release they install; it reads the "
+            "installed `.mpk` and stores nothing, and the cluster test "
+            "`a_releases_frontend_digests_match_the_files_it_serves` checks each digest against the bytes served")

@@ -1068,6 +1068,16 @@ pub struct RefreshRecord {
     pub holder: Option<String>,
 }
 
+/// A holder's proof that it uses a refresh token: `signature` (base64url, the 64-byte `r ‖ s`
+/// of ECDSA P-256 with SHA-256) by the session's holder key ([`RefreshRecord::holder`]) over
+/// [`crate::proof::refresh_holder_message`] of the token's hash and `at` (Unix seconds). A
+/// refresh carries it, and so does the `RefreshReused` a reused token logs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HolderProof {
+    pub at: u64,
+    pub signature: String,
+}
+
 /// How long a refresh token lives (seconds) when no holder key binds it: 30 days.
 pub const REFRESH_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
