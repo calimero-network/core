@@ -5713,6 +5713,62 @@ async fn an_app_that_xcalls_itself_stops_at_the_chain_budget() {
     }
 }
 
+/// An xcall sent from `onXcallFailed` carries on the failed message's chain: an app whose
+/// handler sends again each message that is dead-lettered stops once the chain has taken
+/// `MAX_XCALL_CHAIN` deliveries, the last message going to the dead letters as spent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn xcalls_sent_from_on_xcall_failed_share_the_chain_budget() {
+    use calimero_node::component::xcall::MAX_XCALL_CHAIN;
+
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "bouncer", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let bounces = || async {
+        let got = strong_view(&alice, &app, "get", json!({ "key": "bounces" })).await;
+        got.as_str().map_or(0, |n| n.parse::<u32>().unwrap())
+    };
+    let _r = alice
+        .apps()
+        .call(&app, "bounce", Some(json!({ "app": "no-such-app" })), None, None)
+        .await
+        .unwrap();
+    let dead = crate::harness::poll::eventually(
+        Duration::from_secs(120),
+        "the loop ends in a spent dead letter with nothing pending",
+        || async {
+            let x = alice.apps().xcalls(&app).await.map(wire).unwrap();
+            let dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+            let spent = dead
+                .last()
+                .is_some_and(|d| d["reason"].as_str().unwrap().contains("budget"));
+            if spent && x["pending"] == json!(0) {
+                Ok(dead)
+            } else {
+                Err((bounces().await, x["pending"].clone(), dead.len()))
+            }
+        },
+    )
+    .await;
+    // The client's call, then one handler run per delivery the chain took: the handler run
+    // of a dead-lettered message stands in for its delivery.
+    let ran = bounces().await;
+    assert_eq!(ran, 1 + MAX_XCALL_CHAIN, "{dead:?}");
+    assert_eq!(dead.len(), usize::try_from(ran).unwrap(), "{dead:?}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(bounces().await, ran, "the app kept running");
+}
+
 /// An app calls another as the person its run serves only with that person's grant
 /// (`PUT /apps/{app}/delegations/{target}`, their passkey over the methods the source's
 /// release lists for the target's package): then the target sees the person as its caller
