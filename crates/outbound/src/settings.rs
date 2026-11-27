@@ -49,12 +49,6 @@ pub struct OutboundTestSettings {
     /// `3x…AA` answers "timeout-or-duplicate". A token is spent by its first check, unless
     /// a later one repeats its idempotency key.
     pub turnstile: bool,
-    /// Answer the first-party connectors' hosts (`api.stripe.com`, `api.openai.com`)
-    /// in-process, as their services answer the connectors' operations
-    /// ([`crate::connector`]), once every gate has passed and the key is attached: a request
-    /// without the key is answered `401`, a Stripe amount of `402` is declined. The answers
-    /// carry fields no operation declares, so a test sees them cut.
-    pub connectors: bool,
     /// Secrets given as values, scoped as `env_secrets` are. Exclusive with
     /// `env_secrets` and a sidecar.
     pub secrets: BTreeMap<String, TestSecretSettings>,
