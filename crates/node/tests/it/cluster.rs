@@ -7614,6 +7614,83 @@ async fn new_clients_attest_and_sign_in_while_the_quote_queue_is_full() {
     );
 }
 
+/// `/attestation` answers both forms, and each verifies under the shared
+/// check: without `form` (a client of an earlier release) a quote over the
+/// caller's nonce and no `interval`, byte for byte as before; with
+/// `form=interval` the interval quote and its signature over the nonce. A
+/// `purpose` keeps the per-request quote, and an unknown form is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attestation_answers_the_per_request_and_the_interval_form() {
+    let c = Cluster::start(1).await;
+    let http = reqwest::Client::new();
+    let policy = Policy {
+        allow_mock: true,
+        ..Policy::default()
+    };
+    let get = |query: String| {
+        let (http, url) = (http.clone(), c.urls[0].clone());
+        async move {
+            http.get(format!("{url}attestation?{query}"))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let nonce = calimero_identity::random::<32>();
+
+    let old: calimero_client::attest::AttestationDoc = get(format!("nonce={}", hex::encode(nonce)))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(old.interval.is_none(), "{old:?}");
+    calimero_client::attest::verify(&old, &nonce, &policy)
+        .await
+        .expect("the per-request form verifies");
+
+    // The node makes its first interval quote as it starts.
+    let mut interval = None;
+    for _ in 0..50 {
+        let doc: calimero_client::attest::AttestationDoc =
+            get(format!("nonce={}&form=interval", hex::encode(nonce)))
+                .await
+                .json()
+                .await
+                .unwrap();
+        if doc.interval.is_some() {
+            interval = Some(doc);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let interval = interval.expect("an interval answer");
+    calimero_client::attest::verify(&interval, &nonce, &policy)
+        .await
+        .expect("the interval form verifies");
+    assert!(
+        calimero_client::attest::verify(&interval, &[0; 32], &policy)
+            .await
+            .is_err(),
+        "an interval answer verified for another nonce"
+    );
+
+    let receipts: Value = get(format!(
+        "nonce={}&form=interval&purpose=receipts",
+        hex::encode(nonce)
+    ))
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(receipts.get("interval").is_none(), "{receipts}");
+    assert!(receipts["receiptKey"].is_string(), "{receipts}");
+
+    let bad = get(format!("nonce={}&form=daily", hex::encode(nonce))).await;
+    assert_eq!(bad.status().as_u16(), 400);
+    let body: Value = bad.json().await.unwrap();
+    assert_eq!(body["error"], "BAD_FORM", "{body}");
+}
+
 /// A system write the group cannot commit answers `503 UNAVAILABLE` in
 /// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
 /// system group could not commit, and a sign-up and a node registration each

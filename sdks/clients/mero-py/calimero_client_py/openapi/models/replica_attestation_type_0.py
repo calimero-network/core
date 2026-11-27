@@ -22,7 +22,8 @@ class ReplicaAttestationType0:
         node (int):
         attestation (AttestationDoc): A node's attestation: the TDX quote (base64), the key it binds (hex) and what it
             was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a
-            KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API.
+            KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then
+            the node's interval quote); `jobKey` only from a job node, never from this API.
     """
 
     node: int

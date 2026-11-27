@@ -142,6 +142,7 @@ impl Node {
             kms: None,
             job_key: None,
             cluster_identity: None,
+            interval: None,
         };
         let v = serde_json::to_value(doc)?;
         let _set = self.recovery.attestation.set(v.clone());

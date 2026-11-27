@@ -1391,7 +1391,7 @@ export interface paths {
         };
         /**
          * The node's attestation
-         * @description In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+         * @description In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
          *
          *     **Who:** anyone.
          */
@@ -6381,7 +6381,7 @@ export interface components {
             version: string;
             profile: string;
         };
-        /** @description A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API. */
+        /** @description A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API. */
         AttestationDoc: {
             quote: string;
             transportKey: string;
@@ -6397,6 +6397,15 @@ export interface components {
             kms?: components["schemas"]["KmsKeys"];
             jobKey?: string;
             clusterIdentity?: string;
+            interval?: components["schemas"]["IntervalProof"];
+        };
+        /** @description With `form=interval`: the node's interval key (Ed25519, hex) that its quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex) over the request's nonce, app hash and transport key. */
+        IntervalProof: {
+            key: string;
+            quoteNonce: string;
+            /** Format: int64 */
+            issuedAt: number;
+            signature: string;
         };
         /** @description What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record. */
         KmsKeys: {
@@ -12517,6 +12526,7 @@ export interface operations {
                 app?: string;
                 appHash?: string;
                 purpose?: "receipts" | "kms" | "orchestrator";
+                form?: "interval";
             };
             header?: never;
             path?: never;
@@ -12533,7 +12543,7 @@ export interface operations {
                     "application/json": components["schemas"]["AttestationDoc"];
                 };
             };
-            /** @description `BAD_HASH`; `BAD_NONCE` */
+            /** @description `BAD_FORM`; `BAD_HASH`; `BAD_NONCE` */
             400: {
                 headers: {
                     [name: string]: unknown;

@@ -9302,7 +9302,7 @@
         ],
         "x-calimero-group": "public",
         "summary": "The node's attestation",
-        "description": "In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.\n\n**Who:** anyone.",
+        "description": "In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": false,
@@ -9343,6 +9343,17 @@
                 "orchestrator"
               ]
             }
+          },
+          {
+            "name": "form",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "interval"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9357,7 +9368,7 @@
             }
           },
           "400": {
-            "description": "`BAD_HASH`; `BAD_NONCE`",
+            "description": "`BAD_FORM`; `BAD_HASH`; `BAD_NONCE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9366,6 +9377,7 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_FORM",
               "BAD_HASH",
               "BAD_NONCE"
             ]
@@ -35282,6 +35294,9 @@
           },
           "clusterIdentity": {
             "type": "string"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/IntervalProof"
           }
         },
         "required": [
@@ -35294,7 +35309,33 @@
           "node",
           "mock"
         ],
-        "description": "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API."
+        "description": "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API."
+      },
+      "IntervalProof": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "quoteNonce": {
+            "type": "string"
+          },
+          "issuedAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "quoteNonce",
+          "issuedAt",
+          "signature"
+        ],
+        "description": "With `form=interval`: the node's interval key (Ed25519, hex) that its quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex) over the request's nonce, app hash and transport key."
       },
       "KmsKeys": {
         "type": "object",

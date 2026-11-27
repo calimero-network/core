@@ -3908,6 +3908,7 @@ impl Public<'_> {
         app: Option<&str>,
         app_hash: Option<&str>,
         purpose: Option<AttestationPurpose>,
+        form: Option<AttestationForm>,
     ) -> Result<AttestationDoc> {
         let mut req = Request::new(Method::GET, "attestation");
         req = req.query("nonce", nonce);
@@ -3919,6 +3920,9 @@ impl Public<'_> {
         }
         if let Some(v) = purpose {
             req = req.query("purpose", v.as_str());
+        }
+        if let Some(v) = form {
+            req = req.query("form", v.as_str());
         }
         route::clear(self.client.transport(), req).await
     }

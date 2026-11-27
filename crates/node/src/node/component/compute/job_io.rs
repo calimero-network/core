@@ -560,6 +560,7 @@ mod tests {
                 kms: None,
                 job_key: None,
                 cluster_identity: None,
+                interval: None,
             },
             channel: Arc::new(calimero_sealed::client::SealedTransport::with_key(
                 url.parse().unwrap(),

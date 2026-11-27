@@ -13,6 +13,7 @@ from typing import Union
 if TYPE_CHECKING:
     from ..models.kms_keys import KmsKeys
     from ..models.governance import Governance
+    from ..models.interval_proof import IntervalProof
     from ..models.release import Release
 
 
@@ -23,7 +24,8 @@ T = TypeVar("T", bound="AttestationDoc")
 class AttestationDoc:
     """A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and
     `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with
-    `purpose=orchestrator`; `jobKey` only from a job node, never from this API.
+    `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only
+    from a job node, never from this API.
 
         Attributes:
             quote (str):
@@ -42,6 +44,9 @@ class AttestationDoc:
                 key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.
             job_key (Union[Unset, str]):
             cluster_identity (Union[Unset, str]):
+            interval (Union[Unset, IntervalProof]): With `form=interval`: the node's interval key (Ed25519, hex) that its
+                quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex)
+                over the request's nonce, app hash and transport key.
     """
 
     quote: str
@@ -57,11 +62,13 @@ class AttestationDoc:
     kms: Union[Unset, "KmsKeys"] = UNSET
     job_key: Union[Unset, str] = UNSET
     cluster_identity: Union[Unset, str] = UNSET
+    interval: Union[Unset, "IntervalProof"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.kms_keys import KmsKeys
         from ..models.governance import Governance
+        from ..models.interval_proof import IntervalProof
         from ..models.release import Release
 
         quote = self.quote
@@ -94,6 +101,10 @@ class AttestationDoc:
 
         cluster_identity = self.cluster_identity
 
+        interval: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.interval, Unset):
+            interval = self.interval.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -118,6 +129,8 @@ class AttestationDoc:
             field_dict["jobKey"] = job_key
         if cluster_identity is not UNSET:
             field_dict["clusterIdentity"] = cluster_identity
+        if interval is not UNSET:
+            field_dict["interval"] = interval
 
         return field_dict
 
@@ -125,6 +138,7 @@ class AttestationDoc:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.kms_keys import KmsKeys
         from ..models.governance import Governance
+        from ..models.interval_proof import IntervalProof
         from ..models.release import Release
 
         d = dict(src_dict)
@@ -164,6 +178,13 @@ class AttestationDoc:
 
         cluster_identity = d.pop("clusterIdentity", UNSET)
 
+        _interval = d.pop("interval", UNSET)
+        interval: Union[Unset, IntervalProof]
+        if isinstance(_interval, Unset):
+            interval = UNSET
+        else:
+            interval = IntervalProof.from_dict(_interval)
+
         attestation_doc = cls(
             quote=quote,
             transport_key=transport_key,
@@ -178,6 +199,7 @@ class AttestationDoc:
             kms=kms,
             job_key=job_key,
             cluster_identity=cluster_identity,
+            interval=interval,
         )
 
         attestation_doc.additional_properties = d

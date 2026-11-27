@@ -1937,10 +1937,16 @@ fn components() -> Vec<Component> {
         ),
         component(
             "AttestationDoc",
-            "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API.",
-            "{ quote: string, transportKey: string, appHash: string, nonce: string, release: #Release, cluster: string, node: uint, mock: bool, receiptKey?: string, governance?: #Governance, kms?: #KmsKeys, jobKey?: string, clusterIdentity?: string }",
+            "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API.",
+            "{ quote: string, transportKey: string, appHash: string, nonce: string, release: #Release, cluster: string, node: uint, mock: bool, receiptKey?: string, governance?: #Governance, kms?: #KmsKeys, jobKey?: string, clusterIdentity?: string, interval?: #IntervalProof }",
         )
         .of::<calimero_client::attest::AttestationDoc>(),
+        component(
+            "IntervalProof",
+            "With `form=interval`: the node's interval key (Ed25519, hex) that its quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex) over the request's nonce, app hash and transport key.",
+            "{ key: string, quoteNonce: string, issuedAt: uint, signature: string }",
+        )
+        .of::<calimero_client::attest::IntervalProof>(),
         component(
             "KmsKeys",
             "What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.",
@@ -2357,10 +2363,10 @@ fn operations() -> Vec<Op> {
             .about("In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).")
             .ok("#Health"),
         get("/attestation", "attestation", Anyone, "The node's attestation")
-            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
-            .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" | "orchestrator" }"#)
+            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
+            .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" | "orchestrator", form?: "interval" }"#)
             .ok("#AttestationDoc")
-            .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (404, "NOT_FOUND"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (400, "BAD_FORM"), (404, "NOT_FOUND"), (503, "BUSY")]),
         get("/releases", "releases_public", Anyone, "The cluster's releases")
             .about("The cluster's governance and the deadlines set on mero-tee releases, oldest release first: after `after` (RFC 3339; `afterSecs` Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.")
             .ok("#ClusterReleases"),

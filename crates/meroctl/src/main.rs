@@ -562,7 +562,7 @@ async fn main() -> eyre::Result<()> {
             to_json(
                 &env.client
                     .public()
-                    .attestation(&nonce, None, None, None)
+                    .attestation(&nonce, None, None, None, None)
                     .await?,
             )?
         }
