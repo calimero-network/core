@@ -1503,6 +1503,24 @@ impl Node {
             .read_local(|m, _| f(m))
     }
 
+    /// Read the system state that holds organization `org`'s own data: its
+    /// tenant group once the org structure has moved there and the cutover is on
+    /// ([`shard::ACTIVE`]), otherwise the root group. The reader a request or a
+    /// page uses to look up an org's members, teams, metadata or settings, so it
+    /// follows the org to its shard without every caller knowing where it lives.
+    /// A node that is a system voter hosts every tenant group, so this reads
+    /// locally; a node that does not host it falls back to root
+    /// ([`Node::system_shard`]) until forwarding lands.
+    pub fn sys_org<R>(&self, org: &crate::types::OrgId, f: impl FnOnce(&SystemState) -> R) -> R {
+        use crate::system::shard;
+        if shard::ACTIVE {
+            self.system_shard(&shard::ShardId::Tenant(org.clone()))
+                .read_local(|m, _| f(&m.state))
+        } else {
+            self.sys(f)
+        }
+    }
+
     /// The system Raft group that serves a shard ([`crate::system::shard`]): the
     /// root group for [`ShardId::Root`] (today also the single system group), or
     /// an organization's tenant group once one exists. Until tenant groups are
@@ -1565,13 +1583,18 @@ impl Node {
     /// what every node supports).
     pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        // The shard this command's state belongs to. While the cutover is off
-        // (`shard::ACTIVE`) every command resolves to the root group, so this is
-        // behaviour-preserving; the flip turns it on and gives the resolver the
-        // root directory to look up an app's or account's owning org.
+        // The shard this command's state belongs to: its org's tenant group
+        // when its area has moved there (`shard::flipped`) and the cutover is on
+        // (`shard::ACTIVE`), otherwise the root group. While the cutover is off
+        // this is behaviour-preserving.
         let shard = {
             use crate::system::shard;
-            shard::shard_for(shard::ACTIVE, shard::tenant_of(&cmd.scope(), |_| None))
+            let tenant = if shard::flipped(cmd.area()) {
+                shard::tenant_of(&cmd.scope(), |_| None)
+            } else {
+                None
+            };
+            shard::shard_for(shard::ACTIVE, tenant)
         };
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a

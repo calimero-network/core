@@ -284,7 +284,7 @@ async fn org_get(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let o = node
-        .sys(|s| s.orgs.get(&org).cloned())
+        .sys_org(&org, |s| s.orgs.get(&org).cloned())
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     if o.role(&account).is_none() {
         return Err(ApiError::not_found("no such organization"));
@@ -416,8 +416,9 @@ pub(crate) async fn delete_org(
     confirm: Option<ConfirmBody>,
 ) -> ApiResult {
     let actor = p.account()?;
-    let is_owner =
-        node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner));
+    let is_owner = node.sys_org(&org, |s| {
+        s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner)
+    });
     if !is_owner {
         return Err(ApiError::forbidden(
             "only the organization's owner deletes it",
@@ -474,7 +475,7 @@ pub(crate) async fn rename_org(
 ) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let role = node.sys_org(&org, |s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
     let Some(role) = role else {
         return Err(ApiError::not_found("no such organization"));
     };
@@ -539,7 +540,7 @@ pub(crate) async fn set_all_apps(
 ) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let role = node.sys_org(&org, |s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
     let Some(role) = role else {
         return Err(ApiError::not_found("no such organization"));
     };
@@ -1268,7 +1269,9 @@ pub(crate) async fn create_invite(
         if !crate::types::Org::defined_caps(bits) {
             return Err(crate::node::unknown_capabilities());
         }
-        let may = node.sys(|s| s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits)));
+        let may = node.sys_org(&org, |s| {
+            s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits))
+        });
         if !may {
             return Err(crate::node::cannot_grant_unheld());
         }
@@ -1717,7 +1720,9 @@ async fn org_apps(
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     let limit = q.limit()?;
-    let member = node.sys(|s| s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()));
+    let member = node.sys_org(&org, |s| {
+        s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
+    });
     if !member {
         return Err(ApiError::not_found("no such organization"));
     }

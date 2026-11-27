@@ -8113,7 +8113,7 @@ fn bind_on(
 /// (release 1.0.0 ships `b1`, `upgrades` as given), a raw bundle `raw`,
 /// and the customer's instances `inst` (of `p`) and `rawapp`.
 fn publishing(signer: &str, upgrades: &str) -> SystemMachine {
-    let mut m = SystemMachine::new("test".into());
+    let mut m = SystemMachine::new("test".into(), crate::system::shard::ShardId::Root);
     let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
     for who in ["pam", "bob", "cora", "dan"] {
         let _ok = m.run_unproven(account(who)).unwrap();

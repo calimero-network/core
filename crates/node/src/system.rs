@@ -7942,7 +7942,7 @@ pub struct SystemMachine {
 impl SystemMachine {
     /// The system machine of the cluster named `cluster`, serving `role`.
     #[must_use]
-    pub fn new(cluster: String, role: shard::ShardId) -> Self {
+    pub(crate) fn new(cluster: String, role: shard::ShardId) -> Self {
         Self {
             cluster,
             role,
@@ -8013,12 +8013,13 @@ impl SystemMachine {
         // ([`shard::owns`]). `SeedTenant` is the node's own seed, written
         // straight to its tenant group. While the cutover is off every command
         // owns on root, so this is behaviour-preserving.
+        let tenant = if shard::flipped(cmd.area()) {
+            shard::tenant_of(&cmd.scope(), |_| None)
+        } else {
+            None
+        };
         if !matches!(cmd, SystemCmd::SeedTenant { .. })
-            && !shard::owns(
-                &self.role,
-                shard::tenant_of(&cmd.scope(), |_| None),
-                shard::ACTIVE,
-            )
+            && !shard::owns(&self.role, tenant, shard::ACTIVE)
         {
             return Err("this command reached the wrong system shard".into());
         }

@@ -31,6 +31,15 @@ use crate::node::SYSTEM_GROUP;
 use crate::system::Area;
 use crate::types::{AccountId, AppId, OrgId};
 
+/// Which [`Area`]s have moved to the tenant shards. The cutover lands one area
+/// at a time: a command in a flipped area routes to its org's tenant group (when
+/// [`ACTIVE`]), one in any other area stays on root. The org structure (`Orgs`)
+/// goes first; later slices add the rest. An area not here is read and written on
+/// root exactly as before, so the flip is incremental.
+pub(crate) const fn flipped(area: Area) -> bool {
+    matches!(area, Area::Orgs)
+}
+
 /// Whether tenant sharding routes and applies by shard. This is the cutover
 /// switch, not a runtime feature: while `false`, [`shard_for`] keeps every
 /// command on the root group and the role-aware apply guard treats root as the

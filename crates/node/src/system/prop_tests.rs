@@ -484,13 +484,13 @@ fn replicas_agree(
     entries: &[Vec<u8>],
     cut: usize,
 ) -> Result<usize, TestCaseError> {
-    let mut straight = SystemMachine::new(CLUSTER.into());
+    let mut straight = SystemMachine::new(CLUSTER.into(), crate::system::shard::ShardId::Root);
     let answers = apply(&mut straight, group, 0, entries);
 
-    let mut before = SystemMachine::new(CLUSTER.into());
+    let mut before = SystemMachine::new(CLUSTER.into(), crate::system::shard::ShardId::Root);
     let mut restored_answers = apply(&mut before, group, 0, &entries[..cut]);
     let snapshot = before.snapshot().expect("the system state serializes");
-    let mut restored = SystemMachine::new(CLUSTER.into());
+    let mut restored = SystemMachine::new(CLUSTER.into(), crate::system::shard::ShardId::Root);
     restored.restore(&snapshot).expect("a snapshot restores");
     prop_assert_eq!(
         restored.snapshot().expect("the system state serializes"),
@@ -642,7 +642,7 @@ fn every_kind_of_generated_entry_applies_when_proven() {
     for op in &ops {
         log.add(op);
     }
-    let mut m = SystemMachine::new(CLUSTER.into());
+    let mut m = SystemMachine::new(CLUSTER.into(), crate::system::shard::ShardId::Root);
     for (i, out) in apply(&mut m, &group, 0, &log.entries).iter().enumerate() {
         assert!(
             verdict(out),
