@@ -9861,6 +9861,8 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     for v in ["a", "b", "c"] {
         set(&alice, &in_org, v).await.unwrap();
     }
+    // Usage reads answer from the replica's applied state, with no read index.
+    applied_everywhere(&c, &in_org).await;
     let app_fuel = figure(&app_usage(&alice, &in_org).await["today"]["fuel"]);
     assert!(app_fuel > 0);
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
@@ -9884,6 +9886,7 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         .map(|a| a.app_id)
         .unwrap();
     set(&alice, &personal, "p").await.unwrap();
+    applied_everywhere(&c, &personal).await;
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
     let home = alice.apps().get(&personal).await.map(wire).unwrap()["org"]
         .as_str()
