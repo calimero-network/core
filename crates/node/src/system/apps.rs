@@ -618,8 +618,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             owner_in_org,
             owner_in_team,
+            org,
             ..
-        } => transfer_app(state, app_id, to, actor, owner_in_org, owner_in_team),
+        } => transfer_app(
+            state,
+            app_id,
+            to,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org.map(|o| *o),
+        ),
         SystemCmd::MoveApp {
             app_id,
             to_org,
@@ -671,7 +680,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             owner_in_org,
             owner_in_team,
-        } => set_access(state, app_id, access, actor, owner_in_org, owner_in_team),
+            org,
+        } => set_access(
+            state,
+            app_id,
+            access,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org.map(|o| *o),
+        ),
         SystemCmd::SetDelegation {
             account,
             source,
@@ -722,7 +740,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             owner_in_org,
             owner_in_team,
-        } => set_app_metadata(state, app_id, metadata, actor, owner_in_org, owner_in_team),
+            org,
+        } => set_app_metadata(
+            state,
+            app_id,
+            metadata,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org.map(|o| *o),
+        ),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached apps::apply"),
@@ -1316,18 +1343,22 @@ fn transfer_app(
     actor: AccountId,
     owner_in_org: bool,
     owner_in_team: bool,
+    baked: Option<Org>,
 ) -> Result<Value, Rejection> {
     if !state.accounts.contains_key(&to) {
         return Err(UNKNOWN_ACCOUNT);
     }
     let org = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?.org.clone();
+    // The app's organization comes from its own shard (its tenant group), baked
+    // at propose; `apply` cannot read it from root once org membership moved off
+    // root (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let organization = baked.as_ref().or_else(|| state.orgs.get(&org));
     // An org's app stays with a member of the org (as `CreateApp`),
     // except that, before organizations are ordinary
     // (`SystemState::ordinary_orgs`), one in a personal organization handed
     // to someone outside it goes to theirs, as a personal app went with its
     // new owner.
     let mut to_org = None;
-    let organization = state.orgs.get(&org);
     let role = organization.and_then(|o| o.role(&to));
     if !role.is_some_and(|r| r >= OrgRole::Member) {
         match (
@@ -1348,7 +1379,7 @@ fn transfer_app(
             app,
             &actor,
             OwnerRule::logged(true, owner_in_team),
-            state.orgs.get(&app.org),
+            organization,
         )
     {
         return Err(ONLY_MANAGERS_TRANSFER.into());
@@ -1501,14 +1532,19 @@ fn set_access(
     actor: AccountId,
     owner_in_org: bool,
     owner_in_team: bool,
+    baked: Option<Org>,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
+    // The app's organization comes from its own shard (its tenant group), baked
+    // at propose; `apply` on root judges the manager and validates the grants
+    // against it (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let org = baked.as_ref().or_else(|| state.orgs.get(&app.org));
     if !state.owner_acts_as_logged(
         app,
         &actor,
         OwnerRule::logged(owner_in_org, owner_in_team),
-        state.orgs.get(&app.org),
-    ) && !state.may_set_access_self(app, &access, &actor)
+        org,
+    ) && !state.may_set_access(app, &access, &actor, org)
     {
         return Err(ONLY_MANAGERS_SET_ACCESS);
     }
@@ -1518,10 +1554,7 @@ fn set_access(
         .access
         .keeping_links(access)
         .ok_or(LINKS_KEEP_THEIR_CONSENT)?;
-    // TODO(sharding S4): bake the organization for `SetAccess` as `CreateApp`
-    // does; this still reads root's copy
-    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
-    state.check_grants(&app.org, None, access.without_links().grants())?;
+    state.check_grants(&app.org, org, access.without_links().grants())?;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
     app.access = access;
     Ok(Value::Null)
@@ -1832,15 +1865,19 @@ fn set_app_metadata(
     actor: AccountId,
     owner_in_org: bool,
     owner_in_team: bool,
+    baked: Option<Org>,
 ) -> Result<Value, Rejection> {
     metadata_fits(&metadata)?;
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    let admin = state.is_org_admin_self(&app.org, &actor);
+    // The app's organization from its own shard (its tenant group), baked at
+    // propose (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let org = baked.as_ref().or_else(|| state.orgs.get(&app.org));
+    let admin = state.is_org_admin(org, &actor);
     if !state.owner_acts_as_logged(
         app,
         &actor,
         OwnerRule::logged(owner_in_org, owner_in_team),
-        state.orgs.get(&app.org),
+        org,
     ) && !admin
     {
         return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);

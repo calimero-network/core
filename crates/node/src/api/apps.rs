@@ -1382,6 +1382,7 @@ async fn app_access(
         }
         _ => p.unbound()?,
     }
+    let org = node.org_of(&app.org).map(Box::new);
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
             app_id,
@@ -1389,6 +1390,7 @@ async fn app_access(
             actor: account,
             owner_in_org: true,
             owner_in_team: true,
+            org,
         })
         .await?;
     Ok(Json(json!({})))
@@ -1459,6 +1461,7 @@ async fn app_transfer(
     if leaves_personal {
         let _theirs = personal_org(&node, &body.to).await?;
     }
+    let org = node.org_of(&app.org).map(Box::new);
     Ok(Json(
         node.sys_write(&SystemCmd::TransferApp {
             app_id,
@@ -1467,6 +1470,7 @@ async fn app_transfer(
             consent,
             owner_in_org: true,
             owner_in_team: true,
+            org,
         })
         .await?,
     ))
@@ -1543,8 +1547,10 @@ async fn app_metadata(
     let app_id = node.canonical_app_id(&app_id);
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
-    p.within(&node, &node.app(&app_id).await?)?;
+    let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
     p.settings_write()?;
+    let org = node.org_of(&app.org).map(Box::new);
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
@@ -1552,6 +1558,7 @@ async fn app_metadata(
             actor,
             owner_in_org: true,
             owner_in_team: true,
+            org,
         })
         .await?;
     Ok(Json(json!({})))

@@ -6689,6 +6689,14 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The app's organization as its own shard (its tenant group) holds it,
+        /// baked at propose: `apply` runs on the root group and cannot read
+        /// another shard, so it judges the owner's and the new owner's membership
+        /// against this rather than root's copy. Absent with the cutover off,
+        /// then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
     },
     /// Move an app instance to another organization, its data where it is:
     /// whoever manages it where it is now ([`SystemState::manages_app`]; a
@@ -6834,6 +6842,13 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The app's organization from its own shard (its tenant group), baked
+        /// at propose so `apply` on the root group judges who may set access and
+        /// validates the grants against it, not root's copy. Absent with the
+        /// cutover off
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
     },
     /// A new account, with the session its sign-up opens. Carries the new
     /// passkey's assertion over [`account_args`] (`account:<id> /
@@ -7582,6 +7597,12 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The app's organization from its own shard (its tenant group), baked
+        /// at propose so `apply` on root judges owner and admin against it.
+        /// Absent with the cutover off
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
     },
     SetPasskeyLabel {
         account: AccountId,
