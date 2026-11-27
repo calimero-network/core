@@ -454,6 +454,21 @@ impl Kv {
         Ok(())
     }
 
+    /// Counts one more under `bounces`, then sends `bounce` to app `app`. To an app that does
+    /// not exist it is dead-lettered, and `onXcallFailed` sends it again: a loop through
+    /// failures that, once a client starts it, no client keeps going.
+    pub fn bounce(&mut self, app: String) -> app::Result<()> {
+        let bounces = self
+            .entries
+            .get("bounces")?
+            .and_then(|e| e.value.parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        let _event = self.upsert("bounces", &bounces.to_string())?;
+        env::xcall(&app, "bounce", &NoArgs {})?;
+        Ok(())
+    }
+
     /// Sends `recordWho { key }` to app `app`: the target stores whom this run served.
     pub fn relay_who(&mut self, app: String, key: String) -> app::Result<()> {
         env::xcall(&app, "recordWho", &KeyArg { key: &key })?;
@@ -562,6 +577,9 @@ impl Kv {
     ) -> app::Result<()> {
         self.xcall_failures
             .insert(&method, &format!("{app}|{reason}"))?;
+        if method == "bounce" {
+            return self.bounce(app);
+        }
         Ok(())
     }
 

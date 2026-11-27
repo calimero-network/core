@@ -191,13 +191,17 @@ developer is over its fuel cap for the day.
 
 A message carries a budget: how many deliveries it and every xcall it leads to
 may still take. A run that no xcall delivered (a client's call, a timer tick,
-an action, a follow-up such as `onXcallFailed`) starts a chain for each message
-it sends, with `MAX_XCALL_CHAIN` (128) apiece. A delivered message's run spends
-one of its budget and splits the rest evenly among the messages it sends, the
-first ones taking the remainder. A message sent with nothing left goes to the
-source's dead letters at once ("the xcall chain used its budget of
-deliveries"); it takes no outbox slot and its source's `onXcallFailed` does not
-run.
+an action, `onActionFailed`) starts a chain for each message it sends, with
+`MAX_XCALL_CHAIN` (128) apiece. A delivered message's run spends one of its
+budget and splits the rest evenly among the messages it sends, the first ones
+taking the remainder. A message sent with nothing left goes to the source's
+dead letters at once ("the xcall chain used its budget of deliveries"); it
+takes no outbox slot and its source's `onXcallFailed` does not run.
+
+A dead-lettered message's `onXcallFailed` run stands in for its delivery: it
+spends one of the message's budget and splits the rest among the messages it
+sends, as the delivered run would have. So a handler that sends again what
+failed, which fails again, stops with the chain, at the same 128.
 
 So however a chain fans out, one message leads to at most 128 deliveries, and
 an app whose method sends itself xcalls stops once its chain is spent, rather
@@ -207,7 +211,8 @@ run that fans out to a few apps, stays well inside the budget.
 The leader of the sending run sets the budget, and replicas dead-letter a spent
 one, only once the logged cluster version brings `xcallBudget`
 (1.0.0-rc.39): an earlier release would queue it. A message logged without a
-budget (an earlier release's) starts a chain when it is delivered.
+budget (an earlier release's) starts a chain when it is delivered, or when its
+`onXcallFailed` runs.
 
 ## Limits
 
@@ -280,7 +285,8 @@ The chain budget: the run's leader gives each `XcallOut` its `budget` in `Node::
 (`share_budget`, from `RunExtras::xcall_budget`, the delivered `XcallFrom::budget`; `None` starts a
 chain), only once `Feature::XcallBudget` is logged (`Node::shares_xcall_budget`); `Outgoing` and
 `XcallFrom` carry it on, and `XcallHead::send` dead-letters a `Some(0)` without taking a sequence
-number.
+number. `Node::on_xcall_failed` passes the dead-lettered `Outgoing::budget` as
+`CallRequest::chain_budget`, which the handler's run takes as its `RunExtras::xcall_budget`.
 A full outbox: the run's leader sets `Outcome::keep_queue` on an entry that sends xcalls once
 `Feature::XcallKeepsQueue` is logged (`Node::keeps_xcall_queue`), and `XcallHead::send` then
 dead-letters one past `MAX_OUTBOX` without taking a sequence number; an entry without the flag

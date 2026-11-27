@@ -1813,7 +1813,11 @@ impl Node {
                                     via: req.via.clone(),
                                     secrets,
                                     searches: None,
-                                    xcall_budget: req.xcall.as_ref().and_then(|x| x.budget),
+                                    xcall_budget: req
+                                        .xcall
+                                        .as_ref()
+                                        .and_then(|x| x.budget)
+                                        .or(req.chain_budget),
                                 },
                             );
                             ran_for = Some(started.elapsed());
@@ -2921,7 +2925,9 @@ impl Node {
     }
 
     /// The source's `onXcallFailed`, if its ABI has one the system may call: told which
-    /// message was dead-lettered and why. Best effort, once.
+    /// message was dead-lettered and why. Best effort, once. The run takes the message's
+    /// budget, so the xcalls it sends share that chain's
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
     async fn on_xcall_failed(
         &self,
         source: &str,
@@ -2944,6 +2950,7 @@ impl Node {
                 crate::app::NODE_KEY_PREFIX,
                 msg.seq
             )),
+            chain_budget: msg.budget,
             ..CallRequest::new(
                 source.to_owned(),
                 HANDLER.to_owned(),

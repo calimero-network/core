@@ -374,6 +374,14 @@ pub struct CallRequest {
     /// it along on `internal/call`. `None`: the leader runs a round itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sys_index: Option<u64>,
+    /// An `onXcallFailed` run: the dead-lettered message's budget
+    /// ([`Outgoing::budget`](crate::component::xcall::Outgoing::budget)), which the run
+    /// spends as its delivery would have, so the xcalls it sends carry on that chain
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
+    /// Set only by the source's leader (`Node::on_xcall_failed`); peers pass it along on
+    /// `internal/call`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_budget: Option<u32>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -420,6 +428,7 @@ impl CallRequest {
             sync_from: None,
             via: None,
             sys_index: None,
+            chain_budget: None,
         }
     }
 
