@@ -132,7 +132,7 @@ mod tests {
         let _bob = s.take(Some("bob"), "app").expect("another account");
         let _anon = s.take(None, "app").expect("a caller without an account");
         drop(held.pop());
-        let _again = s
+        let again = s
             .take(Some("alice"), "app")
             .expect("the dropped slot is back");
         drop(held);
