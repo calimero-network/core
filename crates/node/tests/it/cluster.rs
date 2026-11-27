@@ -7262,7 +7262,8 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     const FLOODERS: usize = 40;
     let mut c = Cluster::start(3).await;
     let _ = signed_up(&c, 1, "alice").await;
-    calimero_node::testing::slow_quotes(&c.configs[0].public_url, Duration::from_secs(1));
+    let slow = c.nodes[0].as_ref().unwrap().node.config.public_url.clone();
+    calimero_node::testing::slow_quotes(&slow, Duration::from_secs(1));
     let flooded = c.urls[0].clone();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flooders: Vec<_> = (0..FLOODERS)
@@ -7293,7 +7294,7 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     // The queue is full before node 2 restarts.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    c.restart(1, |_| {}).await;
+    c.restart(1).await;
     let started = std::time::Instant::now();
     let reached = tokio::time::timeout(
         Duration::from_secs(20),
@@ -7313,7 +7314,10 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
         busy += b;
     }
     eprintln!("peer channel after {took:?}: {reached:?}; anonymous {ok} answered, {busy} busy");
-    assert!(busy > 0, "the anonymous queue was never full ({ok} answered)");
+    assert!(
+        busy > 0,
+        "the anonymous queue was never full ({ok} answered)"
+    );
     reached
         .expect("the restarted node reached the flooded one in time")
         .expect("the restarted node attested the flooded one during the flood");

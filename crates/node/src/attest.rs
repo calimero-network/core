@@ -513,7 +513,8 @@ mod tests {
         let until = Instant::now() + Duration::from_secs(3);
         let flood: Vec<_> = (0..2 * (MAX_CONCURRENT_QUOTES + MAX_QUEUED_QUOTES))
             .map(|_| {
-                let (q, in_flight, most) = (Arc::clone(&q), Arc::clone(&in_flight), Arc::clone(&most));
+                let (q, in_flight, most) =
+                    (Arc::clone(&q), Arc::clone(&in_flight), Arc::clone(&most));
                 tokio::spawn(async move {
                     while Instant::now() < until {
                         if q.run(blocking(&in_flight, &most, QUOTE)).await.is_err() {
