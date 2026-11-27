@@ -788,26 +788,48 @@ fn import_holder(
     Ok(json!({ "apps": groups }))
 }
 
-/// Whether `record`'s release (named, else the one the slice records its bundle from), as this
-/// cluster will hold its package (here, else the slice's), ships its bundle under the signer the
-/// slice holds it under. A raw bundle, from no release, passes.
+/// Whether `record`'s release ships its bundle and compute part as this cluster will hold its
+/// package (here, else the slice's), under the signer the slice holds it under. A record that
+/// names no release is judged by the release its bundle is recorded from, which the slice must
+/// carry and, where this cluster records that bundle too, must agree with; a raw bundle passes.
 fn imported_release_ships(state: &SystemState, slice: &HolderSlice, record: &AppRecord) -> bool {
-    let Some(r) = record
-        .release
-        .as_ref()
-        .or_else(|| slice.bundles.get(&record.bundle)?.package.as_ref())
-    else {
-        return true;
+    let attributed = |hash: &str| {
+        let theirs = slice.bundles.get(hash)?;
+        let ours = state.bundles.get(hash).unwrap_or(theirs);
+        (ours.package == theirs.package).then_some(theirs.package.clone())
     };
-    let theirs = slice.packages.get(&r.package);
-    let Some(held) = state.packages.get(&r.package).or(theirs) else {
+    let r = match &record.release {
+        Some(r) => r.clone(),
+        None => match attributed(&record.bundle) {
+            Some(Some(r)) => r,
+            Some(None) => return true,
+            None => return false,
+        },
+    };
+    if record
+        .compute_bundle
+        .as_deref()
+        .is_some_and(|c| record.release.is_none() && attributed(c).is_none())
+    {
+        return false;
+    }
+    let (Some(theirs), Some(held)) = (
+        slice.packages.get(&r.package),
+        state
+            .packages
+            .get(&r.package)
+            .or(slice.packages.get(&r.package)),
+    ) else {
         return false;
     };
-    theirs.is_none_or(|t| t.signer_id == held.signer_id)
-        && held
-            .versions
+    let ships = |hash: &str| {
+        held.versions
             .get(&r.version)
-            .is_some_and(|v| v.parts(&r.package).any(|(h, _)| h == record.bundle))
+            .is_some_and(|v| v.parts(&r.package).any(|(h, _)| h == hash))
+    };
+    theirs.signer_id == held.signer_id
+        && ships(&record.bundle)
+        && record.compute_bundle.as_deref().is_none_or(ships)
 }
 
 /// The lineage `record` keeps on import: its own, else its release's as the slice records it,
