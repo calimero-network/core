@@ -496,6 +496,35 @@ a live three-node cluster:
   (never decremented), so it introduces no second source of truth for
   membership. The same shape covers the other token-keyed, org-agnostic commands
   (app invites, and — once `Accounts`/`Recovery` flip — sessions and recovery).
+- **But routing redeem to the tenant reaches the credential gate.**
+  `RedeemInvite` applied on the tenant must (a) verify the redeemer's **consent
+  proof** and (b) register the redeemer — both of which need that account's
+  **identity** (its passkeys), which lives in the **root** account directory. The
+  redeemer is, by definition, not yet a member, so the tenant seed has not
+  projected them. This is the same blocker as the first open question below
+  (verifying a credential inside a tenant), reached from the membership side. So
+  the control-plane **membership path forks**, and the choice is a design/security
+  decision, not an implementation detail:
+  - **(X) Membership authoritative on root, tenant mirrors it.** Keep every org
+    structure write (roles, teams, invites, redeem) on root, where account
+    identity already is, and extend the one-shot tenant seed into a continuous
+    root→tenant projection so the gate's tenant reads see current membership.
+    Simple, no new credential mechanism, invariant 6 (identity from proofs on
+    root) untouched — but org-structure writes are **not** sharded; the write
+    relief comes from apps, sessions, compute and recovery, not membership. It
+    also means reverting the org-structure commands that currently route to the
+    tenant back to root.
+  - **(Y) Membership authoritative on the tenant.** Route the whole org family
+    (including invites/redeem) to the tenant for full write-sharding, which
+    requires the **signed credential binding** below so a tenant can verify, from
+    the entry alone, that a baked account/credential is authentic — without it, a
+    faulty or compromised leader could forge consent. This is the higher-ceiling
+    option and the one the rest of this note assumes, but it is gated on that
+    security primitive.
+
+  The slice landed so far (org read-routing, tenant lifecycle, role-aware apply,
+  `CreateApp` org-bake) is compatible with either fork; the fork only decides
+  where the invite/membership **writes** go.
 
 ## Open questions / risks
 
