@@ -8,7 +8,7 @@
 )]
 use super::*;
 
-/// What [`SystemMachine::run`] would refuse of `cmd` if it applied next on
+/// What `SystemMachine::run` would refuse of `cmd` if it applied next on
 /// `m`, read-only: its proof ([`authorize`]), the new-work refusal, and the
 /// authority and subject checks of the commands an account with no role can
 /// send (`orgs::prejudge`, `apps::prejudge`). It refuses only what `run`

@@ -1484,7 +1484,7 @@ impl Node {
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
     /// version ([`Node::require_features`]), and the refusal `apply` would
-    /// answer for one it judges refused already ([`Node::sys_prejudge`]).
+    /// answer for one it judges refused already (`Node::sys_prejudge`).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
