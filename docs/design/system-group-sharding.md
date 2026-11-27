@@ -211,6 +211,30 @@ around the cross-shard-read design rather than a mechanical log split.
 
 All of it is unit-tested and inert — nothing calls it on the hot path yet.
 
+### Landed since (hard cutover, PR #5559)
+
+The cutover is built without a feature gate: genesis starts empty, so there is
+no migration and no old-format reader; the single-group path is removed, not
+gated. In code and validated on the in-process `it` cluster (687 node tests
+green):
+
+- `SystemCmd::scope()` — the exhaustive classifier (mirrors `area`), wired
+  through `sys_propose`; `shard::owns(role, tenant, active)`, the apply-side
+  mirror of `shard_for`, with the invariant *a command is applied by exactly the
+  shard its write routed to*.
+- `SystemState::tenant_groups` (root-owned `OrgId -> GroupId`) and
+  `next_tenant_group`: every organization is allocated a tenant group id from a
+  dedicated high range (`shard::TENANT_GROUP_BASE`, `1 << 32`) on all three
+  creation paths (`CreateOrg`, a sign-up's personal org, a recovery import), so a
+  tenant id never shifts an app group id and is never reused.
+- `Node::ensure_tenant_group` + the reconcile loop: every system voter now forms
+  and hosts each org's tenant group (mirroring `ensure_app_group`), so tenant
+  groups are **real, replicating Raft groups**. They run a plain `SystemMachine`
+  and nothing routes to them yet, so behaviour is unchanged.
+
+What remains is the routing flip (reads/writes to the tenant groups, role-aware
+`apply`), and it is gated on the decision below.
+
 ## Migration plan (staged)
 
 Each slice compiles, is behaviour-preserving until the one that flips the gate,
@@ -425,6 +449,23 @@ author did not have — it is the gate between this plan and production.
 
 ## Open questions / risks
 
+- **The gating decision: verifying a credential inside a tenant.** This blocks
+  the routing flip. A tenant command's authority is a consent proof
+  (`proof::verify_consent`) checked against the actor's **credentials**, which
+  live in the **root** account directory (one account acts across many orgs). A
+  tenant group hosting the command's `apply` does not hold that directory. Baking
+  the credential into the entry at propose is not enough on its own: `apply` must
+  judge authority on every node from the log alone (invariant: *a node that only
+  sees the log cannot forge a decision*), so a faulty or compromised leader that
+  baked a forged credential-plus-consent pair would be believed. The flip needs a
+  way for a tenant to verify, from the entry alone, that a credential is bound to
+  its account — e.g. a **signed credential binding** (operator- or cluster-key
+  signed when the credential is registered on root, verifiable by any shard)
+  carried in the entry. This is a genuine security-design choice for the
+  attestation/identity model and must be decided before any tenant applies a
+  consent-bearing command; it is deliberately not improvised. Account-level
+  sessions and `SetOrgMetadata` (no consent proof) do not hit it, but the hot
+  org/app/session commands do.
 - **Root read freshness vs. a tenant write's latency.** Reading the fleet quota
   from the root group on every `CreateApp` reintroduces a cross-group round;
   caching it needs a staleness bound the quota semantics accept. Quantify before
