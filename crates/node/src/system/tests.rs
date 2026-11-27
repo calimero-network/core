@@ -3764,6 +3764,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
         consent: Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let _ok = m.run_unproven(transfer("bob")).unwrap();
     let gift = &m.state.apps["gift"];
@@ -3871,6 +3872,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
         consent: Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     assert_eq!(
         m.run_unproven(transfer),
@@ -4201,6 +4203,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
         actor: "alice".into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let _ok = m.run_unproven(set(json!([]))).unwrap();
     assert!(m.state.apps["forms"].access.link(&key).is_some());
@@ -4379,6 +4382,7 @@ fn an_instances_access_is_a_list_of_grants() {
         actor: "alice".into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let partners = json!({ "channel": "partners" });
     let x = set(
@@ -4465,6 +4469,7 @@ fn an_instances_access_is_a_list_of_grants() {
             actor: "alice".into(),
             owner_in_org: true,
             owner_in_team: true,
+            org: None,
         })
         .unwrap();
     for token in ["inv_a", "inv_b"] {
@@ -6157,6 +6162,7 @@ fn set_access(app: &str, actor: &str) -> SystemCmd {
         actor: actor.into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     }
 }
 
@@ -6167,6 +6173,7 @@ fn set_app_metadata(app: &str, actor: &str) -> SystemCmd {
         actor: actor.into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     }
 }
 
@@ -6188,6 +6195,7 @@ fn transfer_app(pk: &mut Soft, app: &str, actor: &str, to: &str) -> SystemCmd {
         consent: consent(pk, app, "__transfer", &json!({ "to": to })),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     }
 }
 
@@ -11097,6 +11105,7 @@ fn the_payer_totals_always_equal_the_sum_over_the_apps() {
             consent: serde_json::Value::Null,
             owner_in_org: true,
             owner_in_team: true,
+            org: None,
         })
         .unwrap();
     assert_totals_are_sums(&m.state);
@@ -11135,6 +11144,7 @@ fn a_personal_app_moves_only_to_an_owner_whose_quota_holds_its_files() {
         consent: serde_json::Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let refused = m.run_unproven(transfer.clone()).unwrap_err();
     assert!(refused.is_quota(), "{refused}");
