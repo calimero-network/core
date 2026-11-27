@@ -1190,12 +1190,12 @@ extension CalimeroClient {
 
         /// Start a sign-in: `POST /auth/passkey/login/begin` (`login_begin`).
         ///
-        /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+        /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
         ///
         /// **Who:** anyone.
         @discardableResult
-        public func loginBegin(origin: Swift.String? = nil) async throws -> Components.Schemas.PasskeyChallenge {
-            let input = Operations.LoginBegin.Input(body: .json(.init(origin: origin)))
+        public func loginBegin(origin: Swift.String? = nil, holderKey: Swift.String? = nil) async throws -> Components.Schemas.PasskeyChallenge {
+            let input = Operations.LoginBegin.Input(body: .json(.init(origin: origin, holderKey: holderKey)))
             return try await client.perform { api in
                 try await api.loginBegin(input).ok.body.json
             }
@@ -1325,12 +1325,12 @@ extension CalimeroClient {
 
         /// Refresh a session: `POST /auth/refresh` (`refresh`).
         ///
-        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
         ///
         /// **Who:** anyone.
         @discardableResult
-        public func refresh(refreshToken: Swift.String) async throws -> Components.Schemas.Session {
-            let input = Operations.Refresh.Input(body: .json(.init(refreshToken: refreshToken)))
+        public func refresh(refreshToken: Swift.String, holderProof: Operations.Refresh.Input.Body.JsonPayload.HolderProofPayload? = nil) async throws -> Components.Schemas.Session {
+            let input = Operations.Refresh.Input(body: .json(.init(refreshToken: refreshToken, holderProof: holderProof)))
             return try await client.perform { api in
                 try await api.refresh(input).ok.body.json
             }
@@ -1351,12 +1351,12 @@ extension CalimeroClient {
 
         /// Finish a sign-up: `POST /auth/passkey/register/finish` (`register_finish`).
         ///
-        /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+        /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
         ///
         /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
-        public func registerFinish(challengeId: Swift.String, registration: Components.Schemas.Registration, invite: Swift.String? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.Session {
-            let input = Operations.RegisterFinish.Input(body: .json(.init(challengeId: challengeId, registration: registration, invite: invite)))
+        public func registerFinish(challengeId: Swift.String, registration: Components.Schemas.Registration, invite: Swift.String? = nil, holderKey: Swift.String? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.Session {
+            let input = Operations.RegisterFinish.Input(body: .json(.init(challengeId: challengeId, registration: registration, invite: invite, holderKey: holderKey)))
             return try await client.perform(passkey: passkey) { api in
                 try await api.registerFinish(input).ok.body.json
             }

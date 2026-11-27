@@ -316,7 +316,7 @@ async fn a_sign_in_begun_on_one_node_finishes_on_another() {
     let begin = c
         .client(0)
         .auth()
-        .login_begin(None)
+        .login_begin(None, None)
         .await
         .map(wire)
         .unwrap();

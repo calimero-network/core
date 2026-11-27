@@ -119,6 +119,24 @@ a refresh token presented again after it was exchanged revokes its session.
 So every active session writes to the system log once an hour, not once per
 session token.
 
+A browser binds its session to a **holder key**: a P-256 key it makes with
+WebCrypto as non-extractable, so no script can read its private half. The
+sign-in names the key's public point (`holderKey` on
+`/auth/passkey/login/begin`, or on a sign-up's first finish); the challenge
+states it, so the passkey signs the binding with the session, and every
+exchange carries it to the next token unchanged (`UseRefresh` with another
+holder, or none, is refused at apply). Each use of such a refresh token must
+carry the key's ECDSA signature over `"calimero.refresh-holder.v1\0" ‖
+b64url(SHA-256(token)) ‖ "\0" ‖ at ‖ "\0"`, `at` within 120 seconds of the
+node's clock (`holderProof`); without one it is refused `401
+HOLDER_PROOF_REQUIRED`, before anything is spent or logged. So a refresh token
+copied off the device refreshes nothing, and such a token lives 7 days rather
+than 30. A proof replayed within its 120 seconds by someone who copied it with
+the token mints at most a session token, which the next exchange does not
+extend. Binding a session to a holder key is the `sessionHolders` feature
+(1.0.0-rc.39): below that cluster version a sign-in naming one is refused `409
+FEATURE_NOT_ACTIVE`, and the clients sign in unbound.
+
 A node verifies a token issued elsewhere without asking the issuer: it checks
 the signature against the issuer's signing key as it attested it at the
 address the cluster registered for that node, checks the expiry, and that the

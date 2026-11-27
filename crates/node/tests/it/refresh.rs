@@ -9,10 +9,11 @@
 
 use std::time::Duration;
 
-use calimero_client::{Client, Passkey, Session};
+use calimero_client::{Client, Passkey, Request, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::api::REFRESH_ROTATE_AFTER;
 use calimero_node::types::RECOVERY_DELAY_SECS;
+use reqwest::Method;
 use serde_json::json;
 
 use crate::harness;
@@ -210,4 +211,216 @@ async fn an_old_refresh_token_is_exchanged_and_its_reuse_revokes_the_session() {
     let e = owner.auth().me().await.unwrap_err().to_string();
     assert!(e.starts_with("401"), "{e}");
     assert!(refused(&owner).await, "the new token went with the session");
+}
+
+/// A device key for the holder tests: a P-256 key as a browser's non-extractable
+/// WebCrypto key is, its raw public point as the session names it.
+struct Holder {
+    pair: ring::signature::EcdsaKeyPair,
+    public: String,
+}
+
+impl Holder {
+    fn new() -> Self {
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let public = calimero_identity::b64url(pair.public_key().as_ref());
+        Self { pair, public }
+    }
+
+    /// Its proof for `token`, made at `at`.
+    fn proof(&self, token: &str, at: u64) -> serde_json::Value {
+        let message = calimero_node::proof::refresh_holder_message(&refresh_hash(token), at);
+        let rng = ring::rand::SystemRandom::new();
+        let signature = self.pair.sign(&rng, &message).unwrap();
+        json!({ "at": at, "signature": calimero_identity::b64url(signature.as_ref()) })
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// `client` signs in with `pk`, binding the session to `holder`'s key.
+async fn sign_in_held(client: &Client, pk: &mut SoftAuthenticator, holder: &Holder) -> Session {
+    let begin = client
+        .transport()
+        .json(
+            Request::new(Method::POST, "auth/passkey/login/begin")
+                .json(json!({ "holderKey": holder.public })),
+        )
+        .await
+        .unwrap();
+    let challenge =
+        calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
+    let assertion = pk.get(&challenge);
+    let id = begin["challengeId"].as_str().unwrap();
+    client.auth().login_finish(id, assertion).await.unwrap()
+}
+
+/// `POST /auth/refresh` on node `i` with `body`, signed out: the answer, or the refusal's text.
+async fn refresh_raw(
+    c: &Cluster,
+    i: usize,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    c.client(i)
+        .transport()
+        .json(Request::new(Method::POST, "auth/refresh").json(body))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// A session bound to a holder key refreshes only with that key's proof, on any node: the
+/// token alone, copied off the device, is refused, as is a proof by another key, a stale
+/// one, or one for another token. None of those spends the token or ends the session, and
+/// the token lives 7 days rather than 30.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_holder_bound_refresh_token_refreshes_only_with_its_holders_proof() {
+    let c = Cluster::start_with(3, |cfg| cfg.refresh_rotate_after = REFRESH_ROTATE_AFTER).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let device = Holder::new();
+    let s = sign_in_held(&alice, &mut pk, &device).await;
+    let token = s.refresh_token.clone();
+
+    let hash = refresh_hash(&token);
+    let record = alice_record(&c, &hash).await;
+    assert_eq!(record.holder.as_deref(), Some(device.public.as_str()));
+    let lifetime = record.expires_at - now();
+    assert!(
+        lifetime <= 7 * 24 * 3600 && lifetime > 7 * 24 * 3600 - 120,
+        "a holder-bound token lives 7 days: {lifetime}"
+    );
+
+    let stolen = json!({ "refreshToken": token });
+    for i in 0..3 {
+        let e = refresh_raw(&c, i, stolen.clone()).await.unwrap_err();
+        assert!(e.starts_with("401 HOLDER_PROOF_REQUIRED"), "{e}");
+    }
+    let thief = Holder::new();
+    let e = refresh_raw(
+        &c,
+        1,
+        json!({ "refreshToken": token, "holderProof": thief.proof(&token, now()) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.starts_with("401 BAD_HOLDER_PROOF"), "another key: {e}");
+    let e = refresh_raw(
+        &c,
+        1,
+        json!({ "refreshToken": token, "holderProof": device.proof(&token, now() - 600) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.starts_with("401 BAD_HOLDER_PROOF"), "stale: {e}");
+    let e = refresh_raw(
+        &c,
+        1,
+        json!({ "refreshToken": token, "holderProof": device.proof("rt_other", now()) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        e.starts_with("401 BAD_HOLDER_PROOF"),
+        "another token's: {e}"
+    );
+
+    for i in 0..3 {
+        let fresh = refresh_raw(
+            &c,
+            i,
+            json!({ "refreshToken": token, "holderProof": device.proof(&token, now()) }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fresh["refreshToken"],
+            json!(token),
+            "kept while young, node {i}"
+        );
+        let on = holding(
+            &c,
+            i,
+            Session {
+                session_token: fresh["sessionToken"].as_str().unwrap().to_owned(),
+                ..s.clone()
+            },
+        )
+        .await;
+        assert_eq!(
+            on.auth().me().await.map(wire).unwrap()["accountId"],
+            json!(s.account_id)
+        );
+    }
+    assert!(
+        held_unexchanged(&c, &token).await,
+        "no refusal spent the token"
+    );
+}
+
+/// An exchanged holder-bound token's successor is bound to the same key, and keeps
+/// the 7-day lifetime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_exchanged_holder_bound_token_stays_bound() {
+    let rotate = Duration::from_secs(2);
+    let c = Cluster::start_with(3, |cfg| cfg.refresh_rotate_after = rotate).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let device = Holder::new();
+    let first = sign_in_held(&alice, &mut pk, &device).await.refresh_token;
+    tokio::time::sleep(rotate + Duration::from_millis(1100)).await;
+
+    let next = refresh_raw(
+        &c,
+        2,
+        json!({ "refreshToken": first, "holderProof": device.proof(&first, now()) }),
+    )
+    .await
+    .unwrap();
+    let next = next["refreshToken"].as_str().unwrap().to_owned();
+    assert_ne!(next, first, "exchanged once old enough");
+    let record = alice_record(&c, &refresh_hash(&next)).await;
+    assert_eq!(record.holder.as_deref(), Some(device.public.as_str()));
+    assert!(record.expires_at - now() <= 7 * 24 * 3600);
+    let e = refresh_raw(&c, 0, json!({ "refreshToken": next }))
+        .await
+        .unwrap_err();
+    assert!(e.starts_with("401 HOLDER_PROOF_REQUIRED"), "{e}");
+}
+
+/// A holder key that is not an uncompressed P-256 point is refused before the ceremony.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_malformed_holder_key_is_refused_at_sign_in() {
+    let c = Cluster::start(1).await;
+    let e = c
+        .client(0)
+        .transport()
+        .json(
+            Request::new(Method::POST, "auth/passkey/login/begin")
+                .json(json!({ "holderKey": calimero_identity::b64url(&[2; 33]) })),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.starts_with("400 BAD_HOLDER_KEY"), "{e}");
+}
+
+/// The refresh record every node holds under `hash`, once one holds it.
+async fn alice_record(c: &Cluster, hash: &str) -> calimero_node::types::RefreshRecord {
+    for _ in 0..200 {
+        if let Some(r) = c.nodes[0]
+            .as_ref()
+            .and_then(|r| r.node.sys(|s| s.refresh.get(hash).cloned()))
+        {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no node holds the refresh record");
 }
