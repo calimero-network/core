@@ -21,7 +21,7 @@ cargo test -p calimero-pipeline
 | --- | --- | --- |
 | `compile()` | fn | YAML or JSON source to a `Pipeline`; every structural error is returned, each with a path and a stable code |
 | `canonical_json()` | fn | RFC 8785 bytes of a `Pipeline`; the form the API stores and the engine executes |
-| `check()` | fn | Apply-time checks of modules, methods, limits and pools against an `Env` |
+| `check()` | fn | Apply-time checks of modules, methods, limits and pools against an `Env`, and each input's `maxItems` against `MAX_RUN_FILES` |
 | `estimate()` | fn | Runs, fuel and cost per step for known input file counts (`Estimate`, `StepEstimate`); a `forEach` over `inputs.x` uses `min(count, maxItems)`, else `maxItems`; cost is `None` without a `PriceTable` |
 | `worst_case_fuel()` | fn | Sum over steps of fuel cap times maximum runs; `estimate` with no counts |
 | `worst_case_cost()`, `run_cost()` | fn | Upper bound of a pipeline (`estimate` with no counts), or of one run, priced by a `PriceTable` (u128, rounded up) |

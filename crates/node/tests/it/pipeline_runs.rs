@@ -2596,6 +2596,21 @@ async fn validate_against_a_release_uses_its_methods_and_caps() {
         [("steps.a.method".to_owned(), "UNKNOWN_METHOD".to_owned())]
     );
 
+    // An input that declares more files than a start takes is refused before it ships.
+    let wide = STILL_OK.replace(
+        "steps:",
+        "inputs:\n  docs: { kind: files, maxItems: 1025 }\nsteps:",
+    );
+    let wide = rig.alice.validate_pipeline(against(&wide)).await.unwrap();
+    assert_eq!(
+        error_keys(&wide),
+        [(
+            "inputs.docs.maxItems".to_owned(),
+            "BAD_MAX_ITEMS".to_owned()
+        )],
+        "{wide}"
+    );
+
     let ok = rig
         .alice
         .validate_pipeline(against(STILL_OK))

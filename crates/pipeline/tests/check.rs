@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use calimero_pipeline::{check, compile, worst_case_fuel, Caps, Env};
+use calimero_pipeline::{check, compile, worst_case_fuel, Caps, Env, MAX_RUN_FILES};
 
 const HEAD: &str = "apiVersion: compute.calimero.network/v1\nkind: Pipeline\nname: p\nmodule: m\n";
 
@@ -140,6 +140,24 @@ fn every_error_is_reported() {
         )
         .len(),
         2
+    );
+}
+
+#[test]
+fn an_input_may_not_take_more_files_than_a_run_does() {
+    let with = |max: usize| {
+        compile(&format!(
+            "{HEAD}inputs:\n  x: {{ kind: files, maxItems: {max} }}\nsteps:\n  a: {{ method: run }}\n"
+        ))
+        .unwrap()
+    };
+    check(&with(MAX_RUN_FILES), &env(&[])).unwrap();
+    let errs = check(&with(MAX_RUN_FILES + 1), &env(&[])).unwrap_err();
+    assert_eq!(
+        errs.iter()
+            .map(|e| (e.code, e.path.as_str()))
+            .collect::<Vec<_>>(),
+        [("BAD_MAX_ITEMS", "inputs.x.maxItems")]
     );
 }
 

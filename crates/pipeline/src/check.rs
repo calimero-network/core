@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::compile::MAX_RUN_FILES;
 use crate::model::{Caps, Env, Pipeline, PriceTable, SpecError, Step};
 
 fn module_of<'a>(p: &'a Pipeline, s: &'a Step, env: &'a Env) -> Option<&'a str> {
@@ -13,9 +14,19 @@ fn caps_of<'a>(p: &Pipeline, s: &Step, env: &'a Env) -> Option<&'a Caps> {
     env.modules.get(module_of(p, s, env)?)?.get(&s.method)
 }
 
-/// Apply-time checks: modules, methods, limits against caps, pools and their memory.
+/// Apply-time checks: input sizes, modules, methods, limits against caps, pools and their memory.
 pub fn check(p: &Pipeline, env: &Env) -> Result<(), Vec<SpecError>> {
-    let mut errs = Vec::new();
+    // Not a `compile` rule: a release installed before this bound must still recompile.
+    let mut errs: Vec<_> = p
+        .inputs
+        .iter()
+        .filter(|(_, i)| i.max_items.is_some_and(|m| m as usize > MAX_RUN_FILES))
+        .map(|(name, _)| SpecError {
+            path: format!("inputs.{name}.maxItems"),
+            code: "BAD_MAX_ITEMS",
+            message: format!("a run takes at most {MAX_RUN_FILES} files"),
+        })
+        .collect();
     for (name, s) in &p.steps {
         let at = |field: &str| format!("steps.{name}.{field}");
         let mut push = |field: &str, code: &'static str, message: String| {
