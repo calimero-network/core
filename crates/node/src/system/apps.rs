@@ -362,10 +362,14 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             app_id,
             source,
             proof,
+            bundle,
+            compute_bundle,
             ..
         } => {
             let (statement, used) = proofs.fresh(proofs.operator(proof)?)?;
-            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            let args = proofs
+                .s
+                .restore_args(app_id, source, bundle, compute_bundle.as_deref());
             proofs.states(&statement, app_id, "__restore_app", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -1456,7 +1460,7 @@ fn restore_app(
         return Err(RESTORE_REPLICAS_DISTINCT);
     }
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    state.ships_on_lineage(app, &bundle)?;
+    state.ships_on_lineage(app, &bundle, compute_bundle.as_deref())?;
     // A pinned store is not rolled back, whoever signs it: an undo is the owner's way back.
     if state.restores_older(app, &bundle) {
         return Err(LINEAGE_OLDER_RELEASE);

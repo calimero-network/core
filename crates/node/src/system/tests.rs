@@ -9779,10 +9779,8 @@ fn a_compute_only_pinned_instance_is_restored_forward() {
     assert_eq!(m.state.apps["job"].lineage.as_ref().unwrap().floor, "1.1.0");
 }
 
-/// A pinned store is not rolled back: a restore to older code is refused though the operator
-/// signed it.
-#[test]
-fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
+/// `proven_cluster` with `app` pinned to `p` at 1.1.0 (`b1`, compute `c1`); 1.0.0 ships `b0`.
+fn pinned_proven() -> SystemMachine {
     let (mut m, ..) = proven_cluster();
     let signer = "did:key:z".to_owned();
     let _prev = m.state.packages.insert(
@@ -9793,11 +9791,11 @@ fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
                     "services": { "": "b0" }, "installedBy": "alice", "installedAt": 0,
                     "lineage": "pinned" },
                 "1.1.0": { "version": "1.1.0", "mpk": "b", "mpkSize": 1, "source": "upload",
-                    "services": { "": "b1" }, "installedBy": "alice", "installedAt": 0,
-                    "lineage": "pinned" } } }))
+                    "services": { "": "b1" }, "compute": { "": "c1" }, "installedBy": "alice",
+                    "installedAt": 0, "lineage": "pinned" } } }))
         .unwrap(),
     );
-    for hash in ["b0", "b1"] {
+    for hash in ["b0", "b1", "c1", "c9"] {
         let _prev = m.state.bundles.insert(
             hash.into(),
             serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
@@ -9805,6 +9803,8 @@ fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
         );
     }
     let app = m.state.apps.get_mut("app").unwrap();
+    app.bundle = "b1".into();
+    app.compute_bundle = Some("c1".into());
     app.release = Some(PackageRef {
         package: "p".into(),
         version: "1.1.0".into(),
@@ -9816,23 +9816,62 @@ fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
         signer_id: signer,
         floor: "1.1.0".into(),
     });
-    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
-    let refused = m
-        .run(SystemCmd::RestoreApp {
-            app_id: "app".into(),
-            replicas: vec![2, 1, 3],
-            bundle: "b0".into(),
-            compute_bundle: None,
-            source: crate::types::RestoreSource {
-                name: "7.2.x.snap".into(),
-                sha256: "ab".into(),
-                index: 7,
-            },
-            proof: signed("app", "__restore_app", &args),
-        })
-        .unwrap_err();
+    m
+}
+
+/// The operator's restore of `app` onto `bundle` and `compute`, signed over `args`.
+fn signed_restore(bundle: &str, compute: Option<&str>, args: &Value) -> SystemCmd {
+    SystemCmd::RestoreApp {
+        app_id: "app".into(),
+        replicas: vec![2, 1, 3],
+        bundle: bundle.into(),
+        compute_bundle: compute.map(str::to_owned),
+        source: crate::types::RestoreSource {
+            name: "7.2.x.snap".into(),
+            sha256: "ab".into(),
+            index: 7,
+        },
+        proof: signed("app", "__restore_app", args),
+    }
+}
+
+/// A pinned store is not rolled back: a restore to older code is refused though the operator
+/// signed it.
+#[test]
+fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
+    let mut m = pinned_proven();
+    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b0",
+        "computeBundle": null });
+    let refused = m.run(signed_restore("b0", None, &args)).unwrap_err();
     assert_eq!(refused, super::LINEAGE_OLDER_RELEASE);
     assert_eq!(m.state.apps["app"].bundle, "b1");
+}
+
+/// The operator's signature on a pinned instance's restore names the bundle and compute part
+/// it runs, and both must ship in one release of the lineage.
+#[test]
+fn a_pinned_instances_restore_is_signed_over_what_it_runs() {
+    let mut m = pinned_proven();
+    let backup = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
+    assert!(
+        m.run(signed_restore("b1", Some("c1"), &backup)).is_err(),
+        "a signature over the backup alone"
+    );
+    let other = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+        "computeBundle": "c9" });
+    assert!(
+        m.run(signed_restore("b1", Some("c1"), &other)).is_err(),
+        "a signature over another compute part"
+    );
+    let app = m.state.apps["app"].clone();
+    assert_eq!(
+        m.state.ships_on_lineage(&app, "b1", Some("c9")),
+        Err(super::OUTSIDE_LINEAGE),
+        "a compute part no lineage release ships with the bundle"
+    );
+    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+        "computeBundle": "c1" });
+    let _ok = m.run(signed_restore("b1", Some("c1"), &args)).unwrap();
 }
 
 /// [`lineage_fixture`] with `p@2.0.0`, `3.0.0` and `4.0.0` installed after `kv` was created,

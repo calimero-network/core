@@ -3604,15 +3604,21 @@ impl SystemState {
     ///
     /// # Errors
     /// [`OUTSIDE_LINEAGE`].
-    pub fn ships_on_lineage(&self, app: &AppRecord, bundle: &str) -> Result<(), Rejection> {
+    pub fn ships_on_lineage(
+        &self,
+        app: &AppRecord,
+        bundle: &str,
+        compute: Option<&str>,
+    ) -> Result<(), Rejection> {
         let Some(lineage) = &app.lineage else {
             return Ok(());
         };
         let ships = self.signs_lineage(lineage)
-            && self.packages[&lineage.package]
-                .versions
-                .values()
-                .any(|v| v.parts(&lineage.package).any(|(h, _)| h == bundle));
+            && self.packages[&lineage.package].versions.values().any(|v| {
+                let mut parts = v.parts(&lineage.package).map(|(h, _)| h);
+                let has = |want: &str| v.parts(&lineage.package).any(|(h, _)| h == want);
+                parts.any(|h| h == bundle) && compute.is_none_or(has)
+            });
         if ships {
             Ok(())
         } else {
@@ -3659,6 +3665,24 @@ impl SystemState {
     pub fn raise_floor(lineage: &mut AppLineage, version: &str) {
         if compare_versions(version, &lineage.floor) == std::cmp::Ordering::Greater {
             lineage.floor = version.to_owned();
+        }
+    }
+
+    /// What the operator signs for a restore of `app_id`: the backup, and for a pinned instance
+    /// the bundle and compute part it will run too, judged where it applies.
+    #[must_use]
+    pub fn restore_args(
+        &self,
+        app_id: &str,
+        source: &crate::types::RestoreSource,
+        bundle: &str,
+        compute: Option<&str>,
+    ) -> Value {
+        if self.apps.get(app_id).is_some_and(|a| a.lineage.is_some()) {
+            json!({ "backup": source.name, "sha256": source.sha256, "bundle": bundle,
+                "computeBundle": compute })
+        } else {
+            json!({ "backup": source.name, "sha256": source.sha256 })
         }
     }
 
