@@ -11,9 +11,11 @@ adds new nodes on the new release beside the old ones and moves the data:
    is registered (`POST /ops/nodes`, signed), which admits it to the system
    group as a learner;
 3. **move_apps**: every app with a replica on an old node is moved onto new
-   nodes (`POST /ops/apps/{app}/replicas`, signed), one app at a time, keeping
-   its replica count (at least min(3, registered nodes)), until the placement
-   (`GET /ops/placement`) shows it there;
+   nodes (`POST /ops/apps/{app}/replicas`, signed), keeping its replica count
+   (at least min(3, registered nodes)), until the placement
+   (`GET /ops/placement`) shows it there. mdma moves one app at a time; here the
+   first app moves alone (the mixed checks run with nothing in flight) and the
+   rest `MOVE_JOBS` at a time, each with the same checks;
 4. **remove_old**: the old nodes leave one at a time (`DELETE /ops/nodes/{id}`,
    signed, at the system leader), each only while the system group has a leader
    and its full voter count, and the process stops (the VM goes).
@@ -39,6 +41,7 @@ import json
 import os
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import rv2
@@ -50,6 +53,7 @@ OPERATOR_PUBLIC = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f
 # mdma's MIN_NEW_NODES: a rollout adds at least this many nodes.
 MIN_NEW_NODES = 3
 MOVE_TIMEOUT_S = 180  # one app's move: its data streams to three new replicas
+MOVE_JOBS = int(os.environ.get("ROLLOUT_MOVE_JOBS", "8"))  # apps moved at once after the first
 STEP_TIMEOUT_S = 120
 
 
@@ -263,26 +267,8 @@ def roll_forward(fleet: Fleet, binary: str, release: str, new_ids: list[int], *,
     took["add_nodes"] = time.time() - t
 
     t = time.time()
-    moved, mixed_done = [], on_mixed is None
-    while True:
-        placement = fleet.placement()
-        on_old = sorted((a for a in placement["apps"] if set(a["replicas"]) & set(old)), key=lambda a: a["app"])
-        if not on_old:
-            break
-        app = on_old[0]
-        count = max(len(app["replicas"]), min(3, len(placement["nodes"])))
-        target = _choose(app, new_ids, placement, count)
-        log(f"rollout: move {app['app']} {app['replicas']} -> {target}")
-        _move(fleet, app["app"], target, log)
-        moved.append(app["app"])
-        if not mixed_done:
-            mixed_done = True
-            log("rollout: mixed cluster (apps on both releases): running the mixed checks")
-            on_mixed()
+    moved = move_apps(fleet, set(old), new_ids, log, on_mixed)
     took["move_apps"] = time.time() - t
-    if not mixed_done:
-        log("rollout: no app to move; mixed checks run with every node on the cluster")
-        on_mixed()
 
     t = time.time()
     for i in sorted(old, key=lambda n: (n == _leader(fleet), n)):
@@ -296,6 +282,60 @@ def roll_forward(fleet: Fleet, binary: str, release: str, new_ids: list[int], *,
     log(f"rollout: done: {moved and len(moved)} apps moved, nodes {fleet.members}; "
         + ", ".join(f"{k} {v:.0f}s" for k, v in took.items()))
     return took
+
+
+def move_apps(fleet: Fleet, old: set, new_ids: list[int], log, on_mixed=None, jobs: int = MOVE_JOBS) -> list:
+    """Move every app with a replica on a node of `old` onto `new_ids`; the ids moved.
+
+    The first app moves alone and `on_mixed()` runs once it has: new nodes hold one app,
+    old nodes the rest, and nothing is in flight. The rest move `jobs` at a time."""
+    moved, mixed_pending = [], on_mixed is not None
+    while True:
+        placement = fleet.placement()
+        on_old = sorted((a for a in placement["apps"] if set(a["replicas"]) & old), key=lambda a: a["app"])
+        if not on_old:
+            break
+        plan = _plan(on_old, new_ids, placement)
+        batch = plan[:1] if mixed_pending else plan
+        _move_all(fleet, batch, log, jobs)
+        moved += [app["app"] for app, _ in batch]
+        if mixed_pending:
+            mixed_pending = False
+            log("rollout: mixed cluster (apps on both releases): running the mixed checks")
+            on_mixed()
+    if mixed_pending:
+        log("rollout: no app to move; mixed checks run with every node on the cluster")
+        on_mixed()
+    return moved
+
+
+def _plan(on_old, new_ids, placement):
+    """`(app, target)` for each app: each choice counts toward the load of the next."""
+    load = {n["id"]: n.get("apps", 0) for n in placement["nodes"]}
+    plan = []
+    for app in on_old:
+        target = _choose(new_ids, load, max(len(app["replicas"]), min(3, len(placement["nodes"]))))
+        for n in target:
+            load[n] = load.get(n, 0) + 1
+        plan.append((app, target))
+    return plan
+
+
+def _move_all(fleet, batch, log, jobs):
+    """Every move of `batch`, `jobs` at once; all finish before the first failure is raised."""
+    def one(item):
+        app, target = item
+        log(f"rollout: move {app['app']} {app['replicas']} -> {target}")
+        _move(fleet, app["app"], target, log)
+
+    if len(batch) == 1 or jobs <= 1:
+        for item in batch:
+            one(item)
+        return
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [pool.submit(one, item) for item in batch]
+    for f in futures:
+        f.result()
 
 
 def _leader(fleet):
@@ -341,9 +381,8 @@ def _placed(fleet, app, target):
     return False
 
 
-def _choose(app, new_ids, placement, count):
+def _choose(new_ids, load, count):
     """Where an app goes: new nodes holding fewest apps first (mdma's `_choose`)."""
-    load = {n["id"]: n.get("apps", 0) for n in placement["nodes"]}
     return sorted(sorted(new_ids, key=lambda n: (load.get(n, 0), n))[:count])
 
 

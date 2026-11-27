@@ -66,24 +66,24 @@ class UpgradePolicies(DeepCase):
                 "read back as the defaults")
 
     def populate(self, w):
-        pia = person(w, "pia")
-        org = new_org(pia, "Policy Org")
-        pia.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True, "holdHours": 48}})
-        s = {"org": org, "policy": pia.get(f"orgs/{org}/upgrade-policy")}
+        pru = person(w, "pru")
+        org = new_org(pru, "Policy Org")
+        pru.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True, "holdHours": 48}})
+        s = {"org": org, "policy": pru.get(f"orgs/{org}/upgrade-policy")}
         eq(s["policy"]["policy"], {"autoApply": "never", "holdHours": 48, "secondApprover": True},
            "the update policy as set")
         return s
 
     def check(self, w, s):
-        pia = person(w, "pia")
+        pru = person(w, "pru")
         for n in w.members():
-            eq(pia.get(f"orgs/{s['org']}/upgrade-policy", node=n), s["policy"],
+            eq(pru.get(f"orgs/{s['org']}/upgrade-policy", node=n), s["policy"],
                f"the organization's update policy on node {n}")
 
     def exercise(self, w, s):
-        pia = person(w, "pia")
-        pia.raw("post", f"orgs/{s['org']}/upgrade-policy", {"policy": None})
-        s["policy"] = pia.get(f"orgs/{s['org']}/upgrade-policy")
+        pru = person(w, "pru")
+        pru.raw("post", f"orgs/{s['org']}/upgrade-policy", {"policy": None})
+        s["policy"] = pru.get(f"orgs/{s['org']}/upgrade-policy")
         eq(s["policy"]["source"], "default", "the update policy dropped")
 
 
@@ -106,6 +106,7 @@ def _backup(w, node):
 @case
 class OpsState(DeepCase):
     name = "ops-state"
+    exclusive = True  # quotas and pools are the cluster's
     area = "Ops"
     seeds = "account quotas changed, a per-organization quota override, a compute pool"
     verifies = ("quotas, overrides, pools, the cluster's sign-up policy as before (its invites are `sign-up-invites`'); a quota changed "
@@ -250,9 +251,12 @@ class StateDigests(DeepCase):
         for a in s["apps"]:
             for i in range(20):
                 dax.call(a, "set", {"key": f"new{i:02}", "value": f"n{i}"})
-        time.sleep(DIGEST_COMPARE_SECS + 15)
-        after = _comparisons(w, s["apps"])
-        check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+
+        def compared_again():
+            after = _comparisons(w, s["apps"])
+            check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+
+        until("each leader compares again after the new writes", compared_again, DIGEST_COMPARE_SECS + 15)
         self.check(w, s)
 
 

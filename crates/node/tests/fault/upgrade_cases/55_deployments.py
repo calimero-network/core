@@ -302,22 +302,22 @@ class DeploymentTransfer(DeepCase):
                 "the organization offers it back and cancels the offer, and a second offer waits for none")
 
     def populate(self, w):
-        tess, uma, vik = people(w, "tess", "uma", "vik")
-        install(tess, w, "kv-o-1.0.0.mpk")
-        d = tess.raw("post", "deployments", {"name": "tess-labs", "owner": {"account": tess.id}})["id"]
-        tess.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        tilda, ursa, vik = people(w, "tilda", "ursa", "vik")
+        install(tilda, w, "kv-o-1.0.0.mpk")
+        d = tilda.raw("post", "deployments", {"name": "tilda-labs", "owner": {"account": tilda.id}})["id"]
+        tilda.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
         customer = new_org(vik, "Transfer Customer Org")
         app = vik.raw("post", "apps", {"name": "moved-1", "deployment": d, "package": OFFERED,
                                        "org": customer})["appId"]
-        receiver = new_org(uma, "Transfer Receiver Org")
-        uma.raw("post", f"orgs/{receiver}/recovery", {"publicKey": _recovery_key(b"\x13" * 32)})
+        receiver = new_org(ursa, "Transfer Receiver Org")
+        ursa.raw("post", f"orgs/{receiver}/recovery", {"publicKey": _recovery_key(b"\x13" * 32)})
         to = {"org": receiver}
-        tess.raw("post", f"deployments/{d}/transfer", {"to": to})
-        uma.raw("post", f"deployments/{d}/transfer/accept", {"to": to})
+        tilda.raw("post", f"deployments/{d}/transfer", {"to": to})
+        ursa.raw("post", f"deployments/{d}/transfer/accept", {"to": to})
         return {"deployment": d, "app": app, "receiver": receiver}
 
     def check(self, w, s):
-        tess, uma, vik = people(w, "tess", "uma", "vik")
+        tilda, ursa, vik = people(w, "tilda", "ursa", "vik")
         d = s["deployment"]
         got = vik.get(f"deployments/{d}")
         eq(got.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the new owner")
@@ -325,23 +325,23 @@ class DeploymentTransfer(DeepCase):
         eq(vik.get(f"apps/{s['app']}").get("deployment"), d, "the customer's instance stays on it")
         shown = vik.get(f"apps/{s['app']}/update").get("deployment") or {}
         eq(shown.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the update names the new owner")
-        eq((shown.get("transferred") or {}).get("from"), {"kind": "account", "name": "tess"},
+        eq((shown.get("transferred") or {}).get("from"), {"kind": "account", "name": "tilda"},
            "the update names whom it came from")
-        refused("FORBIDDEN", lambda: tess.raw("post", f"deployments/{d}/apps",
+        refused("FORBIDDEN", lambda: tilda.raw("post", f"deployments/{d}/apps",
                                               {"app": "kv", "package": OFFERED, "version": "1.0.0"}, approve=False),
                 "the previous owner offering in it")
-        eq([x.get("id") for x in uma.get("deployments").get("deployments", [])], [d], "the receiver manages it")
+        eq([x.get("id") for x in ursa.get("deployments").get("deployments", [])], [d], "the receiver manages it")
 
     def exercise(self, w, s):
-        tess, uma = people(w, "tess", "uma")
+        tilda, ursa = people(w, "tilda", "ursa")
         d = s["deployment"]
-        uma.raw("post", f"deployments/{d}/transfer", {"to": {"account": tess.id}})
-        refused("TRANSFER_PENDING", lambda: uma.raw("post", f"deployments/{d}/transfer",
-                                                     {"to": {"account": tess.id}}, approve=False),
+        ursa.raw("post", f"deployments/{d}/transfer", {"to": {"account": tilda.id}})
+        refused("TRANSFER_PENDING", lambda: ursa.raw("post", f"deployments/{d}/transfer",
+                                                     {"to": {"account": tilda.id}}, approve=False),
                 "a second offer while one waits")
-        eq([x.get("id") for x in tess.get("deployments").get("offered", [])], [d], "the offer waits for tess")
-        uma.raw("delete", f"deployments/{d}/transfer", {})
-        eq(tess.get("deployments").get("offered", []), [], "the cancelled offer")
+        eq([x.get("id") for x in tilda.get("deployments").get("offered", [])], [d], "the offer waits for tilda")
+        ursa.raw("delete", f"deployments/{d}/transfer", {})
+        eq(tilda.get("deployments").get("offered", []), [], "the cancelled offer")
         self.check(w, s)
 
 

@@ -219,25 +219,25 @@ class BlobUsage(DeepCase):
         return up.get("blobId") or up.get("id")
 
     def populate(self, w):
-        gil = person(w, "gil")
-        org = new_org(gil, "Blob Usage Org")
-        app = gil.deploy(kv_wasm(w), "blob-usage", org=org)
+        wren = person(w, "wren")
+        org = new_org(wren, "Blob Usage Org")
+        app = wren.deploy(kv_wasm(w), "blob-usage", org=org)
         s = {"org": org, "app": app, "held": {}}
         for label, size, seed in (("kept", 7_000, 21), ("gone", 3_000, 22)):
-            s["held"][label] = {"id": self._upload(w, gil, app, label, size, seed), "size": size}
+            s["held"][label] = {"id": self._upload(w, wren, app, label, size, seed), "size": size}
         # The same bytes again hold no second charge.
-        self._upload(w, gil, app, "kept-again", 7_000, 21)
-        gil.raw("delete", f"apps/{app}/blobs/{s['held'].pop('gone')['id']}")
+        self._upload(w, wren, app, "kept-again", 7_000, 21)
+        wren.raw("delete", f"apps/{app}/blobs/{s['held'].pop('gone')['id']}")
         return s
 
     def check(self, w, s):
-        gil = person(w, "gil")
+        wren = person(w, "wren")
         want = sum(b["size"] for b in s["held"].values())
-        until("the organization's blob bytes", lambda: eq(_blob_bytes(gil, s["org"]), want, "fileBytes"), 30)
+        until("the organization's blob bytes", lambda: eq(_blob_bytes(wren, s["org"]), want, "fileBytes"), 30)
 
     def exercise(self, w, s):
-        gil = person(w, "gil")
-        s["held"]["new"] = {"id": self._upload(w, gil, s["app"], "new", 5_000, 23), "size": 5_000}
+        wren = person(w, "wren")
+        s["held"]["new"] = {"id": self._upload(w, wren, s["app"], "new", 5_000, 23), "size": 5_000}
         self.check(w, s)
-        gil.raw("delete", f"apps/{s['app']}/blobs/{s['held'].pop('new')['id']}")
+        wren.raw("delete", f"apps/{s['app']}/blobs/{s['held'].pop('new')['id']}")
         self.check(w, s)

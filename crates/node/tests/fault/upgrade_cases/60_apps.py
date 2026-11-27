@@ -152,21 +152,21 @@ class AccessGrants(DeepCase):
                 "takes its place")
 
     def populate(self, w):
-        gil, gus, gia, gow, gem = people(w, "gil", "gus", "gia", "gow", "gem")
-        org = new_org(gil, "Grants Org")
-        team = team_id(gil.raw("post", f"orgs/{org}/teams", {"name": "deal", "join": "invite"}))
-        join(gil, org, gus, teams=(team,))
-        join(gil, org, gia, gem)
-        app = gil.deploy(kv_wasm(w), "grants", org=org)
-        gil.call(app, "set", {"key": "k", "value": "grants"})
+        gib, gaz, gia, gow, gem = people(w, "gib", "gaz", "gia", "gow", "gem")
+        org = new_org(gib, "Grants Org")
+        team = team_id(gib.raw("post", f"orgs/{org}/teams", {"name": "deal", "join": "invite"}))
+        join(gib, org, gaz, teams=(team,))
+        join(gib, org, gia, gem)
+        app = gib.deploy(kv_wasm(w), "grants", org=org)
+        gib.call(app, "set", {"key": "k", "value": "grants"})
         grants = [{"kind": "team", "team": team},
                   {"kind": "account", "account": gia.id, "scope": {"channel": "partners"}},
                   {"kind": "account", "account": gow.id}]
-        until("the cluster version takes grants", lambda: gil.raw(
+        until("the cluster version takes grants", lambda: gib.raw(
             "post", f"apps/{app}/access", {"grants": grants}), timeout=120)
         s = {"org": org, "team": team, "app": app, "grants": grants}
         s["decisions"] = self._decide(w, s)
-        for want in ("gus reads", "gia reads"):
+        for want in ("gaz reads", "gia reads"):
             check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
         for want in ("gow reads", "anonymous reads"):
             check(s["decisions"][want] != "ok", f"{want} was allowed")
@@ -174,7 +174,7 @@ class AccessGrants(DeepCase):
 
     def _decide(self, w, s):
         out, app = {}, s["app"]
-        for who in ("gil", "gus", "gia", "gow", "gem"):
+        for who in ("gib", "gaz", "gia", "gow", "gem"):
             p = person(w, who)
             out[f"{who} reads"] = decision(lambda p=p: p.view(app, "get", {"key": "k"}))
             out[f"{who} writes"] = decision(lambda p=p: p.call(app, "set", {"key": "w", "value": p.name}))
@@ -183,16 +183,16 @@ class AccessGrants(DeepCase):
         return out
 
     def check(self, w, s):
-        eq(person(w, "gil").get(f"apps/{s['app']}").get("grants"), s["grants"], "the grants as the owner reads them")
+        eq(person(w, "gib").get(f"apps/{s['app']}").get("grants"), s["grants"], "the grants as the owner reads them")
         same_decisions(self._decide(w, s), s["decisions"], "access grants")
 
     def exercise(self, w, s):
-        gil, gus = people(w, "gil", "gus")
+        gib, gaz = people(w, "gib", "gaz")
         s["grants"] = [{"kind": "org"}] + s["grants"][1:]
-        gil.raw("post", f"apps/{s['app']}/access", {"grants": s["grants"]})
+        gib.raw("post", f"apps/{s['app']}/access", {"grants": s["grants"]})
         until("the organization's members read once it is granted",
               lambda: person(w, "gem").view(s["app"], "get", {"key": "k"}))
-        gus.view(s["app"], "get", {"key": "k"})
+        gaz.view(s["app"], "get", {"key": "k"})
         s["decisions"] = self._decide(w, s)
 
 
@@ -353,7 +353,7 @@ class PublicLinks(DeepCase):
 
 def _xcalls(w, s, node=None):
     """`GET /apps/{a}/xcalls`, from a node that holds the app (only one answers it)."""
-    return scrub(person(w, "xia").get(f"apps/{s['a']}/xcalls", node=node or host(w, s["a"])))
+    return scrub(person(w, "xan").get(f"apps/{s['a']}/xcalls", node=node or host(w, s["a"])))
 
 
 def _nonempty(v):
@@ -373,33 +373,33 @@ class Xcall(DeepCase):
                 "ones) and on the new release")
 
     def populate(self, w):
-        xia = person(w, "xia")
-        org = new_org(xia, "Xcall Org")
-        s = {"org": org, "a": xia.deploy(kv_wasm(w), "xc-a", org=org), "b": xia.deploy(kv_wasm(w), "xc-b", org=org),
+        xan = person(w, "xan")
+        org = new_org(xan, "Xcall Org")
+        s = {"org": org, "a": xan.deploy(kv_wasm(w), "xc-a", org=org), "b": xan.deploy(kv_wasm(w), "xc-b", org=org),
              "relayed": {}}
         self._relay(w, s, "seed")
         # A method that allows no app: refused, a final answer. A missing target: dead-lettered,
         # and the source's onXcallFailed hears of it.
-        xia.call(s["a"], "relayToSet", {"app": s["b"], "key": "nope", "value": "x"})
-        xia.call(s["a"], "relay", {"app": "no-such-app", "key": "lost", "value": "x"})
-        s["failures"] = until("the dead letter is reported", lambda: _nonempty(xia.result(s["a"], "xcallFailures")))
-        check(xia.result(s["b"], "get", {"key": "nope"}) is None, "a method that allows no app ran")
+        xan.call(s["a"], "relayToSet", {"app": s["b"], "key": "nope", "value": "x"})
+        xan.call(s["a"], "relay", {"app": "no-such-app", "key": "lost", "value": "x"})
+        s["failures"] = until("the dead letter is reported", lambda: _nonempty(xan.result(s["a"], "xcallFailures")))
+        check(xan.result(s["b"], "get", {"key": "nope"}) is None, "a method that allows no app ran")
         s["dead"] = _xcalls(w, s)["deadLetters"]
         check(len(s["dead"]) == 1 and s["dead"][0]["app"] == "no-such-app", f"the dead letter: {s['dead']}")
         return s
 
     def _relay(self, w, s, tag):
-        xia = person(w, "xia")
+        xan = person(w, "xan")
         key = f"relay-{tag}"
-        xia.call(s["a"], "relay", {"app": s["b"], "key": key, "value": tag})
-        until(f"the {tag} relay lands", lambda: eq(xia.result(s["b"], "get", {"key": key}), tag, key))
+        xan.call(s["a"], "relay", {"app": s["b"], "key": key, "value": tag})
+        until(f"the {tag} relay lands", lambda: eq(xan.result(s["b"], "get", {"key": key}), tag, key))
         s["relayed"][key] = tag
 
     def check(self, w, s):
-        xia = person(w, "xia")
+        xan = person(w, "xan")
         for k, v in s["relayed"].items():
-            eq(xia.result(s["b"], "get", {"key": k}), v, f"relayed {k}")
-        eq(xia.result(s["a"], "xcallFailures"), s["failures"], "xcall failures")
+            eq(xan.result(s["b"], "get", {"key": k}), v, f"relayed {k}")
+        eq(xan.result(s["a"], "xcallFailures"), s["failures"], "xcall failures")
         # Every replica answers it from its own state: each keeps the dead letters the old
         # release recorded (a replica that caught up by replaying the log included).
         for n in hosts(w, s["a"]):
@@ -627,10 +627,10 @@ class AppOrigins(DeepCase):
         return f"apps/{s['app']}/origins"
 
     def _decisions(self, w, s):
-        otto = person(w, "otto")
-        return decisions({"stranger lists": lambda: otto.get(self._path(s)),
-                          "stranger registers": lambda: otto.raw("post", self._path(s),
-                                                                 {"origin": "https://otto-app.example.test"})})
+        zola = person(w, "zola")
+        return decisions({"stranger lists": lambda: zola.get(self._path(s)),
+                          "stranger registers": lambda: zola.raw("post", self._path(s),
+                                                                 {"origin": "https://zola-app.example.test"})})
 
     def _begin(self, w, origin, node):
         got = decision(lambda: anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node))
@@ -645,14 +645,14 @@ class AppOrigins(DeepCase):
                 eq(self._begin(w, origin, node), "ORIGIN_NOT_REGISTERED", f"{origin} on node {node}")
 
     def _read(self, w, s):
-        s["read"] = snap(person(w, "ivy"), self._path(s))
+        s["read"] = snap(person(w, "yara"), self._path(s))
         eq([o["origin"] for o in s["read"]["origins"]], [s["origin"]], "the instance's origins")
 
     def populate(self, w):
-        ivy = person(w, "ivy")
-        s = {"app": ivy.deploy(kv_wasm(w), "origins"), "origin": "https://store-ivy.example.test",
-             "gone": ["https://never-ivy.example.test"]}
-        ivy.raw("post", self._path(s), {"origin": s["origin"]})
+        yara = person(w, "yara")
+        s = {"app": yara.deploy(kv_wasm(w), "origins"), "origin": "https://store-yara.example.test",
+             "gone": ["https://never-yara.example.test"]}
+        yara.raw("post", self._path(s), {"origin": s["origin"]})
         s["decisions"] = self._decisions(w, s)
         check("ok" not in s["decisions"].values(), f"a stranger handled the origins: {s['decisions']}")
         self._read(w, s)
@@ -660,17 +660,17 @@ class AppOrigins(DeepCase):
         return s
 
     def check(self, w, s):
-        ivy = person(w, "ivy")
-        until("the origins read back", lambda: same_read(ivy, self._path(s), s["read"], "the instance's origins"), 15)
+        yara = person(w, "yara")
+        until("the origins read back", lambda: same_read(yara, self._path(s), s["read"], "the instance's origins"), 15)
         same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
         self._ceremonies(w, s)
 
     def exercise(self, w, s):
-        ivy = person(w, "ivy")
-        ivy.raw("delete", self._path(s), {"origin": s["origin"]})
+        yara = person(w, "yara")
+        yara.raw("delete", self._path(s), {"origin": s["origin"]})
         s["gone"].append(s["origin"])
-        s["origin"] = "https://store-ivy-2.example.test"
-        ivy.raw("post", self._path(s), {"origin": s["origin"]})
+        s["origin"] = "https://store-yara-2.example.test"
+        yara.raw("post", self._path(s), {"origin": s["origin"]})
         self._read(w, s)
         self.check(w, s)
 

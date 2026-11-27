@@ -497,34 +497,34 @@ class StateCaps(DeepCase):
                 "maxMetadataBytesPerAccount": 2 * 1024 * 1024}
 
     def populate(self, w):
-        pia = person(w, "pia")
-        org = new_org(pia, "Bounded Org")
-        teams = [team_id(pia.raw("post", f"orgs/{org}/teams", {"name": n, "join": "invite"})) for n in ("a", "b")]
+        pola = person(w, "pola")
+        org = new_org(pola, "Bounded Org")
+        teams = [team_id(pola.raw("post", f"orgs/{org}/teams", {"name": n, "join": "invite"})) for n in ("a", "b")]
         # The quotas are written once the cluster version brings them (`409 FEATURE_NOT_ACTIVE` before).
         until("the cluster version takes the state bounds", lambda: signed_ops(w, "post", "ops/quotas", self.BOUNDS),
               timeout=120)
         try:
-            refused("QUOTA_EXCEEDED", lambda: pia.raw("post", f"orgs/{org}/teams", {"name": "c", "join": "invite"}),
+            refused("QUOTA_EXCEEDED", lambda: pola.raw("post", f"orgs/{org}/teams", {"name": "c", "join": "invite"}),
                     "a third team past maxTeamsPerOrg")
-            pia.raw("post", f"orgs/{org}/metadata", {"metadata": {"about": "x" * 15_000}})
+            pola.raw("post", f"orgs/{org}/metadata", {"metadata": {"about": "x" * 15_000}})
             refused("QUOTA_EXCEEDED",
-                    lambda: pia.raw("post", f"orgs/{org}/teams/{teams[0]}", {"metadata": {"about": "y" * 15_000}}),
+                    lambda: pola.raw("post", f"orgs/{org}/teams/{teams[0]}", {"metadata": {"about": "y" * 15_000}}),
                     "team metadata past maxMetadataBytesPerOrg")
         finally:
             signed_ops(w, "post", "ops/quotas", self.DEFAULTS)
         return {"org": org, "teams": sorted(teams)}
 
     def check(self, w, s):
-        pia = person(w, "pia")
+        pola = person(w, "pola")
         quotas = ops(w, "GET", "ops/quotas")
         eq({k: quotas.get(k) for k in self.DEFAULTS}, self.DEFAULTS, "the state bounds at their defaults")
-        o = pia.get(f"orgs/{s['org']}")
+        o = pola.get(f"orgs/{s['org']}")
         eq(sorted(o.get("teams", {})), s["teams"], "the organization's teams")
         eq(len(json.dumps(o.get("metadata"))), len(json.dumps({"about": "x" * 15_000})), "its metadata")
         eq(o.get("nextTeamsAfter"), None, "one page holds every team")
         paged, after = [], None
         for _ in s["teams"]:
-            page = pia.get(f"orgs/{s['org']}?limit=1" + (f"&teamsAfter={after}" if after else ""))
+            page = pola.get(f"orgs/{s['org']}?limit=1" + (f"&teamsAfter={after}" if after else ""))
             paged += list(page.get("teams", {}))
             after = page.get("nextTeamsAfter")
             if after is None:
@@ -534,6 +534,6 @@ class StateCaps(DeepCase):
         eq(after, None, "the last page")
 
     def exercise(self, w, s):
-        pia = person(w, "pia")
-        made = pia.raw("post", f"orgs/{s['org']}/teams", {"name": "c", "join": "invite"})
+        pola = person(w, "pola")
+        made = pola.raw("post", f"orgs/{s['org']}/teams", {"name": "c", "join": "invite"})
         s["teams"] = sorted(s["teams"] + [team_id(made)])
