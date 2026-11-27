@@ -249,6 +249,82 @@ migration proper and ship behind the gate and the cutover. This PR is slice 1.
 Having the routing decision in one typed, tested place lets the rest of the node
 be written and reviewed against shards before any state is actually split.
 
+## S2: the `SystemState` partition
+
+`SystemState` is one flat struct of ~56 fields. S2 assigns each to the **root**
+machine (cluster-wide, one instance) or a **tenant** machine (one instance per
+organization, holding only that org's rows). A tenant instance applies only the
+commands whose state it owns; a command that reads another shard's state has
+those values resolved at propose and carried in the entry (S4), so `apply` still
+reads only its own shard.
+
+The rule: **state keyed by, or scoped to, one organization is tenant; everything
+else — the fleet, the package registry, compute accounting, cluster governance,
+and the global identity/directory indexes every shard must look up — is root.**
+
+### Field classification
+
+| Group | Fields | Shard |
+| --- | --- | --- |
+| Fleet | `nodes`, `removed_nodes`, `node_epoch`, `next_group` | **root** |
+| Packages | `packages`, `bundles`, `publishers`, `unbound_publishers`, `package_origins`, `price_table` | **root** |
+| Compute | `pools`, `compute`, `next_run_seq`, `run_served`, `run_grants`, `released_runs` | **root** |
+| Governance (cluster) | `governance`, `operator_key`, `operator_releases`, `operator_outbound`, `release_deadlines`, `deployers`, `cluster_owner`, `org_quotas`, `quotas` | **root** |
+| Cluster markers | `cluster_version`, `current_rules_from`, `session_proofs_from`, `attributes_by_release`, `expires_proofs` | **root** |
+| Proof lifecycle | `used_proofs`, `proof_expiry`, `proofs_forgotten_through` | **root** (cluster-wide replay dedup) |
+| Sign-up | `sign_up_invites` | **root** |
+| Identity directory | `accounts`, `credentials`, `recovery_keys`, `activity`, `account_recoveries`, `backup_keys` | **root** (an account is a cluster-wide identity) |
+| Org structure | `orgs` (members, teams), `invites` | **tenant** |
+| Apps | `apps`, `app_invites`, `delegations`, `app_file_bytes`, `deployments`, `deployment_secrets` | **tenant** |
+| Session family | `refresh`, `revoked_sessions`, `revoked_at`, `rotated_refresh`, `api_keys` | **tenant, by org context** (see below) |
+| Byte charges | `payer_file_bytes` | **split**: an org payer → tenant, an account payer → root |
+
+### The crux: identity is root, sessions are tenant
+
+The session family (`refresh`, `rotated_refresh`, `revoked_sessions`,
+`revoked_at`, `api_keys`) is the **largest write source**, so it is exactly what
+sharding must move off root — but each entry is tied to an **account**, which is
+a cluster-wide identity (`accounts`, `credentials`, `recovery_keys` stay root as
+a directory, since an account can act in several orgs).
+
+Resolution: **a session shards by the organization context it is minted for.** A
+sign-in scoped to an org (or to an app, which belongs to an org) mints its
+session in that org's tenant shard; an account-level session with no org context
+(cluster-wide operations) lives on root. This moves the hot session writes to the
+tenants while keeping account identity a single root directory. The cost is the
+access-gate read (S6): authorizing a request reads the **account identity from
+root** and the **session/refresh record from the acting org's tenant** — a
+cross-shard read at a read index, within O2's freshness model. A session cannot
+span two orgs without re-minting; account-level actions fall back to root.
+
+### What the partition forces
+
+- **`apply` / `authorize` become role-aware.** `SystemCmd::area` already groups
+  commands; each command applies on the shard that owns its state. A root command
+  on a tenant instance (or vice-versa) is a routing error, not a no-op.
+- **Resolve-at-propose (S4) for every coupled command.** `CreateApp` (tenant:
+  `apps`) reads `quotas`/`org_quotas` (root) and the `orgs` membership (its own
+  tenant) and the release (root `packages`); the leader reads root at a read
+  index and bakes the quota and release facts into the entry.
+- **The `IN_MEMORY` checkpoint splits.** The system machine checkpoints its whole
+  state in each snapshot; after S2 each shard checkpoints only its slice, so
+  `Machine::snapshot`/`restore` and the snapshot format carry a shard tag.
+- **`next_group` stays root** (one id allocator), so tenant group creation (S3)
+  asks root for the new group id.
+- **`used_proofs` stays root** so a proof cannot be replayed on a second shard;
+  a tenant decision's proof check is a root read at propose.
+
+### Open questions this raises (for review before S2 code)
+
+- **Session org-scoping.** Pinning a session to one org at mint changes the
+  sign-in API's contract (a token names its org). Account-level sessions on root
+  reintroduce some write load there — quantify what fraction stays root.
+- **`activity`, `account_recoveries`, `backup_keys`** follow the account to root
+  here; if an org wants its own activity/recovery isolation they move to tenant,
+  at the cost of another cross-shard read on the recovery path.
+- **`payer_file_bytes` split** needs a key discriminator (org vs account payer)
+  the current flat `String` key does not carry.
+
 ## Open questions / risks
 
 - **Root read freshness vs. a tenant write's latency.** Reading the fleet quota
