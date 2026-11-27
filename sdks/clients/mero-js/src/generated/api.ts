@@ -14422,7 +14422,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `QUOTA_EXCEEDED` */
+            /** @description `QUOTA_EXCEEDED`; `TOO_MANY_COMPILES` */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -17370,6 +17370,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `BUSY` */
             503: {
                 headers: {
@@ -17444,6 +17453,15 @@ export interface operations {
             };
             /** @description `COMPILE_TIMEOUT`. `details` of `COMPILE_TIMEOUT`: a `ServiceRefused`. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -22012,6 +22030,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `BUSY` */
             503: {
                 headers: {
@@ -22105,6 +22132,15 @@ export interface operations {
             };
             /** @description `COMPILE_TIMEOUT`. `details` of `COMPILE_TIMEOUT`: a `ServiceRefused`. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
