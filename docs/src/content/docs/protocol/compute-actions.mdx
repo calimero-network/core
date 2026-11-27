@@ -304,6 +304,9 @@ The step runs under the app's owner, payer and file keys; only the compute compo
 No items skips the step, and more than `maxItems` fails it with `TOO_MANY_ITEMS` before any run starts.
 `batch: b` groups the items in order into runs of at most `b`, so a failed run fails all of its items.
 The runs start in waves: the first decision records how many runs the step will have, and a `more` decision starts the next indices while the step runs, so at most `maxParallel` of its runs are active and never more than the app has room for.
+A wave is also held to what the compute queue would grant now: the free places of the pool its runs go to, and the runs and fuel the payer's quotas leave.
+So a fan-out wider than its pool waits in its step, not in the queue, where a run would end `not-granted` after the queue timeout.
+A step with no run active still starts one, so a step never waits on itself and a pool with no job node still ends that run `not-granted`.
 Run ids are `<run>.<step>.<index>`, so a decision repeated after a change of leader changes nothing.
 The input order of a fan-out run is the step's `inputs` references in the order written, with the run's item files where `item` stands, or first when `item` is not listed.
 A step with no `inputs` gets just its item files.
@@ -348,6 +351,7 @@ It needs the operator's price table (`409 NO_PRICE_TABLE` without one) and is pr
 The cap stops admission and does not refuse the plan: a run whose `worstCase` is above `maxCost` still starts.
 Before every `start` or `more` decision the leader counts what the run may owe: the priced usage of its finished runs (never above `runCost` of their caps) plus the worst case of every active run, and starts only the runs that fit.
 When the next run does not fit, the step is failed with `COST_CAP`: the runs already going finish and are paid for, no more start, dependents are `upstreamFailed` and the run ends `failed`.
+Whether it fits depends on the wave: a small pool starts fewer runs at once, and the ones that finished count at what they used, so a fan-out can finish under a cap on a small pool that fails it with `COST_CAP` on a large one.
 Apply judges the same sum again from the record alone and refuses a decision that would pass the cap.
 Cached runs cost nothing.
 The view shows `cost` (`maxCost`, `priceVersion`, `table`, `worstCase`), `costSoFar` and each step's `cost`.
@@ -787,8 +791,9 @@ A run's id is `run_id(pipeline, step, index)` and `RunRecord::pipeline` carries 
 
 #### The leader's loop
 
-`Node::drive_pipelines` runs beside `drive_runs` and is stateless: `plan` decides every pending step from the records.
-It also decides the next `More` wave of each running fan-out: `maxParallel` less its active runs, bounded by the app's room and `MAX_STEP_RUNS`.
+`Node::drive_pipelines` runs beside `drive_runs` and is stateless: `plan` decides every pending step from the records and a hint read before it, the `QueueRoom` the system state's `queue_room` answers for the app's payer, less the app's runs not queued yet.
+It also decides the next `More` wave of each running fan-out: `maxParallel` less its active runs, bounded by the app's room, by what the queue would grant runs of the step's caps and pool (at least one when the step has none active) and by `MAX_STEP_RUNS`.
+The hint is the leader's local read and only sizes a wave: apply never reads the queue, so a stale read makes a wave smaller, or lets a run wait in the queue, and changes nothing a replica computes.
 A wave is cut so its encoded runs stay within `MAX_DECISION_RUNS_BYTES`; a run that alone cannot fit fails the step with `RUN_TOO_LARGE`.
 A decision is proposed only while it still applies (the step pending, or the fan-out's next index unchanged).
 The leader keeps each fan-out's runs in memory by (group, pipeline run, step), so no item row is read twice.
