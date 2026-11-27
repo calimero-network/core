@@ -282,6 +282,9 @@ pub enum Feature {
     /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop, and
     /// `UpgradeApp` and `ApproveUpgrade` whose class carries a `pinsLineage` reason.
     PinnedLineage,
+    /// `AddAppOrigin` and `RemoveAppOrigin`: an earlier release cannot read them, so its
+    /// replicas would keep no instance's origin; nor `AddPackageOrigin`'s `registration`.
+    AppOrigins,
     /// `outcome.keepQueue` in an app's entry: an xcall past a full outbox
     /// ([`MAX_OUTBOX`](crate::component::xcall::MAX_OUTBOX)) goes to the dead letters alone
     /// and the messages queued before it stay queued
@@ -292,7 +295,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 62] = [
+pub const FEATURES: [Feature; 63] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -354,6 +357,7 @@ pub const FEATURES: [Feature; 62] = [
     Feature::MeteredBlobs,
     Feature::XcallBudget,
     Feature::PinnedLineage,
+    Feature::AppOrigins,
     Feature::XcallKeepsQueue,
 ];
 
@@ -423,6 +427,7 @@ impl Feature {
             Self::MeteredBlobs => "meteredBlobs",
             Self::XcallBudget => "xcallBudget",
             Self::PinnedLineage => "pinnedLineage",
+            Self::AppOrigins => "appOrigins",
             Self::XcallKeepsQueue => "xcallKeepsQueue",
         }
     }
@@ -511,6 +516,7 @@ impl Feature {
             | Self::MeteredBlobs
             | Self::XcallBudget
             | Self::PinnedLineage
+            | Self::AppOrigins
             | Self::XcallKeepsQueue => "1.0.0-rc.39",
         }
     }
@@ -914,6 +920,10 @@ impl SystemCmd {
             Self::OfferDeployment { .. }
             | Self::AcceptDeployment { .. }
             | Self::CancelDeploymentTransfer { .. } => vec![Feature::DeploymentTransfer],
+            Self::AddAppOrigin { .. } | Self::RemoveAppOrigin { .. } => vec![Feature::AppOrigins],
+            Self::AddPackageOrigin { registration, .. } if !registration.is_empty() => {
+                vec![Feature::AppOrigins]
+            }
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -1505,6 +1515,9 @@ mod tests {
                 "deployment": "d", "to": { "org": "org" }, "actor": "alice", "at": 1 })),
             Feature::SessionHolders => entry(json!({ "op": "createRefresh", "hash": "h",
                 "record": { "account": "a", "session": "s", "expiresAt": 1, "holder": "BA" } })),
+            Feature::AppOrigins => entry(json!({ "op": "addAppOrigin", "app_id": "app",
+                "origin": "https://kv.example.com", "rp_id": "kv.example.com", "actor": "alice",
+                "at": 1 })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -2183,9 +2196,16 @@ mod tests {
         for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.39's (a session bound to a holder key, a release pinning its instances) waits past
-        // rc.38: an rc.38 node drops the record's holder and the release's lineage.
-        assert_eq!(rc39, [Feature::SessionHolders, Feature::PinnedLineage]);
+        // rc.39's (holder-bound sessions, pinning releases, instance origins) wait past rc.38:
+        // an rc.38 node drops the holder and the lineage, and cannot read the origin ops.
+        assert_eq!(
+            rc39,
+            [
+                Feature::SessionHolders,
+                Feature::PinnedLineage,
+                Feature::AppOrigins
+            ]
+        );
         for &feature in &rc39 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

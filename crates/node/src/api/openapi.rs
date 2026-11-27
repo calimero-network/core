@@ -1314,6 +1314,12 @@ fn components() -> Vec<Component> {
         )
         .of::<super::origins::OriginList>(),
         component(
+            "AppOriginList",
+            "`GET /apps/{app}/origins`: the origins registered for an instance.",
+            "{ app: string, origins: #PackageOrigin[] }",
+        )
+        .of::<super::apps::AppOriginList>(),
+        component(
             "OriginRemoved",
             "What removing an origin answers.",
             "{ package: string, origin: string, removed: bool }",
@@ -2081,8 +2087,8 @@ fn components() -> Vec<Component> {
         .of::<calimero_client::attest::AccountStatement>(),
         component(
             "PackageOrigin",
-            "A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.",
-            "{ package: string, origin: string, rpId: string, addedBy: string, addedAt: string, served: bool }",
+            "A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin).",
+            "{ package: string, origin: string, rpId: string, addedBy: string, addedAt: string, served: bool, app?: string }",
         )
         .of::<crate::origins::OriginView>(),
         component(
@@ -2469,7 +2475,7 @@ fn operations() -> Vec<Op> {
             .query::<super::ActivityQuery>("{ after?: uint }")
             .ok("#ActivityList"),
         get("/auth/me", "me", SignedIn, "The caller's account")
-            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).")
+            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.")
             .ok("#AccountView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
@@ -2775,6 +2781,22 @@ fn operations() -> Vec<Op> {
             .ok("#LinkRow")
             .step_up()
             .errors(&[(404, "NOT_FOUND"), (400, "NOT_ATTACHABLE"), (403, "FORBIDDEN"), (409, "NOT_AN_ATTACH_REFERENCE"), (409, "WRONG_PACKAGE"), (409, "FEATURE_NOT_ACTIVE")]),
+        get("/apps/{app}/origins", "app_origins", AccountHolder, "An instance's web origins")
+            .about("The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.")
+            .ok("#AppOriginList")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        post("/apps/{app}/origins", "app_origin_add", AccountHolder, "Register a web origin for an instance")
+            .about("By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).")
+            .json::<super::apps::AddAppOriginBody>("{ origin: string, rpId?: string, confirm?: #Confirm }")
+            .ok("#PackageOrigin")
+            .step_up()
+            .errors(&[(400, "BAD_ORIGIN"), (400, "BAD_RP_ID"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "ORIGIN_TAKEN"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
+        delete("/apps/{app}/origins", "app_origin_remove", AccountHolder, "Remove an instance's web origin")
+            .about("Whoever manages the instance, with a passkey step-up. The sessions opened there end.")
+            .json::<super::origins::RemoveOriginBody>("{ origin: string, confirm?: #Confirm }")
+            .ok("#OriginRemoved")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         delete("/apps/{app}/links/{name}", "app_unlink", AccountHolder, "Detach an app attached to an app")
             .about("Whoever manages the app. A member made with the instance is never detached.")
             .json::<super::apps::UnlinkBody>("{ confirm?: #Confirm }")

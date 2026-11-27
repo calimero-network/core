@@ -4650,8 +4650,10 @@ async fn hosted_on(
 /// target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app() {
-    const WALL: Duration = Duration::from_millis(600);
-    const QUICK: Duration = Duration::from_millis(200);
+    // A held lock would keep the entry waiting for the rest of the run (2/3 of `WALL`), so
+    // `QUICK` is half of that: the bound sits clear of a loaded runner's scheduling delay.
+    const WALL: Duration = Duration::from_millis(1_500);
+    const QUICK: Duration = Duration::from_millis(500);
     let c = Cluster::start_with(1, |cfg| {
         cfg.budget = Some(calimero_app_host::Budget {
             fuel: u64::MAX,

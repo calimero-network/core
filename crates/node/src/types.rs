@@ -1091,6 +1091,9 @@ pub struct RefreshRecord {
     /// The registered origin that opened it (`SessionClaims::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// That origin's registration (`SessionClaims::registration`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registration: String,
     /// The token's public key (`proof::refresh_key`, hex), which signs its
     /// exchange (`UseRefresh`). Empty in records from before: those are not
     /// exchanged, and their holders sign in again.

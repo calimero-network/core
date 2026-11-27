@@ -68,6 +68,9 @@ from .app_move_body import AppMoveBody
 from .app_moved import AppMoved
 from .app_offered import AppOffered
 from .app_open_api import AppOpenApi
+from .app_origin_add_body import AppOriginAddBody
+from .app_origin_list import AppOriginList
+from .app_origin_remove_body import AppOriginRemoveBody
 from .app_restore import AppRestore
 from .app_restore_source import AppRestoreSource
 from .app_restored import AppRestored
@@ -849,6 +852,9 @@ __all__ = (
     "AppMoved",
     "AppOffered",
     "AppOpenApi",
+    "AppOriginAddBody",
+    "AppOriginList",
+    "AppOriginRemoveBody",
     "AppRestore",
     "AppRestored",
     "AppRestoredBackup",

@@ -685,10 +685,15 @@ fn finish_recovery(
     let _prev = organization.members.insert(actor.clone(), OrgRole::Owner);
     // The previous owner's apps in the organization reach their owner
     // whatever the membership: they move with it.
-    for app in state.apps.values_mut() {
+    let mut reassigned = Vec::new();
+    for (id, app) in &mut state.apps {
         if app.org == org && previous.contains(&app.owner) {
             app.owner.clone_from(&actor);
+            reassigned.push(id.clone());
         }
+    }
+    for app in &reassigned {
+        state.forget_app_origins(app);
     }
     Ok(json!(RecoveryFinished {
         org,

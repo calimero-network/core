@@ -1068,6 +1068,7 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
             passkey: None,
             app: None,
             origin: None,
+            registration: String::new(),
             node: 0,
             key: String::new(),
         });

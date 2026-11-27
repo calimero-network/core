@@ -350,6 +350,7 @@ pub(super) async fn public_link_list(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
     let now = now_secs();
     node.sys(|s| {
         if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {

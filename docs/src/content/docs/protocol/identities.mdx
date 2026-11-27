@@ -360,7 +360,7 @@ a developer's domain, so each registered origin carries its own `rpId`: the
 origin's host by default, or a parent domain of it that the manager names
 (`https://app.example.com` with `example.com`). The cluster's rp-id, or a
 parent of it, is refused, so the cluster's own passkeys never answer on a
-developer's site. A person signing in there makes a passkey for that site;
+developer's site. So is a public suffix (`co.uk`, `github.io`), as a browser refuses it. A person signing in there makes a passkey for that site;
 the account it opens is an ordinary cluster account whose sessions from that
 origin are always bound to the package. WebAuthn's Related Origin Requests
 (one rp-id, a `/.well-known/webauthn` list of origins) was not chosen:
@@ -393,7 +393,9 @@ state. An uninstalled package takes its origins with it.
 (lowercase, no path, no default port); `http://` only for a `localhost` name
 and only on a `--dev` node. One package per origin (first come; the cluster's
 own origins and served frontends are refused). 8 origins per package, 4096
-per cluster. CORS on the node's API admits registered origins. The node logs,
+per cluster. CORS on the node's API admits registered origins.
+Each node answers a preflight from its own applied state, so one sent to a lagging node can fail for a moment right after the origin is registered.
+The node logs,
 at `info`, each registration and removal (package, origin, rp-id) and each
 session opened on a registered origin (package and origin); who made the
 change is in the system log's command and at `debug` only, never in the
@@ -421,6 +423,42 @@ Registering an origin proves nothing about controlling it: a manager who
 registers another developer's origin denies them its use on this cluster, but
 never sees a token, since the sessions go to the pages on that origin. Origins
 belong to a package, never to a deployment.
+
+**An instance's origins.** A package's origins are its manager's, so the
+customer who runs an instance of someone else's package (a Confidential KV
+store, say) registers a site of their own for that instance instead:
+whoever manages the instance (its owner or an admin of its organization)
+registers it with their passkey.
+
+| Action | Route | Consent |
+| --- | --- | --- |
+| List | `GET /apps/{app}/origins` | none |
+| Register | `POST /apps/{app}/origins { origin, rpId? }` | `{app} / __add_origin / { origin, rpId }` |
+| Remove | `DELETE /apps/{app}/origins { origin }` | `{app} / __remove_origin / { origin }` |
+
+The commands are `AddAppOrigin` and `RemoveAppOrigin` (cluster version
+1.0.0-rc.39, `409 FEATURE_NOT_ACTIVE` below it), judged where they apply. The
+registration is a package origin in every other way (its own rp-id, the
+ceremonies, CORS, a session bound to the instance's package and naming the
+origin, removal ending it), and one more rule: such a session reaches that
+instance alone. Any other instance answers `404` though the account reaches
+it, as does a new instance, and a team change is refused, as is a read of the
+organization's or the account's past the instance (`403`: the organization,
+its teams, invites, usage, update policy and upgrade runs, the account's usage
+and aliases, and taking back a delegation), and `/auth/me` names only the account's id and name and the
+instance's organization, with no passkeys and no recovery state. What the account may
+do in the instance is the instance's own access: a person who signs up there
+has a new account, which reaches the instance only once its managers let it in
+(a guest of the organization with a grant on the instance) and the app's own
+grants then decide. An instance's origin is never served, 4 per instance, 64 per
+organization's instances and 4096 per cluster (apart from packages' own 4096, so instances never fill the
+packages' room), and deleting the instance, moving it to another organization or handing it
+to a new owner takes them with it. The same
+first-come rule holds, one package or instance per origin, with one exception:
+the package's manager takes back an origin an instance of its own package
+holds (`POST /packages/{package}/origins`), which ends the instance's
+registration and the sessions opened under it. An instance of another package
+keeps it.
 
 ## Account recovery
 
@@ -634,7 +672,8 @@ Code: `origins.rs`, `api/origins.rs`.
 - The origin rides in `SessionClaims::origin` and `RefreshRecord::origin`, kept by `Pending::SignUp` and stated nowhere in the sign-in challenge.
 - `principal` and `refresh` refuse such sessions once the origin is removed, and `UseRefresh` refuses an exchange that changes it.
 - `UninstallPackage` of the last release forgets them.
-- Limits `MAX_ORIGINS_PER_PACKAGE` and `MAX_PACKAGE_ORIGINS`; `http` only for `localhost` names on a `--dev` node (`allow_package_uploads`).
+- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app`, `TransferApp` and `MoveApp` forget them (`forget_app_origins`), and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, `beyond_instance`, instance creation, app lists, streams).
+- Limits `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS` and, for instances, `MAX_ORIGINS_PER_APP`, `MAX_APP_ORIGINS_PER_ORG` and `MAX_APP_ORIGINS` (`SystemState::origins_full`, `SystemState::org_origins_full`); `http` only for `localhost` names on a `--dev` node (`allow_package_uploads`).
 
 #### Served origins
 

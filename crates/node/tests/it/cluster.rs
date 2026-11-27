@@ -6189,7 +6189,11 @@ async fn an_install_names_no_stalled_publisher_of_a_package_its_installer_may_no
 /// The binding of `key` to `org`: the key's signature over
 /// `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signer}\n{generation}`,
 /// with the cluster's name and the key's generation as the node names them.
-async fn publisher_binding(cl: &Client, key: &ed25519_dalek::SigningKey, org: &str) -> Value {
+pub(crate) async fn publisher_binding(
+    cl: &Client,
+    key: &ed25519_dalek::SigningKey,
+    org: &str,
+) -> Value {
     use ed25519_dalek::Signer as _;
     let signer = calimero_bundle::derive_signer_id_did_key(key.verifying_key().as_bytes());
     let next = cl

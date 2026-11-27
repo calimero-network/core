@@ -367,6 +367,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /apps/{app}/openapi.json`.
     /// - Remark: Generated from `#/paths//apps/{app}/openapi.json/get(app_openapi)`.
     func appOpenapi(_ input: Operations.AppOpenapi.Input) async throws -> Operations.AppOpenapi.Output
+    /// An instance's web origins
+    ///
+    /// The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/get(app_origins)`.
+    func appOrigins(_ input: Operations.AppOrigins.Input) async throws -> Operations.AppOrigins.Output
+    /// Register a web origin for an instance
+    ///
+    /// By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/post(app_origin_add)`.
+    func appOriginAdd(_ input: Operations.AppOriginAdd.Input) async throws -> Operations.AppOriginAdd.Output
+    /// Remove an instance's web origin
+    ///
+    /// Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/delete(app_origin_remove)`.
+    func appOriginRemove(_ input: Operations.AppOriginRemove.Input) async throws -> Operations.AppOriginRemove.Output
     /// An app's outbound requests
     ///
     /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
@@ -794,7 +821,7 @@ public protocol APIProtocol: Sendable {
     func logoutAll(_ input: Operations.LogoutAll.Input) async throws -> Operations.LogoutAll.Output
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2457,6 +2484,61 @@ extension APIProtocol {
             headers: headers
         ))
     }
+    /// An instance's web origins
+    ///
+    /// The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/get(app_origins)`.
+    public func appOrigins(
+        path: Operations.AppOrigins.Input.Path,
+        headers: Operations.AppOrigins.Input.Headers = .init()
+    ) async throws -> Operations.AppOrigins.Output {
+        try await appOrigins(Operations.AppOrigins.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Register a web origin for an instance
+    ///
+    /// By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/post(app_origin_add)`.
+    public func appOriginAdd(
+        path: Operations.AppOriginAdd.Input.Path,
+        headers: Operations.AppOriginAdd.Input.Headers = .init(),
+        body: Operations.AppOriginAdd.Input.Body
+    ) async throws -> Operations.AppOriginAdd.Output {
+        try await appOriginAdd(Operations.AppOriginAdd.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Remove an instance's web origin
+    ///
+    /// Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/delete(app_origin_remove)`.
+    public func appOriginRemove(
+        path: Operations.AppOriginRemove.Input.Path,
+        headers: Operations.AppOriginRemove.Input.Headers = .init(),
+        body: Operations.AppOriginRemove.Input.Body
+    ) async throws -> Operations.AppOriginRemove.Output {
+        try await appOriginRemove(Operations.AppOriginRemove.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
     /// An app's outbound requests
     ///
     /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
@@ -3284,7 +3366,7 @@ extension APIProtocol {
     }
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -10293,6 +10375,31 @@ public enum Components {
                 case origins
             }
         }
+        /// `GET /apps/{app}/origins`: the origins registered for an instance.
+        ///
+        /// - Remark: Generated from `#/components/schemas/AppOriginList`.
+        public struct AppOriginList: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AppOriginList/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/AppOriginList/origins`.
+            public var origins: [Components.Schemas.PackageOrigin]
+            /// Creates a new `AppOriginList`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - origins:
+            public init(
+                app: Swift.String,
+                origins: [Components.Schemas.PackageOrigin]
+            ) {
+                self.app = app
+                self.origins = origins
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case origins
+            }
+        }
         /// What removing an origin answers.
         ///
         /// - Remark: Generated from `#/components/schemas/OriginRemoved`.
@@ -15534,7 +15641,7 @@ public enum Components {
                 case expiresAt
             }
         }
-        /// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.
+        /// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin).
         ///
         /// - Remark: Generated from `#/components/schemas/PackageOrigin`.
         public struct PackageOrigin: Codable, Hashable, Sendable {
@@ -15550,6 +15657,8 @@ public enum Components {
             public var addedAt: Swift.String
             /// - Remark: Generated from `#/components/schemas/PackageOrigin/served`.
             public var served: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/PackageOrigin/app`.
+            public var app: Swift.String?
             /// Creates a new `PackageOrigin`.
             ///
             /// - Parameters:
@@ -15559,13 +15668,15 @@ public enum Components {
             ///   - addedBy:
             ///   - addedAt:
             ///   - served:
+            ///   - app:
             public init(
                 package: Swift.String,
                 origin: Swift.String,
                 rpId: Swift.String,
                 addedBy: Swift.String,
                 addedAt: Swift.String,
-                served: Swift.Bool
+                served: Swift.Bool,
+                app: Swift.String? = nil
             ) {
                 self.package = package
                 self.origin = origin
@@ -15573,6 +15684,7 @@ public enum Components {
                 self.addedBy = addedBy
                 self.addedAt = addedAt
                 self.served = served
+                self.app = app
             }
             public enum CodingKeys: String, CodingKey {
                 case package
@@ -15581,6 +15693,7 @@ public enum Components {
                 case addedBy
                 case addedAt
                 case served
+                case app
             }
         }
         /// The sign-up policy and what it implies: whether organization invites and cluster sign-up invites admit a new account, and whether one is required.
@@ -27173,6 +27286,507 @@ public enum Operations {
             }
         }
     }
+    /// An instance's web origins
+    ///
+    /// The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/get(app_origins)`.
+    public enum AppOrigins {
+        public static let id: Swift.String = "app_origins"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppOrigins.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOrigins.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOrigins.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppOrigins.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppOrigins.Input.Path,
+                headers: Operations.AppOrigins.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/GET/responses/200/content/application\/json`.
+                    case json(Components.Schemas.AppOriginList)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.AppOriginList {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppOrigins.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppOrigins.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/origins/get(app_origins)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppOrigins.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppOrigins.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Register a web origin for an instance
+    ///
+    /// By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/post(app_origin_add)`.
+    public enum AppOriginAdd {
+        public static let id: Swift.String = "app_origin_add"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppOriginAdd.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOriginAdd.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOriginAdd.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppOriginAdd.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/requestBody/json/origin`.
+                    public var origin: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/requestBody/json/rpId`.
+                    public var rpId: Swift.String?
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - origin:
+                    ///   - rpId:
+                    ///   - confirm:
+                    public init(
+                        origin: Swift.String,
+                        rpId: Swift.String? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.origin = origin
+                        self.rpId = rpId
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case origin
+                        case rpId
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.origin = try container.decode(
+                            Swift.String.self,
+                            forKey: .origin
+                        )
+                        self.rpId = try container.decodeIfPresent(
+                            Swift.String.self,
+                            forKey: .rpId
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "origin",
+                            "rpId",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/requestBody/content/application\/json`.
+                case json(Operations.AppOriginAdd.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppOriginAdd.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppOriginAdd.Input.Path,
+                headers: Operations.AppOriginAdd.Input.Headers = .init(),
+                body: Operations.AppOriginAdd.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.PackageOrigin)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.PackageOrigin {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppOriginAdd.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppOriginAdd.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/origins/post(app_origin_add)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppOriginAdd.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppOriginAdd.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Remove an instance's web origin
+    ///
+    /// Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/delete(app_origin_remove)`.
+    public enum AppOriginRemove {
+        public static let id: Swift.String = "app_origin_remove"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppOriginRemove.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOriginRemove.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOriginRemove.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppOriginRemove.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/requestBody/json/origin`.
+                    public var origin: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - origin:
+                    ///   - confirm:
+                    public init(
+                        origin: Swift.String,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.origin = origin
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case origin
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.origin = try container.decode(
+                            Swift.String.self,
+                            forKey: .origin
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "origin",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/requestBody/content/application\/json`.
+                case json(Operations.AppOriginRemove.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppOriginRemove.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppOriginRemove.Input.Path,
+                headers: Operations.AppOriginRemove.Input.Headers = .init(),
+                body: Operations.AppOriginRemove.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/origins/DELETE/responses/200/content/application\/json`.
+                    case json(Components.Schemas.OriginRemoved)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.OriginRemoved {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppOriginRemove.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppOriginRemove.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/origins/delete(app_origin_remove)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppOriginRemove.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppOriginRemove.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// An app's outbound requests
     ///
     /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
@@ -34544,7 +35158,7 @@ public enum Operations {
     }
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
