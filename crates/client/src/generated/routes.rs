@@ -1430,9 +1430,14 @@ impl Auth<'_> {
     /// Start a sign-in.
     ///
     /// `POST /auth/passkey/login/begin` (`login_begin`). Who: anyone.
-    pub async fn login_begin(self, origin: Option<&str>) -> Result<PasskeyChallenge> {
+    pub async fn login_begin(
+        self,
+        origin: Option<&str>,
+        holder_key: Option<&str>,
+    ) -> Result<PasskeyChallenge> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "origin", origin)?;
+        route::put_some(&mut fields, "holderKey", holder_key)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/passkey/login/begin").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -1563,9 +1568,14 @@ impl Auth<'_> {
     /// Refresh a session.
     ///
     /// `POST /auth/refresh` (`refresh`). Who: anyone.
-    pub async fn refresh(self, refresh_token: &str) -> Result<Session> {
+    pub async fn refresh(
+        self,
+        refresh_token: &str,
+        holder_proof: Option<RefreshRequestHolderProof>,
+    ) -> Result<Session> {
         let mut fields = Map::new();
         route::put(&mut fields, "refreshToken", &refresh_token)?;
+        route::put_some(&mut fields, "holderProof", holder_proof)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/refresh").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -1599,12 +1609,14 @@ impl Auth<'_> {
         challenge_id: &str,
         registration: Registration,
         invite: Option<&str>,
+        holder_key: Option<&str>,
         passkey: Option<&mut dyn Passkey>,
     ) -> Result<Session> {
         let mut fields = Map::new();
         route::put(&mut fields, "challengeId", &challenge_id)?;
         route::put(&mut fields, "registration", &registration)?;
         route::put_some(&mut fields, "invite", invite)?;
+        route::put_some(&mut fields, "holderKey", holder_key)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/passkey/register/finish").json(body);
         route::json(self.client.transport(), req, passkey, None, false).await

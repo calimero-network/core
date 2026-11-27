@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.RefreshRequestHolderProof
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -32,13 +33,17 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param refreshToken 
+ * @param holderProof 
  */
 @Serializable
 
 data class RefreshRequest (
 
     @SerialName(value = "refreshToken")
-    val refreshToken: kotlin.String
+    val refreshToken: kotlin.String,
+
+    @SerialName(value = "holderProof")
+    val holderProof: RefreshRequestHolderProof? = null
 
 ) {
 
