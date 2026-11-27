@@ -561,7 +561,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.8",
+        "world": "calimero:app@0.5.7",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },
@@ -1685,78 +1685,6 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let mut view = core_for(&state, &inv(InvocationKind::View)).with_http(Arc::new(Echo));
     assert!(view.start_action("enrich", b"{}").is_err());
     assert_eq!(ACTION_WALL_CLOCK, Duration::from_secs(10));
-}
-
-/// The node's connectors as a test sees them: `stripe` answers its input back; any other
-/// connector is refused.
-struct Connectors;
-
-impl calimero_app_host::ConnectorHost for Connectors {
-    fn call(&self, connector: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String> {
-        if connector != "stripe" {
-            return Err(format!(
-                "{connector} is not a connector this release declares"
-            ));
-        }
-        Ok(format!("{{\"{operation}\":{}}}", String::from_utf8_lossy(input)).into_bytes())
-    }
-}
-
-#[test]
-fn connector_calls_go_where_http_goes_and_a_call_records_them() {
-    let state = base(&[]);
-    // A logged call: the answer, and both the answer and a refusal recorded for its entry.
-    let mut call =
-        core_for(&state, &inv(InvocationKind::Call)).with_connectors(Arc::new(Connectors));
-    assert_eq!(
-        call.connector_call("stripe", "createPaymentIntent", br#"{"amount":1}"#),
-        Ok(Ok(br#"{"createPaymentIntent":{"amount":1}}"#.to_vec()))
-    );
-    assert_eq!(
-        call.connector_call("slack", "post", b"{}"),
-        Ok(Err(
-            "slack is not a connector this release declares".to_owned()
-        ))
-    );
-    let long = "x".repeat(calimero_app_host::MAX_CONNECTOR_NAME_BYTES + 1);
-    assert!(call.connector_call(&long, "op", b"{}").unwrap().is_err());
-    let out = call.finish(Status::Ok, Vec::new(), Usage::default());
-    assert_eq!(out.http.len(), 2, "the refused name never reached the node");
-    let x = &out.http[0];
-    assert_eq!(x.request.method, calimero_app_host::CONNECTOR_METHOD);
-    assert_eq!(x.request.url, "connector:stripe/createPaymentIntent");
-    assert_eq!(x.request.body, br#"{"amount":1}"#);
-    assert_eq!(x.response.as_ref().unwrap().status, 200);
-    assert!(out.http[1].response.is_err());
-
-    // Shares the run's request count with `wasi:http`.
-    let mut busy = core_for(&state, &inv(InvocationKind::Action))
-        .with_http(Arc::new(Echo))
-        .with_connectors(Arc::new(Connectors));
-    for _ in 0..calimero_app_host::MAX_HTTP_REQUESTS - 1 {
-        busy.http_send(&get("https://enrich.test/v1"))
-            .unwrap()
-            .unwrap();
-    }
-    assert!(busy.connector_call("stripe", "op", b"{}").unwrap().is_ok());
-    assert_eq!(
-        busy.connector_call("stripe", "op", b"{}"),
-        Ok(Err("too many requests in one run".to_owned()))
-    );
-
-    // Without a connector host every call is refused; views and `init` may not call.
-    let mut bare = core_for(&state, &inv(InvocationKind::Call));
-    assert_eq!(
-        bare.connector_call("stripe", "op", b"{}"),
-        Ok(Err(calimero_app_host::NO_CONNECTORS.to_owned()))
-    );
-    for kind in [InvocationKind::View, InvocationKind::Init] {
-        let mut run = core_for(&state, &inv(kind)).with_connectors(Arc::new(Connectors));
-        assert!(
-            run.connector_call("stripe", "op", b"{}").is_err(),
-            "{kind:?}"
-        );
-    }
 }
 
 /// An outbound host that answers after `delay`, counting what it was sent.

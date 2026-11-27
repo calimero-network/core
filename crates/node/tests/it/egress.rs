@@ -31,7 +31,6 @@ async fn approved_app() -> (Cluster, Client, SoftAuthenticator, String, String) 
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             // The fixture's `enrich` names `ECHO_KEY`.
             secrets: [(
                 "ECHO_KEY".to_owned(),

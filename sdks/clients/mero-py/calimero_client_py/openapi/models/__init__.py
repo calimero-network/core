@@ -307,6 +307,8 @@ from .file_stored import FileStored
 from .file_view import FileView
 from .follow_up_failed import FollowUpFailed
 from .follow_up_failed_error import FollowUpFailedError
+from .frontend_digests import FrontendDigests
+from .frontend_file_digest import FrontendFileDigest
 from .governance import Governance
 from .governance_app_upgrades import GovernanceAppUpgrades
 from .governance_deployers import GovernanceDeployers
@@ -1055,6 +1057,8 @@ __all__ = (
     "FileView",
     "FollowUpFailed",
     "FollowUpFailedError",
+    "FrontendDigests",
+    "FrontendFileDigest",
     "Governance",
     "GovernanceAppUpgrades",
     "GovernanceDeployers",

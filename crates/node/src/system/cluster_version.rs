@@ -252,7 +252,9 @@ pub enum Feature {
     /// `CreateRefresh`, `UseRefresh` and `CreateAccount` whose refresh record names a
     /// holder key (`RefreshRecord::holder`): an earlier release drops the field, so its
     /// replicas would hold the session unbound, with the 30-day lifetime, and take an
-    /// exchange that drops the binding where a later one refuses it.
+    /// exchange that drops the binding where a later one refuses it. Also `RefreshReused`
+    /// with `holder_proof`: an earlier release drops the proof and would revoke a bound
+    /// session for a copy of its old token that a later one refuses.
     SessionHolders,
     /// A component app's xcall carries its chain's budget (`XcallOut::budget`), and apply
     /// dead-letters one sent with none left
@@ -886,6 +888,10 @@ impl SystemCmd {
             {
                 vec![Feature::SessionHolders]
             }
+            Self::RefreshReused {
+                holder_proof: Some(_),
+                ..
+            } => vec![Feature::SessionHolders],
             Self::RedeemInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
