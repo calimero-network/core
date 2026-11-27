@@ -21,7 +21,7 @@ static EMAIL: LazyLock<Regex> =
 static CARD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9](?:[ -]?[0-9]){12,18}").unwrap());
 // An international number, or one grouped with spaces, dots, dashes or a bracketed area code.
 static PHONE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\+[0-9]{8,15}|(?:\+[0-9]{1,3}[ .-]?)?(?:\([0-9]{2,4}\)[ .-]?|[0-9]{2,4}[ .-])[0-9]{3,4}[ .-]?[0-9]{3,4}")
+    Regex::new(r"\+[0-9]{8,15}|\+[0-9]{1,3}[ .-]?[0-9]{5}[ .-]?[0-9]{5}|(?:\+[0-9]{1,3}[ .-]?)?(?:\([0-9]{2,4}\)[ .-]?|[0-9]{2,4}[ .-])[0-9]{3,4}[ .-]?[0-9]{3,4}")
         .unwrap()
 });
 
@@ -287,6 +287,26 @@ mod tests {
     }
 
     #[test]
+    fn scan_replaces_a_number_grouped_five_and_five() {
+        for number in [
+            "+91 98765 43210",
+            "+91-98765-43210",
+            "+91.98765.43210",
+            "+91.9876543210",
+            "+9198765 43210",
+            "+91 98765-43210",
+            "+1 41555 50132",
+            "+353.87123.45678",
+        ] {
+            assert_eq!(
+                scan(&format!("call {number}, today")),
+                "call [PHONE], today",
+                "{number}"
+            );
+        }
+    }
+
+    #[test]
     fn scan_leaves_other_text_and_digits_alone() {
         for text in [
             "nothing here, order 12345",
@@ -294,6 +314,13 @@ mod tests {
             "a@b.c",
             "x@y.z.w",
             "12 345",
+            "order 9876543210",
+            "order 98765-43210",
+            "zips 94107 94110",
+            "zips 94107, 94110, 94114",
+            "paid 12500.00 of 98765.43",
+            "up +25000 43210 units",
+            "+91 98765 4321",
             "",
         ] {
             assert_eq!(scan(text), text);
