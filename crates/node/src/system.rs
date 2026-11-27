@@ -5778,6 +5778,73 @@ impl SystemCmd {
             Self::FinishRecovery { .. } => Area::Recovery,
         }
     }
+
+    /// The shard a command's state belongs to ([`shard::Scope`]) — the first,
+    /// behaviour-preserving half of tenant routing. A command that names an
+    /// organization routes to that org's shard; one that names an app routes to
+    /// the app's org (resolved from root state at propose). `CreateOrg` and
+    /// `DeleteOrg` are root lifecycle operations — root owns the tenant-group
+    /// registry. Everything else — the fleet, the package registry, cluster
+    /// governance, account identity and recovery, and the session/invite
+    /// commands that still need their org field (the session-sharding slice adds
+    /// it) — stays on root. Nothing moves until the gate turns on and tenant
+    /// groups exist (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn scope(&self) -> shard::Scope {
+        use shard::Scope;
+        match self {
+            // Org structure, teams, invites, org-scoped governance and recovery.
+            Self::RenameOrg { org, .. }
+            | Self::SetOrgMetadata { org, .. }
+            | Self::SetMemberMetadata { org, .. }
+            | Self::SetOrgRole { org, .. }
+            | Self::RemoveOrgMember { org, .. }
+            | Self::CreateTeam { org, .. }
+            | Self::SetTeamMember { org, .. }
+            | Self::SetTeamMembers { org, .. }
+            | Self::UpdateTeam { org, .. }
+            | Self::DeleteTeam { org, .. }
+            | Self::SetCapabilities { org, .. }
+            | Self::SetAllApps { org, .. }
+            | Self::SetDefaultCapabilities { org, .. }
+            | Self::RemoveTeamMember { org, .. }
+            | Self::RemoveTeamMembers { org, .. }
+            | Self::RevokeInvite { org, .. }
+            | Self::SetOrgSettings { org, .. }
+            | Self::ScopeApps { org, .. }
+            | Self::SetEgress { org, .. }
+            | Self::StartUpgradeRun { org, .. }
+            | Self::FinishUpgradeRun { org, .. }
+            | Self::SetUpgradePolicy { org, .. }
+            | Self::SetRecoveryKey { org, .. }
+            | Self::StartRecovery { org, .. }
+            | Self::CancelRecovery { org, .. }
+            | Self::FinishRecovery { org, .. } => Scope::Org(org.clone()),
+            // A new app carries its org directly.
+            Self::CreateApp { app, .. } => Scope::Org(app.org.clone()),
+            // Commands on an existing app → the app's owning org (resolved from
+            // the root directory at propose).
+            Self::UpgradeApp { app_id, .. }
+            | Self::ApproveUpgrade { app_id, .. }
+            | Self::UndoUpgrade { app_id, .. }
+            | Self::TransferApp { app_id, .. }
+            | Self::MoveApp { app_id, .. }
+            | Self::DeleteApp { app_id, .. }
+            | Self::SetReplicas { app_id, .. }
+            | Self::RestoreApp { app_id, .. }
+            | Self::FinishRestore { app_id, .. }
+            | Self::SetAccess { app_id, .. }
+            | Self::LinkApp { app_id, .. }
+            | Self::SetAppMetadata { app_id, .. }
+            | Self::UpgradeFailed { app_id, .. }
+            | Self::RevokeAppInvite { app_id, .. }
+            | Self::RevokePublicLink { app_id, .. }
+            | Self::ChargeFileBytes { app_id, .. } => Scope::OfApp(app_id.clone()),
+            // Fleet, packages, compute queue, cluster governance, sign-up,
+            // account identity + recovery, and the session/invite commands whose
+            // org field is added by a later slice: all root for now.
+            _ => Scope::Cluster,
+        }
+    }
 }
 
 /// What a person consents to when creating an API key: every field of the

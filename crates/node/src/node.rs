@@ -1539,18 +1539,24 @@ impl Node {
     /// what every node supports).
     pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
+        // The shard this command's state belongs to. The gate is off and no
+        // tenant groups exist yet, so every command resolves to the root group:
+        // this wires the routing layer onto the write path without changing
+        // behaviour. A later slice turns the gate on and gives the resolver the
+        // root directory to look up an app's or account's org.
+        let shard = {
+            use crate::system::shard;
+            shard::shard_for(false, shard::tenant_of(&cmd.scope(), |_| None))
+        };
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
         // count of tries, which a leaderless group used up in about 7.5 s
         // (`a_system_write_waits_for_a_leader_until_its_deadline`).
         let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
         for attempt in 0_u32.. {
-            let Ok(written) = tokio::time::timeout_at(
-                deadline,
-                self.system_shard(&crate::system::shard::ShardId::Root)
-                    .write(bytes.clone()),
-            )
-            .await
+            let Ok(written) =
+                tokio::time::timeout_at(deadline, self.system_shard(&shard).write(bytes.clone()))
+                    .await
             else {
                 return Err(self.system_stalled());
             };

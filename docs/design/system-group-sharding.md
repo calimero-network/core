@@ -277,7 +277,7 @@ and the global identity/directory indexes every shard must look up — is root.*
 | Org structure | `orgs` (members, teams), `invites` | **tenant** |
 | Apps | `apps`, `app_invites`, `delegations`, `app_file_bytes`, `deployments`, `deployment_secrets` | **tenant** |
 | Session family | `refresh`, `revoked_sessions`, `revoked_at`, `rotated_refresh`, `api_keys` | **tenant, by org context** (see below) |
-| Byte charges | `payer_file_bytes` | **split**: an org payer → tenant, an account payer → root |
+| Byte charges | `payer_file_bytes` (keyed by org = `usage::payer`) | **tenant** |
 
 ### The crux: identity is root, sessions are tenant
 
@@ -314,16 +314,21 @@ span two orgs without re-minting; account-level actions fall back to root.
 - **`used_proofs` stays root** so a proof cannot be replayed on a second shard;
   a tenant decision's proof check is a root read at propose.
 
-### Open questions this raises (for review before S2 code)
+### Decisions (resolved)
 
-- **Session org-scoping.** Pinning a session to one org at mint changes the
-  sign-in API's contract (a token names its org). Account-level sessions on root
-  reintroduce some write load there — quantify what fraction stays root.
-- **`activity`, `account_recoveries`, `backup_keys`** follow the account to root
-  here; if an org wants its own activity/recovery isolation they move to tenant,
-  at the cost of another cross-shard read on the recovery path.
-- **`payer_file_bytes` split** needs a key discriminator (org vs account payer)
-  the current flat `String` key does not carry.
+- **Session org-scoping — yes.** A session is minted bound to the org it acts in
+  and shards to that org's tenant group; account-level and cross-org operations
+  fall back to root. The sign-in API's contract gains the org a token names, and
+  a principal acting in several orgs holds a session per org. This is what moves
+  the hot write load off root.
+- **`activity`, `account_recoveries`, `backup_keys` — root.** They follow the
+  cluster-wide account identity, so the recovery and activity paths stay
+  single-shard (no extra cross-shard read).
+- **`payer_file_bytes` — tenant, no discriminator.** The payer is the
+  organization (`usage::payer(app)` = `app.org`): the map is a per-org rollup of
+  file bytes, so it is tenant-owned keyed by org. Charging it reads the cluster
+  `quotas` and the operator's `org_quotas` from root at propose (the `CreateApp`
+  pattern).
 
 ## Implementation plan (S2–S8)
 
