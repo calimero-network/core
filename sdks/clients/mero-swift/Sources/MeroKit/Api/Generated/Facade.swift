@@ -2434,6 +2434,19 @@ extension CalimeroClient {
             }
         }
 
+        /// A release's frontend files: `GET /packages/{package}/{version}/frontend` (`package_frontend`).
+        ///
+        /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+        ///
+        /// **Who:** anyone.
+        @discardableResult
+        public func frontend(package: Swift.String, version: Swift.String) async throws -> Components.Schemas.FrontendDigests {
+            let input = Operations.PackageFrontend.Input(path: .init(package: package, version: version))
+            return try await client.perform { api in
+                try await api.packageFrontend(input).ok.body.json
+            }
+        }
+
         /// One package: `GET /packages/{package}` (`package_get`).
         ///
         /// The versions the caller may see; `404` when none.

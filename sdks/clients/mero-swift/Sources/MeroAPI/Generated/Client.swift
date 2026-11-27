@@ -13452,6 +13452,73 @@ public struct Client: APIProtocol {
             }
         )
     }
+    /// A release's frontend files
+    ///
+    /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+    ///
+    /// **Who:** anyone.
+    ///
+    /// - Remark: HTTP `GET /packages/{package}/{version}/frontend`.
+    /// - Remark: Generated from `#/paths//packages/{package}/{version}/frontend/get(package_frontend)`.
+    public func packageFrontend(_ input: Operations.PackageFrontend.Input) async throws -> Operations.PackageFrontend.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.PackageFrontend.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/packages/{}/{}/frontend",
+                    parameters: [
+                        input.path.package,
+                        input.path.version
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.PackageFrontend.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.FrontendDigests.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
     /// A release's pipelines
     ///
     /// The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the `modules` they pin and the canonical `pipeline`. `404` for a release the caller may not see.
