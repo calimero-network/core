@@ -3385,6 +3385,115 @@ async fn oversized_args_are_refused_before_running() {
     );
 }
 
+/// A view's args over 512 KiB are refused `413 ARGS_TOO_LARGE` before anything
+/// runs, as a call's are: by `/views` (strong and stale), by
+/// `/intents` and `/methods/{method}` naming a view, and by `Node::view` itself
+/// (the path forwarded views and synchronous xcall views take). No node counts a
+/// view run for any of them; a view within the limit still runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_view_args_are_refused_before_running() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let big = json!({ "name": "x".repeat(calimero_node::node::MAX_ARGS_BYTES) });
+    let refused = |e: calimero_client::Error| {
+        assert_eq!(e.code(), Some("ARGS_TOO_LARGE"), "{e}");
+    };
+    for consistency in [
+        ViewsRequestConsistency::Strong,
+        ViewsRequestConsistency::Stale,
+    ] {
+        refused(
+            alice
+                .apps()
+                .view(&app, "linked", Some(big.clone()), Some(consistency), None)
+                .await
+                .unwrap_err(),
+        );
+    }
+    refused(
+        alice
+            .apps()
+            .call(&app, "linked", Some(big.clone()), None, None)
+            .await
+            .unwrap_err(),
+    );
+    refused(
+        alice
+            .apps()
+            .method(&app, "linked", typed(json!({ "args": big })), None)
+            .await
+            .unwrap_err(),
+    );
+    for r in c.nodes.iter().flatten() {
+        let e = r
+            .node
+            .view(&calimero_node::node::ViewRequest {
+                app_id: app.clone(),
+                method: "linked".to_owned(),
+                args: big.clone(),
+                caller: calimero_node::types::Caller::Account {
+                    account: alice_id.clone(),
+                },
+                strong: true,
+                min_index: 0,
+                via: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!((e.status, e.code.as_str()), (413, "ARGS_TOO_LARGE"));
+    }
+    // Within the limit, the same view runs.
+    let ok = alice
+        .apps()
+        .view(&app, "linked", Some(json!({ "name": "x" })), None, None)
+        .await
+        .unwrap();
+    assert_eq!(ok.result, Value::Null);
+
+    // One view ran in all: the one within the limit.
+    let http = reqwest::Client::new();
+    let mut views = 0.0;
+    for r in c.nodes.iter().flatten() {
+        let text = http
+            .get(format!("http://{}/metrics", r.metrics_addr.unwrap()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        views += text
+            .lines()
+            .filter(|l| {
+                l.starts_with("calimero_app_calls_total{")
+                    && l.contains(&format!("app=\"{app}\""))
+                    && l.contains("kind=\"view\"")
+            })
+            .map(|l| l.rsplit(' ').next().unwrap().parse::<f64>().unwrap())
+            .sum::<f64>();
+    }
+    assert_eq!(views, 1.0, "views ran with args over the limit");
+}
+
 /// Args within the limit whose writes push the entry over 1 MiB: the call is
 /// logged as `Trap(HostDenied)` "entry too large", and the log moves on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -5912,51 +6021,6 @@ fn mpk_bound(
     secrets: Option<std::collections::BTreeMap<String, calimero_bundle::BundleSecret>>,
     uses: Value,
 ) -> Vec<u8> {
-    mpk_extended(
-        package,
-        version,
-        wasm,
-        key,
-        outbound,
-        secrets,
-        uses,
-        Value::Null,
-    )
-}
-
-/// [`mpk_declaring`], with `extra`'s keys (e.g. `connectors`) set in the signed manifest.
-pub(crate) fn mpk_declaring_with(
-    package: &str,
-    version: &str,
-    wasm: &[u8],
-    key: &ed25519_dalek::SigningKey,
-    outbound: &[&str],
-    extra: Value,
-) -> Vec<u8> {
-    mpk_extended(
-        package,
-        version,
-        wasm,
-        key,
-        outbound,
-        None,
-        Value::Null,
-        extra,
-    )
-}
-
-/// [`mpk_bound`], with `extra`'s keys set in the signed manifest.
-#[allow(clippy::too_many_arguments)]
-fn mpk_extended(
-    package: &str,
-    version: &str,
-    wasm: &[u8],
-    key: &ed25519_dalek::SigningKey,
-    outbound: &[&str],
-    secrets: Option<std::collections::BTreeMap<String, calimero_bundle::BundleSecret>>,
-    uses: Value,
-    extra: Value,
-) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
@@ -5989,14 +6053,8 @@ fn mpk_extended(
         services: None,
         pipelines: Vec::new(),
         signature: None,
-        connectors: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
-    if let Value::Object(extra) = extra {
-        for (k, v) in extra {
-            manifest[k] = v;
-        }
-    }
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
         Vec::new(),
@@ -6058,7 +6116,6 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6216,7 +6273,6 @@ async fn a_release_gets_only_the_credentials_it_binds_attached_by_the_node() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6364,7 +6420,6 @@ async fn an_instances_owner_reads_its_outbound_requests_without_values() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6643,7 +6698,6 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -6950,7 +7004,6 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: std::collections::BTreeMap::new(),
         }),
         ..calimero_outbound::OutboundSettings::default()
@@ -7153,7 +7206,6 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -7385,7 +7437,6 @@ async fn an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared(
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
             turnstile: false,
-            connectors: false,
             secrets: std::collections::BTreeMap::new(),
         }),
         ..calimero_outbound::OutboundSettings::default()
@@ -8636,7 +8687,6 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
         hosts: vec![HOST.to_owned()],
         testing: Some(calimero_outbound::OutboundTestSettings {
             turnstile: true,
-            connectors: false,
             secrets: [(
                 "TURNSTILE_SECRET".to_owned(),
                 calimero_outbound::TestSecretSettings {

@@ -3720,6 +3720,21 @@ impl Packages<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// A release's frontend files.
+    ///
+    /// `GET /packages/{package}/{version}/frontend` (`package_frontend`). Who: anyone.
+    pub async fn frontend(self, package: &str, version: &str) -> Result<FrontendDigests> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "packages/{}/{}/frontend",
+                route::segment(package),
+                route::segment(version)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// One package.
     ///
     /// `GET /packages/{package}` (`package_get`). Who: signed in (a session or an API key).

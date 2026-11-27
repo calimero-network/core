@@ -124,7 +124,10 @@ impl Node {
             &self.config.cluster,
             self.config.node_id,
         ));
-        let quote = self.quoter.quote(report).await?;
+        let quote = self
+            .quoter
+            .quote_in(crate::attest::Lane::Peer, report)
+            .await?;
         let doc = crate::attest::AttestationDoc {
             quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
             transport_key: hex::encode(self.transport.public_key()),

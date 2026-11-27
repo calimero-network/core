@@ -275,6 +275,30 @@ uses `localhost`.
   collateral; both are signed, so the mirror is trusted with nothing) added to
   `connect-src`.
 
+`GET /packages/{package}/{version}/frontend` (anyone, over the sealed channel
+like every route) answers the release's entry and every file with its SHA-256
+and size, by the path it is served at. The node computed them from the files it
+verified against the publisher's signature. A client that attested the node
+checks the page it was served against this list, so whoever terminates TLS or
+holds a certificate for the origin cannot swap the page unseen: mero-tee's
+frontend verifier extension does this in the browser ([Levels of frontend
+trust](#levels-of-frontend-trust)).
+
+### Levels of frontend trust
+
+A page decrypts and shows what the signed-in person reads, and checks the
+node's attestation in its own JavaScript, so the person trusts whoever served
+it:
+
+| Level | Where the page comes from | Who could serve another page | For |
+| --- | --- | --- | --- |
+| Debug | A static host (Vercel) or any branch build | That host, whoever can push to the branch or its dependencies, anyone with a certificate for its name | Demos and debugging, never data that matters |
+| Production | The node (`--apps-domain`), from the release's signed `.mpk`; TLS ends in the TD on Calimero Cloud | Whoever can get a WebPKI certificate for the name (the operator, through its DNS zone) | Every customer-facing app |
+| Full | Production, with the frontend verifier extension checking every file against this attested node's list | Nobody without the attested node's key or the publisher's | People who must not have to trust TLS, DNS or the operator |
+
+The extension blocks a changed file before the page runs it in Firefox, and
+detects it after loading in Chrome, whose extensions cannot read a response.
+
 A session signed in on a frontend is bound to its package; what it may call,
 and how it asks for the rest, is in [Sessions & authority](/protocol/sessions-and-authority/).
 

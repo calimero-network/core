@@ -2816,6 +2816,29 @@ pub struct SignUpInviteMade {
     pub extra: Map<String, Value>,
 }
 
+/// `GET /packages/{package}/{version}/frontend`: the release's frontend entry and every file, by path relative to the frontend root, with its SHA-256 (lowercase hex) and size in bytes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrontendDigests {
+    pub package: String,
+    pub version: String,
+    pub entry: String,
+    pub files: Vec<FrontendFileDigest>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One frontend file: its path relative to the frontend root (served at `/{version}/{path}`), its SHA-256 (lowercase hex) and its size in bytes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrontendFileDigest {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// `GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in uses to pick the person's passkey for it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SignUpPublic {

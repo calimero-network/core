@@ -109,7 +109,12 @@ frame like any other response.
   A call's answer carries the events its caller is in the audience of, under
   the same rule.
 - A node serves at most 4096 event and presence streams at once
-  (`MAX_EVENT_STREAMS`); past that it answers `429 RATE_LIMITED`.
+  (`MAX_EVENT_STREAMS`), at most 64 of them for one account, through its
+  sessions and API keys together (`MAX_EVENT_STREAMS_PER_ACCOUNT`), and at most
+  1024 for one app (`MAX_EVENT_STREAMS_PER_APP`), so one account or app cannot
+  take a node's streams from everyone else. A caller without an account (an app
+  anyone reaches) counts toward its app's and the node's limits only. Past any
+  of them the node answers `429 RATE_LIMITED`, the message naming which.
 - Events are not the place for secrets: they are returned in call answers and
   stored in the ring.
 

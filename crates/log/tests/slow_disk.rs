@@ -166,6 +166,7 @@ async fn a_slow_disk_under_one_group_does_not_stall_the_others() {
         election_min_ms: 300,
         election_max_ms: 600,
         snapshot_every: 1000,
+        snapshot_scale_bytes: None,
     };
     let mut dirs = Vec::new();
     let mut slow = Groups::new();

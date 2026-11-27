@@ -1325,7 +1325,7 @@ extension CalimeroClient {
 
         /// Refresh a session: `POST /auth/refresh` (`refresh`).
         ///
-        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+        /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
         ///
         /// **Who:** anyone.
         @discardableResult
@@ -2431,6 +2431,19 @@ extension CalimeroClient {
             let input = Operations.PackageCapabilities.Input(path: .init(package: package, version: version), query: .init(service: service))
             return try await client.perform { api in
                 try await api.packageCapabilities(input).ok.body.json
+            }
+        }
+
+        /// A release's frontend files: `GET /packages/{package}/{version}/frontend` (`package_frontend`).
+        ///
+        /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+        ///
+        /// **Who:** anyone.
+        @discardableResult
+        public func frontend(package: Swift.String, version: Swift.String) async throws -> Components.Schemas.FrontendDigests {
+            let input = Operations.PackageFrontend.Input(path: .init(package: package, version: version))
+            return try await client.perform { api in
+                try await api.packageFrontend(input).ok.body.json
             }
         }
 

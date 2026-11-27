@@ -222,6 +222,7 @@ from .openapi.api.packages import origins_add as _origins_add
 from .openapi.api.packages import origins_list as _origins_list
 from .openapi.api.packages import origins_remove as _origins_remove
 from .openapi.api.packages import package_capabilities as _package_capabilities
+from .openapi.api.packages import package_frontend as _package_frontend
 from .openapi.api.packages import package_get as _package_get
 from .openapi.api.packages import package_install as _package_install
 from .openapi.api.packages import package_list as _package_list
@@ -2899,7 +2900,7 @@ class Auth(Group):
     def refresh(self, *, refresh_token, holder_proof=UNSET):
         """Refresh a session (`POST /auth/refresh`, `refresh`).
 
-        A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\\0" ‖ at ‖ "\\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
+        A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\\0" ‖ at ‖ "\\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
 
         **Who:** anyone.
 
@@ -5905,6 +5906,12 @@ _PACKAGE_CAPABILITIES = Operation(
     body="none",
     answer="json",
 )
+_PACKAGE_FRONTEND = Operation(
+    _package_frontend,
+    "package_frontend",
+    body="none",
+    answer="json",
+)
 _PACKAGE_GET = Operation(
     _package_get,
     "package_get",
@@ -6003,6 +6010,29 @@ class Packages(Group):
                 version,
             ),
             {"service": service},
+            None,
+        )
+
+    def frontend(self, *, package, version):
+        """A release's frontend files (`GET /packages/{package}/{version}/frontend`, `package_frontend`).
+
+        Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+
+        **Who:** anyone.
+
+        Args:
+            package: path
+            version: path
+
+        Returns: FrontendDigests
+        """
+        return self._run(
+            _PACKAGE_FRONTEND,
+            (
+                package,
+                version,
+            ),
+            {},
             None,
         )
 

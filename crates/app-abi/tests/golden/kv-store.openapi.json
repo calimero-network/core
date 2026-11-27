@@ -2608,6 +2608,6 @@
   "x-calimero": {
     "abiVersion": 1,
     "stateVersion": 1,
-    "world": "calimero:app@0.5.8"
+    "world": "calimero:app@0.5.7"
   }
 }
