@@ -9518,6 +9518,23 @@ fn an_empty_floor_is_judged_by_the_release_alone() {
     assert_eq!(m.state.apps["kv"].lineage.as_ref().unwrap().floor, "1.2.0");
 }
 
+/// A floor is only ever set to a version that parses.
+#[test]
+fn a_floor_is_never_set_unparseable() {
+    let mut lineage = crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        floor: "1.1.0".into(),
+    };
+    lineage.raise_floor("nightly");
+    assert_eq!(lineage.floor, "1.1.0");
+    lineage.floor = "garbage".into();
+    lineage.raise_floor("nightly");
+    assert_eq!(lineage.floor, "garbage", "nothing better to set");
+    lineage.raise_floor("1.2.0");
+    assert_eq!(lineage.floor, "1.2.0");
+}
+
 /// A pinned instance of a release with only a compute component moves forward as any other.
 #[test]
 fn a_compute_only_pinned_instance_moves_forward() {
