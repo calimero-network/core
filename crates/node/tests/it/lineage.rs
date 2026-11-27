@@ -315,7 +315,7 @@ async fn an_upgrade_judged_on_a_bundle_the_group_left_is_refused() {
         .call(&CallRequest::host(
             app.clone(),
             "__upgrade",
-            json!({ "bundle": judged, "from": judged }),
+            json!({ "bundle": judged, "from": { "bundle": judged, "computeBundle": null } }),
             Caller::System,
         ))
         .await
@@ -452,7 +452,7 @@ async fn a_half_finished_upgrade_is_repaired_by_upgrading_to_what_the_group_runs
         .call(&CallRequest::host(
             app.clone(),
             "__upgrade",
-            json!({ "bundle": ahead, "from": recorded }),
+            json!({ "bundle": ahead, "from": { "bundle": recorded, "computeBundle": null } }),
             Caller::System,
         ))
         .await
