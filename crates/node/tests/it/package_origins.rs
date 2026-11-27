@@ -119,7 +119,20 @@ pub(crate) fn status(e: &calimero_client::Error) -> u16 {
 }
 
 /// Whether the node lets a browser page on `origin` call it (a CORS preflight).
-pub(crate) async fn cors_allows(url: &str, origin: &str) -> bool {
+/// Waits until `url`'s node answers `origin`'s CORS preflight as `allowed`: the node reads its
+/// own applied state, which may lag the write that changed it.
+pub(crate) async fn assert_cors(url: &str, origin: &str, allowed: bool) {
+    harness::poll::eventually(harness::poll::EVENTUALLY, "the CORS answer", || async {
+        if cors_allows(url, origin).await == allowed {
+            Ok(())
+        } else {
+            Err(!allowed)
+        }
+    })
+    .await;
+}
+
+async fn cors_allows(url: &str, origin: &str) -> bool {
     let r = reqwest::Client::new()
         .request(reqwest::Method::OPTIONS, format!("{url}auth/me"))
         .header("origin", origin)
@@ -184,7 +197,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap_err();
     assert_eq!(status(&e), 400, "an unregistered origin: {e}");
-    assert!(!cors_allows(&c.urls[0], SITE).await);
+    assert_cors(&c.urls[0], SITE, false).await;
     // The cluster's own origin, and a node's, begin as before, under the
     // cluster's rp-id.
     for origin in [
@@ -318,10 +331,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_TAKEN"), "{e}");
-    assert!(
-        cors_allows(&c.urls[2], SITE).await,
-        "the site may call every node"
-    );
+    assert_cors(&c.urls[2], SITE, true).await;
 
     // Carol signs up on the site: a passkey for its rp-id, and a session
     // bound to NOTES that names the site.
@@ -459,7 +469,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_NOT_REGISTERED"), "{e}");
-    assert!(!cors_allows(&c.urls[0], SITE).await);
+    assert_cors(&c.urls[0], SITE, false).await;
     assert!(alice
         .packages()
         .origins_list(NOTES)
@@ -704,10 +714,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         .await
         .expect("the site's well-known file");
     assert_eq!(known["package"], NOTES, "{known}");
-    assert!(
-        cors_allows(&c.urls[2], &origin).await,
-        "every node admits it"
-    );
+    assert_cors(&c.urls[2], &origin, true).await;
 
     // The operator sees it, by the package's label, never its name.
     let ops = c.client(1);
@@ -778,7 +785,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     assert_ne!(get("/").await.unwrap().status(), 302);
     let e = carol.auth().me().await.unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
-    assert!(!cors_allows(&c.urls[0], &origin).await);
+    assert_cors(&c.urls[0], &origin, false).await;
     assert!(ops.ops().served().await.map(wire).unwrap()["origins"]
         .as_array()
         .unwrap()

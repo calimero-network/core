@@ -16,7 +16,7 @@ use serde_json::json;
 
 use crate::cluster::publisher_binding;
 use crate::harness;
-use crate::package_origins::{cors_allows, into_catalog, release, status};
+use crate::package_origins::{assert_cors, into_catalog, release, status};
 
 use harness::{signed_up, typed, wire, Cluster};
 
@@ -127,7 +127,7 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         Some("ORIGIN_TAKEN"),
         "one instance holds a site: {e}"
     );
-    assert!(cors_allows(&c.urls[2], SITE).await);
+    assert_cors(&c.urls[2], SITE, true).await;
 
     // Carol signs up on the site: a passkey for its rp-id, a new account, a
     // session bound to the store's package and naming the site.
@@ -360,7 +360,7 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
         .await
         .unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
-    assert!(!cors_allows(&c.urls[0], SITE).await);
+    assert_cors(&c.urls[0], SITE, false).await;
 
     // Registered again, the site does not bring her session back: it was
     // opened under the registration that was removed.
