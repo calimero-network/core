@@ -173,6 +173,7 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
         strong: false,
         min_index: 0,
         via: None,
+        action: None,
     })
     .unwrap();
     let call = json!({

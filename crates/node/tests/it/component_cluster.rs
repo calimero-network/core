@@ -3456,6 +3456,7 @@ async fn oversized_view_args_are_refused_before_running() {
                 strong: true,
                 min_index: 0,
                 via: None,
+                action: None,
             })
             .await
             .unwrap_err();
@@ -6098,7 +6099,7 @@ pub(crate) async fn eventually(
 }
 
 /// An action runs on the app's leader outside the log, reads
-/// through a view, calls out over `wasi:http` only to a prefix the signed manifest
+/// through its app's `allow(action)` view, calls out over `wasi:http` only to a prefix the signed manifest
 /// declares and the owner approved (with a secret its manifest binds to a header, which
 /// the node attaches and redacts), and
 /// writes through a keyed call to an `allow(action)` method no client can call. One that
@@ -6237,6 +6238,64 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+
+    // No client reads the `allow(action)` view `enrich` read, not even by naming an action
+    // in the body of `/views` or `/intents`.
+    let forbidden = |r: Result<Value, calimero_client::Error>| match r {
+        Err(calimero_client::Error::Api { code, details, .. })
+            if code == "APP_ERROR" && details["code"] == "Forbidden" => {}
+        other => panic!("not refused as Forbidden: {other:?}"),
+    };
+    forbidden(
+        alice
+            .apps()
+            .view(
+                &app,
+                "enrichSource",
+                Some(json!({ "key": "acme" })),
+                None,
+                None,
+            )
+            .await
+            .map(wire),
+    );
+    for route in ["views", "intents"] {
+        let body = json!({ "method": "enrichSource", "args": { "key": "acme" }, "action": id });
+        forbidden(
+            alice
+                .transport()
+                .json(Request::new(Method::POST, format!("apps/{app}/{route}")).json(body))
+                .await,
+        );
+    }
+
+    // Another app's action does not read it either: `allow(action)` admits only the app's own.
+    let other = alice
+        .apps()
+        .create(typed(json!({ "name": "kv-other", "package": PACKAGE })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .apps()
+        .call(
+            &other,
+            "enrichFrom",
+            Some(json!({ "app": app, "key": "acme" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let failures = eventually(&alice, &other, "actionFailures", json!({}), |f| {
+        f["enrichFrom"].is_string()
+    })
+    .await;
+    let failure = failures["enrichFrom"].as_str().unwrap();
+    assert!(failure.contains("Forbidden"), "{failure}");
 
     // An app error fails an action at once, without a retry.
     let _r = alice

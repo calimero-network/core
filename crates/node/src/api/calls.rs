@@ -135,6 +135,7 @@ async fn component_intents(
                 strong: true,
                 min_index: 0,
                 via: None,
+                action: None,
             })
             .await?;
         return Ok(component_answer(
@@ -278,6 +279,7 @@ async fn views(
             strong: body.consistency.as_deref() != Some("stale"),
             min_index: body.min_index,
             via: None,
+            action: None,
         })
         .await?;
     Ok(
@@ -566,6 +568,7 @@ async fn app_run(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     if answer.result.is_null() {
@@ -592,6 +595,7 @@ async fn app_run_logs(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     if answer.result.is_null() {
@@ -639,6 +643,7 @@ async fn app_runs(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     Ok(Json(answer.result))

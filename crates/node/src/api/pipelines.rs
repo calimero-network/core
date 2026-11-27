@@ -623,6 +623,7 @@ pub(super) async fn retry(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     let original = answer.result;
@@ -687,6 +688,7 @@ pub(super) async fn get(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     match answer.result {
@@ -728,6 +730,7 @@ pub(super) async fn list(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     Ok(Json(answer.result))
