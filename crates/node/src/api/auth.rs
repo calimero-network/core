@@ -14,7 +14,7 @@ const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
 const KEY_PLACEHOLDER: &str = "key:$key";
 /// The longest account name a sign-up takes, in characters: a sign-up's
 /// ceremony holds it until its challenge expires, so it is bounded before
-/// anything is held ([`account_name_fits`]).
+/// anything is held (`account_name_fits`).
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 64;
 /// The largest request body a passkey ceremony's route (`/auth/passkey/*`)
 /// takes: a name, an origin, an invite and a registration or assertion fit in
