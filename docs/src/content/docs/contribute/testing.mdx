@@ -705,7 +705,9 @@ workspace). The queue's diff is the entry against its base, so two changes that
 break each other within that graph still fail there. The push to master runs every
 test the filter left out, so a test the filter missed fails there. In `.config/nextest.toml`, the
 guest builder's tests and the SDK's compile-fail cases have a high `priority`, so
-they start first rather than leave one shard running minutes after the others. (sccache on the Actions cache was tried and dropped: with this many
+they start first rather than leave one shard running minutes after the others, and
+they run alone: a build saturates the cores for minutes, and the cluster tests beside
+it ran past the 30 s kill. (sccache on the Actions cache was tried and dropped: with this many
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace

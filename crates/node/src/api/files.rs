@@ -5,6 +5,7 @@
     reason = "the handlers moved here from `api.rs` read its items"
 )]
 use super::*;
+use crate::system::cluster_version::Feature::MeteredBlobs;
 
 fn blob_json(id: &[u8; 32], size: u64) -> BlobView {
     BlobView {
@@ -121,14 +122,21 @@ async fn blob_upload(
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
     }
+    let size = body.len() as u64;
     if app.executor == crate::types::Executor::Component {
-        refuse_full_app(&node, &app).await?;
+        refuse_full_app(&node, &app, size).await?;
     }
     // A component records the upload's content type.
     let mime = blob_mime(&headers)?;
     // The bytes of a sealed file would claim its id.
     refuse_sealed_file(&node, &app, &sha256(&body)).await?;
-    let size = body.len() as u64;
+    // Charged to the app's payer before any byte is stored, once every node keeps the charge
+    // with the blob's record; below that version an upload is not charged.
+    let metered = node.require_features(&[MeteredBlobs]).await.is_ok();
+    if metered {
+        node.count_file_bytes(&app_id, i64::try_from(size).unwrap_or(i64::MAX))
+            .await?;
+    }
     let pin = node
         .pin_on_leader(&app, vec![hex::encode(sha256(&body))])
         .await?;
@@ -141,7 +149,7 @@ async fn blob_upload(
                 ..CallRequest::host(
                     app_id.clone(),
                     "__blob",
-                    json!({ "id": id, "size": size, "mime": mime }),
+                    json!({ "id": id, "size": size, "mime": mime, "metered": metered }),
                     p.caller,
                 )
             })
@@ -150,6 +158,14 @@ async fn blob_upload(
     }
     .await;
     node.unpin_on_leader(pin).await;
+    // The record keeps the charge only when it took it: a refused upload, or bytes the app
+    // already held charged, give it back.
+    let kept = stored
+        .as_ref()
+        .is_ok_and(|(_, a)| a.result["metered"] == json!(true));
+    if metered && !kept {
+        node.refund_files(&app_id, size).await;
+    }
     let (id, a) = stored?;
     let raw = parse_blob_id(&id)?;
     Ok(Json(BlobStored {
@@ -158,14 +174,28 @@ async fn blob_upload(
     }))
 }
 
-/// A component holds a bounded number of blobs and files (`MAX_COMPONENT_BLOBS`).
-async fn refuse_full_app(node: &Node, app: &crate::types::AppRecord) -> Result<(), ApiError> {
+/// A component holds a bounded number of blobs and files (`MAX_COMPONENT_BLOBS`), and plain
+/// blobs of at most `MAX_APP_BLOB_BYTES` in all, `size` more included.
+async fn refuse_full_app(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    size: u64,
+) -> Result<(), ApiError> {
+    use crate::component::blobs::{MAX_APP_BLOB_BYTES, MAX_COMPONENT_BLOBS};
     let stats = node.storage_stats(app).await?;
-    if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
+    if stats.blobs.len() + stats.files.len() >= MAX_COMPONENT_BLOBS {
         return Err(ApiError::new(
             429,
             "QUOTA_EXCEEDED",
             "the app holds as many blobs as it may",
+        ));
+    }
+    let held: u64 = stats.blobs.iter().map(|(_, size)| size).sum();
+    if held.saturating_add(size) > MAX_APP_BLOB_BYTES {
+        return Err(ApiError::new(
+            429,
+            "QUOTA_EXCEEDED",
+            "the app holds as many blob bytes as it may",
         ));
     }
     Ok(())
@@ -349,7 +379,7 @@ async fn files_upload(
     body: axum::body::Bytes,
 ) -> ApiResult<Json<FileStored>> {
     let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
-    refuse_full_app(&node, &app).await?;
+    refuse_full_app(&node, &app, 0).await?;
     let up = node.upload_file(&app, body, &account).await?;
     Ok(Json(uploaded_json(&up)?))
 }
@@ -396,7 +426,7 @@ async fn upload_begin(
     Json(body): Json<BeginUpload>,
 ) -> ApiResult {
     let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
-    refuse_full_app(&node, &app).await?;
+    refuse_full_app(&node, &app, 0).await?;
     let op = crate::node::UploadOp::Begin { size: body.size };
     Ok(Json(node.upload_op(&app, &account, op).await?))
 }
