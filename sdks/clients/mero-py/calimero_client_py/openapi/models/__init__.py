@@ -586,6 +586,7 @@ from .recovery_set_response_200 import RecoverySetResponse200
 from .recovery_start_body import RecoveryStartBody
 from .recovery_started import RecoveryStarted
 from .refresh_body import RefreshBody
+from .refresh_body_holder_proof import RefreshBodyHolderProof
 from .register_begin_body import RegisterBeginBody
 from .register_finish_body import RegisterFinishBody
 from .registration import Registration
@@ -1313,6 +1314,7 @@ __all__ = (
     "RecoveryStartBody",
     "RecoveryStarted",
     "RefreshBody",
+    "RefreshBodyHolderProof",
     "RegisterBeginBody",
     "RegisterFinishBody",
     "Registration",

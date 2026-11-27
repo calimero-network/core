@@ -179,6 +179,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
             carol_pk.create(&begin["options"]),
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -192,7 +193,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     ] {
         let begin = carol
             .auth()
-            .login_begin(Some(&origin))
+            .login_begin(Some(&origin), None)
             .await
             .map(wire)
             .unwrap();
@@ -326,7 +327,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     // bound to NOTES that names the site.
     let begin = carol
         .auth()
-        .login_begin(Some(SITE))
+        .login_begin(Some(SITE), None)
         .await
         .map(wire)
         .unwrap();
@@ -728,7 +729,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     let carol = c.client(2);
     let begin = carol
         .auth()
-        .login_begin(Some(&origin))
+        .login_begin(Some(&origin), None)
         .await
         .map(wire)
         .unwrap();

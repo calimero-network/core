@@ -803,7 +803,7 @@ public protocol APIProtocol: Sendable {
     func me(_ input: Operations.Me.Input) async throws -> Operations.Me.Output
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -828,7 +828,7 @@ public protocol APIProtocol: Sendable {
     func registerBegin(_ input: Operations.RegisterBegin.Input) async throws -> Operations.RegisterBegin.Output
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -923,7 +923,7 @@ public protocol APIProtocol: Sendable {
     func accountRecoveryStart(_ input: Operations.AccountRecoveryStart.Input) async throws -> Operations.AccountRecoveryStart.Output
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
     ///
     /// **Who:** anyone.
     ///
@@ -3286,7 +3286,7 @@ extension APIProtocol {
     }
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -3335,7 +3335,7 @@ extension APIProtocol {
     }
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3516,7 +3516,7 @@ extension APIProtocol {
     }
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
     ///
     /// **Who:** anyone.
     ///
@@ -34454,7 +34454,7 @@ public enum Operations {
     }
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -34481,15 +34481,23 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/requestBody/json/origin`.
                     public var origin: Swift.String?
+                    /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/requestBody/json/holderKey`.
+                    public var holderKey: Swift.String?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - origin:
-                    public init(origin: Swift.String? = nil) {
+                    ///   - holderKey:
+                    public init(
+                        origin: Swift.String? = nil,
+                        holderKey: Swift.String? = nil
+                    ) {
                         self.origin = origin
+                        self.holderKey = holderKey
                     }
                     public enum CodingKeys: String, CodingKey {
                         case origin
+                        case holderKey
                     }
                 }
                 /// - Remark: Generated from `#/paths/auth/passkey/login/begin/POST/requestBody/content/application\/json`.
@@ -34894,7 +34902,7 @@ public enum Operations {
     }
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -34927,6 +34935,8 @@ public enum Operations {
                     public var invite: Swift.String?
                     /// - Remark: Generated from `#/paths/auth/passkey/register/finish/POST/requestBody/json/confirm`.
                     public var confirm: Components.Schemas.Confirm?
+                    /// - Remark: Generated from `#/paths/auth/passkey/register/finish/POST/requestBody/json/holderKey`.
+                    public var holderKey: Swift.String?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
@@ -34934,22 +34944,26 @@ public enum Operations {
                     ///   - registration:
                     ///   - invite:
                     ///   - confirm:
+                    ///   - holderKey:
                     public init(
                         challengeId: Swift.String,
                         registration: Components.Schemas.Registration,
                         invite: Swift.String? = nil,
-                        confirm: Components.Schemas.Confirm? = nil
+                        confirm: Components.Schemas.Confirm? = nil,
+                        holderKey: Swift.String? = nil
                     ) {
                         self.challengeId = challengeId
                         self.registration = registration
                         self.invite = invite
                         self.confirm = confirm
+                        self.holderKey = holderKey
                     }
                     public enum CodingKeys: String, CodingKey {
                         case challengeId
                         case registration
                         case invite
                         case confirm
+                        case holderKey
                     }
                 }
                 /// - Remark: Generated from `#/paths/auth/passkey/register/finish/POST/requestBody/content/application\/json`.
@@ -36477,7 +36491,7 @@ public enum Operations {
     }
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token.
     ///
     /// **Who:** anyone.
     ///
@@ -36504,15 +36518,46 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/refreshToken`.
                     public var refreshToken: Swift.String
+                    /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof`.
+                    public struct HolderProofPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof/at`.
+                        public var at: Swift.Int64
+                        /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof/signature`.
+                        public var signature: Swift.String
+                        /// Creates a new `HolderProofPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - at:
+                        ///   - signature:
+                        public init(
+                            at: Swift.Int64,
+                            signature: Swift.String
+                        ) {
+                            self.at = at
+                            self.signature = signature
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case at
+                            case signature
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/json/holderProof`.
+                    public var holderProof: Operations.Refresh.Input.Body.JsonPayload.HolderProofPayload?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - refreshToken:
-                    public init(refreshToken: Swift.String) {
+                    ///   - holderProof:
+                    public init(
+                        refreshToken: Swift.String,
+                        holderProof: Operations.Refresh.Input.Body.JsonPayload.HolderProofPayload? = nil
+                    ) {
                         self.refreshToken = refreshToken
+                        self.holderProof = holderProof
                     }
                     public enum CodingKeys: String, CodingKey {
                         case refreshToken
+                        case holderProof
                     }
                 }
                 /// - Remark: Generated from `#/paths/auth/refresh/POST/requestBody/content/application\/json`.

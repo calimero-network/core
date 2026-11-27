@@ -313,6 +313,14 @@ not_covered("Keys", "An API key made with follow-ups (`POST /auth/apikeys { then
             "1.0.0-rc.38 (`Feature::KeyFollowUps`), and an entry without it replays as before. "
             "`tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build")
 
+not_covered("Accounts", ("A session bound to a browser's holder key (`login/begin { holderKey }`, `refresh "
+                         "{ holderProof }`, `RefreshRecord::holder`): refreshed only with the key's proof, 7 days"),
+            "the proof is an ECDSA P-256 signature, which the suite's standard-library Python cannot make, and "
+            "meroctl binds no session to a holder key; `CreateRefresh`, `UseRefresh` and `CreateAccount` with a holder "
+            "are new in the log only behind cluster version 1.0.0-rc.39 (`Feature::SessionHolders`), a record without "
+            "one reads and replays as before (the `account-sessions` case), and `tests/it/refresh.rs` covers binding, "
+            "proofs and exchange on one build")
+
 not_covered("Accounts", "Account recovery started and finished with a new passkey",
             "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
             "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

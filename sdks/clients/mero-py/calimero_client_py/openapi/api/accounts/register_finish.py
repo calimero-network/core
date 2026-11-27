@@ -55,6 +55,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 412:
         response_412 = Error.from_dict(response.json())
 
@@ -91,7 +96,8 @@ def sync_detailed(
 
      The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the
     account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems
-    `invite` for the new account.
+    `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as
+    on `/auth/passkey/login/begin`.
 
     **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with
     `confirm`, a passkey assertion over `details.challenge`.
@@ -127,7 +133,8 @@ def sync(
 
      The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the
     account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems
-    `invite` for the new account.
+    `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as
+    on `/auth/passkey/login/begin`.
 
     **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with
     `confirm`, a passkey assertion over `details.challenge`.
@@ -158,7 +165,8 @@ async def asyncio_detailed(
 
      The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the
     account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems
-    `invite` for the new account.
+    `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as
+    on `/auth/passkey/login/begin`.
 
     **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with
     `confirm`, a passkey assertion over `details.challenge`.
@@ -192,7 +200,8 @@ async def asyncio(
 
      The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the
     account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems
-    `invite` for the new account.
+    `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as
+    on `/auth/passkey/login/begin`.
 
     **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with
     `confirm`, a passkey assertion over `details.challenge`.

@@ -26,7 +26,8 @@ import {
 } from '../runtime/transport.js';
 import { type NodePolicy, type NodeVerification } from '../runtime/attestation.js';
 import { CLOUD_ENVIRONMENTS, cloudEnvironment, defaultCloudEnvironment, type CloudEnvironment } from '../runtime/directory.js';
-import { CalimeroError, LoginRequired, NotFound, OriginNotRegistered, UnavailableError, WrongRecoveryCode } from '../runtime/errors.js';
+import { CalimeroError, FeatureNotActive, LoginRequired, NotFound, OriginNotRegistered, UnavailableError, WrongRecoveryCode } from '../runtime/errors.js';
+import type { SessionHolder } from '../runtime/holder.js';
 import { b64url, fromB64url, type PasskeyProvider } from '../runtime/passkey.js';
 import { createRouteClient, type RouteClientOptions } from '../routes/route-client.js';
 import type { MethodOptions } from '../routes/method.js';
@@ -320,6 +321,13 @@ export interface CalimeroClientOptions {
   fetch?: typeof fetch;
   /** How calls and views retry a 503 or a failed connection. */
   retry?: RetryOptions;
+  /**
+   * The device key a sign-in binds its session to ({@link SessionHolder}; in a
+   * browser, {@link browserSessionHolder}): every refresh then carries its
+   * proof, so a copied refresh token refreshes nothing, and the node keeps the
+   * token 7 days rather than 30.
+   */
+  holder?: SessionHolder;
 }
 
 /** How {@link CalimeroClient.connect} reaches a Calimero Cloud cluster by name. */
@@ -347,6 +355,8 @@ export interface CalimeroConnectOptions {
   retry?: RetryOptions;
   /** Randomness for the weighted node order, in [0, 1). Defaults to `Math.random`. */
   random?: () => number;
+  /** The device key sessions are bound to ({@link CalimeroClientOptions.holder}). */
+  holder?: SessionHolder;
 }
 
 /**
@@ -378,6 +388,8 @@ export interface ConnectHereOptions {
   retry?: RetryOptions;
   /** Randomness for a directory's weighted node order, in [0, 1). Defaults to `Math.random`. */
   random?: () => number;
+  /** The device key sessions are bound to ({@link CalimeroClientOptions.holder}). */
+  holder?: SessionHolder;
 }
 
 /** The manifest of the frontend at `origin`, or `null` when that origin serves none (or answers anything else). */
@@ -465,6 +477,7 @@ export class CalimeroClient {
   static async connect(options: CalimeroConnectOptions, challenges: RouteClientOptions = {}): Promise<CalimeroClient> {
     const directory = options.directory ?? CLOUD_ENVIRONMENTS[options.environment ?? defaultCloudEnvironment()].directory;
     const transport = await directoryTransport({ ...options, directory });
+    transport.useHolder(options.holder);
     const client = new CalimeroClient(transport, challenges);
     client.placement = { cluster: options.cluster, deployment: null };
     return client;
@@ -498,7 +511,7 @@ export class CalimeroClient {
     const { retry } = options;
     if (manifest) {
       const [baseUrl, ...nodes] = manifest.api;
-      const client = new CalimeroClient({ baseUrl, nodes, policy: options.policy, fetch: options.fetch, retry }, challenges);
+      const client = new CalimeroClient({ baseUrl, nodes, policy: options.policy, fetch: options.fetch, retry, holder: options.holder }, challenges);
       client.placement = { cluster: manifest.cluster, deployment: fromPage ?? manifest.deployment ?? null };
       return client;
     }
@@ -513,12 +526,12 @@ export class CalimeroClient {
       );
     }
     if ('baseUrl' in fallback) {
-      const client = new CalimeroClient({ ...fallback, policy: options.policy, fetch: options.fetch, retry }, challenges);
+      const client = new CalimeroClient({ ...fallback, policy: options.policy, fetch: options.fetch, retry, holder: options.holder }, challenges);
       client.placement = { deployment: fromPage };
       return client;
     }
     const client = await CalimeroClient.connect(
-      { ...fallback, policy: options.policy, fetch: options.fetch, retry, random: options.random },
+      { ...fallback, policy: options.policy, fetch: options.fetch, retry, random: options.random, holder: options.holder },
       challenges,
     );
     client.placement = { cluster: fallback.cluster, deployment: fromPage };
@@ -669,7 +682,12 @@ export class CalimeroClient {
     // passkey with no account. The document says so
     // (`x-calimero-user-verification: preferred`), and the generated method
     // asks the passkey for it.
-    const session = await this.auth.registerFinish({ challengeId: begin.challengeId, registration, ...invite }, this.confirmWith(passkey, { signal }));
+    const finish = (holderKey: string | undefined) =>
+      this.auth.registerFinish(
+        { challengeId: begin.challengeId, registration, ...invite, ...(holderKey === undefined ? {} : { holderKey }) },
+        this.confirmWith(passkey, { signal }),
+      );
+    const session = await this.held(finish);
     this.useSession(session);
     return session;
   }
@@ -687,7 +705,12 @@ export class CalimeroClient {
     const begin = await this.begin<{
       challengeId: string;
       options: { challenge: string; rpId?: string; rp?: { id?: string } };
-    }>(this.auth.loginBegin({ ...origin === undefined ? {} : { origin } }), origin);
+    }>(
+      this.held((holderKey) =>
+        this.auth.loginBegin({ ...(origin === undefined ? {} : { origin }), ...(holderKey === undefined ? {} : { holderKey }) }),
+      ),
+      origin,
+    );
     const rpId = begin.options.rpId ?? begin.options.rp?.id ?? '';
     const challenge = fromB64url(begin.options.challenge);
     const assertion = await (options.signal
@@ -696,6 +719,28 @@ export class CalimeroClient {
     const session = await this.auth.loginFinish({ challengeId: begin.challengeId, assertion });
     this.useSession(session);
     return session;
+  }
+
+  /**
+   * Send a ceremony step with the holder's key ({@link CalimeroClientOptions.holder}),
+   * and without it to a cluster whose nodes do not all take one yet
+   * (`409 FEATURE_NOT_ACTIVE`, refused before anything is spent): that session
+   * is not bound, as on a client with no holder.
+   */
+  private async held<T>(send: (holderKey: string | undefined) => Promise<T>): Promise<T> {
+    const holder = this.transport.holder;
+    if (!holder) return send(undefined);
+    try {
+      return await send(await holder.publicKey());
+    } catch (error) {
+      if (error instanceof FeatureNotActive) return send(undefined);
+      throw error;
+    }
+  }
+
+  /** Bind the sessions signed in from now on to `holder` ({@link CalimeroClientOptions.holder}). */
+  useHolder(holder: SessionHolder | undefined): void {
+    this.transport.useHolder(holder);
   }
 
   /**

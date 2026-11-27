@@ -49,6 +49,20 @@ async fn new_session(
     Ok(session_answer(account, &token, &new))
 }
 
+/// The holder key a ceremony binds its session to ([`RefreshRecord::holder`]), checked before
+/// the ceremony spends anything: `400 BAD_HOLDER_KEY` for a malformed one, `409
+/// FEATURE_NOT_ACTIVE` while a node of the cluster would drop it.
+async fn holder_for(node: &Node, key: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    crate::proof::check_holder_key(&key)
+        .map_err(|why| ApiError::bad_request("BAD_HOLDER_KEY", why))?;
+    node.require_features(&[crate::system::cluster_version::Feature::SessionHolders])
+        .await?;
+    Ok(Some(key))
+}
+
 #[derive(Deserialize)]
 pub(super) struct RegisterBegin {
     #[serde(default)]
@@ -71,6 +85,11 @@ pub(super) struct RegisterBegin {
 pub(super) struct LoginBegin {
     #[serde(default)]
     origin: Option<String>,
+    /// The holder key to bind the session to ([`RefreshRecord::holder`]): a browser's
+    /// non-extractable P-256 key, base64url of its raw public point. The challenge states
+    /// it, so the passkey signs the binding.
+    #[serde(default, rename = "holderKey")]
+    holder_key: Option<String>,
 }
 
 /// The rp-id a ceremony begun on `origin` uses: the cluster's for its own
@@ -186,6 +205,10 @@ pub(super) struct RegisterFinish {
     /// over the account it creates.
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// The holder key to bind the new account's first session to, on the first finish
+    /// ([`LoginBegin::holder_key`]); the new passkey signs it with the account.
+    #[serde(default)]
+    holder_key: Option<String>,
 }
 
 async fn register_finish(
@@ -206,6 +229,7 @@ async fn register_finish(
     if let Some(confirm) = body.confirm {
         return sign_up_confirmed(&node, confirm, body.invite.as_deref()).await;
     }
+    let holder = holder_for(&node, body.holder_key).await?;
     let Pending::Register {
         challenge, name, ..
     } = take_pending(&node, &body.challenge_id).await?
@@ -236,7 +260,7 @@ async fn register_finish(
     // A registration carries no signature by the new key (attestation
     // `none`): the new passkey signs the account it creates, and the session
     // it opens, before the log takes it (412, then the retry).
-    let session = NewSession::new();
+    let session = NewSession::new(holder);
     // The new passkey belongs to the rp-id of the origin it was made on.
     let rp_id = app
         .as_ref()
@@ -384,9 +408,10 @@ async fn login_begin(
 ) -> ApiResult<Json<PasskeyChallenge>> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
+    let holder = holder_for(&node, body.holder_key).await?;
     // The challenge states the session the sign-in opens, so the log takes
     // its refresh token only with this assertion (`CreateRefresh`).
-    let session = NewSession::new();
+    let session = NewSession::new(holder);
     let statement = session.sign_in_statement();
     let challenge = statement.challenge().map_err(ApiError::internal)?;
     let id = put_pending(
@@ -631,6 +656,41 @@ async fn passkey_remove(
 #[serde(rename_all = "camelCase")]
 pub(super) struct RefreshBody {
     refresh_token: String,
+    /// The holder's signature, required for a token bound to a holder key
+    /// ([`RefreshRecord::holder`]) and ignored for any other.
+    #[serde(default)]
+    holder_proof: Option<HolderProof>,
+}
+
+/// A holder's proof that it uses the token: `signature` (base64url, `r ‖ s`) by the session's
+/// holder key over [`crate::proof::refresh_holder_message`] of the token's hash and `at`
+/// (Unix seconds, within [`crate::proof::HOLDER_PROOF_SKEW_SECS`] of the node's clock).
+#[derive(Deserialize)]
+pub(super) struct HolderProof {
+    at: u64,
+    signature: String,
+}
+
+/// A token bound to a holder key is used only with that key's proof: `401 HOLDER_PROOF_REQUIRED`
+/// without one, `401 BAD_HOLDER_PROOF` for one that does not verify. Judged before anything is
+/// written, so a copy of the token taken off the device neither refreshes nor spends it.
+fn check_holder(
+    rec: &RefreshRecord,
+    hash: &str,
+    proof: Option<&HolderProof>,
+) -> Result<(), ApiError> {
+    let Some(holder) = &rec.holder else {
+        return Ok(());
+    };
+    let Some(proof) = proof else {
+        return Err(ApiError::new(
+            401,
+            "HOLDER_PROOF_REQUIRED",
+            "this refresh token is bound to a device key: send its holderProof",
+        ));
+    };
+    crate::proof::verify_refresh_holder(holder, hash, proof.at, &proof.signature, now_secs())
+        .map_err(|why| ApiError::new(401, "BAD_HOLDER_PROOF", why))
 }
 
 async fn refresh(
@@ -683,6 +743,7 @@ async fn refresh(
     if !serves(&node, &rec.account) {
         return Err(wrong_node());
     }
+    check_holder(&rec, &old_hash, body.holder_proof.as_ref())?;
     if let Some(origin) = &rec.origin {
         // Judged on the cluster's latest state: a removal made through
         // another node holds here at once.
@@ -698,12 +759,13 @@ async fn refresh(
     let record = RefreshRecord {
         account: rec.account.clone(),
         session: rec.session.clone(),
-        expires_at: now_secs() + REFRESH_TTL,
+        expires_at: now_secs() + rec.ttl(),
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
         origin: rec.origin.clone(),
         key: crate::proof::refresh_key(&new_refresh),
         opened_at: rec.opened_at,
+        holder: rec.holder.clone(),
     };
     let new_hash = b64url(&sha256(new_refresh.as_bytes()));
     let now = now_secs();
@@ -786,7 +848,7 @@ async fn kept_refresh(
     rec: &RefreshRecord,
 ) -> Result<Option<Json<SessionAnswer>>, ApiError> {
     let now = now_secs();
-    let issued = rec.expires_at.saturating_sub(REFRESH_TTL);
+    let issued = rec.issued_at();
     if rec.key.is_empty()
         || now.saturating_sub(issued) >= node.config.refresh_rotate_after.as_secs()
     {
@@ -898,7 +960,7 @@ fn account_sessions(
             app: r.app.clone(),
             origin: r.origin.clone(),
             opened_at: (r.opened_at > 0).then_some(r.opened_at),
-            last_active_at: r.expires_at.saturating_sub(REFRESH_TTL),
+            last_active_at: r.issued_at(),
             current: current == Some(r.session.as_str()),
         })
         .collect()

@@ -32,13 +32,17 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param origin 
+ * @param holderKey 
  */
 @Serializable
 
 data class LoginBeginRequest (
 
     @SerialName(value = "origin")
-    val origin: kotlin.String? = null
+    val origin: kotlin.String? = null,
+
+    @SerialName(value = "holderKey")
+    val holderKey: kotlin.String? = null
 
 ) {
 

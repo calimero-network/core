@@ -198,6 +198,7 @@ async fn an_invite_only_cluster_takes_invited_people() {
             registration,
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
